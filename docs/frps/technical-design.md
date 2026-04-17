@@ -34,6 +34,7 @@ Storage / Runtime State
 - 管理员登录和会话。
 - 分组、隧道、反代、证书、抓包任务管理。
 - 配置校验、端口冲突检测、热更新下发。
+- 单连接断开、隧道级连接回收等连接管理入口。
 - 审计日志写入。
 
 ### 2.2 Control Layer
@@ -44,8 +45,10 @@ Storage / Runtime State
 - 分组客户端来源 IP 黑白名单校验。
 - 心跳维护。
 - 配置版本同步。
+- 配置版本应答跟踪。
 - 客户端在线状态维护。
 - 工作连接或多路流的生命周期管理。
+- 管理端发起的 stream 强制关闭控制。
 
 ### 2.3 Data Plane
 
@@ -63,7 +66,7 @@ Storage / Runtime State
 
 - 连接注册表。
 - 实时速率统计。
-- 连接级/隧道级/分组级限速。
+- 连接生效限速值计算与展示，全局/分组/规则级限速执行。
 - 抓包写出。
 - 日志事件和状态事件广播。
 
@@ -76,6 +79,7 @@ Storage / Runtime State
 - 暴露 REST API。
 - 维护 WebSocket 会话。
 - 将后台事件映射为前端可消费的消息。
+- 提供在线连接查询和连接管理接口。
 
 ### 3.2 `internal/auth`
 
@@ -88,13 +92,16 @@ Storage / Runtime State
 - `frpc` 登录协议。
 - 心跳处理。
 - 配置推送。
+- 配置应答跟踪。
 - 工作流打开/关闭。
+- 管理端触发的 stream 关闭。
 
 ### 3.4 `internal/tunnel`
 
 - 分组、隧道、端口范围的配置模型。
 - 正向代理规则编排。
 - 公网监听器和分组关系维护。
+- 正向代理配置 diff 和监听器重建。
 
 ### 3.5 `internal/reverse`
 
@@ -114,6 +121,7 @@ Storage / Runtime State
 - 字节计数。
 - 速率计算。
 - 限速器绑定。
+- 连接关闭句柄和关闭原因维护。
 
 ### 3.8 `internal/capture`
 
@@ -259,6 +267,7 @@ ProxyGroup
 - server_port
 - upstream_ip
 - upstream_port
+- stream_id
 - opened_at
 - closed_at
 - rx_bytes
@@ -267,9 +276,11 @@ ProxyGroup
 - tx_rate
 - rate_limit
 - capture_state
+- close_reason
+- close_requested_by
 ```
 
-`ActiveConnection` 只保存在内存运行态，不直接写数据库。关闭后将摘要写入审计或统计表。
+`ActiveConnection` 只保存在内存运行态，不直接写数据库。关闭后将摘要写入审计或统计表。运行态注册表还需要保留关闭函数、所属会话和必要的 stream 元数据，以支持管理端按连接 ID 主动断开。
 
 ## 4.7 `CaptureTask`
 
@@ -321,7 +332,7 @@ accept public tcp connection
 -> resolve tunnel by listen port
 -> match group tunnel ip rules
 -> create ActiveConnection
--> open stream to frpc
+-> open stream to frpc with current tunnel snapshot
 -> proxy both directions
 -> close and flush stats
 ```
@@ -408,6 +419,7 @@ HTTPS：
 - `auth.finish`
 - `server.hello`
 - `config.push`
+- `config.ack`
 - `heartbeat`
 - `stream.open`
 - `stream.ready`
@@ -421,8 +433,31 @@ HTTPS：
 
 - `frps` 递增 `configVersion`
 - 通过控制连接推送 `config.push`
-- `frpc` 应答已接收版本
+- `frpc` 必须回 `config.ack`
+- `frps` 记录每个在线会话的最后已确认版本
 - 未应答则重试或强制重连
+
+`config.push` 建议始终携带该分组的完整运行态快照，而不是增量 patch。这样 `frpc` 可以直接原子替换本地快照，避免补丁顺序错乱导致的状态漂移。
+
+`config.push` 只携带 `frpc` 执行工作流所必需的字段，例如隧道启停、本地目标、端口映射、协议等。`frps` 独占执行的服务端策略，例如 `client/tunnel` ACL、限速、抓包策略，不应作为客户端配置下发。
+
+### 6.3 连接管理中的单条连接关闭
+
+建议管理动作链路：
+
+```text
+POST /api/v1/connections/{id}/close
+-> locate ActiveConnection in registry
+-> mark close_requested_by=admin
+-> publish connection.close_requested
+-> close public side connection
+-> send stream.close to frpc if stream is active
+-> wait resource cleanup
+-> publish connection.closed with close_reason=admin_terminated
+-> write audit log
+```
+
+如果目标连接已经关闭，接口返回幂等成功或 `404` 都可以，但实现上必须保证不会误伤其他连接。
 
 ## 7. 热更新设计
 
@@ -434,11 +469,20 @@ HTTPS：
 
 ### 7.2 正向代理配置
 
-例如分组、隧道、IP 规则、限速。要求热更新：
+正向代理热更新需要区分两类配置：
+
+- `frpc` 执行配置，例如分组启停、隧道启停、协议、远端端口映射、本地目标地址。
+- `frps` 本地策略，例如客户端 ACL、隧道入口 ACL、限速、抓包开关。
+
+要求热更新：
 
 - 新增端口立即监听。
 - 修改端口先校验冲突，再重建监听器。
 - 删除端口先停止新接入，再等待旧连接自然关闭或强制回收。
+- 执行配置保存成功后，立即向该分组在线 `frpc` 推送 `config.push`。
+- `frpc` 不需要重启，收到后原子替换本地运行态快照。
+- `frps` 需要追踪 `config.ack`，在 WebUI 展示最后同步版本和同步时间。
+- 本地策略保存成功后，只更新 `frps` 运行态，不要求给 `frpc` 推送配置。
 
 ### 7.3 反向代理配置
 
@@ -447,6 +491,14 @@ HTTPS：
 - HTTP 路由表原子替换。
 - HTTPS 证书表原子替换。
 - TCP 固定端口监听器按规则重建。
+
+### 7.4 热更新与活跃连接关系
+
+- 修改本地目标地址等 `frpc` 执行配置时，不打断无关已有连接，新建连接立即使用新配置。
+- 修改 ACL、限速、抓包开关等 `frps` 本地策略时，不要求 `frpc` 感知，新接入连接和后续转发立即按新策略执行。
+- 修改远端监听端口、协议、启停状态时，`frps` 先完成监听器切换，新接入连接立即按新配置处理。
+- 隧道被禁用或删除后，新连接必须立刻拒绝；已有连接默认允许自然结束。
+- 管理端如果需要立即回收已有连接，应按连接 ID 或隧道维度显式触发关闭动作，而不是依赖配置删除隐式清空。
 
 ## 8. 事件总线与 WebSocket
 
@@ -465,9 +517,11 @@ HTTPS：
 
 - `client.online`
 - `client.offline`
+- `config.synced`
 - `group.updated`
 - `tunnel.updated`
 - `reverse.updated`
+- `connection.close_requested`
 - `connection.opened`
 - `connection.updated`
 - `connection.closed`
@@ -487,17 +541,52 @@ HTTPS：
 - 以 1 秒窗口计算 `rx_rate` 和 `tx_rate`
 - 定期向事件总线广播增量
 
-### 9.2 限速优先级
+### 9.2 限速执行边界与生效值
 
-建议三层同时支持：
+限速只在 `frps` 数据面执行：
+
+- `frpc` 不接收限速参数，不参与流量额度扣减，也不上报“当前正在被限速”的状态。
+- 对正向代理来说，`frpc` 只会观察到经由 `frps` 转发的数据变慢，但无法区分这是网络抖动还是服务端节流。
+- 限速配置的热更新只修改 `frps` 本地运行态，不通过 `config.push` 下发到客户端。
+- 本文中的流量额度桶（quota bucket）只用于限速实现，表示可消费的流量预算；它不是登录鉴权使用的 token，也不会出现在认证协议中。
+- 限速实现统一放在应用层 pacer，不依赖 Linux `tc`。这样可以保证 `frps` 在 Windows 和 Linux 上都具备一致能力，也避免为老旧且平台绑定的内核流控方案维护第二套实现路径。
+
+建议支持以下层级：
 
 - 全局限速
 - 分组限速
 - 隧道或反代规则限速
 
-最终生效值取最严格值。
+其中：
 
-### 9.3 UDP 统计
+- `0` 或空值表示不限制。
+- `ActiveConnection.rate_limit` 存储该连接当前生效值，用于连接管理页展示。
+- 生效值取所有非零限制中的最严格值。
+
+### 9.3 TCP 限速实现
+
+TCP 限速建议在 `frps` 双向拷贝链路上执行：
+
+- 为每条 `ActiveConnection` 创建两个方向的 limiter，分别对应入口方向和出口方向。
+- 在 `io.Copy` 风格循环外包一层 paced reader 或 paced writer；实现重点不是“攒够一大块额度再写一大块”，而是按单调时钟连续补充额度，并计算下一次允许发送时间。
+- 每次写出前按本次准备转发的字节数申请流量额度；如果当前额度不足，只发送允许的那一小部分，剩余部分继续等待，而不是整块数据一起憋到下一个时间窗。
+- 流量额度不足时，当前 goroutine 在 `frps` 侧等待额度恢复，而不是通知 `frpc` 降速。
+- limiter 内部维护按 `bytes` 计量的可消费额度，额度补充速率配置统一使用 `bytes/sec`；底层可用流量额度桶（quota bucket）做额度核算，但输出调度必须由 pacer 保证平滑，不能做成类似 PWM 的秒级 burst/sleep。
+- TCP 写路径必须支持 partial write 和小块发送。低速场景例如 `10 bps` 时，可退化为接近 `1 byte / 800 ms` 的发送节拍；这已经是应用层字节流可达到的最细粒度。
+- 为减少内核侧合并导致的额外突发，发送方向应限制单次 write 大小，并评估是否对对应 socket 启用 `TCP_NODELAY`。
+- 修改全局、分组或规则限速后，运行态需要原子更新受影响连接的 limiter 参数，使新旧连接都能立即看到新的生效值。
+
+### 9.4 UDP 限速实现
+
+UDP 限速建议在 `frps` 的会话转发路径执行：
+
+- 以 UDP 会话为最小运行态对象，按方向维护 limiter。
+- 每次转发数据报前，按 datagram 大小申请流量额度。
+- 流量额度不足时等待额度恢复；如果会话 context 已取消或超时，则放弃该次转发并记录统计。
+- UDP 平滑度受 datagram 边界限制，无法细于“单个数据报”本身；如果一个数据报大于当前可用额度，只能等待额度累积后整包发出。
+- 首版不需要把 UDP 限速状态同步给 `frpc`，客户端只按收到的数据报继续转发。
+
+### 9.5 UDP 统计
 
 UDP 以会话维度记录：
 
@@ -554,12 +643,14 @@ UDP 以会话维度记录：
 - 反代路由表
 - 活跃连接注册表
 - WebSocket 会话集合
+- 在线 `frpc` 会话的配置同步状态
 
 建议使用：
 
 - 原子替换只读快照，用于高频读场景
 - 分片锁或细粒度锁，避免全局大锁
 - context 控制监听器、连接、抓包任务生命周期
+- 单分组串行化配置重载，避免同一分组的多次 Web 修改交错下发
 
 ## 13. 安全要求
 

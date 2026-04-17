@@ -31,6 +31,7 @@
 - 登录协议
 - 心跳
 - 配置同步
+- 配置应答
 - 服务端事件接收
 
 ### 2.4 `internal/proxy`
@@ -46,6 +47,7 @@
 - 当前隧道索引
 - 当前活跃 stream
 - 当前 UDP session
+- 活跃 stream 绑定的隧道快照
 
 ### 2.6 `internal/config`
 
@@ -85,6 +87,7 @@ token = token_id + token_secret
 
 - 登录
 - 接收配置版本
+- 回应配置版本
 - 心跳保活
 - 接收工作流打开请求
 - 上报错误事件
@@ -100,6 +103,7 @@ connect server
 -> send auth.finish with sha256(token_hash + challenge_nonce)
 -> receive server.hello
 -> receive config.push
+-> send config.ack
 -> start heartbeat
 -> wait for stream.open
 ```
@@ -111,15 +115,25 @@ connect server
 收到 `config.push` 后：
 
 1. 校验配置版本是否更新
-2. 原子替换本地运行时配置
-3. 清理已删除隧道的运行态资源
-4. 保留仍有效的活跃流
+2. 构造新的运行时快照
+3. 原子替换本地运行时配置
+4. 返回 `config.ack`
+5. 清理已删除隧道的空闲运行态资源
+6. 保留仍有效的活跃流
 
 需要注意：
 
 - 配置更新不能中断无关流量
 - 已建立 TCP 连接可自然结束
 - 新建流必须使用最新配置
+- 客户端进程不允许因为配置更新而重启
+- `config.push` 不包含服务端 ACL、限速器状态或抓包策略，这些能力只在 `frps` 执行
+
+活跃流处理原则：
+
+- 每个 stream 在打开时绑定当时的隧道快照或已解析本地目标。
+- 后续配置修改不回写已打开 stream 的目标地址。
+- 隧道被删除或禁用后，新 stream 不再允许打开；已有 stream 是否关闭由 `frps` 通过 `stream.close` 明确控制。
 
 ## 6. TCP 工作流设计
 
@@ -130,6 +144,7 @@ connect server
 3. 拨号本地 TCP 服务
 4. 建立双向转发
 5. 上报打开成功或失败
+6. 收到服务端 `stream.close` 时立即回收本地连接和 goroutine
 
 目标地址计算：
 
@@ -169,8 +184,10 @@ UDP 采用短会话模式：
 - 本地目标拨号失败
 - 本地连接中途断开
 - 配置版本异常
+- 配置应答失败
 - 控制连接解析失败
 - UDP 会话异常
+- 收到管理端强制断开
 
 上报目的不是替代日志，而是让 `frps` WebUI 可见。
 
@@ -208,6 +225,7 @@ UDP 采用短会话模式：
 - 登录响应必须绑定服务端下发的一次性 challenge nonce。
 - 控制连接只保存必要上下文。
 - 本地目标地址必须来自服务端下发的有效配置。
+- 不对服务端限速做本地推断、缓存或二次实现。
 - 对异常输入做长度和类型校验，避免协议解析被拖垮。
 
 ## 13. 推荐实现顺序
