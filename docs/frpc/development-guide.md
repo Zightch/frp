@@ -95,6 +95,19 @@ frpc/
 - `server`
 - `token`
 
+`token` 必须按固定长度拆成：
+
+- `token_id`
+- `token_secret`
+
+登录流程固定为：
+
+1. 发送 `token_id`。
+2. 接收服务端一次性临时盐。
+3. 本地计算 `token_hash = sha256(token_secret)`。
+4. 发送 `sha256(token_hash + challenge_nonce)`。
+5. 登录成功后再接收分组配置。
+
 登录后才能知道：
 
 - 所属分组

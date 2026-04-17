@@ -27,8 +27,11 @@
 
 - 分组名全局唯一。
 - token 不明文回显，只允许创建和重置时查看一次。
-- token 采用 `tokenId.secret` 两段式结构。
-- 服务端只保存 `tokenId + tokenSalt + tokenHash`。
+- token 采用固定长度拼接结构：`token = tokenId + tokenSecret`，不使用 `.` 分隔符。
+- 服务端只在分组记录中保存 `tokenId + tokenHash`。
+- 首版建议 `tokenId` 使用 32 位小写 hex，`tokenSecret` 使用 64 位小写 hex。
+- `tokenHash = sha256(tokenSecret)`，用于 challenge 登录校验。
+- `tokenId` 和 `tokenSecret` 必须固定长度，格式非法直接拒绝。
 - 禁用分组后，新的 `frpc` 登录必须被拒绝。
 - 已在线客户端可以选择立即踢下线或等配置重载回收。
 
@@ -58,7 +61,7 @@ allowlist 模式且 allow 未命中 -> 拒绝
 - 拒绝登录时要返回明确原因。
 - 拒绝事件要记日志并推送到 WebUI。
 - 管理员可查看最近拒绝记录。
-- token 格式非法、`tokenId` 不存在、加盐 hash 校验失败都必须拒绝登录。
+- token 格式非法、`tokenId` 不存在、challenge 过期、challenge 重放、响应校验失败都必须拒绝登录。
 
 ## 2.3 公网隧道入口来源 IP 黑白名单
 
@@ -275,7 +278,7 @@ frps:20000 -> frpc local 127.0.0.1:22
 ## 8.1 新建一个正向代理分组
 
 1. 管理员创建分组。
-2. 系统生成 `tokenId`、随机盐和明文 token。
+2. 系统生成固定长度 `tokenId`、`tokenSecret` 和完整明文 token。
 3. 管理员配置 `frpc` 接入 IP 黑白名单。
 4. 管理员配置隧道入口 IP 黑白名单。
 5. 管理员创建一个或多个 TCP/UDP 隧道。

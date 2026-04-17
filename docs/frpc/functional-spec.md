@@ -37,7 +37,10 @@ frpc --server 1.2.3.4:7000 --token xxxxx
 
 `frpc` 必须：
 
-- 发起登录请求
+- 从 `token` 固定长度截取 `tokenId` 和 `tokenSecret`
+- 先发送只包含 `tokenId` 的登录开始请求
+- 接收服务端临时盐 challenge
+- 计算 `tokenHash = sha256(tokenSecret)` 并发送 `sha256(tokenHash + challengeNonce)`
 - 上报自身版本和基础环境信息
 - 接收登录结果
 
@@ -126,4 +129,3 @@ frpc --server 1.2.3.4:7000 --token xxxxx
 - 断网后可恢复
 - 在配置变更时不崩溃
 - 在本地目标不可用时能明确报错
-

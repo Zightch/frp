@@ -71,6 +71,8 @@ go test ./...
 
 - 正确 token 可登录
 - 错误 token 被拒绝
+- token 长度非法时启动失败
+- challenge 过期或重放时能重新发起登录
 - 被 `client` 黑白名单拦截时能收到明确失败
 - 服务端版本不兼容时能提示
 
@@ -161,6 +163,7 @@ Test-NetConnection 127.0.0.1 -Port 8080
 
 - `server` 地址是否正确
 - token 是否正确
+- token 是否符合固定长度拼接格式
 - 分组是否启用
 - `frpc` 来源 IP 是否被服务端黑白名单拦截
 
@@ -189,4 +192,3 @@ Test-NetConnection 127.0.0.1 -Port 8080
 - 单连接大流量转发稳定性
 - 多并发 stream 下内存占用
 - 高频配置更新时是否出现异常抖动
-

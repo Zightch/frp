@@ -66,6 +66,19 @@
 
 这样可以维持用户侧的简单启动方式。
 
+`--token` 的内容采用固定长度拼接格式：
+
+```text
+token = token_id + token_secret
+```
+
+首版建议：
+
+- `token_id` 为 32 位小写 hex
+- `token_secret` 为 64 位小写 hex
+
+客户端不依赖 `.` 等分隔符解析 token，而是按固定长度截取 `token_id` 和 `token_secret`。如果长度或字符集非法，启动阶段直接失败。
+
 ## 4. 控制连接设计
 
 `frpc` 与 `frps` 之间至少需要一条长连接，用于：
@@ -80,7 +93,11 @@
 
 ```text
 connect server
--> send client.hello
+-> parse token_id and token_secret from token
+-> send auth.begin with token_id
+-> receive auth.challenge
+-> calculate token_hash = sha256(token_secret)
+-> send auth.finish with sha256(token_hash + challenge_nonce)
 -> receive server.hello
 -> receive config.push
 -> start heartbeat
@@ -187,6 +204,8 @@ UDP 采用短会话模式：
 ## 12. 安全要求
 
 - token 不落盘。
+- 客户端只在内存中保存 `token_secret` 和本次登录派生出的 `token_hash`。
+- 登录响应必须绑定服务端下发的一次性 challenge nonce。
 - 控制连接只保存必要上下文。
 - 本地目标地址必须来自服务端下发的有效配置。
 - 对异常输入做长度和类型校验，避免协议解析被拖垮。
@@ -200,4 +219,3 @@ UDP 采用短会话模式：
 5. 自动重连
 6. UDP 工作流
 7. 错误事件上报
-

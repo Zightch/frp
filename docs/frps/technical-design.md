@@ -81,7 +81,7 @@ Storage / Runtime State
 
 - 管理员认证。
 - API/WS 鉴权中间件。
-- `tokenId` 定位与加盐 hash 校验。
+- `token_id` 定位与一次性 challenge 校验。
 
 ### 3.3 `internal/control`
 
@@ -142,7 +142,6 @@ ProxyGroup
 - id
 - name
 - token_id
-- token_salt
 - token_hash
 - enabled
 - max_clients
@@ -300,12 +299,13 @@ ProxyGroup
 
 ```text
 accept
--> read ClientHello
--> parse tokenId and secret
--> load group by tokenId
--> validate salted token hash
+-> read auth.begin
+-> parse token_id
+-> load group by token_id
 -> match group client ip rules
--> reject or accept
+-> reject or send auth.challenge with one-time nonce
+-> read auth.finish
+-> validate sha256(token_hash + challenge_nonce)
 -> register session
 -> push ServerHello + ConfigPush
 ```
@@ -362,12 +362,14 @@ HTTPS：
 
 ### 6.1 基础消息
 
+登录阶段拆成三类消息：
+
 ```json
 {
-  "type": "client.hello",
+  "type": "auth.begin",
   "requestId": "uuid",
   "payload": {
-    "token": "group-token",
+    "tokenId": "fixed-length-token-id",
     "clientVersion": "0.1.0",
     "hostname": "host-a",
     "os": "linux",
@@ -376,9 +378,34 @@ HTTPS：
 }
 ```
 
+```json
+{
+  "type": "auth.challenge",
+  "requestId": "uuid",
+  "payload": {
+    "challengeId": "uuid",
+    "nonce": "random-temporary-salt",
+    "expiresInMs": 10000
+  }
+}
+```
+
+```json
+{
+  "type": "auth.finish",
+  "requestId": "uuid",
+  "payload": {
+    "challengeId": "uuid",
+    "response": "sha256(token_hash + nonce)"
+  }
+}
+```
+
 建议定义的消息类型：
 
-- `client.hello`
+- `auth.begin`
+- `auth.challenge`
+- `auth.finish`
 - `server.hello`
 - `config.push`
 - `heartbeat`
@@ -536,9 +563,15 @@ UDP 以会话维度记录：
 
 ## 13. 安全要求
 
-- token 采用 `tokenId.secret` 结构。
-- 服务端只保存 `token_id + token_salt + token_hash`。
-- token 校验比较必须使用常量时间算法。
+- token 采用固定长度拼接结构：`token = token_id + token_secret`，不使用 `.` 分隔符。
+- `token_id` 和 `token_secret` 必须固定长度，否则客户端无法可靠截取。
+- 首版建议 `token_id` 为 32 位小写 hex，`token_secret` 为 64 位小写 hex。
+- 服务端只在分组记录中持久化 `token_id + token_hash`。
+- 登录阶段先用 `token_id` 定位分组，再下发一次性临时盐，也就是 challenge nonce。
+- `token_hash` 建议固定使用 `sha256(token_secret)`。
+- 客户端提交 `sha256(token_hash + challenge_nonce)`，服务端使用常量时间算法比较。
+- challenge nonce 必须短时有效、只能使用一次，过期或重复使用必须拒绝。
+- 当前方案下 `token_hash` 等价于可登录校验材料，必须按敏感凭据保护。
 - 管理员密码只存 hash。
 - 私钥独立存储并限制权限。
 - 控制连接登录前先做最小解析，避免被恶意输入拖垮。

@@ -201,7 +201,6 @@ ProxyGroup
 - id
 - name
 - tokenId
-- tokenSalt
 - tokenHash
 - enabled
 - clientAccessMode: disabled | allowlist | denylist | allowlist_and_denylist
@@ -218,16 +217,20 @@ ProxyGroup
 
 一个分组可以包含多个隧道，也可以有多个在线客户端。第一阶段可以限制一个分组同时只允许一个活跃客户端，降低转发一致性复杂度；后续再扩展多客户端负载均衡或主备。
 
-分组 token 建议采用两段式结构：
+分组 token 采用固定长度拼接结构，不使用分隔符：
 
 ```text
-token = tokenId.secret
+token = token_id + token_secret
 ```
 
-- `tokenId` 是公开定位段，用于快速定位分组或 token 记录。
-- `secret` 是高熵随机密钥，只在创建或重置时展示一次。
-- 服务端保存 `tokenId + tokenSalt + tokenHash`，不保存明文 `secret`。
-- 校验时按 `tokenId` 定位记录，再用 `tokenSalt` 对 `secret` 计算 hash 后做常量时间比较。
+- `token_id` 是固定长度公开定位段，用于快速定位分组或 token 记录。
+- `token_secret` 是固定长度高熵随机密钥，只在创建或重置时展示一次。
+- 首版建议 `token_id` 使用 16 字节随机值并编码为 32 位小写 hex，`token_secret` 使用 32 字节随机值并编码为 64 位小写 hex。
+- `frpc` 按固定长度从 `token` 中截取 `token_id`，登录第一步只发送 `token_id`。
+- 服务端在分组记录中保存 `token_id + token_hash`，不保存明文 `token_secret`。
+- `token_hash = sha256(token_secret)`，由客户端本地计算并由服务端在创建或重置 token 时持久化。
+- 登录时服务端生成一次性临时盐，也就是 challenge nonce，客户端提交 `sha256(token_hash + challenge_nonce)`。
+- 临时盐只保存在服务端内存运行态，必须有过期时间且只能使用一次。
 
 分组 IP 黑白名单必须拆成两类：
 
@@ -383,7 +386,6 @@ ClientHello
 
 ServerHello
 - serverVersion
-- groupId
 - configVersion
 - heartbeatInterval
 
@@ -467,13 +469,13 @@ accept connection
 
 ```text
 accept control connection on 7000
--> receive token
--> parse tokenId and secret
+-> receive auth.begin with token_id
 -> resolve source IP
--> locate group by tokenId
--> verify salted token hash
+-> locate group by token_id
 -> match client IP access policy
--> reject or continue
+-> reject or issue one-time challenge nonce
+-> receive auth.finish with sha256(token_hash + challenge_nonce)
+-> verify challenge response by constant-time compare
 -> mark client online
 -> push config
 ```
@@ -537,7 +539,7 @@ accept connection
 
 - 管理员账号。
 - 分组。
-- tokenId、tokenSalt、tokenHash。
+- 分组 tokenId、tokenHash。
 - `frpc` 客户端接入黑白名单。
 - 隧道入口黑白名单。
 - 隧道配置。
@@ -554,9 +556,10 @@ accept connection
 
 基础安全要求：
 
-- 分组 token 只保存 `tokenId + tokenSalt + tokenHash`，不明文保存。
-- token 校验使用随机盐和常量时间比较。
+- 分组 token 只保存 `tokenId + tokenHash`，不明文保存。
+- token 登录使用一次性临时盐挑战，服务端校验 `sha256(tokenHash + challengeNonce)` 时必须使用常量时间比较。
 - token 的私密段只在创建和重置时展示一次，不写入普通日志。
+- 当前 challenge 方案下，`tokenHash` 是可用于生成登录响应的校验材料，必须按敏感凭据保护；如果数据库泄漏，攻击者可用泄漏的 `tokenHash` 伪造登录。
 - WebUI 管理端使用独立管理员账号和 session/JWT。
 - frpc 控制连接必须鉴权成功后才能领取配置。
 - WebSocket 复用管理端鉴权。

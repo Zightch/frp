@@ -96,6 +96,8 @@ go test ./...
 - token 格式非法被拒绝
 - `tokenId` 不存在被拒绝
 - token 错误被拒绝
+- challenge 过期被拒绝
+- challenge 重放被拒绝
 - 分组禁用被拒绝
 - `client allow` 命中可登录
 - `client deny` 命中被拒绝
