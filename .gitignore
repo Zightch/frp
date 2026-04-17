@@ -1,0 +1,5 @@
+.idea/
+config.toml
+go.sum
+*.exe
+*.log
