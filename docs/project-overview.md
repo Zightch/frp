@@ -200,6 +200,8 @@ N/A   正向代理公网端口，由隧道配置动态监听
 ProxyGroup
 - id
 - name
+- tokenId
+- tokenSalt
 - tokenHash
 - enabled
 - clientAccessMode: disabled | allowlist | denylist | allowlist_and_denylist
@@ -215,6 +217,17 @@ ProxyGroup
 ```
 
 一个分组可以包含多个隧道，也可以有多个在线客户端。第一阶段可以限制一个分组同时只允许一个活跃客户端，降低转发一致性复杂度；后续再扩展多客户端负载均衡或主备。
+
+分组 token 建议采用两段式结构：
+
+```text
+token = tokenId.secret
+```
+
+- `tokenId` 是公开定位段，用于快速定位分组或 token 记录。
+- `secret` 是高熵随机密钥，只在创建或重置时展示一次。
+- 服务端保存 `tokenId + tokenSalt + tokenHash`，不保存明文 `secret`。
+- 校验时按 `tokenId` 定位记录，再用 `tokenSalt` 对 `secret` 计算 hash 后做常量时间比较。
 
 分组 IP 黑白名单必须拆成两类：
 
@@ -455,8 +468,10 @@ accept connection
 ```text
 accept control connection on 7000
 -> receive token
+-> parse tokenId and secret
 -> resolve source IP
--> locate group by token
+-> locate group by tokenId
+-> verify salted token hash
 -> match client IP access policy
 -> reject or continue
 -> mark client online
@@ -514,11 +529,15 @@ accept connection
 
 ## 10. 存储设计
 
-第一阶段建议使用 SQLite，便于单机部署：
+当前数据库支持范围限定为 SQLite 和 MySQL：
+
+- SQLite 适合单机部署、开发环境和快速联调。
+- MySQL 适合独立数据库部署和更标准的生产环境。
+- 存储层从第一阶段开始就要兼容这两种数据库，但只做支持这两种数据库所必需的最小抽象。
 
 - 管理员账号。
 - 分组。
-- token hash。
+- tokenId、tokenSalt、tokenHash。
 - `frpc` 客户端接入黑白名单。
 - 隧道入口黑白名单。
 - 隧道配置。
@@ -529,13 +548,15 @@ accept connection
 
 在线连接、实时速率、客户端心跳不建议直接写数据库，应保存在内存中，并通过事件总线推送。
 
-后续可抽象存储接口，支持 PostgreSQL/MySQL。
+第一阶段不把 PostgreSQL 纳入实现范围，避免为未使用数据库提前增加复杂度。
 
 ## 11. 安全设计
 
 基础安全要求：
 
-- 分组 token 只保存 hash，不明文保存。
+- 分组 token 只保存 `tokenId + tokenSalt + tokenHash`，不明文保存。
+- token 校验使用随机盐和常量时间比较。
+- token 的私密段只在创建和重置时展示一次，不写入普通日志。
 - WebUI 管理端使用独立管理员账号和 session/JWT。
 - frpc 控制连接必须鉴权成功后才能领取配置。
 - WebSocket 复用管理端鉴权。
@@ -614,7 +635,7 @@ accept connection
 
 - Go 标准库网络栈作为基础。
 - `net/http` 提供 API 和 WebSocket 升级入口。
-- SQLite 作为 MVP 存储。
+- SQLite/MySQL 双支持作为存储方案，开发默认 SQLite，部署可选 MySQL。
 - 内存事件总线驱动实时状态。
 - 可插拔 limiter 和 capture 组件。
 

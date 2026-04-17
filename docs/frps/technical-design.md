@@ -81,7 +81,7 @@ Storage / Runtime State
 
 - 管理员认证。
 - API/WS 鉴权中间件。
-- token hash 校验。
+- `tokenId` 定位与加盐 hash 校验。
 
 ### 3.3 `internal/control`
 
@@ -129,7 +129,7 @@ Storage / Runtime State
 
 ### 3.10 `internal/storage`
 
-- SQLite 存储适配。
+- SQLite/MySQL 存储适配。
 - 配置实体的仓储接口。
 - 审计与抓包元数据持久化。
 
@@ -141,6 +141,8 @@ Storage / Runtime State
 ProxyGroup
 - id
 - name
+- token_id
+- token_salt
 - token_hash
 - enabled
 - max_clients
@@ -299,8 +301,9 @@ ProxyGroup
 ```text
 accept
 -> read ClientHello
--> validate token
--> load group
+-> parse tokenId and secret
+-> load group by tokenId
+-> validate salted token hash
 -> match group client ip rules
 -> reject or accept
 -> register session
@@ -495,13 +498,23 @@ UDP 以会话维度记录：
 
 ## 11. 存储设计
 
-第一阶段使用 SQLite。
+第一阶段即支持 SQLite 和 MySQL。
+
+- SQLite 用于单机、开发和快速联调。
+- MySQL 用于独立数据库部署。
+- 存储层只抽象到支撑 SQLite/MySQL 双支持所需的最小层级。
 
 存储层需要区分：
 
 - 配置型数据：分组、隧道、反代、证书、管理员
 - 审计型数据：操作日志、拒绝事件、抓包任务
 - 运行态数据：在线连接、实时速率、客户端会话
+
+数据库设计约束：
+
+- 表结构优先使用 SQLite 和 MySQL 的公共能力。
+- 首版避免依赖 JSON 列、触发器、生成列、数据库枚举等方言特性。
+- 数据库差异尽量收敛在 `internal/storage`，不向业务层扩散。
 
 运行态数据放内存，不能让数据库成为数据面瓶颈。
 
@@ -523,7 +536,9 @@ UDP 以会话维度记录：
 
 ## 13. 安全要求
 
-- token 只存 hash。
+- token 采用 `tokenId.secret` 结构。
+- 服务端只保存 `token_id + token_salt + token_hash`。
+- token 校验比较必须使用常量时间算法。
 - 管理员密码只存 hash。
 - 私钥独立存储并限制权限。
 - 控制连接登录前先做最小解析，避免被恶意输入拖垮。
@@ -540,4 +555,3 @@ UDP 以会话维度记录：
 6. UDP 与端口范围映射。
 7. 反向代理。
 8. 抓包和高级限速。
-
