@@ -16,6 +16,7 @@
 - [frps 开发文档](frps/development-guide.md)
 - [frps 功能文档](frps/functional-spec.md)
 - [frps 测试与调试文档](frps/testing-debugging.md)
+- [frps/frpc 协议文档](protocol.md)
 - [frpc 项目概览](frpc/project-overview.md)
 - [frpc 技术设计](frpc/technical-design.md)
 - [frpc 开发文档](frpc/development-guide.md)
@@ -375,6 +376,8 @@ UDP 没有天然连接生命周期，建议按五元组维护短生命周期会�
 
 ## 7. frps 与 frpc 通信协议
 
+更具体的分包格式、业务帧头和消息类型定义，见 [frps/frpc 协议文档](protocol.md)。
+
 ### 7.1 连接类型
 
 建议区分控制连接和工作连接：
@@ -430,7 +433,7 @@ TrafficReport
 - txRate
 ```
 
-协议编码建议从 JSON 开始，便于调试；当数据面稳定后再把高频消息切换为二进制帧。
+协议编码固定使用二进制业务帧。底层传输使用 `4` 字节长度前缀明确帧边界，业务层再用消息类型和定长字段定义登录、配置同步、逻辑连接、数据读写和关闭语义。
 
 ## 8. WebUI 与实时同步
 

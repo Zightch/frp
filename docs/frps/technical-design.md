@@ -369,50 +369,17 @@ HTTPS：
 
 共享协议建议下沉到 `pkg/protocol`。
 
-第一阶段可采用 JSON 帧，字段明确、易调试；后续高频消息再切换为二进制编码。
+第一阶段即采用二进制帧：底层用 `4` 字节长度前缀明确包边界，业务层用固定头和二进制 body 定义登录、配置同步、逻辑连接、数据读写和关闭语义。
 
 ### 6.1 基础消息
 
-登录阶段拆成三类消息：
+登录阶段拆成三类业务消息，但具体字段不再使用 JSON，而是按协议文档中的二进制 body 编码：
 
-```json
-{
-  "type": "auth.begin",
-  "requestId": "uuid",
-  "payload": {
-    "tokenId": "fixed-length-token-id",
-    "clientVersion": "0.1.0",
-    "hostname": "host-a",
-    "os": "linux",
-    "arch": "amd64"
-  }
-}
-```
+- `auth.begin`：携带 `tokenId` 原始字节、客户端版本、主机名、OS、架构和能力位。
+- `auth.challenge`：携带一次性 `challengeId`、`nonce` 和过期时间。
+- `auth.finish`：携带 `challengeId` 和 `sha256(token_hash + nonce)` 的原始摘要。
 
-```json
-{
-  "type": "auth.challenge",
-  "requestId": "uuid",
-  "payload": {
-    "challengeId": "uuid",
-    "nonce": "random-temporary-salt",
-    "expiresInMs": 10000
-  }
-}
-```
-
-```json
-{
-  "type": "auth.finish",
-  "requestId": "uuid",
-  "payload": {
-    "challengeId": "uuid",
-    "response": "sha256(token_hash + nonce)"
-  }
-}
-```
-
-建议定义的消息类型：
+首版消息类型固定为：
 
 - `auth.begin`
 - `auth.challenge`
@@ -420,12 +387,17 @@ HTTPS：
 - `server.hello`
 - `config.push`
 - `config.ack`
-- `heartbeat`
+- `heartbeat.ping`
+- `heartbeat.pong`
 - `stream.open`
-- `stream.ready`
+- `stream.opened`
+- `stream.data`
 - `stream.close`
-- `traffic.report`
+- `udp.open`
+- `udp.data`
+- `udp.close`
 - `event.report`
+- `error`
 
 ### 6.2 配置版本
 
