@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"errors"
+	"net"
 	"testing"
 )
 
@@ -131,6 +132,66 @@ func TestConfigPushRoundTrip(t *testing.T) {
 	}
 	if got.Tunnels[0].LocalHost.String() != "127.0.0.1" {
 		t.Fatalf("unexpected local host: %s", got.Tunnels[0].LocalHost.String())
+	}
+}
+
+func TestStreamMessagesRoundTrip(t *testing.T) {
+	openBody, err := MarshalStreamOpen(StreamOpen{
+		TunnelID:   7,
+		RemotePort: 20000,
+		ClientAddr: SockAddr{
+			IP:   net.ParseIP("203.0.113.10").To4(),
+			Port: 54321,
+		},
+		OpenedAtMs: 1234,
+	})
+	if err != nil {
+		t.Fatalf("marshal stream.open: %v", err)
+	}
+
+	open, err := UnmarshalStreamOpen(openBody)
+	if err != nil {
+		t.Fatalf("unmarshal stream.open: %v", err)
+	}
+	if open.TunnelID != 7 || open.RemotePort != 20000 || open.ClientAddr.Port != 54321 || open.OpenedAtMs != 1234 {
+		t.Fatalf("unexpected stream.open: %#v", open)
+	}
+	if open.ClientAddr.IP.String() != "203.0.113.10" {
+		t.Fatalf("unexpected client ip: %s", open.ClientAddr.IP.String())
+	}
+
+	openedBody, err := MarshalStreamOpened(StreamOpened{
+		Status:    StatusError,
+		ErrorCode: ErrorCodeStreamLocalDialFailed,
+		Message:   "dial failed",
+	})
+	if err != nil {
+		t.Fatalf("marshal stream.opened: %v", err)
+	}
+
+	opened, err := UnmarshalStreamOpened(openedBody)
+	if err != nil {
+		t.Fatalf("unmarshal stream.opened: %v", err)
+	}
+	if opened.Status != StatusError || opened.ErrorCode != ErrorCodeStreamLocalDialFailed || opened.Message != "dial failed" {
+		t.Fatalf("unexpected stream.opened: %#v", opened)
+	}
+
+	closeBody, err := MarshalStreamClose(StreamClose{
+		ReasonCode: CloseReasonEOF,
+		Initiator:  InitiatorFRPC,
+		Message:    "done",
+	})
+	if err != nil {
+		t.Fatalf("marshal stream.close: %v", err)
+	}
+
+	closeMessage, err := UnmarshalStreamClose(closeBody)
+	if err != nil {
+		t.Fatalf("unmarshal stream.close: %v", err)
+	}
+	if closeMessage.ReasonCode != CloseReasonEOF || closeMessage.Initiator != InitiatorFRPC || closeMessage.Message != "done" {
+		t.Fatalf("unexpected stream.close: %#v", closeMessage)
 	}
 }
 

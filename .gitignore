@@ -3,3 +3,4 @@ config.toml
 go.sum
 *.exe
 *.log
+**/tmp/

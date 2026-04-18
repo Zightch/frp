@@ -71,7 +71,14 @@ type sessionState struct {
 	LastAckedConfigVersion uint64
 	pendingConfigRequestID uint32
 	nextServerRequestID    uint32
+	nextStreamID           atomic.Uint32
 	readTimeout            time.Duration
+	writeMu                sync.Mutex
+
+	runtimeMu        sync.Mutex
+	streams          map[uint32]*publicStream
+	listeners        map[uint32]net.Listener
+	listenersStarted bool
 }
 
 func NewServer(options Options, logger *slog.Logger, version string) *Server {
@@ -191,6 +198,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		"group_id", session.Group.ID,
 		"group_name", session.Group.Name,
 	)
+	defer s.shutdownSession(session)
 	logger.Info(
 		"frpc control login succeeded",
 		"config_version", session.Snapshot.Version,
@@ -303,6 +311,8 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		Snapshot:            group.Snapshot,
 		nextServerRequestID: initialServerRequestID,
 		readTimeout:         sessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
+		streams:             make(map[uint32]*publicStream),
+		listeners:           make(map[uint32]net.Listener),
 	}
 
 	helloBody, err := protocol.MarshalServerHello(protocol.ServerHello{
@@ -334,7 +344,7 @@ func (s *Server) runSession(conn net.Conn, logger *slog.Logger, session *session
 	for {
 		frame, err := s.readFrameWithTimeout(conn, session.readTimeout)
 		if err != nil {
-			return s.replyProtocolError(conn, frame, err)
+			return s.replyProtocolErrorWithSession(conn, session, frame, err)
 		}
 
 		switch frame.Type {
@@ -343,12 +353,25 @@ func (s *Server) runSession(conn net.Conn, logger *slog.Logger, session *session
 				return err
 			}
 		case protocol.TypeHeartbeatPing:
-			if err := s.handleHeartbeatPing(conn, frame); err != nil {
+			if err := s.handleHeartbeatPing(conn, session, frame); err != nil {
+				return err
+			}
+		case protocol.TypeStreamOpened:
+			if err := s.handleStreamOpened(conn, session, frame); err != nil {
+				return err
+			}
+		case protocol.TypeStreamData:
+			if err := s.handleStreamData(conn, session, frame); err != nil {
+				return err
+			}
+		case protocol.TypeStreamClose:
+			if err := s.handleStreamClose(session, frame); err != nil {
 				return err
 			}
 		default:
-			return s.replyError(
+			return s.replyErrorWithSession(
 				conn,
+				session,
 				frame.RequestID,
 				frame.StreamID,
 				protocol.ErrorCodeProtocolBadBody,
@@ -361,22 +384,23 @@ func (s *Server) runSession(conn net.Conn, logger *slog.Logger, session *session
 
 func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *sessionState, frame protocol.Frame) error {
 	if frame.RequestID == 0 {
-		return s.replyError(conn, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "config.ack requestId must be non-zero")
+		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "config.ack requestId must be non-zero")
 	}
 	if frame.StreamID != 0 {
-		return s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "config.ack streamId must be zero")
+		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "config.ack streamId must be zero")
 	}
 	if session.pendingConfigRequestID == 0 || frame.RequestID != session.pendingConfigRequestID {
-		return s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unexpected config.ack requestId %d", frame.RequestID)
+		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unexpected config.ack requestId %d", frame.RequestID)
 	}
 
 	ack, err := protocol.UnmarshalConfigAck(frame.Body)
 	if err != nil {
-		return s.replyProtocolError(conn, frame, err)
+		return s.replyProtocolErrorWithSession(conn, session, frame, err)
 	}
 	if ack.ConfigVersion != session.Snapshot.Version {
-		return s.replyError(
+		return s.replyErrorWithSession(
 			conn,
+			session,
 			frame.RequestID,
 			0,
 			protocol.ErrorCodeProtocolBadBody,
@@ -386,8 +410,9 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		)
 	}
 	if ack.Status == protocol.StatusError {
-		return s.replyError(
+		return s.replyErrorWithSession(
 			conn,
+			session,
 			frame.RequestID,
 			0,
 			protocol.ErrorCodeConfigApplyFailed,
@@ -397,26 +422,26 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		)
 	}
 	if ack.Status != protocol.StatusOK {
-		return s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeProtocolBadBody, "unsupported config.ack status %d", ack.Status)
+		return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeProtocolBadBody, "unsupported config.ack status %d", ack.Status)
 	}
 
 	session.LastAckedConfigVersion = ack.ConfigVersion
 	session.pendingConfigRequestID = 0
 	logger.Info("config acknowledged", "config_version", ack.ConfigVersion, "applied_at_ms", ack.AppliedAtMs)
-	return nil
+	return s.ensureTunnelListeners(conn, logger, session)
 }
 
-func (s *Server) handleHeartbeatPing(conn net.Conn, frame protocol.Frame) error {
+func (s *Server) handleHeartbeatPing(conn net.Conn, session *sessionState, frame protocol.Frame) error {
 	if frame.RequestID == 0 {
-		return s.replyError(conn, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "heartbeat.ping requestId must be non-zero")
+		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "heartbeat.ping requestId must be non-zero")
 	}
 	if frame.StreamID != 0 {
-		return s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "heartbeat.ping streamId must be zero")
+		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "heartbeat.ping streamId must be zero")
 	}
 
 	ping, err := protocol.UnmarshalHeartbeatPing(frame.Body)
 	if err != nil {
-		return s.replyProtocolError(conn, frame, err)
+		return s.replyProtocolErrorWithSession(conn, session, frame, err)
 	}
 
 	body, err := protocol.MarshalHeartbeatPong(protocol.HeartbeatPong{
@@ -426,7 +451,7 @@ func (s *Server) handleHeartbeatPing(conn net.Conn, frame protocol.Frame) error 
 	if err != nil {
 		return err
 	}
-	return s.writeFrame(conn, protocol.Frame{
+	return s.writeFrameWithSession(conn, session, protocol.Frame{
 		Type:      protocol.TypeHeartbeatPong,
 		RequestID: frame.RequestID,
 		Body:      body,
@@ -445,9 +470,51 @@ func (s *Server) pushConfig(conn net.Conn, session *sessionState) error {
 	}
 
 	session.pendingConfigRequestID = requestID
-	return s.writeFrame(conn, protocol.Frame{
+	return s.writeFrameWithSession(conn, session, protocol.Frame{
 		Type:      protocol.TypeConfigPush,
 		RequestID: requestID,
+		Body:      body,
+	})
+}
+
+func (s *Server) writeFrameWithSession(conn net.Conn, session *sessionState, frame protocol.Frame) error {
+	session.writeMu.Lock()
+	defer session.writeMu.Unlock()
+	return s.writeFrame(conn, frame)
+}
+
+func (s *Server) replyProtocolErrorWithSession(conn net.Conn, session *sessionState, frame protocol.Frame, err error) error {
+	protocolErr := protocol.AsProtocolError(err)
+	if protocolErr == nil {
+		return err
+	}
+	if writeErr := s.writeErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocolErr.Code, false, protocolErr.Message); writeErr != nil {
+		return errors.Join(err, writeErr)
+	}
+	return err
+}
+
+func (s *Server) replyErrorWithSession(conn net.Conn, session *sessionState, requestID, streamID uint32, code uint16, format string, args ...any) error {
+	err := protocol.NewError(code, format, args...)
+	if writeErr := s.writeErrorWithSession(conn, session, requestID, streamID, code, false, err.Message); writeErr != nil {
+		return errors.Join(err, writeErr)
+	}
+	return err
+}
+
+func (s *Server) writeErrorWithSession(conn net.Conn, session *sessionState, requestID, streamID uint32, code uint16, retryable bool, message string) error {
+	body, err := protocol.MarshalErrorBody(protocol.ErrorBody{
+		ErrorCode: code,
+		Retryable: retryable,
+		Message:   message,
+	})
+	if err != nil {
+		return err
+	}
+	return s.writeFrameWithSession(conn, session, protocol.Frame{
+		Type:      protocol.TypeError,
+		RequestID: requestID,
+		StreamID:  streamID,
 		Body:      body,
 	})
 }

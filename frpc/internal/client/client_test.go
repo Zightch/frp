@@ -186,6 +186,146 @@ func TestClientRunSession(t *testing.T) {
 	}
 }
 
+func TestClientHandlesStreamOpenAndData(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen echo server: %v", err)
+	}
+	defer listener.Close()
+
+	echoDone := make(chan struct{})
+	go func() {
+		defer close(echoDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		buffer := make([]byte, 16)
+		n, err := conn.Read(buffer)
+		if err != nil {
+			return
+		}
+		_, _ = conn.Write(buffer[:n])
+	}()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	client := New(
+		appconfig.Config{
+			Server: "127.0.0.1:7000",
+			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-client",
+	)
+
+	state := newSessionState(1000)
+	state.setSnapshot(protocol.ConfigPush{
+		ConfigVersion: 1,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    7,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: 20000,
+				RemoteEnd:   20000,
+				LocalHost:   mustHost(t, "127.0.0.1"),
+				LocalStart:  uint16(listener.Addr().(*net.TCPAddr).Port),
+				LocalEnd:    uint16(listener.Addr().(*net.TCPAddr).Port),
+			},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- client.readLoop(ctx, clientConn, state)
+	}()
+
+	openBody, err := protocol.MarshalStreamOpen(protocol.StreamOpen{
+		TunnelID:   7,
+		RemotePort: 20000,
+		ClientAddr: protocol.SockAddr{
+			IP:   net.ParseIP("203.0.113.10").To4(),
+			Port: 54321,
+		},
+		OpenedAtMs: 1234,
+	})
+	if err != nil {
+		t.Fatalf("marshal stream.open: %v", err)
+	}
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:      protocol.TypeStreamOpen,
+		RequestID: 1,
+		StreamID:  7,
+		Body:      openBody,
+	})
+
+	openedFrame := readFrame(t, serverConn)
+	if openedFrame.Type != protocol.TypeStreamOpened {
+		t.Fatalf("expected stream.opened, got %s", openedFrame.Type.String())
+	}
+	opened, err := protocol.UnmarshalStreamOpened(openedFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal stream.opened: %v", err)
+	}
+	if opened.Status != protocol.StatusOK {
+		t.Fatalf("unexpected stream.opened status: %#v", opened)
+	}
+
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:     protocol.TypeStreamData,
+		StreamID: 7,
+		Body:     []byte("hello"),
+	})
+
+	dataFrame := readFrame(t, serverConn)
+	if dataFrame.Type != protocol.TypeStreamData {
+		t.Fatalf("expected stream.data, got %s", dataFrame.Type.String())
+	}
+	if string(dataFrame.Body) != "hello" {
+		t.Fatalf("unexpected echoed payload: %q", string(dataFrame.Body))
+	}
+
+	closeBody, err := protocol.MarshalStreamClose(protocol.StreamClose{
+		ReasonCode: protocol.CloseReasonEOF,
+		Initiator:  protocol.InitiatorFRPS,
+		Message:    "done",
+	})
+	if err != nil {
+		t.Fatalf("marshal stream.close: %v", err)
+	}
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:     protocol.TypeStreamClose,
+		StreamID: 7,
+		Body:     closeBody,
+	})
+
+	cancel()
+	_ = clientConn.Close()
+
+	select {
+	case err := <-readDone:
+		if err != nil && !isNetClosed(err) {
+			t.Fatalf("read loop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("read loop did not exit")
+	}
+
+	select {
+	case <-echoDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("echo server did not exit")
+	}
+}
+
 func writeFrame(t *testing.T, conn net.Conn, frame protocol.Frame) {
 	t.Helper()
 
@@ -220,4 +360,11 @@ func mustHost(t *testing.T, value string) protocol.Host {
 		t.Fatalf("parse host: %v", err)
 	}
 	return host
+}
+
+func isNetClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	return err.Error() == "io: read/write on closed pipe"
 }

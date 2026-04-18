@@ -41,9 +41,13 @@ type sessionState struct {
 
 	nextRequestID          atomic.Uint32
 	lastAckedConfigVersion atomic.Uint64
+	activeStreams          atomic.Uint32
 
 	snapshotMu sync.RWMutex
 	snapshot   protocol.ConfigPush
+
+	streamMu sync.Mutex
+	streams  map[uint32]*localStream
 }
 
 func New(cfg appconfig.Config, logger *slog.Logger, version string) *Client {
@@ -116,6 +120,7 @@ func (c *Client) runSession(ctx context.Context, conn net.Conn, token appconfig.
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer state.closeAllStreams()
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -256,6 +261,18 @@ func (c *Client) readLoop(ctx context.Context, conn net.Conn, state *sessionStat
 			if err := c.applyConfigPush(conn, state, frame); err != nil {
 				return err
 			}
+		case protocol.TypeStreamOpen:
+			if err := c.handleStreamOpen(conn, state, frame); err != nil {
+				return err
+			}
+		case protocol.TypeStreamData:
+			if err := c.handleStreamData(conn, state, frame); err != nil {
+				return err
+			}
+		case protocol.TypeStreamClose:
+			if err := c.handleStreamClose(state, frame); err != nil {
+				return err
+			}
 		case protocol.TypeError:
 			return c.remoteError(frame)
 		default:
@@ -281,7 +298,7 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn net.Conn, state *sessio
 		case <-ticker.C:
 			body, err := protocol.MarshalHeartbeatPing(protocol.HeartbeatPing{
 				ClientUnixMs:           uint64(time.Now().UTC().UnixMilli()),
-				ActiveStreams:          0,
+				ActiveStreams:          state.activeStreams.Load(),
 				ActiveUDPSessions:      0,
 				LastAckedConfigVersion: state.lastAckedConfigVersion.Load(),
 			})
@@ -379,6 +396,7 @@ func newSessionState(heartbeatIntervalMs uint32) *sessionState {
 	state := &sessionState{
 		heartbeatInterval: heartbeatInterval,
 		readTimeout:       sessionReadTimeout(heartbeatInterval),
+		streams:           make(map[uint32]*localStream),
 	}
 	state.nextRequestID.Store(2)
 	return state
