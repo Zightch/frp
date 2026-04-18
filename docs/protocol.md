@@ -679,6 +679,7 @@ body：
 | `1104` | `auth_challenge_expired` |
 | `1105` | `auth_challenge_replayed` |
 | `1106` | `auth_version_unsupported` |
+| `1107` | `auth_client_limit_reached` |
 | `1201` | `config_apply_failed` |
 | `1301` | `stream_tunnel_not_found` |
 | `1302` | `stream_local_dial_failed` |

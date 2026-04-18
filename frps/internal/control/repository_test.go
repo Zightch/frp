@@ -34,7 +34,6 @@ CREATE TABLE proxy_groups (
 	token_id TEXT NOT NULL,
 	token_hash TEXT NOT NULL,
 	enabled INTEGER NOT NULL,
-	max_clients INTEGER NOT NULL,
 	client_access_mode TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 )`,
@@ -72,13 +71,12 @@ CREATE TABLE tunnels (
 
 	if _, err := store.Exec(
 		`
-INSERT INTO proxy_groups (name, token_id, token_hash, enabled, max_clients, client_access_mode, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO proxy_groups (name, token_id, token_hash, enabled, client_access_mode, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
 `,
 		"group-a",
 		hex.EncodeToString(tokenID[:]),
 		hex.EncodeToString(tokenHash[:]),
-		1,
 		1,
 		"allowlist_and_denylist",
 		"2026-04-18 10:00:00.000001",

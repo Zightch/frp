@@ -21,6 +21,7 @@ Python 外网客户端
 当前已落地能力：
 
 - `frps` / `frpc` 支持 token challenge/response 登录。
+- 一个分组始终只允许 1 个在线 `frpc` 客户端；同分组第二个客户端会在登录阶段被拒绝。
 - `frps` 可从 SQLite/MySQL schema 中读取 `proxy_groups` / `tunnels` 运行数据。
 - `frps` 在收到 `config.ack` 后启动启用状态的 TCP 单端口 listener。
 - `frpc` 可接收 `config.push`，返回 `config.ack`，并处理 `stream.open` / `stream.data` / `stream.close`。
@@ -111,58 +112,108 @@ Python 外网客户端
 
 - 在线改库热更新
 - ACL
-- 多客户端 / `max_clients`
-- 同 token 顶号 / 防顶号
+- 多客户端扩展
 - 反向代理
 - UDP
 - 端口范围
 - 抓包
 - 限速
 
-## 6. 下一轮目标
+## 6. 当前轮 WebUI 进度
 
-下一轮目标已经收束为极简 WebUI。
+本轮极简 WebUI 首版已经完成。
 
-目标：
+当前已落地能力：
 
-- 没有登录功能。
-- 只有分组编辑和隧道编辑。
-- 完成从 WebUI 对数据库的增删改查。
-- WebUI 调用 `frps management api`。
-- `frps` 负责实际读写数据库。
-- WebUI 不直接连接 SQLite 文件。
+- `frps management api` 新增 `proxy_groups` / `tunnels` 最小 CRUD JSON API。
+- 根路径 `/` 返回单页 WebUI。
+- 管理界面不展示任何 `maxclient` / `max_clients` 选项；单分组单客户端由 `frps` 控制面的固定客户端槽位保证。
+- 页面只管理两个对象：
+  - `proxy_groups`
+  - `tunnels`
+- 分组支持：
+  - 列表
+  - 新增
+  - 编辑
+  - 删除
+  - 创建或重置 token
+- 隧道支持：
+  - 列表
+  - 新增
+  - 编辑
+  - 删除
 
-首版页面范围：
+当前接口入口：
 
-- 分组列表
-- 分组新增 / 编辑 / 删除
-- 分组 token 创建或重置
-- 隧道列表
-- 隧道新增 / 编辑 / 删除
+- `/api/v1/proxy-groups`
+- `/api/v1/proxy-groups/{id}`
+- `/api/v1/proxy-groups/{id}/token`
+- `/api/v1/tunnels`
+- `/api/v1/tunnels/{id}`
 
-首版实现边界：
+当前页面和接口仍遵守以下边界：
 
+- WebUI 归属于 `frps management api`。
+- WebUI 不直接连接数据库。
+- `frps` 负责实际数据库读写。
+- 管理界面不展示任何 `maxclient` / `max_clients` 配置项。
 - 不引入独立前端工程。
-- 不引入 Node、Vue、Element 或打包链。
-- 不做登录。
-- 不做管理员表和管理员体系。
-- 不做 WebSocket。
-- 不做在线热更新。
-- 不做连接表、统计图、日志页。
-- 不做 IP 规则编辑。
-- 不做 ACL、限速、抓包、反向代理配置页。
+- 不引入 Node / Vue / 打包链。
+- 不做登录和管理员体系。
+- 不做 WebSocket、热更新、统计页、日志页。
+- 不把 ACL、限速、抓包、反向代理配置页混进这一轮。
 
-## 7. 下一步编码入口
+## 7. WebUI 验证结果
 
-如果开始下一轮编码，第一步应只做最小管理面 CRUD：
+首版 WebUI 当前已经完成两层验证。
 
-- 在 `frps management api` 增加 `proxy_groups` / `tunnels` 最小 CRUD JSON API。
-- 根路径或单一路径返回一个内嵌静态 HTML 页面。
-- 页面用最简单的 JS 调用这些 API。
+自动化验证：
 
-编码时继续保持：
+- `frps/internal/api/server_test.go` 已覆盖：
+  - 页面入口
+  - 页面不展示 `maxclient` / `max_clients` 选项
+  - group CRUD
+  - API 额外字段会被直接忽略，例如传入 `max_clients`
+  - 数据库 schema 已删除 `max_clients`
+  - token reset
+  - tunnel CRUD
+- `frps/internal/control/server_test.go` 已覆盖：
+  - 同分组第二个 `frpc` 登录被拒绝
+- `go test ./...` 已通过
 
-- 不动 `frpc` CLI。
-- 不动 Python e2e 主线。
-- 不把热更新、登录、管理员体系混进这一轮。
-- 不因为“未来可能需要”提前引入复杂抽象。
+真实 smoke 验证：
+
+- 已用临时 SQLite 配置启动真实 `frps`
+- 已确认页面入口 `/` 可访问
+- 已通过真实 HTTP 请求完成 `proxy_groups` 最小 CRUD
+- 已通过真实 HTTP 请求完成 `tunnels` 最小 CRUD
+- 已验证 token reset 能返回新的 token 原值
+- 已直接核对 SQLite：
+  - 数据库中只有 `token_id` 和 `token_hash`
+  - 不存在 `token_secret` 明文字段
+  - 返回给调用方的 token 原值与库内 `token_id` / `token_hash` 可对应校验
+
+## 8. 当前停止线与下一步
+
+当前 WebUI 首版已经达到本轮停止线。
+
+当前不继续扩展：
+
+- 登录
+- 管理员体系
+- 独立前端工程
+- 在线热更新
+- 连接态展示
+- 统计图
+- 日志页
+- ACL
+- 限速
+- 抓包
+- 反向代理页面
+
+如果继续下一步，应该只补一页极简使用说明文档，说明：
+
+- 如何启动 `frps`
+- 如何打开 WebUI
+- 如何管理分组和隧道
+- token 只在创建或重置时返回一次，数据库不保存明文

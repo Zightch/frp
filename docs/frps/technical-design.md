@@ -175,7 +175,6 @@ ProxyGroup
 - token_id
 - token_hash
 - enabled
-- max_clients
 - rate_limit
 - client_access_mode
 - tunnel_access_mode
@@ -435,6 +434,8 @@ HTTPS：
 `config.push` 建议始终携带该分组的完整运行态快照，而不是增量 patch。这样 `frpc` 可以直接原子替换本地快照，避免补丁顺序错乱导致的状态漂移。
 
 `config.push` 只携带 `frpc` 执行工作流所必需的字段，例如隧道启停、本地目标、端口映射、协议等。`frps` 独占执行的服务端策略，例如 `client/tunnel` ACL、限速、抓包策略，不应作为客户端配置下发。
+
+协议和配置构造都遵守同一条字段治理规则：目标端只解析必要字段，不代表源端可以继续携带冗余字段。某个字段一旦确认无用或语义调整，必须同步从 `frps` 的配置构造、持久化、API 输出、测试数据和文档中收束，不能长期依赖“目标端忽略未知字段”维持兼容。
 
 ### 6.3 连接管理中的单条连接关闭
 

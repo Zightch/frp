@@ -659,6 +659,148 @@ func TestServerRejectsInvalidToken(t *testing.T) {
 	}
 }
 
+func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	server := NewServer(
+		Options{
+			Repository: stubRepository{
+				group: GroupRuntime{
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					ClientAccessMode: "disabled",
+					TokenHash:        tokenHash,
+					Snapshot: ConfigSnapshot{
+						Version:       99,
+						GeneratedAtMs: 1234,
+						Tunnels: []protocol.TunnelEntry{
+							{
+								TunnelID:    7,
+								Protocol:    protocol.ProtocolTCP,
+								TunnelFlags: 0,
+								RemoteStart: 20000,
+								RemoteEnd:   20000,
+								LocalHost:   host,
+								LocalStart:  22,
+								LocalEnd:    22,
+							},
+						},
+					},
+				},
+			},
+			ReadTimeout:       time.Second,
+			WriteTimeout:      time.Second,
+			ChallengeTTL:      5 * time.Second,
+			HeartbeatInterval: 2 * time.Second,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	firstConn, firstDone, _ := authenticateServerSession(t, server, tokenID, tokenHash)
+
+	secondClientRaw, secondServerRaw := net.Pipe()
+	secondClientConn := &connWithRemoteAddr{
+		Conn:   secondClientRaw,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 10002},
+	}
+	secondServerConn := &connWithRemoteAddr{
+		Conn:   secondServerRaw,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20002},
+	}
+
+	secondDone := make(chan struct{})
+	server.registerConn(secondServerConn)
+	server.connWG.Add(1)
+	go func() {
+		defer close(secondDone)
+		server.handleConnection(secondServerConn)
+	}()
+
+	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
+		TokenID:       tokenID,
+		ClientVersion: "test-client-2",
+		Hostname:      "node-2",
+		OS:            protocol.OSLinux,
+		Arch:          protocol.ArchAMD64,
+	})
+	if err != nil {
+		t.Fatalf("marshal auth.begin: %v", err)
+	}
+	writeMessage(t, secondClientConn, protocol.Frame{
+		Type:      protocol.TypeAuthBegin,
+		RequestID: 1,
+		Body:      authBeginBody,
+	})
+
+	challengeFrame := readMessage(t, secondClientConn)
+	if challengeFrame.Type != protocol.TypeAuthChallenge {
+		t.Fatalf("expected auth.challenge, got %s", challengeFrame.Type.String())
+	}
+	challenge, err := protocol.UnmarshalAuthChallenge(challengeFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal auth.challenge: %v", err)
+	}
+
+	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
+		ChallengeID: challenge.ChallengeID,
+		Response:    challengeResponse(tokenHash, challenge.Nonce),
+	})
+	if err != nil {
+		t.Fatalf("marshal auth.finish: %v", err)
+	}
+	writeMessage(t, secondClientConn, protocol.Frame{
+		Type:      protocol.TypeAuthFinish,
+		RequestID: 2,
+		Body:      authFinishBody,
+	})
+
+	errorFrame := readMessage(t, secondClientConn)
+	if errorFrame.Type != protocol.TypeError {
+		t.Fatalf("expected error frame, got %s", errorFrame.Type.String())
+	}
+	errorBody, err := protocol.UnmarshalErrorBody(errorFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal error frame: %v", err)
+	}
+	if errorBody.ErrorCode != protocol.ErrorCodeAuthClientLimitReached {
+		t.Fatalf("unexpected error code: %d", errorBody.ErrorCode)
+	}
+
+	_ = secondClientConn.Close()
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second server connection did not exit")
+	}
+
+	_ = firstConn.Close()
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first server connection did not exit")
+	}
+
+	thirdConn, thirdDone, _ := authenticateServerSession(t, server, tokenID, tokenHash)
+	_ = thirdConn.Close()
+	select {
+	case <-thirdDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("third server connection did not exit")
+	}
+}
+
 type stubRepository struct {
 	group GroupRuntime
 	err   error

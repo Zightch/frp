@@ -47,6 +47,8 @@ type Server struct {
 	mu         sync.Mutex
 	listener   net.Listener
 	activeConn map[net.Conn]struct{}
+	// groupSlots tracks the occupied single client slot for each proxy group.
+	groupSlots map[int64]uint64
 	closeOnce  sync.Once
 	connWG     sync.WaitGroup
 
@@ -107,6 +109,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		version:    version,
 		repo:       options.Repository,
 		activeConn: make(map[net.Conn]struct{}),
+		groupSlots: make(map[int64]uint64),
 		challenges: make(map[uint32]*authChallenge),
 	}
 }
@@ -314,6 +317,9 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		streams:             make(map[uint32]*publicStream),
 		listeners:           make(map[uint32]net.Listener),
 	}
+	if !s.reserveGroupSlot(session.Group.ID, session.ID) {
+		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthClientLimitReached, "proxy group already has an active client")
+	}
 
 	helloBody, err := protocol.MarshalServerHello(protocol.ServerHello{
 		HeartbeatIntervalMs: uint32(s.options.HeartbeatInterval / time.Millisecond),
@@ -323,6 +329,7 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		MinSupportedVersion: s.options.MinSupportedVersion,
 	})
 	if err != nil {
+		s.releaseGroupSlot(session.Group.ID, session.ID)
 		return nil, err
 	}
 	if err := s.writeFrame(conn, protocol.Frame{
@@ -330,10 +337,12 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		RequestID: frame.RequestID,
 		Body:      helloBody,
 	}); err != nil {
+		s.releaseGroupSlot(session.Group.ID, session.ID)
 		return nil, err
 	}
 
 	if err := s.pushConfig(conn, session); err != nil {
+		s.releaseGroupSlot(session.Group.ID, session.ID)
 		return nil, err
 	}
 
@@ -701,6 +710,26 @@ func (s *Server) unregisterConn(conn net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.activeConn, conn)
+}
+
+func (s *Server) reserveGroupSlot(groupID int64, sessionID uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.groupSlots[groupID]; ok {
+		return false
+	}
+	s.groupSlots[groupID] = sessionID
+	return true
+}
+
+func (s *Server) releaseGroupSlot(groupID int64, sessionID uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.groupSlots[groupID] == sessionID {
+		delete(s.groupSlots, groupID)
+	}
 }
 
 func (s *sessionState) nextRequestID() uint32 {

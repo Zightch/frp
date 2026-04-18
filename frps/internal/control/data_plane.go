@@ -286,6 +286,7 @@ func (s *Server) shutdownSession(session *sessionState) {
 		stream.signalReady(net.ErrClosed)
 		stream.close()
 	}
+	s.releaseGroupSlot(session.Group.ID, session.ID)
 }
 
 func sockAddrFromNetAddr(addr net.Addr) protocol.SockAddr {

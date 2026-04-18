@@ -94,6 +94,7 @@ const (
 	ErrorCodeAuthChallengeExpired   uint16 = 1104
 	ErrorCodeAuthChallengeReplayed  uint16 = 1105
 	ErrorCodeAuthVersionUnsupported uint16 = 1106
+	ErrorCodeAuthClientLimitReached uint16 = 1107
 	ErrorCodeConfigApplyFailed      uint16 = 1201
 	ErrorCodeStreamTunnelNotFound   uint16 = 1301
 	ErrorCodeStreamLocalDialFailed  uint16 = 1302

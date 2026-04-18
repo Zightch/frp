@@ -7,11 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/zightch/frp/frps/internal/storage"
 )
 
 type Options struct {
 	Addr              string
 	ReadHeaderTimeout time.Duration
+	Store             *storage.SQL
 }
 
 type Server struct {
@@ -19,6 +22,7 @@ type Server struct {
 	logger    *slog.Logger
 	startedAt time.Time
 	version   string
+	manager   *managementService
 }
 
 func NewServer(options Options, logger *slog.Logger, version string) *Server {
@@ -26,6 +30,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		logger:    logger,
 		startedAt: time.Now().UTC(),
 		version:   version,
+		manager:   newManagementService(options.Store),
 	}
 
 	mux := http.NewServeMux()
@@ -33,6 +38,10 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/readyz", srv.handleHealth)
 	mux.HandleFunc("/api/v1/healthz", srv.handleHealth)
+	mux.HandleFunc("/api/v1/proxy-groups", srv.handleProxyGroups)
+	mux.HandleFunc("/api/v1/proxy-groups/", srv.handleProxyGroupResource)
+	mux.HandleFunc("/api/v1/tunnels", srv.handleTunnels)
+	mux.HandleFunc("/api/v1/tunnels/", srv.handleTunnelResource)
 
 	srv.server = &http.Server{
 		Addr:              options.Addr,
@@ -66,9 +75,9 @@ func (s *Server) handleIndex(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 
-	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(http.StatusOK)
-	_, _ = writer.Write([]byte("frps management API is running\n"))
+	_, _ = writer.Write([]byte(indexHTML))
 }
 
 func (s *Server) handleHealth(writer http.ResponseWriter, request *http.Request) {

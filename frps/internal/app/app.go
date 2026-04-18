@@ -41,6 +41,7 @@ func (a *App) Run(parent context.Context) error {
 		api.Options{
 			Addr:              a.config.ManagementListenAddr,
 			ReadHeaderTimeout: a.config.ReadHeaderTimeoutDuration(),
+			Store:             a.store,
 		},
 		a.logger.With("subsystem", "api"),
 		a.version,

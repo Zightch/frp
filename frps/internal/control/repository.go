@@ -32,7 +32,6 @@ type GroupRuntime struct {
 	ID               int64
 	Name             string
 	Enabled          bool
-	MaxClients       int64
 	ClientAccessMode string
 	ClientRules      []IPRule
 	TokenHash        [32]byte
@@ -68,7 +67,6 @@ SELECT
 	name,
 	token_hash,
 	enabled,
-	max_clients,
 	client_access_mode,
 	updated_at
 FROM proxy_groups
@@ -92,9 +90,6 @@ WHERE token_id = ?
 	}
 	if group.Enabled, err = rowBool(row, "enabled"); err != nil {
 		return GroupRuntime{}, fmt.Errorf("decode group enabled: %w", err)
-	}
-	if group.MaxClients, err = rowInt64(row, "max_clients"); err != nil {
-		return GroupRuntime{}, fmt.Errorf("decode group max clients: %w", err)
 	}
 	if group.ClientAccessMode, err = validateAccessMode(rowString(row, "client_access_mode")); err != nil {
 		return GroupRuntime{}, fmt.Errorf("decode group client access mode: %w", err)

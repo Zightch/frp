@@ -47,14 +47,13 @@
 
 - 在线改库热更新
 - ACL
-- 多客户端 / `max_clients`
-- 同 token 顶号 / 防顶号
+- 多客户端扩展
 - 反向代理
 - UDP
 - 端口范围
 - 抓包与限速
 
-下一轮短期目标是极简 WebUI：无登录，只做 `proxy_groups` / `tunnels` 的数据库增删改查。它通过 `frps management api` 写库，不直接连接 SQLite 文件，也不改变 `frps/frpc` 的 challenge 登录和数据面职责。
+下一轮短期目标是极简 WebUI：无登录，只做 `proxy_groups` / `tunnels` 的数据库增删改查。它通过 `frps management api` 写库，不直接连接 SQLite 文件，也不改变 `frps/frpc` 的 challenge 登录和数据面职责；管理界面不展示任何客户端数量配置项。
 
 ## 2. 能力范围
 
@@ -248,12 +247,11 @@ ProxyGroup
 - tunnelAllowList
 - tunnelDenyList
 - rateLimit
-- maxClients
 - createdAt
 - updatedAt
 ```
 
-一个分组可以包含多个隧道，也可以有多个在线客户端。第一阶段可以限制一个分组同时只允许一个活跃客户端，降低转发一致性复杂度；后续再扩展多客户端负载均衡或主备。
+一个分组可以包含多个隧道，但始终只允许一个在线 `frpc` 客户端。`frps` 控制面为每个分组维护固定客户端槽位；槽位已占用时，新客户端登录直接拒绝，不做顶号切换。管理界面不展示任何客户端数量配置项；请求里的额外字段不会参与处理，例如传入 `max_clients` 也只会被忽略，不再落库。
 
 分组 token 采用固定长度拼接结构，不使用分隔符：
 
@@ -763,3 +761,5 @@ save group/tunnel config from WebUI
 - 限速只在服务端执行：`frps` 负责节流，`frpc` 只负责转发。
 - 限速和抓包做成转发链路插件：避免代理核心逻辑被观测逻辑污染。
 - MVP 先 TCP 后 UDP，先单端口后端口范围，先可用后高级观测。
+- 字段及时收束：目标端只消费必要字段，不代表源端可以继续保留废字段；确认无用的字段要尽早从 schema、仓储、API、WebUI、测试数据和文档中移除，避免堆积。
+- 字段变更必须落实：字段名、语义或归属边界一旦调整，源端写库、出参、测试 seed 和文档必须同步改到位；额外入参可以忽略，但旧字段不能继续由源端产出。
