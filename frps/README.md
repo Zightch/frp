@@ -37,7 +37,10 @@ curl http://127.0.0.1:7500/api/v1/healthz
 {
   "database": {
     "type": "mysql",
-    "dsn": "user:password@tcp(127.0.0.1:3306)/frps?parseTime=true"
+    "dsn": "frps:123456@staticplant.top:3306/frps"
   }
 }
 ```
+
+应用启动时会在上层按配置打开数据库并注入 `internal/storage/sql.go` 的封装对象。
+MySQL 支持简写地址格式，示例中的 `frps:123456@staticplant.top:3306/frps` 会被规范化后再交给驱动。

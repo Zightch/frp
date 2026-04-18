@@ -9,6 +9,7 @@ import (
 	"github.com/zightch/frp/frps/internal/api"
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/control"
+	"github.com/zightch/frp/frps/internal/storage"
 )
 
 type App struct {
@@ -17,6 +18,7 @@ type App struct {
 	version string
 	api     *api.Server
 	control *control.Server
+	store   *storage.SQL
 }
 
 func New(cfg config.Config, logger *slog.Logger, version string) *App {
@@ -30,6 +32,10 @@ func New(cfg config.Config, logger *slog.Logger, version string) *App {
 func (a *App) Run(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+
+	if err := a.initDatabase(ctx); err != nil {
+		return err
+	}
 
 	a.api = api.NewServer(
 		api.Options{
@@ -96,6 +102,8 @@ func (a *App) shutdown() error {
 			errs = append(errs, fmt.Errorf("shutdown control listener: %w", err))
 		}
 	}
+
+	a.closeDatabase()
 
 	if len(errs) == 0 {
 		a.logger.Info("frps shutdown completed")

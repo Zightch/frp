@@ -4,8 +4,8 @@
   "read_header_timeout": "5s",
   "shutdown_timeout": "10s",
   "database": {
-    "type": "sqlite",
-    "path": "./data/frps.sqlite"
+    "type": "mysql",
+    "dsn": "frps:123456@staticplant.top:3306/frps"
   },
   "log": {
     "level": "info",
