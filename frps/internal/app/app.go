@@ -1,0 +1,106 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+
+	"github.com/zightch/frp/frps/internal/api"
+	"github.com/zightch/frp/frps/internal/config"
+	"github.com/zightch/frp/frps/internal/control"
+)
+
+type App struct {
+	config  config.Config
+	logger  *slog.Logger
+	version string
+	api     *api.Server
+	control *control.Server
+}
+
+func New(cfg config.Config, logger *slog.Logger, version string) *App {
+	return &App{
+		config:  cfg,
+		logger:  logger,
+		version: version,
+	}
+}
+
+func (a *App) Run(parent context.Context) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+
+	a.api = api.NewServer(
+		api.Options{
+			Addr:              a.config.ManagementListenAddr,
+			ReadHeaderTimeout: a.config.ReadHeaderTimeoutDuration(),
+		},
+		a.logger.With("subsystem", "api"),
+		a.version,
+	)
+	a.control = control.NewServer(
+		control.Options{Addr: a.config.ControlListenAddr},
+		a.logger.With("subsystem", "control"),
+	)
+
+	errCh := make(chan error, 2)
+
+	go func() {
+		if err := a.api.ListenAndServe(); err != nil {
+			errCh <- fmt.Errorf("management api: %w", err)
+		}
+	}()
+
+	go func() {
+		if err := a.control.ListenAndServe(ctx); err != nil {
+			errCh <- fmt.Errorf("control listener: %w", err)
+		}
+	}()
+
+	a.logger.Info(
+		"frps started",
+		"control_addr", a.config.ControlListenAddr,
+		"management_addr", a.config.ManagementListenAddr,
+		"version", a.version,
+	)
+
+	select {
+	case <-ctx.Done():
+		a.logger.Info("frps shutdown requested")
+		return a.shutdown()
+	case err := <-errCh:
+		cancel()
+		shutdownErr := a.shutdown()
+		if shutdownErr != nil {
+			return errors.Join(err, shutdownErr)
+		}
+		return err
+	}
+}
+
+func (a *App) shutdown() error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.config.ShutdownTimeoutDuration())
+	defer cancel()
+
+	var errs []error
+
+	if a.api != nil {
+		if err := a.api.Shutdown(shutdownCtx); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown management api: %w", err))
+		}
+	}
+
+	if a.control != nil {
+		if err := a.control.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
+			errs = append(errs, fmt.Errorf("shutdown control listener: %w", err))
+		}
+	}
+
+	if len(errs) == 0 {
+		a.logger.Info("frps shutdown completed")
+		return nil
+	}
+
+	return errors.Join(errs...)
+}
