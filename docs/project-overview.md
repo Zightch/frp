@@ -27,6 +27,35 @@
 
 本项目中的“反向代理”指完全由 `frps` 承担的服务端代理模式：外部请求进入 `frps`，再由 `frps` 转发到服务端配置的上游地址，不依赖 `frpc`。
 
+## 1.1 当前实现状态和短期边界
+
+截至 2026-04-18，当前已完成的是正向代理最小核心链路，不是完整平台能力：
+
+- `frps` / `frpc` 已支持 token challenge/response 登录。
+- `frps` 可从 SQLite/MySQL schema 中读取 `proxy_groups` / `tunnels` 运行数据。
+- `frps` 可在 `config.ack` 后启动启用状态的 TCP 单端口 listener。
+- `frpc` 可接收配置、处理 `stream.open` / `stream.data` / `stream.close`，并回连本地 TCP 目标。
+- 已通过 `test/e2e_tcp_single.py` 验证：
+  - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+  - `happy_path`
+  - `bad_token`
+  - `disabled_group`
+  - `disabled_tunnel`
+  - `local_unavailable`
+
+当前已明确暂不纳入上一轮最小链路的能力包括：
+
+- 在线改库热更新
+- ACL
+- 多客户端 / `max_clients`
+- 同 token 顶号 / 防顶号
+- 反向代理
+- UDP
+- 端口范围
+- 抓包与限速
+
+下一轮短期目标是极简 WebUI：无登录，只做 `proxy_groups` / `tunnels` 的数据库增删改查。它通过 `frps management api` 写库，不直接连接 SQLite 文件，也不改变 `frps/frpc` 的 challenge 登录和数据面职责。
+
 ## 2. 能力范围
 
 ### 2.1 正向代理能力
@@ -93,7 +122,7 @@
 │   ├── internal/capture/         # 抓包、pcap 输出、过滤规则
 │   ├── internal/storage/         # 数据持久化
 │   ├── internal/eventbus/        # 后端事件总线，推送 WebSocket
-│   ├── webui/                    # Node.js + Element 前端项目
+│   ├── webui/                    # 后续复杂 WebUI 目录，当前首版可先内嵌在 management api
 │   └── configs/                  # frps 示例配置
 ├── frpc/
 │   ├── cmd/frpc/                 # frpc 启动入口
@@ -437,7 +466,16 @@ TrafficReport
 
 ## 8. WebUI 与实时同步
 
-WebUI 使用 Node.js + Element 构建，建议 Vue 3 + Element Plus。
+WebUI 归属于 `frps` 管理面。当前下一轮首版先走极简实现：不做登录，不引入独立前端工程，只用 `frps management api` 提供一个内嵌静态页面和最小 JSON CRUD API。
+
+当前首版只覆盖：
+
+- 分组列表、新增、编辑、删除。
+- 隧道列表、新增、编辑、删除。
+- 创建或重置分组 token 时只在当次返回原始 token，数据库仍只保存 `token_id + token_hash`。
+- 改库后以“刷新可见、SQLite 查询可验证”为验收，不要求在线 session 热更新。
+
+当管理面复杂度真实上升后，再演进到独立前端工程。长期方案可以使用 Vue 3 + Element Plus。
 
 后端提供：
 
@@ -621,6 +659,17 @@ save group/tunnel config from WebUI
 - TCP 单端口映射可用。
 - WebUI 可以看到客户端在线和隧道状态。
 
+截至 2026-04-18，当前已经完成的实际收口是：
+
+- `frps` / `frpc` 最小 challenge 登录
+- SQLite 冷启动配置读取
+- TCP 单端口映射
+- `config.push` / `config.ack`
+- `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+- 4 个最小负向场景
+
+其中“WebUI 可以看到客户端在线和隧道状态”尚未进入这一轮完成定义，被明确后移。
+
 ### 阶段二：管理面成型
 
 - WebUI 增删改查分组和隧道。
@@ -628,6 +677,19 @@ save group/tunnel config from WebUI
 - WebSocket 推送客户端、隧道、连接状态。
 - 端口冲突检测。
 - 正向代理配置热更新，在线 `frpc` 无需重启。
+
+当前下一轮只启动这个阶段里的最小子集：
+
+- 无登录的极简 WebUI
+- `proxy_groups` / `tunnels` 最小 CRUD
+- 通过 `frps management api` 写库
+
+本轮不包含：
+
+- WebSocket
+- 在线热更新
+- 连接管理
+- 端口冲突检测完善
 
 ### 阶段三：协议扩展
 
@@ -687,10 +749,9 @@ save group/tunnel config from WebUI
 
 前端：
 
-- Vue 3。
-- Element Plus。
-- Pinia 或轻量状态管理。
-- WebSocket 驱动实时数据刷新。
+- 当前极简 WebUI 首版可直接内嵌静态 HTML/CSS/JS，不引入 Node 或打包链。
+- 当页面和状态复杂度真实上升后，再引入 Vue 3、Element Plus 和轻量状态管理。
+- WebSocket 驱动实时数据刷新属于后续管理面成型阶段，不属于当前极简 CRUD 首版。
 - REST API 负责配置型操作。
 
 ## 15. 关键设计原则

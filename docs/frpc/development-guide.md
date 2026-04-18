@@ -15,6 +15,31 @@
 - 不为未来的多服务端、多工作模式、离线缓存、复杂本地配置提前加抽象。
 - `frpc` 启动参数始终优先保持为最小集合：`server` 和 `token`。
 
+## 1.1 当前进度
+
+截至 2026-04-18，`frpc` 当前已完成：
+
+- `server` / `token` 参数解析与校验
+- 固定长度 token 解析
+- challenge/response 登录
+- `config.push` / `config.ack`
+- 最小 TCP 单端口 stream 生命周期处理
+- 本地拨号失败错误回传
+- 与真实 `frps` 的最小端到端脚本联调：
+  - `test/e2e_tcp_single.py`
+  - `happy_path`
+  - `bad_token`
+  - `disabled_group`
+  - `disabled_tunnel`
+  - `local_unavailable`
+
+当前仍未进入：
+
+- UDP
+- 端口范围
+- 在线热更新的更完整矩阵
+- 多客户端竞争场景
+
 ## 2. 目录建议
 
 ```text
@@ -65,12 +90,20 @@ frpc/
 - 登录与心跳
 - 配置接收
 
+当前状态：
+
+- 已完成。
+
 ### 4.4 第四阶段：实现 TCP 正向代理
 
 - TCP 工作流
 - 本地拨号
 - 自动重连
 - 单端口先跑通
+
+当前状态：
+
+- 最小 TCP 单端口链路已完成并已纳入端到端脚本验证。
 
 ### 4.5 第五阶段：补增强能力
 

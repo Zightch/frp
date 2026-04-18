@@ -19,11 +19,15 @@
 - `internal/config` 基础配置加载、默认值和校验
 - `internal/logging` 结构化日志
 - `internal/api` 最小管理端 HTTP 服务，当前提供 `/`、`/healthz`、`/readyz`、`/api/v1/healthz`
-- `internal/control` `7000` 控制端口监听骨架，当前只接受连接并记录日志
+- `internal/control` 控制端口监听、token challenge/response 登录、心跳、配置下发和配置确认
+- `internal/control` 最小 TCP 单端口数据面，`config.ack` 后启动公网 listener
+- `internal/control` 可处理 `stream.open` / `stream.opened` / `stream.data` / `stream.close`
+- 分组禁用、隧道禁用、本地目标不可达等最小失败路径已经有确定性行为
 - `internal/storage/sql.go` 统一数据库封装，支持 `*sql.DB` / `*sql.Tx`、结构化查询结果和事务
 - SQLite/MySQL 启动期建连、MySQL DSN 规范化、内嵌 schema bootstrap 与严格表结构校验
+- 已通过 `test/e2e_tcp_single.py` 验证 `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
 
-当前还没有落地分组仓储、控制协议实现、真实转发链路和 WebUI 业务页，因此本文件后续章节仍主要描述目标架构和边界。
+当前已经完成最小正向代理链路，但还没有落地 WebUI 业务页、在线改库热更新、ACL、UDP、端口范围、反向代理、抓包、限速和完整观测面。因此本文件后续章节仍同时描述长期目标架构和当前边界。
 
 ## 2. 目标
 
@@ -98,6 +102,13 @@
 - `GET /readyz`
 - `GET /api/v1/healthz`
 
+下一轮短期目标是极简 WebUI：
+
+- 不做登录。
+- 只做 `proxy_groups` 和 `tunnels` 编辑。
+- 通过 `frps management api` 完成数据库增删改查。
+- 首版不做 WebSocket、在线热更新、连接列表、抓包、限速或独立前端工程。
+
 ## 6. 与 frpc 的关系
 
 `frps` 是控制端，`frpc` 是执行端。关系边界如下：
@@ -127,7 +138,7 @@ frps/
 ├── internal/storage/
 ├── internal/runtime/
 ├── internal/config/
-├── webui/
+├── webui/                    # 后续复杂 WebUI 目录，当前首版可先内嵌在 internal/api
 └── configs/
 ```
 

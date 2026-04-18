@@ -11,6 +11,27 @@
 - 不维护复杂配置文件
 - 不承载管理逻辑
 
+## 1.1 当前实现状态
+
+截至 2026-04-18，`frpc` 当前已落地：
+
+- 只接受 `server` 和 `token` 两个启动参数
+- 按固定长度拆分 `token_id` / `token_secret`
+- challenge/response 登录
+- 接收 `config.push` 并返回 `config.ack`
+- 最小 TCP 单端口 `stream.open` / `stream.data` / `stream.close`
+- 本地拨号失败时返回确定性错误
+- 已通过 `test/e2e_tcp_single.py` 与真实 `frps` 打通：
+  - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+
+当前还没有进入的范围包括：
+
+- UDP 工作流
+- 端口范围
+- 多客户端竞争语义
+- 本地观测面
+- 任何本地管理页面
+
 ## 2. 核心职责
 
 `frpc` 只负责以下事情：
@@ -105,4 +126,3 @@ frpc/
 - 协议兼容优先于本地灵活性。
 - 失败后优先重连而不是等待人工修复。
 - 所有业务规则都由服务端下发。
-

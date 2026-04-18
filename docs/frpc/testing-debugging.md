@@ -40,7 +40,25 @@ go test ./...
 
 ## 2.3 手工联调
 
-最小联调环境：
+当前最小联调优先使用已落地脚本：
+
+```powershell
+python test/e2e_tcp_single.py --scenario happy_path
+python test/e2e_tcp_single.py --scenario bad_token
+python test/e2e_tcp_single.py --scenario disabled_group
+python test/e2e_tcp_single.py --scenario disabled_tunnel
+python test/e2e_tcp_single.py --scenario local_unavailable
+```
+
+脚本会自动：
+
+- 创建临时 SQLite 数据库
+- 写入 `proxy_groups` / `tunnels`
+- 启动真实 `frps` / `frpc`
+- 启动 Python echo server 和 Python 外网客户端
+- 断言最小控制面与数据面行为
+
+如需手工联调，最小环境为：
 
 - 一个本地 `frps`
 - 一个本地 TCP echo 服务
@@ -92,8 +110,9 @@ go test ./...
 必须验证：
 
 - 单端口映射正确
+- 当前已落地：`happy_path`
 - 端口范围偏移计算正确
-- 本地目标不可达时正确上报失败
+- 当前已落地：本地目标不可达时正确上报失败
 - 服务端要求关闭某个 stream 时，只关闭目标 stream
 
 ## 3.5 UDP
@@ -142,6 +161,14 @@ python -m http.server 8081
 ```
 
 然后通过 `frps` 暴露端口访问，确认 `frpc` 是否正确把流量送到本地。
+
+如果问题出在最小端到端链路，优先使用：
+
+```powershell
+python test/e2e_tcp_single.py --scenario happy_path --keep-temp
+```
+
+然后查看脚本输出的 `db_path`、`frps.log` 和 `frpc.log`。
 
 ## 4.3 网络调试
 

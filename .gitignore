@@ -4,3 +4,4 @@ go.sum
 *.exe
 *.log
 **/tmp/
+**/__pycache__/

@@ -18,17 +18,36 @@
 
 ## 1.1 当前进度
 
-截至 2026-04-18，`frps` 已完成的第一阶段基建包括：
+截至 2026-04-18，`frps` 已完成的当前主线包括：
 
 - 独立 Go 子模块和 `cmd/frps` 启动入口
 - 基础配置、日志和生命周期管理
 - 管理端最小 HTTP 服务与健康检查
-- `7000` 控制端口监听骨架
 - SQLite/MySQL 双支持的数据库打开逻辑
 - `internal/storage/sql.go` 统一数据库封装，支持结构化结果和事务
 - 启动时内嵌 schema bootstrap、版本推进和严格表结构校验
+- 分组运行态读取：`proxy_groups` / `tunnels`
+- token challenge/response 登录
+- `config.push` / `config.ack`
+- `config.ack` 后启动启用状态的 TCP 单端口 listener
+- `stream.open` / `stream.data` / `stream.close` 最小数据面
+- 最小失败路径：
+  - `bad_token`
+  - `disabled_group`
+  - `disabled_tunnel`
+  - `local_unavailable`
+- 已通过 `test/e2e_tcp_single.py` 打通：
+  - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
 
-当前还未进入仓储层、控制协议、真实代理链路和 WebUI 业务页实现。
+当前仍未进入的范围包括：
+
+- WebUI 业务页
+- 在线改库热更新
+- ACL
+- UDP
+- 端口范围
+- 反向代理
+- 抓包、限速、完整连接观测
 
 ## 2. 建议目录
 
@@ -64,9 +83,9 @@ pkg/
 ## 3. 环境要求
 
 - Go 1.23 或更高版本
-- Node.js 20 LTS 或更高版本
-- npm 或 pnpm
 - SQLite 3 或 MySQL 8.0
+
+当前极简 WebUI 首版不要求 Node.js、npm 或 pnpm；如果后续管理面复杂度真实上升，再评估是否引入独立前端工程。
 
 推荐本地开发环境：
 
@@ -95,16 +114,19 @@ pkg/
 
 - 已完成。
 
-### 4.2 第二步：WebUI 框架
+### 4.2 第二步：极简 WebUI 起步
 
-- 初始化 `webui` 工程。
-- 建立 Vue 3 + Element Plus 的基础布局、路由、状态管理和 API 封装。
-- 建立 WebSocket 客户端封装，但只先验证连通性。
-- 先做空壳页面，不急着做完整业务页。
+- 首版不引入独立前端工程。
+- 由 `frps management api` 直接返回一个内嵌静态 HTML 页面。
+- 页面只做最简单的列表、表单和按钮。
+- 页面只调用最小 JSON API，不先做 WebSocket。
+- 当前只覆盖 `proxy_groups` 和 `tunnels` 的数据库增删改查。
 
 阶段目标：
 
-- WebUI 可以启动，可以访问 `frps` 管理端最小接口，可以建立基础 WebSocket 连接。
+- 浏览器可打开管理页。
+- 可查看、创建、编辑、删除 `proxy_groups` / `tunnels`。
+- token 创建或重置时只在当次显示原值，数据库仍只保存 `token_id + token_hash`。
 
 ### 4.3 第三步：数据库
 
@@ -121,7 +143,8 @@ pkg/
 当前状态：
 
 - 数据库打开、驱动注册、统一封装、schema bootstrap/校验已完成。
-- 仓储层和业务 CRUD 尚未开始。
+- 控制面运行时读取已开始并可支撑最小链路。
+- 管理面业务 CRUD 尚未开始。
 
 ### 4.4 第四步：`frps/frpc` 协议设计
 
@@ -155,6 +178,11 @@ pkg/
 阶段目标：
 
 - 从公网入口到内网目标的 TCP 代理链路可以稳定跑通。
+
+当前状态：
+
+- 已完成。
+- 已通过 `test/e2e_tcp_single.py` 固化单客户端、冷启动、SQLite 预注入、TCP 单端口闭环。
 
 ### 4.7 第七步：管理面接线
 
@@ -194,7 +222,13 @@ pkg/
 
 `webui` 属于 `frps`，不是独立产品。
 
-建议前端目录：
+当前首版约定：
+
+- 首版优先内嵌在 `internal/api`，不急着建立 `frps/webui/` 独立工程。
+- 首版只做分组和隧道 CRUD，不做登录、不做 WebSocket、不做管理仪表盘。
+- 如果页面复杂度后续真实上升，再演进到独立前端目录。
+
+后续如需独立前端工程，可参考目录：
 
 ```text
 frps/webui/
@@ -209,7 +243,7 @@ frps/webui/
 前端约定：
 
 - 首屏列表由 REST API 拉取。
-- 运行态更新由 WebSocket 推送。
+- 当前首版不做运行态实时推送，先以刷新可见为准。
 - 不在前端复刻复杂业务判断，校验以服务端为准。
 - 管理页面状态模型尽量按“分组、隧道、反代、连接、抓包”划分。
 
@@ -341,7 +375,25 @@ REST API 建议统一前缀：
 
 ## 12. 联调建议
 
-建议本地保留一套最小联调配置：
+当前最小联调优先使用已经固化的脚本：
+
+```powershell
+python test/e2e_tcp_single.py --scenario happy_path
+python test/e2e_tcp_single.py --scenario bad_token
+python test/e2e_tcp_single.py --scenario disabled_group
+python test/e2e_tcp_single.py --scenario disabled_tunnel
+python test/e2e_tcp_single.py --scenario local_unavailable
+```
+
+脚本职责只限测试编排：
+
+- 创建临时 SQLite 数据库并 seed `proxy_groups` / `tunnels`。
+- 启动真实 `frps` / `frpc`。
+- 模拟 Python 内网 echo server。
+- 模拟 Python 外网客户端。
+- 验证真实控制面和数据面行为。
+
+手工联调也建议保持同样的最小配置：
 
 - 一个 `frps`
 - 一个 `frpc`
@@ -355,15 +407,14 @@ REST API 建议统一前缀：
 3. 创建 TCP 隧道。
 4. 启动 `frpc` 接入。
 5. 用公网入口进行访问。
-6. 查看 WebUI 中的连接和速率。
+6. 当前阶段先看日志和实际 echo 结果；WebUI 连接和速率属于后续观测面。
 
 ## 13. 提交前检查
 
 每次开发完一个功能后，至少检查：
 
 - 单元测试是否通过
-- 本地集成测试是否通过
-- WebSocket 实时事件是否正常
-- 端口冲突校验是否正常
-- 在线 `frpc` 是否无需重启即可完成配置同步
+- 与当前功能相关的本地集成测试是否通过
+- 如果改动控制面或数据面，`test/e2e_tcp_single.py` 的 5 个场景是否通过
+- 如果改动 WebUI 首版，是否能通过页面和 SQLite 查询同时验证 `proxy_groups` / `tunnels` 写库结果
 - 文档是否同步更新

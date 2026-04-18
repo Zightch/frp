@@ -82,7 +82,7 @@ Storage / Runtime State
 - `internal/config`：JSON 配置、默认值和校验
 - `internal/logging`：`slog` 日志初始化
 - `internal/api`：最小管理端 HTTP 服务和健康检查
-- `internal/control`：TCP 控制端口监听骨架
+- `internal/control`：token challenge/response、配置下发、配置确认和最小 TCP 单端口数据面
 - `internal/storage`：数据库对象封装
 - `internal/app`：数据库打开、schema bootstrap/校验、服务启动和关闭编排
 

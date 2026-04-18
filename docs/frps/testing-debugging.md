@@ -20,6 +20,18 @@
 - SQLite 数据目录自动创建测试
 - 应用启动时自动建表和 schema 版本写入测试
 - SQLite 现有表结构错误时启动立即失败测试
+- 控制面单元测试：
+  - token challenge/response
+  - `config.push` / `config.ack`
+  - listener 启停
+  - 无效 `stream.open` 错误路径
+- 最小 TCP 单端口端到端脚本：
+  - `test/e2e_tcp_single.py`
+  - `happy_path`
+  - `bad_token`
+  - `disabled_group`
+  - `disabled_tunnel`
+  - `local_unavailable`
 
 ## 2. 测试分层
 
@@ -48,7 +60,7 @@ go test ./...
 覆盖链路：
 
 - `frpc` 登录与配置下发
-- 配置热更新与 `config.ack`
+- `config.ack` 前后 listener 行为
 - TCP 正向代理
 - UDP 正向代理
 - TCP 反向代理
@@ -75,18 +87,55 @@ go test ./...
 
 ## 2.4 端到端测试
 
-目标：
+当前已落地的最小端到端测试目标：
 
-- 模拟管理员从 WebUI 创建分组、创建隧道、启动 `frpc`、访问公网入口、查看在线连接与抓包文件
+- `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+- 单客户端
+- 冷启动
+- SQLite 预注入
+- TCP 单端口
+- 加最小必要负向场景
 
-建议工具：
+当前脚本：
 
-- Playwright 负责 WebUI
-- Go 脚本负责启动和清理服务
+- `test/e2e_tcp_single.py`
+
+当前脚本职责：
+
+- 创建临时 SQLite 数据库
+- seed `proxy_groups` / `tunnels`
+- 启动真实 `frps` / `frpc`
+- 启动 Python echo server
+- 启动 Python 外网客户端
+- 观察和断言真实控制面与数据面行为
+
+当前固定场景：
+
+- `happy_path`
+- `bad_token`
+- `disabled_group`
+- `disabled_tunnel`
+- `local_unavailable`
+
+建议命令：
+
+```powershell
+python test/e2e_tcp_single.py --scenario happy_path
+python test/e2e_tcp_single.py --scenario bad_token
+python test/e2e_tcp_single.py --scenario disabled_group
+python test/e2e_tcp_single.py --scenario disabled_tunnel
+python test/e2e_tcp_single.py --scenario local_unavailable
+```
+
+如需查看脚本实际写入的 SQLite 数据库，可加：
+
+```powershell
+python test/e2e_tcp_single.py --scenario happy_path --keep-temp
+```
 
 ## 3. 最小测试环境
 
-推荐本地端口：
+当前脚本默认动态分配测试端口，不要求固定本地端口。手工联调时可参考：
 
 - `7000`：`frpc` 控制入口
 - `7500`：WebUI/API
@@ -132,11 +181,13 @@ go test ./...
 必须验证：
 
 - 单端口映射可用
+- 当前已落地：`happy_path`
 - 并发多个连接可用
+- 当前已落地：禁用隧道时新连接不可进入 listener
+- 当前已落地：本地目标不可达时触发真实 `stream.open` 后关闭连接
 - Web 修改隧道配置后，在线 `frpc` 无需重启即可应用
 - 修改本地目标地址后，新连接使用新目标，旧连接可自然结束
 - 修改 ACL 或限速后，`frps` 立即生效且不要求 `frpc` 收到新配置
-- 隧道禁用后新连接被拒绝
 - 管理员强制断开某条连接时，只影响目标连接
 - `frpc` 断线后连接失败且状态更新
 
@@ -188,6 +239,13 @@ HTTPS：
 ## 5. 调试建议
 
 当前第一阶段最小联调时，优先先确认数据库启动链路，再继续排查 API 或控制端口问题。
+
+如果当前问题出在最小端到端链路，优先保留脚本临时目录并查看：
+
+- 脚本打印出的 `db_path`
+- `frps.log`
+- `frpc.log`
+- 失败输出中的 `expected` / `actual` 摘要
 
 ## 5.1 日志调试
 
