@@ -474,20 +474,18 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports, scenari
                 token_id,
                 token_hash,
                 enabled,
-                max_clients,
                 rate_limit,
                 client_access_mode,
                 tunnel_access_mode,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "e2e-group",
                 token.token_id,
                 token.token_hash,
                 group_enabled,
-                1,
                 0,
                 "disabled",
                 "disabled",

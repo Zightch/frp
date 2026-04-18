@@ -10,6 +10,8 @@
 - 实时观测是否可信
 - 限速和抓包是否不破坏主链路
 
+当前压测口径也按同一原则执行：优先看代码链路在受压时有没有异常，吞吐和延迟数字只作为发现退化的辅助手段，不作为首要目标。
+
 ## 1.1 当前已落地验证项
 
 截至 2026-04-18，代码库里已经存在并应持续保留的第一阶段验证项包括：
@@ -32,6 +34,11 @@
   - `disabled_group`
   - `disabled_tunnel`
   - `local_unavailable`
+- 最小 TCP 代码健康压测脚本：
+  - `test/e2e_tcp_perf.py`
+  - `stability`
+  - `upload`
+  - `download`
 
 ## 2. 测试分层
 
@@ -99,6 +106,7 @@ go test ./...
 当前脚本：
 
 - `test/e2e_tcp_single.py`
+- `test/e2e_tcp_perf.py`
 
 当前脚本职责：
 
@@ -108,6 +116,13 @@ go test ./...
 - 启动 Python echo server
 - 启动 Python 外网客户端
 - 观察和断言真实控制面与数据面行为
+
+性能脚本额外负责：
+
+- 启动 Python 内网目标服务器
+- 运行高并发稳定性 workload
+- 运行上下行吞吐 workload
+- 输出 `report.json` 和 `report.md`
 
 当前固定场景：
 
@@ -125,6 +140,12 @@ python test/e2e_tcp_single.py --scenario bad_token
 python test/e2e_tcp_single.py --scenario disabled_group
 python test/e2e_tcp_single.py --scenario disabled_tunnel
 python test/e2e_tcp_single.py --scenario local_unavailable
+```
+
+```powershell
+python test/e2e_tcp_perf.py
+python test/e2e_tcp_perf.py --stability-concurrency 128 --stability-duration 30
+python test/e2e_tcp_perf.py --transfer-concurrency 8 --transfer-bytes-per-connection 67108864
 ```
 
 如需查看脚本实际写入的 SQLite 数据库，可加：
@@ -383,19 +404,82 @@ curl http://127.0.0.1:7500/readyz
 curl http://127.0.0.1:7500/api/v1/healthz
 ```
 
-## 8. 性能测试建议
+## 8. 代码健康压测基线
 
-建议压测项：
+截至 2026-04-18，当前仓库已经有一套最小可执行的 TCP 受压验证基线：
 
-- 单隧道 TCP 高并发连接数
-- 单隧道大流量吞吐
-- 大量空闲连接下的内存占用
-- 大量 WebSocket 订阅时的事件广播压力
+- `test/e2e_tcp_perf.py`
 
-建议记录指标：
+当前脚本固定边界：
 
-- CPU
-- 内存
-- goroutine 数
-- 每秒新建连接数
-- 平均速率统计误差
+- 只测 TCP 单端口正向代理
+- 只编排真实 `frps` / `frpc`
+- Python 只模拟内网目标服务器和外网客户端
+- 不实现鉴权和代理产品逻辑
+- 默认在本机 loopback 环境执行
+
+当前内置 workload：
+
+- `stability`
+- `upload`
+- `download`
+
+含义：
+
+- `stability`：高并发短连接 echo 稳定性
+- `upload`：外网客户端到内网目标的上行传输正确性与方向性退化检查
+- `download`：内网目标到外网客户端的下行传输正确性与方向性退化检查
+
+这一轮压测不以“冲到多高吞吐”作为首要目标，而以“受压时有没有明确代码异常、协议错误、转发错误或资源异常”作为首要目标。
+
+默认命令：
+
+```powershell
+python test/e2e_tcp_perf.py
+```
+
+常用放大命令：
+
+```powershell
+python test/e2e_tcp_perf.py --stability-concurrency 128 --stability-duration 30
+python test/e2e_tcp_perf.py --transfer-concurrency 8 --transfer-bytes-per-connection 67108864
+```
+
+当前报表输出：
+
+- `report.json`
+- `report.md`
+- `frps.log`
+- `frpc.log`
+
+当前默认记录指标：
+
+- 稳定性请求总数、成功数、失败数、成功率
+- 稳定性 `req/s`
+- 稳定性延迟 `min/avg/p50/p95/p99/max`
+- 上行吞吐 `bytes/s` 与 `Mbps`
+- 下行吞吐 `bytes/s` 与 `Mbps`
+- 每连接传输耗时分布
+- `frps` / `frpc` 峰值 RSS
+- `frps` / `frpc` 近似 CPU 百分比
+
+这些指标的当前用途是：
+
+- 先判断是否出现真实代理链路失败
+- 再判断是否出现方向性退化、尾延迟异常或资源异常
+- 最后才看吞吐数字是否值得继续深挖优化
+
+当前已知限制：
+
+- 这是单机 loopback 基线，不代表真实公网带宽或弱网质量
+- 进程 CPU 采样是基于累计 CPU 秒的近似值，不是高精度 profiler
+- 还没有 goroutine、heap、pprof 等内部观测
+- Windows 本机高 churn 短连接测试可能触发 `WinError 10048`，通常意味着客户端临时端口 / TIME_WAIT 压力，需要和 `frps/frpc` 代理链路失败分开分析
+
+当前建议使用方式：
+
+- 先跑默认基线
+- 再跑更长时间和更高并发的阶梯压测
+- 如果高 churn 短连接出现 `WinError 10048`，先降低新建连接速率、延长冷却时间或改用长连接 workload 复核
+- 如果只有宿主机 `WinError 10048` 一类错误，而 `frps` / `frpc` 日志没有对应运行时异常，不要直接判定为代理代码问题
+- 先比较同机同参数前后版本差异，再决定是否需要优化核心数据面

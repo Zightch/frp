@@ -35,6 +35,7 @@
 - `frps` 可从 SQLite/MySQL schema 中读取 `proxy_groups` / `tunnels` 运行数据。
 - `frps` 可在 `config.ack` 后启动启用状态的 TCP 单端口 listener。
 - `frpc` 可接收配置、处理 `stream.open` / `stream.data` / `stream.close`，并回连本地 TCP 目标。
+- 极简 WebUI 首版已支持 `proxy_groups` / `tunnels` 最小 CRUD，不做登录和在线状态展示。
 - 已通过 `test/e2e_tcp_single.py` 验证：
   - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
   - `happy_path`
@@ -42,6 +43,10 @@
   - `disabled_group`
   - `disabled_tunnel`
   - `local_unavailable`
+- 已通过 `test/e2e_tcp_perf.py` 建立最小 TCP 代码健康压测基线：
+  - 高并发短连接稳定性
+  - 上行传输正确性与方向性退化检查
+  - 下行传输正确性与方向性退化检查
 
 当前已明确暂不纳入上一轮最小链路的能力包括：
 
@@ -53,7 +58,7 @@
 - 端口范围
 - 抓包与限速
 
-下一轮短期目标是极简 WebUI：无登录，只做 `proxy_groups` / `tunnels` 的数据库增删改查。它通过 `frps management api` 写库，不直接连接 SQLite 文件，也不改变 `frps/frpc` 的 challenge 登录和数据面职责；管理界面不展示任何客户端数量配置项。
+当前短期目标已经转为代码健康压测基线：先在不扩产品功能的前提下，持续验证 `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机` 在压力下是否出现明确代码异常；吞吐和延迟数字只作为发现退化的辅助手段，避免在核心链路未验证前继续堆叠高级功能。
 
 ## 2. 能力范围
 
@@ -464,7 +469,7 @@ TrafficReport
 
 ## 8. WebUI 与实时同步
 
-WebUI 归属于 `frps` 管理面。当前下一轮首版先走极简实现：不做登录，不引入独立前端工程，只用 `frps management api` 提供一个内嵌静态页面和最小 JSON CRUD API。
+WebUI 归属于 `frps` 管理面。当前极简首版已完成：不做登录，不引入独立前端工程，只用 `frps management api` 提供一个内嵌静态页面和最小 JSON CRUD API。
 
 当前首版只覆盖：
 
@@ -472,6 +477,7 @@ WebUI 归属于 `frps` 管理面。当前下一轮首版先走极简实现：不
 - 隧道列表、新增、编辑、删除。
 - 创建或重置分组 token 时只在当次返回原始 token，数据库仍只保存 `token_id + token_hash`。
 - 改库后以“刷新可见、SQLite 查询可验证”为验收，不要求在线 session 热更新。
+- 管理界面不展示任何 `maxclient` / `max_clients` 配置项。
 
 当管理面复杂度真实上升后，再演进到独立前端工程。长期方案可以使用 Vue 3 + Element Plus。
 
@@ -665,6 +671,7 @@ save group/tunnel config from WebUI
 - `config.push` / `config.ack`
 - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
 - 4 个最小负向场景
+- 最小 TCP 代码健康压测基线
 
 其中“WebUI 可以看到客户端在线和隧道状态”尚未进入这一轮完成定义，被明确后移。
 
@@ -676,13 +683,13 @@ save group/tunnel config from WebUI
 - 端口冲突检测。
 - 正向代理配置热更新，在线 `frpc` 无需重启。
 
-当前下一轮只启动这个阶段里的最小子集：
+当前已经完成这个阶段里的最小子集：
 
 - 无登录的极简 WebUI
 - `proxy_groups` / `tunnels` 最小 CRUD
 - 通过 `frps management api` 写库
 
-本轮不包含：
+该最小子集不包含：
 
 - WebSocket
 - 在线热更新

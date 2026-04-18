@@ -5,3 +5,6 @@ go.sum
 *.log
 **/tmp/
 **/__pycache__/
+**/*.sqlite
+**/*.db
+frps/configs/

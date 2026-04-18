@@ -228,9 +228,109 @@ Python 外网客户端
 - 抓包
 - 反向代理页面
 
-如果继续下一步，应该只补一页极简使用说明文档，说明：
+该轮已经收口，后续工作已切到代码健康压测基线，不再沿着 WebUI 首版继续扩展。
 
-- 如何启动 `frps`
-- 如何打开 WebUI
-- 如何管理分组和隧道
-- token 只在创建或重置时返回一次，数据库不保存明文
+## 9. 代码健康压测基线
+
+本轮目标不是继续扩功能，而是给当前最小 TCP 正向代理主线补一套可重复执行的受压验证基线，优先判断代码链路在压力下是否出现异常。
+
+当前新增脚本：
+
+- `test/e2e_tcp_perf.py`
+
+脚本职责保持极简：
+
+- 创建临时 SQLite 数据库
+- seed `proxy_groups` / `tunnels`
+- 启动真实 `frps` / `frpc`
+- 启动 Python 内网目标服务器
+- 启动 Python 外网客户端压测
+- 输出 JSON 原始结果和 Markdown 报表
+
+脚本当前覆盖 3 个 workload：
+
+- `stability`
+- `upload`
+- `download`
+
+含义分别是：
+
+- `stability`：高并发短连接 echo 稳定性
+- `upload`：`Python 外网客户端 -> frps -> frpc -> Python 内网主机` 的上行传输正确性与方向性退化检查
+- `download`：`Python 内网主机 -> frpc -> frps -> Python 外网客户端` 的下行传输正确性与方向性退化检查
+
+这一轮不以“冲到多高吞吐”作为首要目标，而以“有没有明确代码异常、协议错误、转发错误或资源异常”作为首要目标。
+
+为了避免测试端噪声，本轮还收束了两个边界：
+
+- `test/e2e_tcp_single.py` 已移除旧的 `max_clients` seed 列，和当前 schema 保持一致
+- `test/e2e_tcp_perf.py` 的 Python 内网目标服务器已把 `request_queue_size` 提升到 `1024`，避免高并发时 backlog 过小导致的假性拒连
+
+当前脚本输出内容：
+
+- `report.json`
+- `report.md`
+- `frps.log`
+- `frpc.log`
+- 临时 SQLite 数据库
+
+当前默认本地基线结果如下：
+
+- 参数：
+  - `stability_concurrency = 64`
+  - `stability_duration_seconds = 5`
+  - `stability_payload_bytes = 1024`
+  - `transfer_concurrency = 4`
+  - `transfer_bytes_per_connection = 8388608`
+- 结果：
+  - 稳定性：`8405 / 8405` 成功，`0` 失败
+  - 稳定性速率：约 `1671 req/s`
+  - 延迟：`p50 ≈ 38.11ms`，`p95 ≈ 41.97ms`，`p99 ≈ 49.78ms`
+  - 上行吞吐：约 `1880.74 Mbps`
+  - 下行吞吐：约 `1358.90 Mbps`
+- `frps` 峰值 RSS：约 `27.6 MB`
+- `frpc` 峰值 RSS：约 `23.5 MB`
+- 当前判断：这轮没有压出明确的 `frps/frpc` 代码问题
+
+当前还额外跑过一轮放大样本：
+
+- 参数：
+  - `stability_concurrency = 128`
+  - `stability_duration_seconds = 30`
+  - `transfer_concurrency = 8`
+  - `transfer_bytes_per_connection = 67108864`
+- 结果：
+  - 上行吞吐：约 `2157.94 Mbps`
+  - 下行吞吐：约 `1706.26 Mbps`
+  - 吞吐 workload 全部成功
+  - 短连接稳定性：`22256 / 45684` 成功
+  - 短连接失败全部为 Windows 本机 `WinError 10048`
+
+对这一轮放大样本的当前判断是：
+
+- `frps` / `frpc` 日志没有对应异常 `WARN/ERROR`
+- `upload` / `download` workload 能正常完成，说明在同一轮压力下，真实代理链路并未先出现明显协议级失败
+- 当前失败更像是 Windows 本机 loopback 短连接 churn 触发了客户端临时端口 / TIME_WAIT 压力
+- 因此，这一轮结果可以说明“当前短连接稳定性压力已经撞到宿主机环境边界”，但不能直接说明 `frps/frpc` 自身在 `128` 并发下已经失败
+
+当前日志观察：
+
+- 压测期间 `frps` 没有出现异常 `WARN/ERROR`
+- `frpc` 没有出现异常 `WARN/ERROR`
+- 停止时只出现预期的 control session EOF 和正常 shutdown 日志
+
+当前结论只限定在本机 loopback 基线：
+
+- 当前最小 TCP 单端口正向代理链路，在本机环境下已经具备可重复执行的并发稳定性和方向性传输测试能力
+- 本轮数字可作为后续代码改动后的回归比较基线
+- 现阶段还没有压出明确的 `frps/frpc` 代码缺陷证据
+- 当前结果不能直接外推到真实公网网络质量、跨机房 RTT 或弱网环境
+- 当前高 churn 短连接测试在 Windows 本机上还会受到临时端口 / TIME_WAIT 压力影响，后续需要单独隔离这个变量
+
+当前还未纳入已完成主线：
+
+- 长时间稳定性测试
+- 128 / 256 并发阶梯测试
+- 多轮基线对比
+- 性能回归硬阈值
+- `pprof` / goroutine / heap 级内部观测
