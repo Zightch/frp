@@ -375,6 +375,227 @@ func TestServerForwardsTCPStream(t *testing.T) {
 	}
 }
 
+func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	remotePort := freeTCPPort(t)
+	server := NewServer(
+		Options{
+			Repository: stubRepository{
+				group: GroupRuntime{
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					ClientAccessMode: "disabled",
+					TokenHash:        tokenHash,
+					Snapshot: ConfigSnapshot{
+						Version:       99,
+						GeneratedAtMs: 1234,
+						Tunnels: []protocol.TunnelEntry{
+							{
+								TunnelID:    7,
+								Protocol:    protocol.ProtocolTCP,
+								TunnelFlags: protocol.TunnelFlagEnabled,
+								RemoteStart: uint16(remotePort),
+								RemoteEnd:   uint16(remotePort),
+								LocalHost:   host,
+								LocalStart:  22,
+								LocalEnd:    22,
+							},
+						},
+					},
+				},
+			},
+			ReadTimeout:       time.Second,
+			WriteTimeout:      time.Second,
+			ChallengeTTL:      5 * time.Second,
+			HeartbeatInterval: 2 * time.Second,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal config.push: %v", err)
+	}
+
+	assertTCPDialFails(t, remotePort)
+
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	publicConn := waitForTCPDial(t, remotePort)
+	streamOpenFrame := readMessage(t, clientConn)
+	if streamOpenFrame.Type != protocol.TypeStreamOpen {
+		t.Fatalf("expected stream.open, got %s", streamOpenFrame.Type.String())
+	}
+
+	streamOpenedBody, err := protocol.MarshalStreamOpened(protocol.StreamOpened{
+		Status:    protocol.StatusError,
+		ErrorCode: protocol.ErrorCodeStreamLocalDialFailed,
+		Message:   "reject for test cleanup",
+	})
+	if err != nil {
+		t.Fatalf("marshal stream.opened: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeStreamOpened,
+		RequestID: streamOpenFrame.RequestID,
+		StreamID:  streamOpenFrame.StreamID,
+		Body:      streamOpenedBody,
+	})
+	_ = publicConn.Close()
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+
+	assertTCPDialFails(t, remotePort)
+}
+
+func TestServerStartsListenersOnlyForEnabledSinglePortTCPTunnels(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	allowedPort := freeTCPPort(t)
+	disabledPort := freeTCPPort(t)
+	rangePort := freeTCPPort(t)
+	udpPort := freeTCPPort(t)
+
+	server := NewServer(
+		Options{
+			Repository: stubRepository{
+				group: GroupRuntime{
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					ClientAccessMode: "disabled",
+					TokenHash:        tokenHash,
+					Snapshot: ConfigSnapshot{
+						Version:       99,
+						GeneratedAtMs: 1234,
+						Tunnels: []protocol.TunnelEntry{
+							{
+								TunnelID:    7,
+								Protocol:    protocol.ProtocolTCP,
+								TunnelFlags: protocol.TunnelFlagEnabled,
+								RemoteStart: uint16(allowedPort),
+								RemoteEnd:   uint16(allowedPort),
+								LocalHost:   host,
+								LocalStart:  22,
+								LocalEnd:    22,
+							},
+							{
+								TunnelID:    8,
+								Protocol:    protocol.ProtocolTCP,
+								TunnelFlags: 0,
+								RemoteStart: uint16(disabledPort),
+								RemoteEnd:   uint16(disabledPort),
+								LocalHost:   host,
+								LocalStart:  23,
+								LocalEnd:    23,
+							},
+							{
+								TunnelID:    9,
+								Protocol:    protocol.ProtocolTCP,
+								TunnelFlags: protocol.TunnelFlagEnabled | protocol.TunnelFlagRange,
+								RemoteStart: uint16(rangePort),
+								RemoteEnd:   uint16(rangePort + 1),
+								LocalHost:   host,
+								LocalStart:  24,
+								LocalEnd:    25,
+							},
+							{
+								TunnelID:    10,
+								Protocol:    protocol.ProtocolUDP,
+								TunnelFlags: protocol.TunnelFlagEnabled,
+								RemoteStart: uint16(udpPort),
+								RemoteEnd:   uint16(udpPort),
+								LocalHost:   host,
+								LocalStart:  26,
+								LocalEnd:    26,
+							},
+						},
+					},
+				},
+			},
+			ReadTimeout:       time.Second,
+			WriteTimeout:      time.Second,
+			ChallengeTTL:      5 * time.Second,
+			HeartbeatInterval: 2 * time.Second,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	assertTCPDialFails(t, disabledPort)
+	assertTCPDialFails(t, rangePort)
+	assertTCPDialFails(t, udpPort)
+
+	publicConn := waitForTCPDial(t, allowedPort)
+	streamOpenFrame := readMessage(t, clientConn)
+	if streamOpenFrame.Type != protocol.TypeStreamOpen {
+		t.Fatalf("expected stream.open, got %s", streamOpenFrame.Type.String())
+	}
+
+	streamOpenedBody, err := protocol.MarshalStreamOpened(protocol.StreamOpened{
+		Status:    protocol.StatusError,
+		ErrorCode: protocol.ErrorCodeStreamLocalDialFailed,
+		Message:   "reject for test cleanup",
+	})
+	if err != nil {
+		t.Fatalf("marshal stream.opened: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeStreamOpened,
+		RequestID: streamOpenFrame.RequestID,
+		StreamID:  streamOpenFrame.StreamID,
+		Body:      streamOpenedBody,
+	})
+	_ = publicConn.Close()
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
 func TestServerRejectsInvalidToken(t *testing.T) {
 	server := NewServer(
 		Options{
@@ -511,4 +732,105 @@ func waitForTCPDial(t *testing.T, port int) net.Conn {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func assertTCPDialFails(t *testing.T, port int) {
+	t.Helper()
+
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	conn, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("expected dial %s to fail", address)
+	}
+}
+
+func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.Frame) {
+	t.Helper()
+
+	clientRaw, serverRaw := net.Pipe()
+	clientConn := &connWithRemoteAddr{
+		Conn:   clientRaw,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 10001},
+	}
+	serverConn := &connWithRemoteAddr{
+		Conn:   serverRaw,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20001},
+	}
+
+	done := make(chan struct{})
+	server.registerConn(serverConn)
+	server.connWG.Add(1)
+	go func() {
+		defer close(done)
+		server.handleConnection(serverConn)
+	}()
+
+	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
+		TokenID:       tokenID,
+		ClientVersion: "test-client",
+		Hostname:      "node-1",
+		OS:            protocol.OSLinux,
+		Arch:          protocol.ArchAMD64,
+	})
+	if err != nil {
+		t.Fatalf("marshal auth.begin: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeAuthBegin,
+		RequestID: 1,
+		Body:      authBeginBody,
+	})
+
+	challengeFrame := readMessage(t, clientConn)
+	if challengeFrame.Type != protocol.TypeAuthChallenge {
+		t.Fatalf("expected auth.challenge, got %s", challengeFrame.Type.String())
+	}
+	challenge, err := protocol.UnmarshalAuthChallenge(challengeFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal auth.challenge: %v", err)
+	}
+
+	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
+		ChallengeID: challenge.ChallengeID,
+		Response:    challengeResponse(tokenHash, challenge.Nonce),
+	})
+	if err != nil {
+		t.Fatalf("marshal auth.finish: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeAuthFinish,
+		RequestID: 2,
+		Body:      authFinishBody,
+	})
+
+	helloFrame := readMessage(t, clientConn)
+	if helloFrame.Type != protocol.TypeServerHello {
+		t.Fatalf("expected server.hello, got %s", helloFrame.Type.String())
+	}
+
+	configFrame := readMessage(t, clientConn)
+	if configFrame.Type != protocol.TypeConfigPush {
+		t.Fatalf("expected config.push, got %s", configFrame.Type.String())
+	}
+
+	return clientConn, done, configFrame
+}
+
+func writeConfigAck(t *testing.T, conn net.Conn, requestID uint32, version uint64) {
+	t.Helper()
+
+	configAckBody, err := protocol.MarshalConfigAck(protocol.ConfigAck{
+		ConfigVersion: version,
+		AppliedAtMs:   uint64(time.Now().UTC().UnixMilli()),
+		Status:        protocol.StatusOK,
+	})
+	if err != nil {
+		t.Fatalf("marshal config.ack: %v", err)
+	}
+	writeMessage(t, conn, protocol.Frame{
+		Type:      protocol.TypeConfigAck,
+		RequestID: requestID,
+		Body:      configAckBody,
+	})
 }

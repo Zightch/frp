@@ -326,6 +326,72 @@ func TestClientHandlesStreamOpenAndData(t *testing.T) {
 	}
 }
 
+func TestClientRejectsStreamOpenForUnknownTunnel(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	client := New(
+		appconfig.Config{
+			Server: "127.0.0.1:7000",
+			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-client",
+	)
+
+	state := newSessionState(1000)
+	state.setSnapshot(protocol.ConfigPush{ConfigVersion: 1})
+
+	openBody, err := protocol.MarshalStreamOpen(protocol.StreamOpen{
+		TunnelID:   99,
+		RemotePort: 20000,
+		ClientAddr: protocol.SockAddr{
+			IP:   net.ParseIP("203.0.113.10").To4(),
+			Port: 54321,
+		},
+		OpenedAtMs: 1234,
+	})
+	if err != nil {
+		t.Fatalf("marshal stream.open: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.handleStreamOpen(clientConn, state, protocol.Frame{
+			Type:      protocol.TypeStreamOpen,
+			RequestID: 1,
+			StreamID:  7,
+			Body:      openBody,
+		})
+	}()
+
+	openedFrame := readFrame(t, serverConn)
+	if openedFrame.Type != protocol.TypeStreamOpened {
+		t.Fatalf("expected stream.opened, got %s", openedFrame.Type.String())
+	}
+	opened, err := protocol.UnmarshalStreamOpened(openedFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal stream.opened: %v", err)
+	}
+	if opened.Status != protocol.StatusError {
+		t.Fatalf("unexpected status: %d", opened.Status)
+	}
+	if opened.ErrorCode != protocol.ErrorCodeStreamTunnelNotFound {
+		t.Fatalf("unexpected error code: %d", opened.ErrorCode)
+	}
+	if opened.Message != "tunnel 99 not found" {
+		t.Fatalf("unexpected error message: %q", opened.Message)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("handle stream.open: %v", err)
+	}
+	if state.activeStreams.Load() != 0 {
+		t.Fatalf("unexpected active stream count: %d", state.activeStreams.Load())
+	}
+}
+
 func writeFrame(t *testing.T, conn net.Conn, frame protocol.Frame) {
 	t.Helper()
 
