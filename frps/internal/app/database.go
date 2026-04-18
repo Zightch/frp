@@ -27,8 +27,17 @@ func (a *App) initDatabase(ctx context.Context) error {
 		return fmt.Errorf("attach database store: %w", err)
 	}
 
+	if err := ensureDatabaseSchema(ctx, store, a.config.Database.Type); err != nil {
+		store.Close()
+		return fmt.Errorf("ensure database schema: %w", err)
+	}
+
 	a.store = store
-	a.logger.Info("database ready", "type", a.config.Database.Type)
+	a.logger.Info(
+		"database ready",
+		"type", a.config.Database.Type,
+		"schema_version", currentSchemaVersion,
+	)
 	return nil
 }
 

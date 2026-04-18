@@ -10,6 +10,17 @@
 - 实时观测是否可信
 - 限速和抓包是否不破坏主链路
 
+## 1.1 当前已落地验证项
+
+截至 2026-04-18，代码库里已经存在并应持续保留的第一阶段验证项包括：
+
+- `storage.SQL` 的结构化查询结果测试
+- `storage.SQL` 的 `Begin` / `BeginTx` / `WithTx` 事务测试
+- MySQL 简写 DSN 规范化测试
+- SQLite 数据目录自动创建测试
+- 应用启动时自动建表和 schema 版本写入测试
+- SQLite 现有表结构错误时启动立即失败测试
+
 ## 2. 测试分层
 
 ## 2.1 单元测试
@@ -57,7 +68,7 @@ go test ./...
 
 必须验证：
 
-- SQLite 和 MySQL 都能完成初始化迁移
+- SQLite 和 MySQL 都能完成启动期 schema bootstrap 或版本推进
 - 相同仓储接口在两种数据库下行为一致
 - 唯一约束、索引、事务边界符合预期
 - 管理员、分组、隧道等核心 CRUD 在两种数据库下结果一致
@@ -176,6 +187,8 @@ HTTPS：
 
 ## 5. 调试建议
 
+当前第一阶段最小联调时，优先先确认数据库启动链路，再继续排查 API 或控制端口问题。
+
 ## 5.1 日志调试
 
 推荐日志级别：
@@ -232,6 +245,16 @@ curl https://demo.local:18443/ --resolve demo.local:18443:127.0.0.1 -k
 
 ## 6. 故障排查手册
 
+## 6.0 启动即退出
+
+优先排查：
+
+- 配置文件 JSON 是否合法
+- SQLite `path` 或 MySQL `dsn` 是否配置正确
+- 数据库是否可连通
+- 现有库结构是否和服务内嵌 schema 一致
+- `schema_migrations.version` 是否高于当前服务支持版本
+
 ## 6.1 `frpc` 无法上线
 
 优先排查：
@@ -283,7 +306,26 @@ HTTPS：
 - 分组当前在线客户端是否已切换到最新版本
 - 配置是否只写入数据库但未触发运行态重载
 
-## 7. 性能测试建议
+## 7. 当前可执行检查
+
+第一阶段开发期间，最常用的检查命令是：
+
+```powershell
+cd frps
+go test ./...
+go build -o NUL ./cmd/frps
+go run ./cmd/frps --config ./configs/frps.json.example
+```
+
+如果只想验证服务是否已经正常启动，可直接访问：
+
+```powershell
+curl http://127.0.0.1:7500/healthz
+curl http://127.0.0.1:7500/readyz
+curl http://127.0.0.1:7500/api/v1/healthz
+```
+
+## 8. 性能测试建议
 
 建议压测项：
 

@@ -5,7 +5,7 @@
   "shutdown_timeout": "10s",
   "database": {
     "type": "mysql",
-    "dsn": "frps:123456@staticplant.top:3306/frps"
+    "dsn": "frps:123456@tcp(staticplant.top:3306)/frps"
   },
   "log": {
     "level": "info",

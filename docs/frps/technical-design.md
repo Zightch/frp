@@ -74,6 +74,20 @@ Storage / Runtime State
 
 建议模块职责如下：
 
+### 3.0 当前已落地模块
+
+截至 2026-04-18，下面这些模块已经有第一阶段实现：
+
+- `cmd/frps`：启动入口、参数解析和应用生命周期接线
+- `internal/config`：JSON 配置、默认值和校验
+- `internal/logging`：`slog` 日志初始化
+- `internal/api`：最小管理端 HTTP 服务和健康检查
+- `internal/control`：TCP 控制端口监听骨架
+- `internal/storage`：数据库对象封装
+- `internal/app`：数据库打开、schema bootstrap/校验、服务启动和关闭编排
+
+其余模块目前仍处于设计阶段。
+
 ### 3.1 `internal/api`
 
 - 暴露 REST API。
@@ -140,6 +154,15 @@ Storage / Runtime State
 - SQLite/MySQL 存储适配。
 - 配置实体的仓储接口。
 - 审计与抓包元数据持久化。
+
+当前已经落地的最小边界是：
+
+- `internal/storage/sql.go` 只负责包装已经打开好的 `*sql.DB` / `*sql.Tx`
+- 查询结果统一返回 `map[string]any` 形式的 `Row`
+- 同时提供 `Begin`、`BeginTx`、`WithTx`、`WithTxContext` 事务辅助
+- 数据库驱动注册放在 `internal/storage/drivers`
+- 数据库打开和 DSN 解析放在上层 `internal/app/database.go`
+- schema bootstrap 和校验放在 `internal/app/schema.go`
 
 ## 4. 数据模型
 
@@ -603,6 +626,9 @@ UDP 以会话维度记录：
 - 表结构优先使用 SQLite 和 MySQL 的公共能力。
 - 首版避免依赖 JSON 列、触发器、生成列、数据库枚举等方言特性。
 - 数据库差异尽量收敛在 `internal/storage`，不向业务层扩散。
+- 当前 schema 版本和建表语句以内嵌代码维护，不单独引入 `.sql` 迁移目录。
+- `frps` 启动时必须先完成 `schema_migrations` bootstrap、版本推进和表结构校验；如果现有库结构不符合预期，服务立即退出。
+- 空库允许自动初始化；非空库要求列定义、主键、自增属性和唯一索引与内置 schema 完全一致。
 
 运行态数据放内存，不能让数据库成为数据面瓶颈。
 
