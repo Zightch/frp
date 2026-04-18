@@ -2,30 +2,105 @@ package control
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/zightch/frp/frps/internal/storage"
+	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/transport"
+)
+
+const (
+	defaultReadTimeout       = 5 * time.Second
+	defaultWriteTimeout      = 5 * time.Second
+	defaultChallengeTTL      = 30 * time.Second
+	defaultHeartbeatInterval = 15 * time.Second
+	initialServerRequestID   = uint32(1 << 31)
 )
 
 type Options struct {
-	Addr string
+	Addr                string
+	Store               *storage.SQL
+	Repository          Repository
+	ReadTimeout         time.Duration
+	WriteTimeout        time.Duration
+	ChallengeTTL        time.Duration
+	HeartbeatInterval   time.Duration
+	MinSupportedVersion string
 }
 
 type Server struct {
-	options  Options
-	logger   *slog.Logger
-	listener net.Listener
+	options Options
+	logger  *slog.Logger
+	version string
+	repo    Repository
 
-	mu        sync.Mutex
-	closeOnce sync.Once
-	connWG    sync.WaitGroup
+	mu         sync.Mutex
+	listener   net.Listener
+	activeConn map[net.Conn]struct{}
+	closeOnce  sync.Once
+	connWG     sync.WaitGroup
+
+	challengeMu sync.Mutex
+	challenges  map[uint32]*authChallenge
+
+	nextChallengeID atomic.Uint32
+	nextSessionID   atomic.Uint64
 }
 
-func NewServer(options Options, logger *slog.Logger) *Server {
+type authChallenge struct {
+	TokenHash [32]byte
+	Nonce     [16]byte
+	ExpiresAt time.Time
+	Used      bool
+}
+
+type sessionState struct {
+	ID                     uint64
+	Group                  GroupRuntime
+	Snapshot               ConfigSnapshot
+	LastAckedConfigVersion uint64
+	pendingConfigRequestID uint32
+	nextServerRequestID    uint32
+	readTimeout            time.Duration
+}
+
+func NewServer(options Options, logger *slog.Logger, version string) *Server {
+	if options.ReadTimeout <= 0 {
+		options.ReadTimeout = defaultReadTimeout
+	}
+	if options.WriteTimeout <= 0 {
+		options.WriteTimeout = defaultWriteTimeout
+	}
+	if options.ChallengeTTL <= 0 {
+		options.ChallengeTTL = defaultChallengeTTL
+	}
+	if options.HeartbeatInterval <= 0 {
+		options.HeartbeatInterval = defaultHeartbeatInterval
+	}
+	if options.MinSupportedVersion == "" {
+		options.MinSupportedVersion = version
+	}
+	if options.Repository == nil && options.Store != nil {
+		options.Repository = NewRepository(options.Store)
+	}
+
 	return &Server{
-		options: options,
-		logger:  logger,
+		options:    options,
+		logger:     logger,
+		version:    version,
+		repo:       options.Repository,
+		activeConn: make(map[net.Conn]struct{}),
+		challenges: make(map[uint32]*authChallenge),
 	}
 }
 
@@ -51,6 +126,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			return err
 		}
 
+		s.registerConn(conn)
 		s.connWG.Add(1)
 		go s.handleConnection(conn)
 	}
@@ -59,10 +135,19 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
-		if s.listener != nil {
-			_ = s.listener.Close()
+		listener := s.listener
+		activeConn := make([]net.Conn, 0, len(s.activeConn))
+		for conn := range s.activeConn {
+			activeConn = append(activeConn, conn)
 		}
 		s.mu.Unlock()
+
+		if listener != nil {
+			_ = listener.Close()
+		}
+		for _, conn := range activeConn {
+			_ = conn.Close()
+		}
 	})
 
 	done := make(chan struct{})
@@ -81,9 +166,551 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) handleConnection(conn net.Conn) {
 	defer s.connWG.Done()
+	defer s.unregisterConn(conn)
 	defer conn.Close()
 
 	logger := s.logger.With("remote_addr", conn.RemoteAddr().String())
 	logger.Info("frpc control connection accepted")
-	logger.Info("frpc control connection closed", "reason", "protocol not implemented")
+
+	if s.repo == nil {
+		logger.Error("frpc control connection rejected", "reason", "repository not configured")
+		logger.Info("frpc control connection closed", "reason", "repository not configured")
+		return
+	}
+
+	session, err := s.authenticate(conn)
+	if err != nil {
+		level, reason := connectionErrorDetails(err)
+		logConnection(logger, level, "frpc control login failed", err)
+		logger.Info("frpc control connection closed", "reason", reason)
+		return
+	}
+
+	logger = logger.With(
+		"session_id", session.ID,
+		"group_id", session.Group.ID,
+		"group_name", session.Group.Name,
+	)
+	logger.Info(
+		"frpc control login succeeded",
+		"config_version", session.Snapshot.Version,
+		"tunnel_count", len(session.Snapshot.Tunnels),
+	)
+
+	err = s.runSession(conn, logger, session)
+	if err != nil {
+		level, reason := connectionErrorDetails(err)
+		logConnection(logger, level, "frpc control session ended", err)
+		logger.Info("frpc control connection closed", "reason", reason)
+		return
+	}
+
+	logger.Info("frpc control connection closed", "reason", "completed")
+}
+
+func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
+	frame, err := s.readFrame(conn)
+	if err != nil {
+		return nil, s.replyProtocolError(conn, frame, err)
+	}
+	if frame.Type != protocol.TypeAuthBegin {
+		return nil, s.replyError(
+			conn,
+			frame.RequestID,
+			frame.StreamID,
+			protocol.ErrorCodeProtocolBadBody,
+			"expected auth.begin, got %s",
+			frame.Type.String(),
+		)
+	}
+	if frame.RequestID == 0 {
+		return nil, s.replyError(conn, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.begin requestId must be non-zero")
+	}
+	if frame.StreamID != 0 {
+		return nil, s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.begin streamId must be zero")
+	}
+
+	begin, err := protocol.UnmarshalAuthBegin(frame.Body)
+	if err != nil {
+		return nil, s.replyProtocolError(conn, frame, err)
+	}
+
+	group, err := s.loadGroupRuntime(begin.TokenID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrGroupNotFound):
+			return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidToken, "token id not found")
+		default:
+			return nil, err
+		}
+	}
+	if !group.Enabled {
+		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthGroupDisabled, "proxy group is disabled")
+	}
+
+	if !clientIPAllowed(group.ClientAccessMode, group.ClientRules, remoteIP(conn.RemoteAddr())) {
+		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthDeniedByIP, "client IP is not allowed")
+	}
+
+	challenge, err := s.issueChallenge(group.TokenHash)
+	if err != nil {
+		return nil, err
+	}
+	challengeBody, err := protocol.MarshalAuthChallenge(challenge)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.writeFrame(conn, protocol.Frame{
+		Type:      protocol.TypeAuthChallenge,
+		RequestID: frame.RequestID,
+		Body:      challengeBody,
+	}); err != nil {
+		return nil, err
+	}
+
+	frame, err = s.readFrame(conn)
+	if err != nil {
+		return nil, s.replyProtocolError(conn, frame, err)
+	}
+	if frame.Type != protocol.TypeAuthFinish {
+		return nil, s.replyError(
+			conn,
+			frame.RequestID,
+			frame.StreamID,
+			protocol.ErrorCodeProtocolBadBody,
+			"expected auth.finish, got %s",
+			frame.Type.String(),
+		)
+	}
+	if frame.RequestID == 0 {
+		return nil, s.replyError(conn, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.finish requestId must be non-zero")
+	}
+	if frame.StreamID != 0 {
+		return nil, s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.finish streamId must be zero")
+	}
+
+	finish, err := protocol.UnmarshalAuthFinish(frame.Body)
+	if err != nil {
+		return nil, s.replyProtocolError(conn, frame, err)
+	}
+	if err := s.consumeChallenge(finish.ChallengeID, finish.Response); err != nil {
+		return nil, s.replyProtocolError(conn, frame, err)
+	}
+
+	session := &sessionState{
+		ID:                  s.nextSessionID.Add(1),
+		Group:               group,
+		Snapshot:            group.Snapshot,
+		nextServerRequestID: initialServerRequestID,
+		readTimeout:         sessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
+	}
+
+	helloBody, err := protocol.MarshalServerHello(protocol.ServerHello{
+		HeartbeatIntervalMs: uint32(s.options.HeartbeatInterval / time.Millisecond),
+		SessionID:           session.ID,
+		CapabilityBits:      0,
+		ServerVersion:       s.version,
+		MinSupportedVersion: s.options.MinSupportedVersion,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.writeFrame(conn, protocol.Frame{
+		Type:      protocol.TypeServerHello,
+		RequestID: frame.RequestID,
+		Body:      helloBody,
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := s.pushConfig(conn, session); err != nil {
+		return nil, err
+	}
+
+	return session, nil
+}
+
+func (s *Server) runSession(conn net.Conn, logger *slog.Logger, session *sessionState) error {
+	for {
+		frame, err := s.readFrameWithTimeout(conn, session.readTimeout)
+		if err != nil {
+			return s.replyProtocolError(conn, frame, err)
+		}
+
+		switch frame.Type {
+		case protocol.TypeConfigAck:
+			if err := s.handleConfigAck(conn, logger, session, frame); err != nil {
+				return err
+			}
+		case protocol.TypeHeartbeatPing:
+			if err := s.handleHeartbeatPing(conn, frame); err != nil {
+				return err
+			}
+		default:
+			return s.replyError(
+				conn,
+				frame.RequestID,
+				frame.StreamID,
+				protocol.ErrorCodeProtocolBadBody,
+				"unexpected message type %s",
+				frame.Type.String(),
+			)
+		}
+	}
+}
+
+func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *sessionState, frame protocol.Frame) error {
+	if frame.RequestID == 0 {
+		return s.replyError(conn, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "config.ack requestId must be non-zero")
+	}
+	if frame.StreamID != 0 {
+		return s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "config.ack streamId must be zero")
+	}
+	if session.pendingConfigRequestID == 0 || frame.RequestID != session.pendingConfigRequestID {
+		return s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unexpected config.ack requestId %d", frame.RequestID)
+	}
+
+	ack, err := protocol.UnmarshalConfigAck(frame.Body)
+	if err != nil {
+		return s.replyProtocolError(conn, frame, err)
+	}
+	if ack.ConfigVersion != session.Snapshot.Version {
+		return s.replyError(
+			conn,
+			frame.RequestID,
+			0,
+			protocol.ErrorCodeProtocolBadBody,
+			"config.ack version mismatch: got %d want %d",
+			ack.ConfigVersion,
+			session.Snapshot.Version,
+		)
+	}
+	if ack.Status == protocol.StatusError {
+		return s.replyError(
+			conn,
+			frame.RequestID,
+			0,
+			protocol.ErrorCodeConfigApplyFailed,
+			"client rejected config version %d: %s",
+			ack.ConfigVersion,
+			strings.TrimSpace(ack.Message),
+		)
+	}
+	if ack.Status != protocol.StatusOK {
+		return s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeProtocolBadBody, "unsupported config.ack status %d", ack.Status)
+	}
+
+	session.LastAckedConfigVersion = ack.ConfigVersion
+	session.pendingConfigRequestID = 0
+	logger.Info("config acknowledged", "config_version", ack.ConfigVersion, "applied_at_ms", ack.AppliedAtMs)
+	return nil
+}
+
+func (s *Server) handleHeartbeatPing(conn net.Conn, frame protocol.Frame) error {
+	if frame.RequestID == 0 {
+		return s.replyError(conn, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "heartbeat.ping requestId must be non-zero")
+	}
+	if frame.StreamID != 0 {
+		return s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "heartbeat.ping streamId must be zero")
+	}
+
+	ping, err := protocol.UnmarshalHeartbeatPing(frame.Body)
+	if err != nil {
+		return s.replyProtocolError(conn, frame, err)
+	}
+
+	body, err := protocol.MarshalHeartbeatPong(protocol.HeartbeatPong{
+		ClientUnixMs: ping.ClientUnixMs,
+		ServerUnixMs: uint64(time.Now().UTC().UnixMilli()),
+	})
+	if err != nil {
+		return err
+	}
+	return s.writeFrame(conn, protocol.Frame{
+		Type:      protocol.TypeHeartbeatPong,
+		RequestID: frame.RequestID,
+		Body:      body,
+	})
+}
+
+func (s *Server) pushConfig(conn net.Conn, session *sessionState) error {
+	requestID := session.nextRequestID()
+	body, err := protocol.MarshalConfigPush(protocol.ConfigPush{
+		ConfigVersion: session.Snapshot.Version,
+		GeneratedAtMs: session.Snapshot.GeneratedAtMs,
+		Tunnels:       session.Snapshot.Tunnels,
+	})
+	if err != nil {
+		return err
+	}
+
+	session.pendingConfigRequestID = requestID
+	return s.writeFrame(conn, protocol.Frame{
+		Type:      protocol.TypeConfigPush,
+		RequestID: requestID,
+		Body:      body,
+	})
+}
+
+func (s *Server) loadGroupRuntime(tokenID [16]byte) (GroupRuntime, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.options.ReadTimeout)
+	defer cancel()
+	return s.repo.LoadGroupRuntime(ctx, tokenID)
+}
+
+func (s *Server) readFrame(conn net.Conn) (protocol.Frame, error) {
+	return s.readFrameWithTimeout(conn, s.options.ReadTimeout)
+}
+
+func (s *Server) readFrameWithTimeout(conn net.Conn, timeout time.Duration) (protocol.Frame, error) {
+	frameBytes, err := transport.ReadFrame(conn, timeout)
+	if err != nil {
+		return protocol.Frame{}, err
+	}
+	return protocol.ParseFrame(frameBytes)
+}
+
+func (s *Server) writeFrame(conn net.Conn, frame protocol.Frame) error {
+	frameBytes, err := frame.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	return transport.WriteFrame(conn, frameBytes, s.options.WriteTimeout)
+}
+
+func (s *Server) replyProtocolError(conn net.Conn, frame protocol.Frame, err error) error {
+	protocolErr := protocol.AsProtocolError(err)
+	if protocolErr == nil {
+		return err
+	}
+	if writeErr := s.writeError(conn, frame.RequestID, frame.StreamID, protocolErr.Code, false, protocolErr.Message); writeErr != nil {
+		return errors.Join(err, writeErr)
+	}
+	return err
+}
+
+func (s *Server) replyError(conn net.Conn, requestID, streamID uint32, code uint16, format string, args ...any) error {
+	err := protocol.NewError(code, format, args...)
+	if writeErr := s.writeError(conn, requestID, streamID, code, false, err.Message); writeErr != nil {
+		return errors.Join(err, writeErr)
+	}
+	return err
+}
+
+func (s *Server) writeError(conn net.Conn, requestID, streamID uint32, code uint16, retryable bool, message string) error {
+	body, err := protocol.MarshalErrorBody(protocol.ErrorBody{
+		ErrorCode: code,
+		Retryable: retryable,
+		Message:   message,
+	})
+	if err != nil {
+		return err
+	}
+	return s.writeFrame(conn, protocol.Frame{
+		Type:      protocol.TypeError,
+		RequestID: requestID,
+		StreamID:  streamID,
+		Body:      body,
+	})
+}
+
+func (s *Server) issueChallenge(tokenHash [32]byte) (protocol.AuthChallenge, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return protocol.AuthChallenge{}, err
+	}
+
+	challengeID := s.nextChallengeID.Add(1)
+	if challengeID == 0 {
+		challengeID = s.nextChallengeID.Add(1)
+	}
+
+	now := time.Now().UTC()
+	s.challengeMu.Lock()
+	defer s.challengeMu.Unlock()
+
+	s.purgeExpiredChallengesLocked(now)
+	s.challenges[challengeID] = &authChallenge{
+		TokenHash: tokenHash,
+		Nonce:     nonce,
+		ExpiresAt: now.Add(s.options.ChallengeTTL),
+	}
+
+	return protocol.AuthChallenge{
+		ChallengeID: challengeID,
+		Nonce:       nonce,
+		ExpiresInMs: uint32(s.options.ChallengeTTL / time.Millisecond),
+	}, nil
+}
+
+func (s *Server) consumeChallenge(challengeID uint32, response [32]byte) error {
+	now := time.Now().UTC()
+
+	s.challengeMu.Lock()
+	defer s.challengeMu.Unlock()
+
+	s.purgeExpiredChallengesLocked(now)
+
+	challenge, ok := s.challenges[challengeID]
+	if !ok {
+		return protocol.NewError(protocol.ErrorCodeAuthChallengeExpired, "challenge %d is missing or expired", challengeID)
+	}
+	if challenge.Used {
+		return protocol.NewError(protocol.ErrorCodeAuthChallengeReplayed, "challenge %d has already been used", challengeID)
+	}
+	if now.After(challenge.ExpiresAt) {
+		challenge.Used = true
+		return protocol.NewError(protocol.ErrorCodeAuthChallengeExpired, "challenge %d expired", challengeID)
+	}
+
+	challenge.Used = true
+	expected := challengeResponse(challenge.TokenHash, challenge.Nonce)
+	if subtle.ConstantTimeCompare(expected[:], response[:]) != 1 {
+		return protocol.NewError(protocol.ErrorCodeAuthInvalidToken, "challenge response mismatch")
+	}
+
+	return nil
+}
+
+func (s *Server) purgeExpiredChallengesLocked(now time.Time) {
+	for challengeID, challenge := range s.challenges {
+		if now.After(challenge.ExpiresAt) {
+			delete(s.challenges, challengeID)
+		}
+	}
+}
+
+func challengeResponse(tokenHash [32]byte, nonce [16]byte) [32]byte {
+	var payload [48]byte
+	copy(payload[:32], tokenHash[:])
+	copy(payload[32:], nonce[:])
+	return sha256.Sum256(payload[:])
+}
+
+func clientIPAllowed(mode string, rules []IPRule, ip net.IP) bool {
+	allowMatched := false
+	for _, rule := range rules {
+		if !rule.Matches(ip) {
+			continue
+		}
+		if rule.Action == "deny" {
+			return false
+		}
+		if rule.Action == "allow" {
+			allowMatched = true
+		}
+	}
+
+	switch mode {
+	case "allowlist", "allowlist_and_denylist":
+		return allowMatched
+	default:
+		return true
+	}
+}
+
+func remoteIP(addr net.Addr) net.IP {
+	switch typed := addr.(type) {
+	case *net.TCPAddr:
+		return typed.IP
+	case *net.UDPAddr:
+		return typed.IP
+	default:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return nil
+		}
+		return net.ParseIP(host)
+	}
+}
+
+func (s *Server) registerConn(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeConn[conn] = struct{}{}
+}
+
+func (s *Server) unregisterConn(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.activeConn, conn)
+}
+
+func (s *sessionState) nextRequestID() uint32 {
+	if s.nextServerRequestID == 0 {
+		s.nextServerRequestID = initialServerRequestID
+	}
+
+	requestID := s.nextServerRequestID
+	s.nextServerRequestID++
+	if requestID == 0 {
+		requestID = initialServerRequestID
+		s.nextServerRequestID = requestID + 1
+	}
+	return requestID
+}
+
+func sessionReadTimeout(heartbeatInterval, minimum time.Duration) time.Duration {
+	timeout := heartbeatInterval * 3
+	if timeout < minimum {
+		return minimum
+	}
+	return timeout
+}
+
+func logConnection(logger *slog.Logger, level slog.Level, message string, err error) {
+	if isExpectedConnectionClose(err) {
+		logger.Log(context.Background(), slog.LevelInfo, message, "error", err)
+		return
+	}
+	logger.Log(context.Background(), level, message, "error", err)
+}
+
+func connectionErrorDetails(err error) (slog.Level, string) {
+	if err == nil {
+		return slog.LevelInfo, "completed"
+	}
+	if isExpectedConnectionClose(err) {
+		return slog.LevelInfo, connectionReason(err)
+	}
+	return slog.LevelWarn, connectionReason(err)
+}
+
+func isExpectedConnectionClose(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func connectionReason(err error) string {
+	switch {
+	case err == nil:
+		return "completed"
+	case errors.Is(err, io.EOF):
+		return "eof"
+	case errors.Is(err, net.ErrClosed):
+		return "closed"
+	case errors.Is(err, transport.ErrFrameTooSmall):
+		return "invalid frame length below minimum"
+	case errors.Is(err, transport.ErrFrameTooLarge):
+		return "invalid frame length above maximum"
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+
+	var protocolErr *protocol.ProtocolError
+	if errors.As(err, &protocolErr) {
+		return protocolErr.Message
+	}
+
+	return err.Error()
 }

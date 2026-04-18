@@ -46,8 +46,13 @@ func (a *App) Run(parent context.Context) error {
 		a.version,
 	)
 	a.control = control.NewServer(
-		control.Options{Addr: a.config.ControlListenAddr},
+		control.Options{
+			Addr:        a.config.ControlListenAddr,
+			Store:       a.store,
+			ReadTimeout: a.config.ReadHeaderTimeoutDuration(),
+		},
 		a.logger.With("subsystem", "control"),
+		a.version,
 	)
 
 	errCh := make(chan error, 2)
