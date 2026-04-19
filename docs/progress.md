@@ -532,3 +532,36 @@ localPort = localStart + offset
   - `docs/frpc/technical-design.md`
 
 本子步骤属于文档收束，不包含代码改动验证；本次未运行测试。
+
+## 17. TCP range 的 frps 入口已打通
+
+截至 2026-04-19，TCP/UDP 端口范围映射这一轮又完成了一个已归档子步骤：`frps` 侧 TCP range 入口已经进入真实执行链路。
+
+本次已完成的实现和收束如下：
+
+- `frps/internal/control` 的运行时 listener 容器已改为支持“一个 tunnel 挂多个 listener”，不再假设一个 tunnel 只能对应一个公网 listener。
+- `frps` 在收到 `config.ack` 后，已经会为启用状态的 TCP range tunnel 按 `remoteStart..remoteEnd` 逐端口展开真实公网 TCP listener。
+- TCP range listener 命中后，`frps` 下发的 `stream.open.remotePort` 已改为实际命中的公网端口，不再固定写 `remoteStart`。
+- 当前 TCP range 仍然只使用原有同一个 wire `tunnelId`；`frpc` 继续按 `remotePort` 偏移计算本地目标端口。
+- UDP range 运行态本次没有放开，当前仍保持“只支持 UDP 单端口 listener，UDP range 留到下一子步骤实现”的边界。
+
+本次新增和更新的验证如下：
+
+- `frps/internal/control/server_test.go` 已新增/更新覆盖：
+  - 启用状态的 TCP range tunnel 会真正启动非 `remoteStart` 端口上的 listener
+  - 命中 range 内实际公网端口后，`stream.open.remotePort` 会回填该实际端口
+  - 既有单端口 TCP 监听行为仍保持可用
+- 已执行：
+  - `go test ./internal/control`
+  - `go test ./...`（`frps/` 模块）
+
+本次还同步了当前实现状态文档，避免继续按“只有单端口 TCP 数据面”理解代码现状：
+
+- `docs/frps-frpc-current-architecture.md`
+- `docs/frps/technical-design.md`
+
+当前仍未归档为“TCP range 整体闭环完成”的内容：
+
+- 最小 Python e2e 还未补
+- TCP range 的端到端回归仍未按脚本方式收口
+- UDP range 执行链路仍未开始实现

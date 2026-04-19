@@ -78,7 +78,7 @@ flowchart TB
 - `cmd/frps/main.go`：零参数启动，固定读取当前工作目录下的 `data/config.json`，加载配置和日志，启动 `app.App`。
 - `internal/app`：打开数据库，执行当前必需表建表 / 校验，并并发启动管理面和控制面。
 - `internal/api`：提供内嵌 WebUI、健康检查、分组 CRUD、隧道 CRUD、token 重置。
-- `internal/control`：处理 `frpc` 登录、challenge/response、单分组单客户端槽位、配置下发、心跳、TCP stream 转发，以及 `frps` 侧 UDP listener/session 管理。
+- `internal/control`：处理 `frpc` 登录、challenge/response、单分组单客户端槽位、配置下发、心跳、TCP 单端口/范围 stream 转发，以及 `frps` 侧 UDP listener/session 管理。
 - `internal/storage`：包装已打开的 `*sql.DB` / `*sql.Tx`，提供统一查询、执行、事务接口。
 - `pkg/protocol`：定义业务帧、消息类型、错误码、隧道结构和编解码。
 - `pkg/transport`：定义 4 字节长度前缀帧读写、超时和最大帧限制。
@@ -197,12 +197,12 @@ sequenceDiagram
 
 当前实际数据面边界：
 
-- `frps` 会为 `enabled`、非 `range` 的单端口 `ProtocolTCP` / `ProtocolUDP` 隧道启动公网 listener。
+- `frps` 会为 `enabled` 的 TCP 单端口 / range 隧道，以及 `enabled` 的 UDP 单端口隧道启动公网 listener；UDP range 还没有进入真实运行态。
 - `frps` 当前已经能把公网 UDP datagram 按 `tunnelId + 公网客户端地址` 绑定到 `sessionId`，并向 `frpc` 顺序发送 `udp.open` / `udp.data`，同时接收来自 `frpc` 的 `udp.data` 回写公网客户端。
 - `frps` 是 UDP session 生命周期的唯一裁决方；当前会在公网收包和 `frpc` 回包时立即刷新 UDP session 活跃时间，并由后台每 `1s` sweep 一次空闲会话，在“最后一次成功双向转发后空闲约 `30s`”时删除本地 session、向 `frpc` 发送 `udp.close`。
 - `frpc` 当前会在收到 `udp.open` 后按 `sessionId` 建立真实本地 `UDPConn`，收到 `udp.data` 后把 datagram 写到本地 UDP 服务，并由后台读循环把本地响应按同一 `sessionId` 回发给 `frps`。
 - `frpc` 当前不做本地 idle timer；只有在收到 `udp.close`、发生本地不可恢复读写错误，或控制会话结束时才释放本地 UDP session。
-- 因此，UDP 当前已经完成“公网入口、本地转发、`frps` `30s` idle cleanup、`frpc` 收口，以及 Python happy path / idle cleanup e2e”的最小闭环；端口范围、隧道入口 ACL、限速、抓包、在线观测等能力仍未进入真实执行链路。
+- TCP range 当前已经进入 `frps` 真实执行链路：`config.ack` 后会按 `remoteStart..remoteEnd` 展开 listener，并把实际命中的公网端口写入 `stream.open.remotePort`；最小 Python e2e 仍待补齐。UDP 当前已经完成“公网入口、本地转发、`frps` `30s` idle cleanup、`frpc` 收口，以及 Python happy path / idle cleanup e2e”的最小闭环；UDP range、隧道入口 ACL、限速、抓包、在线观测等能力仍未进入真实执行链路。
 
 ## 6. 数据库模型关系
 

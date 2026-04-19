@@ -82,8 +82,8 @@ type sessionState struct {
 	streams          map[uint32]*publicStream
 	udpSessions      map[uint32]*publicUDPSession
 	udpSessionKeys   map[string]uint32
-	listeners        map[uint32]net.Listener
-	udpListeners     map[uint32]*net.UDPConn
+	listeners        map[uint32][]net.Listener
+	udpListeners     map[uint32][]*net.UDPConn
 	listenersStarted bool
 	shutdownOnce     sync.Once
 	done             chan struct{}
@@ -319,8 +319,8 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		streams:        make(map[uint32]*publicStream),
 		udpSessions:    make(map[uint32]*publicUDPSession),
 		udpSessionKeys: make(map[string]uint32),
-		listeners:      make(map[uint32]net.Listener),
-		udpListeners:   make(map[uint32]*net.UDPConn),
+		listeners:      make(map[uint32][]net.Listener),
+		udpListeners:   make(map[uint32][]*net.UDPConn),
 		done:           make(chan struct{}),
 	}
 	session.nextServerRequestID.Store(initialServerRequestID - 1)

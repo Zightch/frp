@@ -83,7 +83,7 @@ Storage / Runtime State
 - `internal/logging`：`slog` 日志初始化
 - `internal/api`：WebUI 静态资源托管、健康检查、管理认证、`proxy_groups` / `tunnels` 最小 CRUD 和 token 重置
 - `internal/auth`：`auth.json` 读取、初始化、challenge 管理和删除后的自动复位
-- `internal/control`：token challenge/response、配置下发、配置确认、TCP/UDP 单端口数据面，以及 `frps` 侧 UDP `30s` idle cleanup
+- `internal/control`：token challenge/response、配置下发、配置确认、TCP 单端口/范围数据面、UDP 单端口数据面，以及 `frps` 侧 UDP `30s` idle cleanup
 - `internal/storage`：数据库对象封装
 - `internal/app`：数据库打开、schema bootstrap/校验、服务启动和关闭编排
 

@@ -561,8 +561,8 @@ func TestServerCleansUpIdleUDPSessionAndNotifiesClient(t *testing.T) {
 		streams:        make(map[uint32]*publicStream),
 		udpSessions:    make(map[uint32]*publicUDPSession),
 		udpSessionKeys: make(map[string]uint32),
-		listeners:      make(map[uint32]net.Listener),
-		udpListeners:   make(map[uint32]*net.UDPConn),
+		listeners:      make(map[uint32][]net.Listener),
+		udpListeners:   make(map[uint32][]*net.UDPConn),
 		done:           make(chan struct{}),
 	}
 	defer server.shutdownSession(session)
@@ -708,7 +708,7 @@ func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testi
 	assertTCPDialFails(t, remotePort)
 }
 
-func TestServerStartsListenersOnlyForEnabledSinglePortTCPTunnels(t *testing.T) {
+func TestServerStartsListenersForEnabledTCPRangeTunnelAndUsesMatchedRemotePort(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
 
@@ -721,10 +721,10 @@ func TestServerStartsListenersOnlyForEnabledSinglePortTCPTunnels(t *testing.T) {
 		t.Fatalf("parse host: %v", err)
 	}
 
-	allowedPort := freeTCPPort(t)
-	disabledPort := freeTCPPort(t)
-	rangePort := freeTCPPort(t)
-	udpPort := freeTCPPort(t)
+	rangePort := freeTCPPortRange(t, 2)
+	allowedPort := freeTCPPortExcept(t, rangePort, rangePort+1)
+	disabledPort := freeTCPPortExcept(t, rangePort, rangePort+1, allowedPort)
+	udpPort := freeUDPPortExcept(t, rangePort, rangePort+1, allowedPort, disabledPort)
 
 	server := NewServer(
 		Options{
@@ -802,13 +802,19 @@ func TestServerStartsListenersOnlyForEnabledSinglePortTCPTunnels(t *testing.T) {
 	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
 
 	assertTCPDialFails(t, disabledPort)
-	assertTCPDialFails(t, rangePort)
 	assertTCPDialFails(t, udpPort)
 
-	publicConn := waitForTCPDial(t, allowedPort)
-	streamOpenFrame := readMessage(t, clientConn)
-	if streamOpenFrame.Type != protocol.TypeStreamOpen {
-		t.Fatalf("expected stream.open, got %s", streamOpenFrame.Type.String())
+	singleConn := waitForTCPDial(t, allowedPort)
+	singleOpenFrame := readMessage(t, clientConn)
+	if singleOpenFrame.Type != protocol.TypeStreamOpen {
+		t.Fatalf("expected stream.open, got %s", singleOpenFrame.Type.String())
+	}
+	singleOpen, err := protocol.UnmarshalStreamOpen(singleOpenFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal single stream.open: %v", err)
+	}
+	if singleOpen.TunnelID != 7 || singleOpen.RemotePort != uint16(allowedPort) {
+		t.Fatalf("unexpected single stream.open: %#v", singleOpen)
 	}
 
 	streamOpenedBody, err := protocol.MarshalStreamOpened(protocol.StreamOpened{
@@ -821,11 +827,35 @@ func TestServerStartsListenersOnlyForEnabledSinglePortTCPTunnels(t *testing.T) {
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeStreamOpened,
-		RequestID: streamOpenFrame.RequestID,
-		StreamID:  streamOpenFrame.StreamID,
+		RequestID: singleOpenFrame.RequestID,
+		StreamID:  singleOpenFrame.StreamID,
 		Body:      streamOpenedBody,
 	})
-	_ = publicConn.Close()
+	_ = singleConn.Close()
+
+	rangeConn := waitForTCPDial(t, rangePort+1)
+	rangeOpenFrame := readMessage(t, clientConn)
+	if rangeOpenFrame.Type != protocol.TypeStreamOpen {
+		t.Fatalf("expected range stream.open, got %s", rangeOpenFrame.Type.String())
+	}
+	rangeOpen, err := protocol.UnmarshalStreamOpen(rangeOpenFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal range stream.open: %v", err)
+	}
+	if rangeOpen.TunnelID != 9 {
+		t.Fatalf("unexpected range tunnel id: %d", rangeOpen.TunnelID)
+	}
+	if rangeOpen.RemotePort != uint16(rangePort+1) {
+		t.Fatalf("unexpected range remote port: got %d want %d", rangeOpen.RemotePort, rangePort+1)
+	}
+
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeStreamOpened,
+		RequestID: rangeOpenFrame.RequestID,
+		StreamID:  rangeOpenFrame.StreamID,
+		Body:      streamOpenedBody,
+	})
+	_ = rangeConn.Close()
 
 	_ = clientConn.Close()
 	select {
@@ -1216,6 +1246,69 @@ func freeTCPPort(t *testing.T) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
+func freeTCPPortExcept(t *testing.T, excluded ...int) int {
+	t.Helper()
+
+	blocked := make(map[int]struct{}, len(excluded))
+	for _, port := range excluded {
+		blocked[port] = struct{}{}
+	}
+
+	for attempt := 0; attempt < 100; attempt++ {
+		port := freeTCPPort(t)
+		if _, exists := blocked[port]; exists {
+			continue
+		}
+		return port
+	}
+
+	t.Fatal("failed to allocate distinct tcp port")
+	return 0
+}
+
+func freeTCPPortRange(t *testing.T, size int) int {
+	t.Helper()
+
+	if size <= 0 {
+		t.Fatal("tcp port range size must be positive")
+	}
+
+	tryRange := func(start int) bool {
+		listeners := make([]net.Listener, 0, size)
+		for offset := 0; offset < size; offset++ {
+			addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(start+offset))
+			listener, err := net.Listen("tcp", addr)
+			if err != nil {
+				for _, started := range listeners {
+					_ = started.Close()
+				}
+				return false
+			}
+			listeners = append(listeners, listener)
+		}
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+		return true
+	}
+
+	seed := freeTCPPort(t)
+	maxStart := 65535 - size + 1
+	for start := seed; start <= maxStart; start++ {
+		if tryRange(start) {
+			return start
+		}
+	}
+	for start := 1024; start < seed; start++ {
+		if tryRange(start) {
+			return start
+		}
+	}
+
+	t.Fatalf("failed to allocate contiguous tcp port range of size %d", size)
+	return 0
+}
+
 func freeUDPPort(t *testing.T) int {
 	t.Helper()
 
@@ -1226,6 +1319,26 @@ func freeUDPPort(t *testing.T) int {
 	}
 	defer listener.Close()
 	return listener.LocalAddr().(*net.UDPAddr).Port
+}
+
+func freeUDPPortExcept(t *testing.T, excluded ...int) int {
+	t.Helper()
+
+	blocked := make(map[int]struct{}, len(excluded))
+	for _, port := range excluded {
+		blocked[port] = struct{}{}
+	}
+
+	for attempt := 0; attempt < 100; attempt++ {
+		port := freeUDPPort(t)
+		if _, exists := blocked[port]; exists {
+			continue
+		}
+		return port
+	}
+
+	t.Fatal("failed to allocate distinct udp port")
+	return 0
 }
 
 func waitForTCPDial(t *testing.T, port int) net.Conn {
