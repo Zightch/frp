@@ -81,6 +81,51 @@ func TestManagerIssuesAndVerifiesChallenges(t *testing.T) {
 	}
 }
 
+func TestManagerCreatesValidatesAndRevokesSessions(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewManager(Options{
+		Path: filepath.Join(t.TempDir(), "auth.json"),
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	keyHash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	if err := manager.Initialize(keyHash); err != nil {
+		t.Fatalf("initialize manager: %v", err)
+	}
+
+	challenge, err := manager.IssueChallenge()
+	if err != nil {
+		t.Fatalf("issue challenge: %v", err)
+	}
+
+	session, token, err := manager.Login(challenge.ID, buildProof(keyHash, challenge.Salt))
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if token == "" {
+		t.Fatal("login must return a session token")
+	}
+	if session.ExpiresAt.IsZero() {
+		t.Fatal("session expiration must be set")
+	}
+
+	validated, err := manager.ValidateSession(token)
+	if err != nil {
+		t.Fatalf("validate session: %v", err)
+	}
+	if !validated.ExpiresAt.Equal(session.ExpiresAt) {
+		t.Fatalf("unexpected session expiration: got %v want %v", validated.ExpiresAt, session.ExpiresAt)
+	}
+
+	manager.Logout(token)
+	if _, err := manager.ValidateSession(token); !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("expected revoked session to be invalid, got %v", err)
+	}
+}
+
 func TestManagerRejectsExpiredChallenge(t *testing.T) {
 	t.Parallel()
 
@@ -105,5 +150,37 @@ func TestManagerRejectsExpiredChallenge(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	if err := manager.VerifyChallenge(challenge.ID, buildProof(keyHash, challenge.Salt)); !errors.Is(err, ErrChallengeExpired) {
 		t.Fatalf("expected expired challenge error, got %v", err)
+	}
+}
+
+func TestManagerRejectsExpiredSession(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewManager(Options{
+		Path:       filepath.Join(t.TempDir(), "auth.json"),
+		SessionTTL: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	keyHash := "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	if err := manager.Initialize(keyHash); err != nil {
+		t.Fatalf("initialize manager: %v", err)
+	}
+
+	challenge, err := manager.IssueChallenge()
+	if err != nil {
+		t.Fatalf("issue challenge: %v", err)
+	}
+
+	_, token, err := manager.Login(challenge.ID, buildProof(keyHash, challenge.Salt))
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	if _, err := manager.ValidateSession(token); !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("expected expired session error, got %v", err)
 	}
 }

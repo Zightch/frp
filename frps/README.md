@@ -53,6 +53,17 @@ curl http://127.0.0.1:7500/api/v1/healthz
 
 管理认证设计不再依赖数据库 `admins` 表。服务启动时应先检查本地 `auth.json`；如果文件不存在，管理面只允许用户初始化管理密钥。`auth.json` 只保存管理密钥的 hash，不保存明文，后续 WebUI 登录通过一次性盐 challenge 校验 `sha256(key_hash + salt)`。
 
+当前最小认证接口包括：
+
+- `GET /api/v1/auth/state`
+- `POST /api/v1/auth/init`
+- `POST /api/v1/auth/challenge`
+- `POST /api/v1/auth/login`
+- `GET /api/v1/auth/session`
+- `POST /api/v1/auth/logout`
+
+管理 CRUD 接口已经要求有效管理会话。
+
 空库会在启动时自动创建当前必需表；如果现有 SQLite/MySQL 表结构与服务内置 schema 不一致，`frps` 会直接退出，避免带着错误库结构继续运行。当前开发阶段不做数据库 schema 兼容或自动迁移。
 `internal/storage/sql.go` 仍只负责统一封装数据库对象，不承载驱动打开和 schema 迁移逻辑。
 当前 `sql.go` 已支持：

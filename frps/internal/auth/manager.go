@@ -18,6 +18,7 @@ import (
 const (
 	DefaultPath         = "./data/auth.json"
 	defaultChallengeTTL = 2 * time.Minute
+	defaultSessionTTL   = 12 * time.Hour
 )
 
 var (
@@ -27,21 +28,26 @@ var (
 	ErrInvalidProof       = errors.New("challenge proof is invalid")
 	ErrChallengeExpired   = errors.New("challenge is missing or expired")
 	ErrChallengeReplayed  = errors.New("challenge has already been used")
+	ErrSessionRequired    = errors.New("management session is required")
+	ErrSessionExpired     = errors.New("management session is invalid or expired")
 )
 
 type Options struct {
 	Path         string
 	ChallengeTTL time.Duration
+	SessionTTL   time.Duration
 }
 
 type Manager struct {
 	path         string
 	challengeTTL time.Duration
+	sessionTTL   time.Duration
 
 	mu          sync.RWMutex
 	keyHash     string
 	initialized bool
 	challenges  map[string]*challenge
+	sessions    map[string]*session
 }
 
 type Challenge struct {
@@ -50,10 +56,18 @@ type Challenge struct {
 	ExpiresAt time.Time
 }
 
+type Session struct {
+	ExpiresAt time.Time
+}
+
 type challenge struct {
 	Salt      string
 	ExpiresAt time.Time
 	Used      bool
+}
+
+type session struct {
+	ExpiresAt time.Time
 }
 
 type filePayload struct {
@@ -71,10 +85,17 @@ func NewManager(options Options) (*Manager, error) {
 		ttl = defaultChallengeTTL
 	}
 
+	sessionTTL := options.SessionTTL
+	if sessionTTL <= 0 {
+		sessionTTL = defaultSessionTTL
+	}
+
 	manager := &Manager{
 		path:         path,
 		challengeTTL: ttl,
+		sessionTTL:   sessionTTL,
 		challenges:   make(map[string]*challenge),
+		sessions:     make(map[string]*session),
 	}
 
 	if err := manager.load(); err != nil {
@@ -164,41 +185,70 @@ func (m *Manager) IssueChallenge() (Challenge, error) {
 	}, nil
 }
 
-func (m *Manager) VerifyChallenge(challengeID, proof string) error {
-	proof, err := normalizeHexDigest(proof)
+func (m *Manager) Login(challengeID, proof string) (Session, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now().UTC()
+	if err := m.verifyChallengeLocked(now, challengeID, proof); err != nil {
+		return Session{}, "", err
+	}
+
+	token, err := randomHex(32)
 	if err != nil {
-		return ErrInvalidProof
+		return Session{}, "", fmt.Errorf("generate session token: %w", err)
+	}
+
+	expiresAt := now.Add(m.sessionTTL)
+	m.sessions[token] = &session{ExpiresAt: expiresAt}
+	return Session{ExpiresAt: expiresAt}, token, nil
+}
+
+func (m *Manager) VerifyChallenge(challengeID, proof string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now().UTC()
+	return m.verifyChallengeLocked(now, challengeID, proof)
+}
+
+func (m *Manager) ValidateSession(token string) (Session, error) {
+	token = normalizeSessionToken(token)
+	if token == "" {
+		return Session{}, ErrSessionRequired
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if !m.initialized {
-		return ErrNotInitialized
+		return Session{}, ErrNotInitialized
 	}
 
 	now := time.Now().UTC()
 	m.cleanupExpiredLocked(now)
 
-	item, ok := m.challenges[strings.TrimSpace(challengeID)]
+	item, ok := m.sessions[token]
 	if !ok {
-		return ErrChallengeExpired
-	}
-	if item.Used {
-		return ErrChallengeReplayed
+		return Session{}, ErrSessionExpired
 	}
 	if now.After(item.ExpiresAt) {
-		item.Used = true
-		return ErrChallengeExpired
+		delete(m.sessions, token)
+		return Session{}, ErrSessionExpired
 	}
 
-	expected := buildProof(m.keyHash, item.Salt)
-	item.Used = true
-	if subtle.ConstantTimeCompare([]byte(expected), []byte(proof)) != 1 {
-		return ErrInvalidProof
+	return Session{ExpiresAt: item.ExpiresAt}, nil
+}
+
+func (m *Manager) Logout(token string) {
+	token = normalizeSessionToken(token)
+	if token == "" {
+		return
 	}
 
-	return nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, token)
 }
 
 func (m *Manager) load() error {
@@ -233,6 +283,43 @@ func (m *Manager) cleanupExpiredLocked(now time.Time) {
 			delete(m.challenges, id)
 		}
 	}
+	for token, item := range m.sessions {
+		if now.After(item.ExpiresAt) {
+			delete(m.sessions, token)
+		}
+	}
+}
+
+func (m *Manager) verifyChallengeLocked(now time.Time, challengeID, proof string) error {
+	proof, err := normalizeHexDigest(proof)
+	if err != nil {
+		return ErrInvalidProof
+	}
+	if !m.initialized {
+		return ErrNotInitialized
+	}
+
+	m.cleanupExpiredLocked(now)
+
+	item, ok := m.challenges[strings.TrimSpace(challengeID)]
+	if !ok {
+		return ErrChallengeExpired
+	}
+	if item.Used {
+		return ErrChallengeReplayed
+	}
+	if now.After(item.ExpiresAt) {
+		item.Used = true
+		return ErrChallengeExpired
+	}
+
+	expected := buildProof(m.keyHash, item.Salt)
+	item.Used = true
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(proof)) != 1 {
+		return ErrInvalidProof
+	}
+
+	return nil
 }
 
 func normalizeHexDigest(value string) (string, error) {
@@ -257,4 +344,15 @@ func randomHex(size int) (string, error) {
 func buildProof(keyHash, salt string) string {
 	sum := sha256.Sum256([]byte(keyHash + salt))
 	return hex.EncodeToString(sum[:])
+}
+
+func normalizeSessionToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) != 64 {
+		return ""
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return ""
+	}
+	return value
 }

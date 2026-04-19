@@ -2,11 +2,14 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -50,7 +53,7 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestAuthInitializationAndChallengeEndpoints(t *testing.T) {
+func TestAuthInitializationLoginAndSessionEndpoints(t *testing.T) {
 	store := newTestStore(t)
 	authPath := filepath.Join(t.TempDir(), "auth.json")
 	manager, err := authn.NewManager(authn.Options{Path: authPath})
@@ -88,6 +91,9 @@ func TestAuthInitializationAndChallengeEndpoints(t *testing.T) {
 	)
 	if state["initialized"] != false {
 		t.Fatalf("unexpected initialization state: %#v", state)
+	}
+	if state["authenticated"] != false {
+		t.Fatalf("unexpected authentication state before init: %#v", state)
 	}
 
 	performJSONRequest(
@@ -132,6 +138,9 @@ func TestAuthInitializationAndChallengeEndpoints(t *testing.T) {
 	if stateAfterInit["initialized"] != true {
 		t.Fatalf("unexpected state after init: %#v", stateAfterInit)
 	}
+	if stateAfterInit["authenticated"] != false {
+		t.Fatalf("unexpected authentication state after init: %#v", stateAfterInit)
+	}
 
 	performJSONRequest(
 		t,
@@ -159,11 +168,262 @@ func TestAuthInitializationAndChallengeEndpoints(t *testing.T) {
 		t.Fatalf("challenge payload must include expires_at: %#v", challenge)
 	}
 
+	login := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/auth/login",
+		map[string]any{
+			"challenge_id": challenge["challenge_id"],
+			"proof":        buildManagementProof("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", challenge["salt"].(string)),
+		},
+		http.StatusOK,
+	)
+	if login.JSON["authenticated"] != true {
+		t.Fatalf("unexpected login response: %#v", login.JSON)
+	}
+	sessionCookie := findCookie(login.Cookies, managementSessionCookieName)
+	if sessionCookie == nil {
+		t.Fatal("login must set a management session cookie")
+	}
+
+	stateWithSession := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/auth/state",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if stateWithSession.JSON["authenticated"] != true {
+		t.Fatalf("unexpected state with session: %#v", stateWithSession.JSON)
+	}
+
+	sessionState := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/auth/session",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if sessionState.JSON["authenticated"] != true {
+		t.Fatalf("unexpected session payload: %#v", sessionState.JSON)
+	}
+
+	protected := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/proxy-groups",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	items, ok := protected.JSON["items"].([]any)
+	if !ok || len(items) != 0 {
+		t.Fatalf("unexpected protected payload: %#v", protected.JSON)
+	}
+
 	performJSONRequest(
 		t,
 		server.Handler(),
 		http.MethodGet,
 		"/api/v1/proxy-groups",
+		nil,
+		http.StatusUnauthorized,
+	)
+
+	logout := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/auth/logout",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if logout.JSON["logged_out"] != true {
+		t.Fatalf("unexpected logout payload: %#v", logout.JSON)
+	}
+	clearedCookie := findCookie(logout.Cookies, managementSessionCookieName)
+	if clearedCookie == nil || clearedCookie.MaxAge != -1 {
+		t.Fatalf("logout must clear the session cookie: %#v", logout.Cookies)
+	}
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/auth/session",
+		nil,
+		http.StatusUnauthorized,
+		sessionCookie,
+	)
+}
+
+func TestManagementKeySmokeFlow(t *testing.T) {
+	store := newTestStore(t)
+	manager, err := authn.NewManager(authn.Options{Path: filepath.Join(t.TempDir(), "auth.json")})
+	if err != nil {
+		t.Fatalf("new auth manager: %v", err)
+	}
+
+	server := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("create cookie jar: %v", err)
+	}
+	client := &http.Client{Jar: jar}
+
+	state := performClientRequest(
+		t,
+		client,
+		http.MethodGet,
+		httpServer.URL+"/api/v1/auth/state",
+		nil,
+		http.StatusOK,
+	)
+	if state.JSON["initialized"] != false || state.JSON["authenticated"] != false {
+		t.Fatalf("unexpected pre-init state: %#v", state.JSON)
+	}
+
+	performClientRequest(
+		t,
+		client,
+		http.MethodGet,
+		httpServer.URL+"/api/v1/proxy-groups",
+		nil,
+		http.StatusConflict,
+	)
+
+	managementSecret := "smoke-test-management-secret"
+	keyHash := sha256Hex(managementSecret)
+
+	initResult := performClientRequest(
+		t,
+		client,
+		http.MethodPost,
+		httpServer.URL+"/api/v1/auth/init",
+		map[string]any{"key_hash": keyHash},
+		http.StatusCreated,
+	)
+	if initResult.JSON["initialized"] != true {
+		t.Fatalf("unexpected init response: %#v", initResult.JSON)
+	}
+
+	challenge := performClientRequest(
+		t,
+		client,
+		http.MethodPost,
+		httpServer.URL+"/api/v1/auth/challenge",
+		nil,
+		http.StatusOK,
+	)
+	challengeID, _ := challenge.JSON["challenge_id"].(string)
+	salt, _ := challenge.JSON["salt"].(string)
+	if challengeID == "" || salt == "" {
+		t.Fatalf("challenge payload must include challenge_id and salt: %#v", challenge.JSON)
+	}
+
+	login := performClientRequest(
+		t,
+		client,
+		http.MethodPost,
+		httpServer.URL+"/api/v1/auth/login",
+		map[string]any{
+			"challenge_id": challengeID,
+			"proof":        buildManagementProof(keyHash, salt),
+		},
+		http.StatusOK,
+	)
+	if login.JSON["authenticated"] != true {
+		t.Fatalf("unexpected login response: %#v", login.JSON)
+	}
+	if findCookie(login.Cookies, managementSessionCookieName) == nil {
+		t.Fatal("login must set a management session cookie")
+	}
+
+	session := performClientRequest(
+		t,
+		client,
+		http.MethodGet,
+		httpServer.URL+"/api/v1/auth/session",
+		nil,
+		http.StatusOK,
+	)
+	if session.JSON["authenticated"] != true {
+		t.Fatalf("unexpected session response: %#v", session.JSON)
+	}
+
+	createdGroup := performClientRequest(
+		t,
+		client,
+		http.MethodPost,
+		httpServer.URL+"/api/v1/proxy-groups",
+		map[string]any{
+			"name":    "smoke-group",
+			"enabled": true,
+		},
+		http.StatusCreated,
+	)
+	item, ok := createdGroup.JSON["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected proxy group payload: %#v", createdGroup.JSON)
+	}
+	groupID, ok := item["id"].(float64)
+	if !ok || int64(groupID) <= 0 {
+		t.Fatalf("unexpected proxy group id: %#v", item)
+	}
+	if _, ok := createdGroup.JSON["token"].(string); !ok {
+		t.Fatalf("expected proxy group token in response: %#v", createdGroup.JSON)
+	}
+
+	protected := performClientRequest(
+		t,
+		client,
+		http.MethodGet,
+		httpServer.URL+"/api/v1/proxy-groups",
+		nil,
+		http.StatusOK,
+	)
+	items, ok := protected.JSON["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("unexpected proxy groups payload after create: %#v", protected.JSON)
+	}
+
+	logout := performClientRequest(
+		t,
+		client,
+		http.MethodPost,
+		httpServer.URL+"/api/v1/auth/logout",
+		nil,
+		http.StatusOK,
+	)
+	if logout.JSON["logged_out"] != true {
+		t.Fatalf("unexpected logout response: %#v", logout.JSON)
+	}
+
+	performClientRequest(
+		t,
+		client,
+		http.MethodGet,
+		httpServer.URL+"/api/v1/auth/session",
 		nil,
 		http.StatusUnauthorized,
 	)
@@ -262,14 +522,20 @@ func newTestAuthManager(t *testing.T, initialize bool) *authn.Manager {
 	return manager
 }
 
-func performJSONRequest(
+type testResponse struct {
+	JSON    map[string]any
+	Cookies []*http.Cookie
+}
+
+func performRequest(
 	t *testing.T,
 	handler http.Handler,
 	method string,
 	target string,
 	body any,
 	wantStatus int,
-) map[string]any {
+	cookies ...*http.Cookie,
+) testResponse {
 	t.Helper()
 
 	var reader io.Reader
@@ -285,6 +551,10 @@ func performJSONRequest(
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	for _, cookie := range cookies {
+		request.AddCookie(cookie)
+	}
+
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 
@@ -292,13 +562,103 @@ func performJSONRequest(
 		t.Fatalf("unexpected status for %s %s: got %d want %d body=%s", method, target, recorder.Code, wantStatus, recorder.Body.String())
 	}
 
+	response := testResponse{
+		JSON:    map[string]any{},
+		Cookies: recorder.Result().Cookies(),
+	}
 	if recorder.Body.Len() == 0 {
-		return map[string]any{}
+		return response
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response.JSON); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	return payload
+	return response
+}
+
+func performJSONRequest(
+	t *testing.T,
+	handler http.Handler,
+	method string,
+	target string,
+	body any,
+	wantStatus int,
+) map[string]any {
+	t.Helper()
+	return performRequest(t, handler, method, target, body, wantStatus).JSON
+}
+
+func performClientRequest(
+	t *testing.T,
+	client *http.Client,
+	method string,
+	target string,
+	body any,
+	wantStatus int,
+) testResponse {
+	t.Helper()
+
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal request body: %v", err)
+		}
+		reader = bytes.NewReader(raw)
+	}
+
+	request, err := http.NewRequest(method, target, reader)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("perform request: %v", err)
+	}
+	defer response.Body.Close()
+
+	rawBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+
+	if response.StatusCode != wantStatus {
+		t.Fatalf("unexpected status for %s %s: got %d want %d body=%s", method, target, response.StatusCode, wantStatus, string(rawBody))
+	}
+
+	result := testResponse{
+		JSON:    map[string]any{},
+		Cookies: response.Cookies(),
+	}
+	if len(rawBody) == 0 {
+		return result
+	}
+
+	if err := json.Unmarshal(rawBody, &result.JSON); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return result
+}
+
+func buildManagementProof(keyHash, salt string) string {
+	sum := sha256.Sum256([]byte(keyHash + salt))
+	return hex.EncodeToString(sum[:])
+}
+
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	return nil
 }

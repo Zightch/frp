@@ -74,8 +74,10 @@ const indexHTML = `<!DOCTYPE html>
       <p><code>GET /api/v1/auth/state</code> 查看是否已初始化。</p>
       <p><code>POST /api/v1/auth/init</code> 在未初始化时写入管理密钥 hash。</p>
       <p><code>POST /api/v1/auth/challenge</code> 在已初始化后申请一次性盐 challenge。</p>
+      <p><code>POST /api/v1/auth/login</code> 提交 <code>challenge_id</code> 和 <code>proof</code>，由服务端签发管理会话。</p>
+      <p><code>GET /api/v1/auth/session</code> 查看当前管理会话状态；<code>POST /api/v1/auth/logout</code> 注销当前会话。</p>
     </div>
-    <p>业务管理接口会在后续会话登录与会话校验完成后再开放。</p>
+    <p>当前业务管理接口已经要求有效管理会话，后续阶段再切换到独立的 Node.js + Vue 3 + Element Plus WebUI。</p>
   </main>
 </body>
 </html>
