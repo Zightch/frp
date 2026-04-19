@@ -392,6 +392,70 @@ func TestClientRejectsStreamOpenForUnknownTunnel(t *testing.T) {
 	}
 }
 
+func TestSessionStateLocalUDPTargetSupportsSingleAndRange(t *testing.T) {
+	state := newSessionState(1000)
+	state.setSnapshot(protocol.ConfigPush{
+		ConfigVersion: 1,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    9,
+				Protocol:    protocol.ProtocolUDP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: 21000,
+				RemoteEnd:   21000,
+				LocalHost:   mustHost(t, "127.0.0.1"),
+				LocalStart:  5300,
+				LocalEnd:    5300,
+			},
+			{
+				TunnelID:    10,
+				Protocol:    protocol.ProtocolUDP,
+				TunnelFlags: protocol.TunnelFlagEnabled | protocol.TunnelFlagRange,
+				RemoteStart: 22000,
+				RemoteEnd:   22001,
+				LocalHost:   mustHost(t, "127.0.0.1"),
+				LocalStart:  5400,
+				LocalEnd:    5401,
+			},
+		},
+	})
+
+	tests := []struct {
+		name string
+		open protocol.UDPOpen
+		want string
+	}{
+		{
+			name: "single",
+			open: protocol.UDPOpen{
+				TunnelID:   9,
+				RemotePort: 21000,
+			},
+			want: "127.0.0.1:5300",
+		},
+		{
+			name: "range",
+			open: protocol.UDPOpen{
+				TunnelID:   10,
+				RemotePort: 22001,
+			},
+			want: "127.0.0.1:5401",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := state.localUDPTarget(tt.open)
+			if err != nil {
+				t.Fatalf("local udp target: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("unexpected local udp target: got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClientReadLoopHandlesUDPOpenAndClose(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -470,6 +534,148 @@ func TestClientReadLoopHandlesUDPOpenAndClose(t *testing.T) {
 	})
 
 	deadline = time.Now().Add(time.Second)
+	for state.activeUDPSessions.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("udp session was not closed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	_ = clientConn.Close()
+
+	select {
+	case err := <-readDone:
+		if err != nil && !isNetClosed(err) {
+			t.Fatalf("read loop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("read loop did not exit")
+	}
+}
+
+func TestClientReadLoopForwardsUDPDatagramsToMappedRangeLocalService(t *testing.T) {
+	localRangeStart := freeUDPPortRange(t, 2)
+	localServer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1").To4(), Port: localRangeStart + 1})
+	if err != nil {
+		t.Fatalf("listen udp range echo server: %v", err)
+	}
+	defer localServer.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		buffer := make([]byte, protocol.MaxDataBodyLen)
+		_ = localServer.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, addr, err := localServer.ReadFromUDP(buffer)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if string(buffer[:n]) != "ping-range" {
+			serverDone <- fmt.Errorf("unexpected udp range request payload: %q", string(buffer[:n]))
+			return
+		}
+		if _, err := localServer.WriteToUDP([]byte("pong-range"), addr); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- nil
+	}()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	client := New(
+		appconfig.Config{
+			Server: "127.0.0.1:7000",
+			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-client",
+	)
+
+	state := newSessionState(1000)
+	state.setSnapshot(protocol.ConfigPush{
+		ConfigVersion: 1,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    10,
+				Protocol:    protocol.ProtocolUDP,
+				TunnelFlags: protocol.TunnelFlagEnabled | protocol.TunnelFlagRange,
+				RemoteStart: 22000,
+				RemoteEnd:   22001,
+				LocalHost:   mustHost(t, "127.0.0.1"),
+				LocalStart:  uint16(localRangeStart),
+				LocalEnd:    uint16(localRangeStart + 1),
+			},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- client.readLoop(ctx, clientConn, state)
+	}()
+
+	openBody, err := protocol.MarshalUDPOpen(protocol.UDPOpen{
+		TunnelID:      10,
+		RemotePort:    22001,
+		ClientAddr:    protocol.SockAddr{IP: net.ParseIP("203.0.113.11").To4(), Port: 40001},
+		IdleTimeoutMs: 30000,
+	})
+	if err != nil {
+		t.Fatalf("marshal udp.open: %v", err)
+	}
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:      protocol.TypeUDPOpen,
+		RequestID: 7,
+		StreamID:  44,
+		Body:      openBody,
+	})
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:     protocol.TypeUDPData,
+		StreamID: 44,
+		Body:     []byte("ping-range"),
+	})
+
+	responseFrame := readFrame(t, serverConn)
+	if responseFrame.Type != protocol.TypeUDPData {
+		t.Fatalf("expected udp.data, got %s", responseFrame.Type.String())
+	}
+	if responseFrame.StreamID != 44 {
+		t.Fatalf("unexpected udp session id: %d", responseFrame.StreamID)
+	}
+	if string(responseFrame.Body) != "pong-range" {
+		t.Fatalf("unexpected udp range response payload: %q", string(responseFrame.Body))
+	}
+
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatalf("udp range local server: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("udp range local server did not exit")
+	}
+
+	closeBody, err := protocol.MarshalUDPClose(protocol.UDPClose{
+		ReasonCode: protocol.CloseReasonIdleTimeout,
+		Initiator:  protocol.InitiatorFRPS,
+		Message:    "cleanup",
+	})
+	if err != nil {
+		t.Fatalf("marshal udp.close: %v", err)
+	}
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:     protocol.TypeUDPClose,
+		StreamID: 44,
+		Body:     closeBody,
+	})
+
+	deadline := time.Now().Add(time.Second)
 	for state.activeUDPSessions.Load() != 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("udp session was not closed")
@@ -715,4 +921,52 @@ func isNetClosed(err error) bool {
 		return false
 	}
 	return err.Error() == "io: read/write on closed pipe"
+}
+
+func freeUDPPortRange(t *testing.T, size int) int {
+	t.Helper()
+
+	if size <= 0 {
+		t.Fatal("udp port range size must be positive")
+	}
+
+	tryRange := func(start int) bool {
+		listeners := make([]*net.UDPConn, 0, size)
+		for offset := 0; offset < size; offset++ {
+			listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: start + offset})
+			if err != nil {
+				for _, started := range listeners {
+					_ = started.Close()
+				}
+				return false
+			}
+			listeners = append(listeners, listener)
+		}
+		for _, listener := range listeners {
+			_ = listener.Close()
+		}
+		return true
+	}
+
+	seedListener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen for free udp port: %v", err)
+	}
+	seed := seedListener.LocalAddr().(*net.UDPAddr).Port
+	_ = seedListener.Close()
+
+	maxStart := 65535 - size + 1
+	for start := seed; start <= maxStart; start++ {
+		if tryRange(start) {
+			return start
+		}
+	}
+	for start := 1024; start < seed; start++ {
+		if tryRange(start) {
+			return start
+		}
+	}
+
+	t.Fatalf("failed to allocate contiguous udp port range of size %d", size)
+	return 0
 }

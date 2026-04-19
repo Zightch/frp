@@ -424,7 +424,7 @@ ActiveConnection
 - closeRequestedBy
 ```
 
-UDP 没有天然连接生命周期。当前代码已经固定为：`frps` 按 `tunnelId + 公网客户端地址` 维护短生命周期会话，在最后一次成功转发 datagram 后重新开始计算空闲时间，空闲约 `30s` 后清理并下发 `udp.close`；`frpc` 不做本地 idle timer。
+UDP 没有天然连接生命周期。当前代码已经固定为：`frps` 按 `tunnelId + remotePort + 公网客户端地址` 维护短生命周期会话，在最后一次成功转发 datagram 后重新开始计算空闲时间，空闲约 `30s` 后清理并下发 `udp.close`；`frpc` 不做本地 idle timer。
 
 ## 7. frps 与 frpc 通信协议
 

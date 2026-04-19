@@ -197,9 +197,6 @@ func (s *sessionState) localUDPTarget(open protocol.UDPOpen) (string, error) {
 	if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
 		return "", fmt.Errorf("tunnel %d is disabled", open.TunnelID)
 	}
-	if tunnel.TunnelFlags&protocol.TunnelFlagRange != 0 {
-		return "", fmt.Errorf("tunnel %d range udp is not supported yet", open.TunnelID)
-	}
 	if open.RemotePort < tunnel.RemoteStart || open.RemotePort > tunnel.RemoteEnd {
 		return "", fmt.Errorf("remote port %d is outside tunnel %d", open.RemotePort, open.TunnelID)
 	}
