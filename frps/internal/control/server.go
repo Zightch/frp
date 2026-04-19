@@ -25,6 +25,7 @@ const (
 	defaultChallengeTTL      = 30 * time.Second
 	defaultHeartbeatInterval = 15 * time.Second
 	defaultUDPIdleTimeout    = 30 * time.Second
+	defaultUDPIdleSweep      = time.Second
 	initialServerRequestID   = uint32(1 << 31)
 )
 
@@ -84,6 +85,8 @@ type sessionState struct {
 	listeners        map[uint32]net.Listener
 	udpListeners     map[uint32]*net.UDPConn
 	listenersStarted bool
+	shutdownOnce     sync.Once
+	done             chan struct{}
 }
 
 func NewServer(options Options, logger *slog.Logger, version string) *Server {
@@ -318,6 +321,7 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		udpSessionKeys: make(map[string]uint32),
 		listeners:      make(map[uint32]net.Listener),
 		udpListeners:   make(map[uint32]*net.UDPConn),
+		done:           make(chan struct{}),
 	}
 	session.nextServerRequestID.Store(initialServerRequestID - 1)
 	if !s.reserveGroupSlot(session.Group.ID, session.ID) {
@@ -760,6 +764,19 @@ func (s *sessionState) nextRequestID() uint32 {
 		requestID = s.nextServerRequestID.Add(1)
 	}
 	return requestID
+}
+
+func (s *sessionState) doneCh() <-chan struct{} {
+	return s.done
+}
+
+func (s *sessionState) closeDone() {
+	if s.done == nil {
+		return
+	}
+	s.shutdownOnce.Do(func() {
+		close(s.done)
+	})
 }
 
 func sessionReadTimeout(heartbeatInterval, minimum time.Duration) time.Duration {

@@ -77,6 +77,38 @@ func (s *Server) sendUDPClose(conn net.Conn, session *sessionState, sessionID ui
 	})
 }
 
+func (s *Server) serveUDPIdleCleanup(conn net.Conn, logger Logger, session *sessionState) {
+	ticker := time.NewTicker(defaultUDPIdleSweep)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-session.doneCh():
+			return
+		case now := <-ticker.C:
+			if err := s.cleanupIdlePublicUDPSessions(conn, logger, session, now.UTC()); err != nil {
+				logger.Warn("udp session idle cleanup failed", "error", err)
+			}
+		}
+	}
+}
+
+func (s *Server) cleanupIdlePublicUDPSessions(conn net.Conn, logger Logger, session *sessionState, now time.Time) error {
+	idleSessions := session.takeIdlePublicUDPSessions(now)
+	for _, udpSession := range idleSessions {
+		if err := s.sendUDPClose(conn, session, udpSession.sessionID, protocol.CloseReasonIdleTimeout, "udp session idle timeout"); err != nil {
+			return err
+		}
+		logger.Info(
+			"udp session closed for idle timeout",
+			"session_id", udpSession.sessionID,
+			"tunnel_id", udpSession.tunnelID,
+			"client_addr", udpSession.publicAddr.String(),
+		)
+	}
+	return nil
+}
+
 func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, listener *net.UDPConn, clientAddr *net.UDPAddr, payload []byte) error {
 	now := time.Now().UTC()
 	udpSession := newPublicUDPSession(session.nextTunnelStreamID(), tunnel, listener, clientAddr, now)
@@ -158,6 +190,27 @@ func (s *sessionState) closePublicUDPSession(sessionID uint32) bool {
 	}
 	s.runtimeMu.Unlock()
 	return ok
+}
+
+func (s *sessionState) takeIdlePublicUDPSessions(now time.Time) []*publicUDPSession {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+
+	idleSessions := make([]*publicUDPSession, 0)
+	for sessionID, udpSession := range s.udpSessions {
+		lastActiveUnixMs := udpSession.lastActiveUnixMs.Load()
+		if lastActiveUnixMs == 0 {
+			continue
+		}
+		lastActive := time.UnixMilli(lastActiveUnixMs).UTC()
+		if now.Before(lastActive) || now.Sub(lastActive) < udpSession.idleTimeout {
+			continue
+		}
+		delete(s.udpSessions, sessionID)
+		delete(s.udpSessionKeys, udpSession.key())
+		idleSessions = append(idleSessions, udpSession)
+	}
+	return idleSessions
 }
 
 func newPublicUDPSession(sessionID uint32, tunnel protocol.TunnelEntry, listener *net.UDPConn, clientAddr *net.UDPAddr, now time.Time) *publicUDPSession {

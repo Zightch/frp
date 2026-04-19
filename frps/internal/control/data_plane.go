@@ -85,6 +85,10 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 	session.listenersStarted = true
 	session.runtimeMu.Unlock()
 
+	if len(startedUDPByTunnel) > 0 {
+		go s.serveUDPIdleCleanup(conn, logger, session)
+	}
+
 	for _, tunnel := range session.Snapshot.Tunnels {
 		if listener, ok := startedTCPByTunnel[tunnel.TunnelID]; ok {
 			logger.Info("tcp tunnel listener ready", "tunnel_id", tunnel.TunnelID, "addr", listener.Addr().String())
@@ -309,6 +313,8 @@ func (s *Server) copyPublicToClient(conn net.Conn, session *sessionState, stream
 }
 
 func (s *Server) shutdownSession(session *sessionState) {
+	session.closeDone()
+
 	session.runtimeMu.Lock()
 	listeners := make([]net.Listener, 0, len(session.listeners))
 	for tunnelID, listener := range session.listeners {

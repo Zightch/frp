@@ -519,6 +519,101 @@ func TestServerForwardsPublicUDPDatagramsAndReusesSession(t *testing.T) {
 	}
 }
 
+func TestServerCleansUpIdleUDPSessionAndNotifiesClient(t *testing.T) {
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	remotePort := freeUDPPort(t)
+	server := NewServer(
+		Options{
+			WriteTimeout: time.Second,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	session := &sessionState{
+		ID: 1,
+		Group: GroupRuntime{
+			ID:   1,
+			Name: "group-a",
+		},
+		Snapshot: ConfigSnapshot{
+			Tunnels: []protocol.TunnelEntry{
+				{
+					TunnelID:    10,
+					Protocol:    protocol.ProtocolUDP,
+					TunnelFlags: protocol.TunnelFlagEnabled,
+					RemoteStart: uint16(remotePort),
+					RemoteEnd:   uint16(remotePort),
+					LocalHost:   host,
+					LocalStart:  5300,
+					LocalEnd:    5300,
+				},
+			},
+		},
+		streams:        make(map[uint32]*publicStream),
+		udpSessions:    make(map[uint32]*publicUDPSession),
+		udpSessionKeys: make(map[string]uint32),
+		listeners:      make(map[uint32]net.Listener),
+		udpListeners:   make(map[uint32]*net.UDPConn),
+		done:           make(chan struct{}),
+	}
+	defer server.shutdownSession(session)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := server.ensureTunnelListeners(serverConn, logger, session); err != nil {
+		t.Fatalf("ensure tunnel listeners: %v", err)
+	}
+
+	publicConn := dialUDPConn(t, remotePort)
+	defer publicConn.Close()
+
+	openFrame := writeUDPAndReadOpenFrame(t, clientConn, publicConn, []byte("hello"))
+	if openFrame.Type != protocol.TypeUDPOpen {
+		t.Fatalf("expected udp.open, got %s", openFrame.Type.String())
+	}
+
+	firstDataFrame := readMessage(t, clientConn)
+	if firstDataFrame.Type != protocol.TypeUDPData {
+		t.Fatalf("expected udp.data, got %s", firstDataFrame.Type.String())
+	}
+
+	udpSession := session.publicUDPSession(openFrame.StreamID)
+	if udpSession == nil {
+		t.Fatal("expected udp session to exist")
+	}
+	udpSession.touch(time.Now().Add(-defaultUDPIdleTimeout - 2*time.Second))
+
+	closeFrame, err := readMessageWithin(clientConn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read udp.close: %v", err)
+	}
+	if closeFrame.Type != protocol.TypeUDPClose {
+		t.Fatalf("expected udp.close, got %s", closeFrame.Type.String())
+	}
+	if closeFrame.StreamID != openFrame.StreamID {
+		t.Fatalf("unexpected udp.close session id: got %d want %d", closeFrame.StreamID, openFrame.StreamID)
+	}
+
+	udpClose, err := protocol.UnmarshalUDPClose(closeFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal udp.close: %v", err)
+	}
+	if udpClose.ReasonCode != protocol.CloseReasonIdleTimeout || udpClose.Message != "udp session idle timeout" {
+		t.Fatalf("unexpected udp.close body: %#v", udpClose)
+	}
+	if session.publicUDPSession(openFrame.StreamID) != nil {
+		t.Fatal("expected udp session to be removed after idle cleanup")
+	}
+}
+
 func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
