@@ -391,6 +391,146 @@ func TestClientRejectsStreamOpenForUnknownTunnel(t *testing.T) {
 	}
 }
 
+func TestClientReadLoopHandlesUDPOpenAndClose(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	client := New(
+		appconfig.Config{
+			Server: "127.0.0.1:7000",
+			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-client",
+	)
+
+	state := newSessionState(1000)
+	state.setSnapshot(protocol.ConfigPush{
+		ConfigVersion: 1,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    9,
+				Protocol:    protocol.ProtocolUDP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: 21000,
+				RemoteEnd:   21000,
+				LocalHost:   mustHost(t, "127.0.0.1"),
+				LocalStart:  5300,
+				LocalEnd:    5300,
+			},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- client.readLoop(ctx, clientConn, state)
+	}()
+
+	openBody, err := protocol.MarshalUDPOpen(protocol.UDPOpen{
+		TunnelID:      9,
+		RemotePort:    21000,
+		ClientAddr:    protocol.SockAddr{IP: net.ParseIP("203.0.113.11").To4(), Port: 40001},
+		IdleTimeoutMs: 30000,
+	})
+	if err != nil {
+		t.Fatalf("marshal udp.open: %v", err)
+	}
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:      protocol.TypeUDPOpen,
+		RequestID: 7,
+		StreamID:  33,
+		Body:      openBody,
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for state.activeUDPSessions.Load() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("udp session was not registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	closeBody, err := protocol.MarshalUDPClose(protocol.UDPClose{
+		ReasonCode: protocol.CloseReasonIdleTimeout,
+		Initiator:  protocol.InitiatorFRPS,
+		Message:    "cleanup",
+	})
+	if err != nil {
+		t.Fatalf("marshal udp.close: %v", err)
+	}
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:     protocol.TypeUDPClose,
+		StreamID: 33,
+		Body:     closeBody,
+	})
+
+	deadline = time.Now().Add(time.Second)
+	for state.activeUDPSessions.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("udp session was not closed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	_ = clientConn.Close()
+
+	select {
+	case err := <-readDone:
+		if err != nil && !isNetClosed(err) {
+			t.Fatalf("read loop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("read loop did not exit")
+	}
+}
+
+func TestClientRejectsUDPDataForUnknownSession(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	client := New(
+		appconfig.Config{
+			Server: "127.0.0.1:7000",
+			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-client",
+	)
+
+	state := newSessionState(1000)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.handleUDPData(clientConn, state, protocol.Frame{
+			Type:     protocol.TypeUDPData,
+			StreamID: 55,
+			Body:     []byte("hello"),
+		})
+	}()
+
+	closeFrame := readFrame(t, serverConn)
+	if closeFrame.Type != protocol.TypeUDPClose {
+		t.Fatalf("expected udp.close, got %s", closeFrame.Type.String())
+	}
+	closeMessage, err := protocol.UnmarshalUDPClose(closeFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal udp.close: %v", err)
+	}
+	if closeMessage.ReasonCode != protocol.CloseReasonProtocolError || closeMessage.Message != "udp session not found" {
+		t.Fatalf("unexpected udp.close: %#v", closeMessage)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("handle udp.data: %v", err)
+	}
+}
+
 func writeFrame(t *testing.T, conn net.Conn, frame protocol.Frame) {
 	t.Helper()
 

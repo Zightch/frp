@@ -195,6 +195,49 @@ func TestStreamMessagesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUDPMessagesRoundTrip(t *testing.T) {
+	openBody, err := MarshalUDPOpen(UDPOpen{
+		TunnelID:   8,
+		RemotePort: 21000,
+		ClientAddr: SockAddr{
+			IP:   net.ParseIP("2001:db8::10"),
+			Port: 45678,
+		},
+		IdleTimeoutMs: 30000,
+	})
+	if err != nil {
+		t.Fatalf("marshal udp.open: %v", err)
+	}
+
+	open, err := UnmarshalUDPOpen(openBody)
+	if err != nil {
+		t.Fatalf("unmarshal udp.open: %v", err)
+	}
+	if open.TunnelID != 8 || open.RemotePort != 21000 || open.ClientAddr.Port != 45678 || open.IdleTimeoutMs != 30000 {
+		t.Fatalf("unexpected udp.open: %#v", open)
+	}
+	if open.ClientAddr.IP.String() != "2001:db8::10" {
+		t.Fatalf("unexpected client ip: %s", open.ClientAddr.IP.String())
+	}
+
+	closeBody, err := MarshalUDPClose(UDPClose{
+		ReasonCode: CloseReasonIdleTimeout,
+		Initiator:  InitiatorFRPS,
+		Message:    "idle timeout",
+	})
+	if err != nil {
+		t.Fatalf("marshal udp.close: %v", err)
+	}
+
+	closeMessage, err := UnmarshalUDPClose(closeBody)
+	if err != nil {
+		t.Fatalf("unmarshal udp.close: %v", err)
+	}
+	if closeMessage.ReasonCode != CloseReasonIdleTimeout || closeMessage.Initiator != InitiatorFRPS || closeMessage.Message != "idle timeout" {
+		t.Fatalf("unexpected udp.close: %#v", closeMessage)
+	}
+}
+
 func TestErrorBodyRejectsInvalidBool(t *testing.T) {
 	body := []byte{0x04, 0x4d, 0x02, 0x00, 0x00}
 	_, err := UnmarshalErrorBody(body)

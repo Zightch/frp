@@ -1,10 +1,10 @@
 # frps / frpc 当前代码架构图
 
-本文根据当前代码实现绘制，不包含尚未落地的设计目标。代码现状以 `2026-04-18` 的工作区为准。
+本文根据当前代码实现绘制，不包含尚未落地的设计目标。代码现状以 `2026-04-19` 的工作区为准。
 
 ## 1. 总体运行拓扑
 
-当前已跑通和代码实际支持的主链路是：
+当前已完整跑通的主链路是：
 
 ```text
 Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机
@@ -36,6 +36,7 @@ flowchart LR
 - `frps` 的公网隧道监听器由控制会话在收到 `config.ack` 后启动。
 - `frpc` 只通过 `--server` 和 `--token` 启动，不保存复杂隧道配置。
 - 当前数据面把多个 stream 复用在同一条 `frpc <-> frps` 控制 TCP 连接上，没有单独工作连接池。
+- UDP 当前只完成了 `frps` 公网 listener 和控制帧桥接，`frpc` 本地 UDP 转发与 `frps` idle cleanup 还没有形成完整闭环。
 
 ## 2. frps 进程内架构
 
@@ -63,7 +64,7 @@ flowchart TB
     Control --> Auth[challenge / response auth]
     Control --> Slot[groupSlots single client slot]
     Control --> ConfigPush[config.push / config.ack]
-    Control --> DataPlane[data_plane TCP listeners]
+    Control --> DataPlane[data_plane TCP/UDP listeners]
 
     Auth --> Protocol[frps/pkg/protocol]
     ConfigPush --> Protocol
@@ -77,7 +78,7 @@ flowchart TB
 - `cmd/frps/main.go`：零参数启动，固定读取当前工作目录下的 `data/config.json`，加载配置和日志，启动 `app.App`。
 - `internal/app`：打开数据库，执行当前必需表建表 / 校验，并并发启动管理面和控制面。
 - `internal/api`：提供内嵌 WebUI、健康检查、分组 CRUD、隧道 CRUD、token 重置。
-- `internal/control`：处理 `frpc` 登录、challenge/response、单分组单客户端槽位、配置下发、心跳和 TCP stream 转发。
+- `internal/control`：处理 `frpc` 登录、challenge/response、单分组单客户端槽位、配置下发、心跳、TCP stream 转发，以及 `frps` 侧 UDP listener/session 管理。
 - `internal/storage`：包装已打开的 `*sql.DB` / `*sql.Tx`，提供统一查询、执行、事务接口。
 - `pkg/protocol`：定义业务帧、消息类型、错误码、隧道结构和编解码。
 - `pkg/transport`：定义 4 字节长度前缀帧读写、超时和最大帧限制。
@@ -196,9 +197,10 @@ sequenceDiagram
 
 当前实际数据面边界：
 
-- `frps` 只会为 `ProtocolTCP`、`enabled`、非 `range` 的隧道启动公网 TCP listener。
-- `frpc` 当前 `handleStreamOpen` 只处理 TCP 目标拨号。
-- `udp`、端口范围、隧道入口 ACL、限速、抓包、在线观测等字段或协议类型在模型中已有部分定义，但当前数据面没有完整执行链路。
+- `frps` 会为 `enabled`、非 `range` 的单端口 `ProtocolTCP` / `ProtocolUDP` 隧道启动公网 listener。
+- `frps` 当前已经能把公网 UDP datagram 按 `tunnelId + 公网客户端地址` 绑定到 `sessionId`，并向 `frpc` 顺序发送 `udp.open` / `udp.data`，同时接收来自 `frpc` 的 `udp.data` 回写公网客户端。
+- `frpc` 当前 `handleStreamOpen` 只处理 TCP 目标拨号；UDP 侧仍只有 `handleUDPOpen` / `handleUDPData` 的本地 session 骨架，还没有真正把 datagram 写到本地 UDP 服务。
+- 因此，UDP 当前属于“`frps` 公网入口已落地、`frpc` 本地转发未完成”的中间状态；端口范围、隧道入口 ACL、限速、抓包、在线观测等能力仍未进入真实执行链路。
 
 ## 6. 数据库模型关系
 

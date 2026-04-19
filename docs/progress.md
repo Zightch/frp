@@ -2,24 +2,24 @@
 
 本文档用于单独记录跨轮实现进度、已完成主线、当前停止线和已经收口的活动边界。长期设计仍以 `project-overview.md`、`frps/` 和 `frpc/` 下的正式设计文档为准。
 
-当前轮执行只看 `docs/tmp/todo.md`。`docs/tmp/todo.md` 必须只保留当前轮目标、边界、当前轮完成项和当前唯一下一步；上一轮及更早内容统一收口到本文档，不回填到当前轮 `todo`，当前轮只保留必要引用。
+当前轮执行只看 `docs/tmp/todo.md`。`docs/tmp/todo.md` 必须只保留当前总目标、实现该目标的子步骤、当前轮边界和当前唯一下一步；已完成内容一律即时归档到本文档，不回填到当前轮 `todo`。当前总目标完成后，先完成归档，再清空当前 `todo`。
 
 更新时间：2026-04-19
 
 ## 0. 进度与 Todo 分工
 
 - `docs/progress.md` 负责承接跨轮历史进度、停止线、已完成项和已确认边界。
-- `docs/tmp/todo.md` 只负责当前轮执行，不记录前几轮的目标、完成项和讨论细节。
+- `docs/tmp/todo.md` 只负责当前轮未完成执行项，必须明确当前总目标、实现该目标的子步骤、当前轮边界和当前唯一下一步，不记录已完成内容。
 - 进入新一轮时，先把上一轮收口同步到本文档，再重写当前 `todo`；当前轮如需引用历史，只引用本文档。
 
 ## 0.1 Todo 轮换工作流
 
 固定按下面 4 步执行：
 
-1. 当前轮收口：把本轮已完成事项、当前停止线、已经稳定的边界和验收结果同步到 `docs/progress.md`；如果形成了长期有效规则，再同步到正式文档。
-2. 提炼下一轮：只保留下一轮仍然要推进的最小目标、边界和下一步，不复制上一轮已完成项，不搬运上一轮讨论过程。
-3. 重写当前 todo：直接重写 `docs/tmp/todo.md`，只保留当前轮目标、当前轮边界、当前轮已完成、当前唯一下一步，以及对 `docs/progress.md` 的引用。
-4. 按当前轮持续更新：本轮进行中的新增完成项只写入当前 `todo`；需要追溯历史时回看 `docs/progress.md`，不把前几轮内容回贴到当前 `todo`。
+1. 完成即归档：任一子任务完成后，立刻把完成项、验收结果和已经稳定的边界同步到 `docs/progress.md`；如果形成了长期有效规则，再同步到正式文档。
+2. 提炼当前目标：当前 `todo` 只保留仍待推进的最小总目标、该目标下的子步骤、边界和下一步，不复制已完成项，不搬运上一轮讨论过程。
+3. 重写当前 todo：直接重写 `docs/tmp/todo.md`，只保留当前总目标、实现该目标的子步骤、当前轮边界、当前唯一下一步，以及对 `docs/progress.md` 的引用。
+4. 按当前轮持续更新：`todo` 只增删未完成工作；如果当前总目标已经完成，则先归档到本文档，再立即清空当前 `todo`，等待下一轮重新写入。
 
 ## 1. 当前已完成
 
@@ -481,3 +481,20 @@ python test/e2e_management_webui.py
 - 删除后立即使旧 challenge 和旧管理会话失效
 - 前端说明统一改为“删除 `auth.json` 重置”，不再引入在线轮换入口
 - `test/e2e_management_webui.py` 已扩展覆盖删除 `auth.json` 后自动重置与重新初始化
+
+## 15. UDP 最小闭环当前归档
+
+截至 2026-04-19，UDP 最小闭环这一轮尚未收口，但以下已完成子任务已经从 `todo` 即时归档到这里：
+
+- 管理面 `proxy_groups` / `tunnels` CRUD 已完成，隧道模型已支持 `protocol = tcp | udp`
+- 协议文档已定义 UDP 会话时序、`sessionId` 语义和 `idleTimeoutMs` 字段
+- UDP 生命周期边界已固定：`frps` 统一做空闲 `30s` 清理，`frpc` 不做本地 idle timeout 判断，只执行来自 `frps` 的 `udp.close`
+- `frps/pkg/protocol` 已补齐 `udp.open` / `udp.close` 消息体与编解码，并补了 round-trip 单测
+- `frps` / `frpc` 控制连接读循环已接入 `udp.*` 分支，UDP session 状态骨架已预留
+- UDP 控制面未知会话处理已从默认 `unexpected message type` 收敛为会话级 `udp.close`
+- 已补最小 UDP 控制面回归测试，覆盖 `frps/internal/control` 与 `frpc/internal/client` 的基础分支
+- `frps` 已在 `config.ack` 后为启用的单端口 UDP tunnel 启动真实公网 UDP listener，并在控制会话结束时统一回收 listener
+- `frps` 已按 `tunnelId + 公网客户端地址` 维护 UDP session；首个公网 datagram 会分配 `sessionId` 并顺序下发 `udp.open` / `udp.data`
+- 同一公网客户端后续 datagram 会复用既有 `sessionId`；`frps` 也已支持把来自 `frpc` 的 `udp.data` 按 `sessionId` 回写给对应公网客户端
+- `frps` 已在公网收包和 `frpc` 回包路径刷新 UDP session 活跃时间，并固定向 `frpc` 下发 `30s` idle timeout 元数据，为后续 cleanup 收口复用
+- 已新增 `frps/internal/control/server_test.go` 的 UDP listener/session 回归测试，覆盖首包建会话、同客户端 session 复用和公网回包写出；`go test ./...` 已在 `frps/` 模块通过

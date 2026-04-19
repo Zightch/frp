@@ -42,12 +42,16 @@ type sessionState struct {
 	nextRequestID          atomic.Uint32
 	lastAckedConfigVersion atomic.Uint64
 	activeStreams          atomic.Uint32
+	activeUDPSessions      atomic.Uint32
 
 	snapshotMu sync.RWMutex
 	snapshot   protocol.ConfigPush
 
 	streamMu sync.Mutex
 	streams  map[uint32]*localStream
+
+	udpMu       sync.Mutex
+	udpSessions map[uint32]*localUDPSession
 }
 
 func New(cfg appconfig.Config, logger *slog.Logger, version string) *Client {
@@ -121,6 +125,7 @@ func (c *Client) runSession(ctx context.Context, conn net.Conn, token appconfig.
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer state.closeAllStreams()
+	defer state.closeAllUDPSessions()
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -273,6 +278,18 @@ func (c *Client) readLoop(ctx context.Context, conn net.Conn, state *sessionStat
 			if err := c.handleStreamClose(state, frame); err != nil {
 				return err
 			}
+		case protocol.TypeUDPOpen:
+			if err := c.handleUDPOpen(conn, state, frame); err != nil {
+				return err
+			}
+		case protocol.TypeUDPData:
+			if err := c.handleUDPData(conn, state, frame); err != nil {
+				return err
+			}
+		case protocol.TypeUDPClose:
+			if err := c.handleUDPClose(state, frame); err != nil {
+				return err
+			}
 		case protocol.TypeError:
 			return c.remoteError(frame)
 		default:
@@ -299,7 +316,7 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn net.Conn, state *sessio
 			body, err := protocol.MarshalHeartbeatPing(protocol.HeartbeatPing{
 				ClientUnixMs:           uint64(time.Now().UTC().UnixMilli()),
 				ActiveStreams:          state.activeStreams.Load(),
-				ActiveUDPSessions:      0,
+				ActiveUDPSessions:      state.activeUDPSessions.Load(),
 				LastAckedConfigVersion: state.lastAckedConfigVersion.Load(),
 			})
 			if err != nil {
@@ -397,6 +414,7 @@ func newSessionState(heartbeatIntervalMs uint32) *sessionState {
 		heartbeatInterval: heartbeatInterval,
 		readTimeout:       sessionReadTimeout(heartbeatInterval),
 		streams:           make(map[uint32]*localStream),
+		udpSessions:       make(map[uint32]*localUDPSession),
 	}
 	state.nextRequestID.Store(2)
 	return state

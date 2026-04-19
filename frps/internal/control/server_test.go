@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -365,6 +366,149 @@ func TestServerForwardsTCPStream(t *testing.T) {
 	streamCloseFrame := readMessage(t, clientConn)
 	if streamCloseFrame.Type != protocol.TypeStreamClose {
 		t.Fatalf("expected stream.close, got %s", streamCloseFrame.Type.String())
+	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
+func TestServerForwardsPublicUDPDatagramsAndReusesSession(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	remotePort := freeUDPPort(t)
+	server := NewServer(
+		Options{
+			Repository: stubRepository{
+				group: GroupRuntime{
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					ClientAccessMode: "disabled",
+					TokenHash:        tokenHash,
+					Snapshot: ConfigSnapshot{
+						Version:       99,
+						GeneratedAtMs: 1234,
+						Tunnels: []protocol.TunnelEntry{
+							{
+								TunnelID:    10,
+								Protocol:    protocol.ProtocolUDP,
+								TunnelFlags: protocol.TunnelFlagEnabled,
+								RemoteStart: uint16(remotePort),
+								RemoteEnd:   uint16(remotePort),
+								LocalHost:   host,
+								LocalStart:  5300,
+								LocalEnd:    5300,
+							},
+						},
+					},
+				},
+			},
+			ReadTimeout:       time.Second,
+			WriteTimeout:      time.Second,
+			ChallengeTTL:      5 * time.Second,
+			HeartbeatInterval: 2 * time.Second,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	publicConn := dialUDPConn(t, remotePort)
+	defer publicConn.Close()
+
+	openFrame := writeUDPAndReadOpenFrame(t, clientConn, publicConn, []byte("hello"))
+	if openFrame.Type != protocol.TypeUDPOpen {
+		t.Fatalf("expected udp.open, got %s", openFrame.Type.String())
+	}
+	if openFrame.RequestID == 0 {
+		t.Fatalf("udp.open requestId must be non-zero")
+	}
+
+	openMessage, err := protocol.UnmarshalUDPOpen(openFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal udp.open: %v", err)
+	}
+	localAddr := publicConn.LocalAddr().(*net.UDPAddr)
+	if openMessage.TunnelID != 10 {
+		t.Fatalf("unexpected udp.open tunnel id: %d", openMessage.TunnelID)
+	}
+	if openMessage.RemotePort != uint16(remotePort) {
+		t.Fatalf("unexpected udp.open remote port: %d", openMessage.RemotePort)
+	}
+	if !openMessage.ClientAddr.IP.Equal(localAddr.IP.To4()) {
+		t.Fatalf("unexpected udp.open client ip: %v", openMessage.ClientAddr.IP)
+	}
+	if openMessage.ClientAddr.Port != uint16(localAddr.Port) {
+		t.Fatalf("unexpected udp.open client port: %d", openMessage.ClientAddr.Port)
+	}
+	if openMessage.IdleTimeoutMs != uint32(defaultUDPIdleTimeout/time.Millisecond) {
+		t.Fatalf("unexpected udp.open idle timeout: %d", openMessage.IdleTimeoutMs)
+	}
+
+	firstDataFrame := readMessage(t, clientConn)
+	if firstDataFrame.Type != protocol.TypeUDPData {
+		t.Fatalf("expected first udp.data, got %s", firstDataFrame.Type.String())
+	}
+	if firstDataFrame.StreamID != openFrame.StreamID {
+		t.Fatalf("unexpected first udp.data session id: got %d want %d", firstDataFrame.StreamID, openFrame.StreamID)
+	}
+	if string(firstDataFrame.Body) != "hello" {
+		t.Fatalf("unexpected first udp.data payload: %q", string(firstDataFrame.Body))
+	}
+
+	if _, err := publicConn.Write([]byte("again")); err != nil {
+		t.Fatalf("write second udp datagram: %v", err)
+	}
+
+	secondDataFrame := readMessage(t, clientConn)
+	if secondDataFrame.Type != protocol.TypeUDPData {
+		t.Fatalf("expected second udp.data, got %s", secondDataFrame.Type.String())
+	}
+	if secondDataFrame.StreamID != openFrame.StreamID {
+		t.Fatalf("unexpected second udp.data session id: got %d want %d", secondDataFrame.StreamID, openFrame.StreamID)
+	}
+	if string(secondDataFrame.Body) != "again" {
+		t.Fatalf("unexpected second udp.data payload: %q", string(secondDataFrame.Body))
+	}
+
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:     protocol.TypeUDPData,
+		StreamID: openFrame.StreamID,
+		Body:     []byte("world"),
+	})
+
+	if err := publicConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set udp read deadline: %v", err)
+	}
+	buffer := make([]byte, 16)
+	n, err := publicConn.Read(buffer)
+	if err != nil {
+		t.Fatalf("read udp response: %v", err)
+	}
+	if string(buffer[:n]) != "world" {
+		t.Fatalf("unexpected udp response: %q", string(buffer[:n]))
 	}
 
 	_ = clientConn.Close()
@@ -801,6 +945,124 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 	}
 }
 
+func TestServerHandlesUDPControlFramesWithoutEndingSession(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	server := NewServer(
+		Options{
+			Repository: stubRepository{
+				group: GroupRuntime{
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					ClientAccessMode: "disabled",
+					TokenHash:        tokenHash,
+					Snapshot: ConfigSnapshot{
+						Version:       99,
+						GeneratedAtMs: 1234,
+						Tunnels: []protocol.TunnelEntry{
+							{
+								TunnelID:    10,
+								Protocol:    protocol.ProtocolUDP,
+								TunnelFlags: protocol.TunnelFlagEnabled,
+								RemoteStart: 21000,
+								RemoteEnd:   21000,
+								LocalHost:   host,
+								LocalStart:  5300,
+								LocalEnd:    5300,
+							},
+						},
+					},
+				},
+			},
+			ReadTimeout:       time.Second,
+			WriteTimeout:      time.Second,
+			ChallengeTTL:      5 * time.Second,
+			HeartbeatInterval: 2 * time.Second,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:     protocol.TypeUDPData,
+		StreamID: 77,
+		Body:     []byte("hello"),
+	})
+
+	udpCloseFrame := readMessage(t, clientConn)
+	if udpCloseFrame.Type != protocol.TypeUDPClose {
+		t.Fatalf("expected udp.close, got %s", udpCloseFrame.Type.String())
+	}
+	udpClose, err := protocol.UnmarshalUDPClose(udpCloseFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal udp.close: %v", err)
+	}
+	if udpClose.ReasonCode != protocol.CloseReasonProtocolError || udpClose.Message != "udp session not found" {
+		t.Fatalf("unexpected udp.close: %#v", udpClose)
+	}
+
+	udpCloseBody, err := protocol.MarshalUDPClose(protocol.UDPClose{
+		ReasonCode: protocol.CloseReasonIdleTimeout,
+		Initiator:  protocol.InitiatorFRPC,
+		Message:    "cleanup",
+	})
+	if err != nil {
+		t.Fatalf("marshal udp.close: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:     protocol.TypeUDPClose,
+		StreamID: 77,
+		Body:     udpCloseBody,
+	})
+
+	heartbeatBody, err := protocol.MarshalHeartbeatPing(protocol.HeartbeatPing{
+		ClientUnixMs:           456,
+		ActiveStreams:          0,
+		ActiveUDPSessions:      0,
+		LastAckedConfigVersion: configPush.ConfigVersion,
+	})
+	if err != nil {
+		t.Fatalf("marshal heartbeat.ping: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeHeartbeatPing,
+		RequestID: 3,
+		Body:      heartbeatBody,
+	})
+
+	pongFrame := readMessage(t, clientConn)
+	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 3 {
+		t.Fatalf("unexpected heartbeat.pong frame: %#v", pongFrame)
+	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
 type stubRepository struct {
 	group GroupRuntime
 	err   error
@@ -859,6 +1121,18 @@ func freeTCPPort(t *testing.T) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+
+	addr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0}
+	listener, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		t.Fatalf("listen for free udp port: %v", err)
+	}
+	defer listener.Close()
+	return listener.LocalAddr().(*net.UDPAddr).Port
+}
+
 func waitForTCPDial(t *testing.T, port int) net.Conn {
 	t.Helper()
 
@@ -885,6 +1159,55 @@ func assertTCPDialFails(t *testing.T, port int) {
 		_ = conn.Close()
 		t.Fatalf("expected dial %s to fail", address)
 	}
+}
+
+func dialUDPConn(t *testing.T, port int) *net.UDPConn {
+	t.Helper()
+
+	conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+	if err != nil {
+		t.Fatalf("dial udp 127.0.0.1:%d: %v", port, err)
+	}
+	return conn
+}
+
+func writeUDPAndReadOpenFrame(t *testing.T, controlConn net.Conn, publicConn *net.UDPConn, payload []byte) protocol.Frame {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := publicConn.Write(payload); err != nil {
+			t.Fatalf("write udp datagram: %v", err)
+		}
+
+		frame, err := readMessageWithin(controlConn, 100*time.Millisecond)
+		if err == nil {
+			return frame
+		}
+		if !isTimeoutError(err) && !errors.Is(err, io.EOF) {
+			t.Fatalf("read udp.open: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for udp.open: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func readMessageWithin(conn net.Conn, timeout time.Duration) (protocol.Frame, error) {
+	frameBytes, err := transport.ReadFrame(conn, timeout)
+	if err != nil {
+		return protocol.Frame{}, err
+	}
+	return protocol.ParseFrame(frameBytes)
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.Frame) {

@@ -366,6 +366,19 @@ type StreamClose struct {
 	Message    string
 }
 
+type UDPOpen struct {
+	TunnelID      uint32
+	RemotePort    uint16
+	ClientAddr    SockAddr
+	IdleTimeoutMs uint32
+}
+
+type UDPClose struct {
+	ReasonCode uint16
+	Initiator  uint8
+	Message    string
+}
+
 type ErrorBody struct {
 	ErrorCode uint16
 	Retryable bool
@@ -728,6 +741,62 @@ func MarshalStreamClose(message StreamClose) ([]byte, error) {
 
 func UnmarshalStreamClose(data []byte) (StreamClose, error) {
 	var message StreamClose
+	dec := newBodyDecoder(data)
+	var err error
+	if message.ReasonCode, err = dec.u16(); err != nil {
+		return message, err
+	}
+	if message.Initiator, err = dec.u8(); err != nil {
+		return message, err
+	}
+	if message.Message, err = dec.shortstr(); err != nil {
+		return message, err
+	}
+	return message, dec.done()
+}
+
+func MarshalUDPOpen(message UDPOpen) ([]byte, error) {
+	var enc bodyEncoder
+	enc.u32(message.TunnelID)
+	enc.u16(message.RemotePort)
+	if err := encodeSockAddr(&enc, message.ClientAddr); err != nil {
+		return nil, err
+	}
+	enc.u32(message.IdleTimeoutMs)
+	return enc.bytesValue(), nil
+}
+
+func UnmarshalUDPOpen(data []byte) (UDPOpen, error) {
+	var message UDPOpen
+	dec := newBodyDecoder(data)
+	var err error
+	if message.TunnelID, err = dec.u32(); err != nil {
+		return message, err
+	}
+	if message.RemotePort, err = dec.u16(); err != nil {
+		return message, err
+	}
+	if message.ClientAddr, err = decodeSockAddr(dec); err != nil {
+		return message, err
+	}
+	if message.IdleTimeoutMs, err = dec.u32(); err != nil {
+		return message, err
+	}
+	return message, dec.done()
+}
+
+func MarshalUDPClose(message UDPClose) ([]byte, error) {
+	var enc bodyEncoder
+	enc.u16(message.ReasonCode)
+	enc.u8(message.Initiator)
+	if err := enc.shortstr(message.Message); err != nil {
+		return nil, err
+	}
+	return enc.bytesValue(), nil
+}
+
+func UnmarshalUDPClose(data []byte) (UDPClose, error) {
+	var message UDPClose
 	dec := newBodyDecoder(data)
 	var err error
 	if message.ReasonCode, err = dec.u16(); err != nil {

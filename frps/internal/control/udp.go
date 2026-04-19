@@ -1,0 +1,204 @@
+package control
+
+import (
+	"fmt"
+	"net"
+	"strconv"
+	"sync/atomic"
+	"time"
+
+	"github.com/zightch/frp/frps/pkg/protocol"
+)
+
+type publicUDPSession struct {
+	sessionID        uint32
+	tunnelID         uint32
+	remotePort       uint16
+	clientAddr       protocol.SockAddr
+	publicAddr       *net.UDPAddr
+	listener         *net.UDPConn
+	idleTimeout      time.Duration
+	lastActiveUnixMs atomic.Int64
+}
+
+func (s *Server) handleUDPData(conn net.Conn, session *sessionState, frame protocol.Frame) error {
+	if frame.RequestID != 0 {
+		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "udp.data requestId must be zero")
+	}
+	if frame.StreamID == 0 {
+		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "udp.data streamId must be non-zero")
+	}
+	if len(frame.Body) > protocol.MaxDataBodyLen {
+		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "udp.data body exceeds %d bytes", protocol.MaxDataBodyLen)
+	}
+
+	udpSession := session.publicUDPSession(frame.StreamID)
+	if udpSession == nil {
+		return s.sendUDPClose(conn, session, frame.StreamID, protocol.CloseReasonProtocolError, "udp session not found")
+	}
+
+	if _, err := udpSession.listener.WriteToUDP(frame.Body, udpSession.publicAddr); err != nil {
+		if session.closePublicUDPSession(frame.StreamID) {
+			return s.sendUDPClose(conn, session, frame.StreamID, protocol.CloseReasonWriteError, err.Error())
+		}
+		return nil
+	}
+	udpSession.touch(time.Now().UTC())
+	return nil
+}
+
+func (s *Server) handleUDPClose(session *sessionState, frame protocol.Frame) error {
+	if frame.RequestID != 0 {
+		return fmt.Errorf("udp.close requestId must be zero")
+	}
+	if frame.StreamID == 0 {
+		return fmt.Errorf("udp.close streamId must be non-zero")
+	}
+	if _, err := protocol.UnmarshalUDPClose(frame.Body); err != nil {
+		return err
+	}
+	session.closePublicUDPSession(frame.StreamID)
+	return nil
+}
+
+func (s *Server) sendUDPClose(conn net.Conn, session *sessionState, sessionID uint32, reasonCode uint16, message string) error {
+	body, err := protocol.MarshalUDPClose(protocol.UDPClose{
+		ReasonCode: reasonCode,
+		Initiator:  protocol.InitiatorFRPS,
+		Message:    message,
+	})
+	if err != nil {
+		return err
+	}
+	return s.writeFrameWithSession(conn, session, protocol.Frame{
+		Type:     protocol.TypeUDPClose,
+		StreamID: sessionID,
+		Body:     body,
+	})
+}
+
+func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, listener *net.UDPConn, clientAddr *net.UDPAddr, payload []byte) error {
+	now := time.Now().UTC()
+	udpSession := newPublicUDPSession(session.nextTunnelStreamID(), tunnel, listener, clientAddr, now)
+	udpSession, created := session.bindPublicUDPSession(udpSession)
+	if !created {
+		udpSession.touch(now)
+		return s.writeFrameWithSession(controlConn, session, protocol.Frame{
+			Type:     protocol.TypeUDPData,
+			StreamID: udpSession.sessionID,
+			Body:     payload,
+		})
+	}
+
+	requestID := session.nextRequestID()
+	openBody, err := protocol.MarshalUDPOpen(protocol.UDPOpen{
+		TunnelID:      tunnel.TunnelID,
+		RemotePort:    tunnel.RemoteStart,
+		ClientAddr:    udpSession.clientAddr,
+		IdleTimeoutMs: uint32(udpSession.idleTimeout / time.Millisecond),
+	})
+	if err != nil {
+		session.closePublicUDPSession(udpSession.sessionID)
+		return err
+	}
+
+	err = s.writeFramesWithSession(controlConn, session,
+		protocol.Frame{
+			Type:      protocol.TypeUDPOpen,
+			RequestID: requestID,
+			StreamID:  udpSession.sessionID,
+			Body:      openBody,
+		},
+		protocol.Frame{
+			Type:     protocol.TypeUDPData,
+			StreamID: udpSession.sessionID,
+			Body:     payload,
+		},
+	)
+	if err != nil {
+		session.closePublicUDPSession(udpSession.sessionID)
+		return err
+	}
+
+	logger.Info("udp session opened", "session_id", udpSession.sessionID, "tunnel_id", tunnel.TunnelID, "client_addr", clientAddr.String())
+	return nil
+}
+
+func (s *sessionState) bindPublicUDPSession(udpSession *publicUDPSession) (*publicUDPSession, bool) {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+
+	key := udpSession.key()
+	if sessionID, exists := s.udpSessionKeys[key]; exists {
+		if existing := s.udpSessions[sessionID]; existing != nil {
+			return existing, false
+		}
+		delete(s.udpSessionKeys, key)
+	}
+	if _, exists := s.udpSessions[udpSession.sessionID]; exists {
+		return s.udpSessions[udpSession.sessionID], false
+	}
+	s.udpSessions[udpSession.sessionID] = udpSession
+	s.udpSessionKeys[key] = udpSession.sessionID
+	return udpSession, true
+}
+
+func (s *sessionState) publicUDPSession(sessionID uint32) *publicUDPSession {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	return s.udpSessions[sessionID]
+}
+
+func (s *sessionState) closePublicUDPSession(sessionID uint32) bool {
+	s.runtimeMu.Lock()
+	udpSession, ok := s.udpSessions[sessionID]
+	if ok {
+		delete(s.udpSessions, sessionID)
+		delete(s.udpSessionKeys, udpSession.key())
+	}
+	s.runtimeMu.Unlock()
+	return ok
+}
+
+func newPublicUDPSession(sessionID uint32, tunnel protocol.TunnelEntry, listener *net.UDPConn, clientAddr *net.UDPAddr, now time.Time) *publicUDPSession {
+	udpSession := &publicUDPSession{
+		sessionID:   sessionID,
+		tunnelID:    tunnel.TunnelID,
+		remotePort:  tunnel.RemoteStart,
+		clientAddr:  sockAddrFromNetAddr(clientAddr),
+		publicAddr:  cloneUDPAddr(clientAddr),
+		listener:    listener,
+		idleTimeout: defaultUDPIdleTimeout,
+	}
+	udpSession.touch(now)
+	return udpSession
+}
+
+func (s *publicUDPSession) touch(now time.Time) {
+	s.lastActiveUnixMs.Store(now.UnixMilli())
+}
+
+func (s *publicUDPSession) key() string {
+	return publicUDPSessionKey(s.tunnelID, s.clientAddr)
+}
+
+func publicUDPSessionKey(tunnelID uint32, clientAddr protocol.SockAddr) string {
+	ip := clientAddr.IP
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+	} else {
+		ip = ip.To16()
+	}
+	return strconv.FormatUint(uint64(tunnelID), 10) + "|" + ip.String() + "|" + strconv.FormatUint(uint64(clientAddr.Port), 10)
+}
+
+func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	return &net.UDPAddr{
+		IP:   append(net.IP(nil), addr.IP...),
+		Port: addr.Port,
+		Zone: addr.Zone,
+	}
+}

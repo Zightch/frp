@@ -24,6 +24,7 @@ const (
 	defaultWriteTimeout      = 5 * time.Second
 	defaultChallengeTTL      = 30 * time.Second
 	defaultHeartbeatInterval = 15 * time.Second
+	defaultUDPIdleTimeout    = 30 * time.Second
 	initialServerRequestID   = uint32(1 << 31)
 )
 
@@ -71,14 +72,17 @@ type sessionState struct {
 	Snapshot               ConfigSnapshot
 	LastAckedConfigVersion uint64
 	pendingConfigRequestID uint32
-	nextServerRequestID    uint32
+	nextServerRequestID    atomic.Uint32
 	nextStreamID           atomic.Uint32
 	readTimeout            time.Duration
 	writeMu                sync.Mutex
 
 	runtimeMu        sync.Mutex
 	streams          map[uint32]*publicStream
+	udpSessions      map[uint32]*publicUDPSession
+	udpSessionKeys   map[string]uint32
 	listeners        map[uint32]net.Listener
+	udpListeners     map[uint32]*net.UDPConn
 	listenersStarted bool
 }
 
@@ -305,14 +309,17 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 	}
 
 	session := &sessionState{
-		ID:                  s.nextSessionID.Add(1),
-		Group:               group,
-		Snapshot:            group.Snapshot,
-		nextServerRequestID: initialServerRequestID,
-		readTimeout:         sessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
-		streams:             make(map[uint32]*publicStream),
-		listeners:           make(map[uint32]net.Listener),
+		ID:             s.nextSessionID.Add(1),
+		Group:          group,
+		Snapshot:       group.Snapshot,
+		readTimeout:    sessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
+		streams:        make(map[uint32]*publicStream),
+		udpSessions:    make(map[uint32]*publicUDPSession),
+		udpSessionKeys: make(map[string]uint32),
+		listeners:      make(map[uint32]net.Listener),
+		udpListeners:   make(map[uint32]*net.UDPConn),
 	}
+	session.nextServerRequestID.Store(initialServerRequestID - 1)
 	if !s.reserveGroupSlot(session.Group.ID, session.ID) {
 		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthClientLimitReached, "proxy group already has an active client")
 	}
@@ -370,6 +377,14 @@ func (s *Server) runSession(conn net.Conn, logger *slog.Logger, session *session
 			}
 		case protocol.TypeStreamClose:
 			if err := s.handleStreamClose(session, frame); err != nil {
+				return err
+			}
+		case protocol.TypeUDPData:
+			if err := s.handleUDPData(conn, session, frame); err != nil {
+				return err
+			}
+		case protocol.TypeUDPClose:
+			if err := s.handleUDPClose(session, frame); err != nil {
 				return err
 			}
 		default:
@@ -485,6 +500,17 @@ func (s *Server) writeFrameWithSession(conn net.Conn, session *sessionState, fra
 	session.writeMu.Lock()
 	defer session.writeMu.Unlock()
 	return s.writeFrame(conn, frame)
+}
+
+func (s *Server) writeFramesWithSession(conn net.Conn, session *sessionState, frames ...protocol.Frame) error {
+	session.writeMu.Lock()
+	defer session.writeMu.Unlock()
+	for _, frame := range frames {
+		if err := s.writeFrame(conn, frame); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) replyProtocolErrorWithSession(conn net.Conn, session *sessionState, frame protocol.Frame, err error) error {
@@ -728,15 +754,10 @@ func (s *Server) releaseGroupSlot(groupID int64, sessionID uint64) {
 }
 
 func (s *sessionState) nextRequestID() uint32 {
-	if s.nextServerRequestID == 0 {
-		s.nextServerRequestID = initialServerRequestID
-	}
-
-	requestID := s.nextServerRequestID
-	s.nextServerRequestID++
+	requestID := s.nextServerRequestID.Add(1)
 	if requestID == 0 {
-		requestID = initialServerRequestID
-		s.nextServerRequestID = requestID + 1
+		s.nextServerRequestID.Store(initialServerRequestID - 1)
+		requestID = s.nextServerRequestID.Add(1)
 	}
 	return requestID
 }
