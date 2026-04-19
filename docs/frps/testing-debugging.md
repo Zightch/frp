@@ -34,6 +34,10 @@
   - `disabled_group`
   - `disabled_tunnel`
   - `local_unavailable`
+- 最小 TCP range 端到端脚本：
+  - `test/e2e_tcp_range.py`
+  - 同一个 range tunnel 命中两个不同 `remotePort` 时映射到对应 `localPort`
+  - 同轮确认 TCP 单端口最小链路不回退
 - 最小 UDP 单端口端到端脚本：
   - `test/e2e_udp_single.py`
   - `happy_path`
@@ -119,6 +123,7 @@ go test ./...
 当前脚本：
 
 - `test/e2e_tcp_single.py`
+- `test/e2e_tcp_range.py`
 - `test/e2e_udp_single.py`
 - `test/e2e_tcp_perf.py`
 - `test/e2e_management_webui.py`
@@ -157,6 +162,7 @@ python test/e2e_tcp_single.py --scenario bad_token
 python test/e2e_tcp_single.py --scenario disabled_group
 python test/e2e_tcp_single.py --scenario disabled_tunnel
 python test/e2e_tcp_single.py --scenario local_unavailable
+python test/e2e_tcp_range.py
 ```
 
 ```powershell

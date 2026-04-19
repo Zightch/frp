@@ -557,3 +557,35 @@ localPort = localStart + offset
 - 最小 Python e2e 还未补
 - TCP range 的端到端回归仍未按脚本方式收口
 - UDP range 执行链路仍未开始实现
+
+## 18. TCP range 最小 Python e2e 已归档
+
+截至 2026-04-19，TCP/UDP 端口范围映射这一轮又完成了一个已归档子步骤：TCP range 的最小 Python e2e 已经收口。
+
+本次已完成的实现和收束如下：
+
+- 新增 `test/e2e_tcp_range.py`，在隔离工作目录中启动真实 `frps` / `frpc`，分别模拟公网客户端和内网 TCP 服务。
+- `test/e2e_tcp_range.py` 已固定按当前产品边界启动 `frps`：使用 `workspace/data/config.json`、隔离 `data/auth.json` / SQLite，并复制 `webui/dist`，不再依赖旧的 `--config` 启动方式。
+- 脚本会 seed 一个启用状态的 TCP single tunnel 和一个启用状态的 TCP range tunnel。
+- 脚本会分别启动 1 个 single 本地 TCP 服务和 2 个 range 本地 TCP 服务；3 个本地服务使用不同响应前缀回包，因此可以直接验证实际命中的 `localPort`。
+- 已验证 single remote port 仍会命中 single local port，确认 TCP 单端口最小链路没有因 range 改动回退。
+- 已验证同一个 TCP range tunnel 命中两个不同的 `remotePort` 时，`frpc` 会按 `offset = remotePort - remoteStart` 转发到对应的两个 `localPort`。
+- `test/e2e_tcp_single.py` 也已同步到当前 `frps` 直接从 `data/config.json` 启动的模型，并重新验证 `happy_path`，避免旧单端口脚本继续停留在失效启动方式上。
+
+本次执行的验证如下：
+
+- `python test/e2e_tcp_range.py`
+- `python test/e2e_tcp_single.py --scenario happy_path`
+
+本子步骤完成后，TCP range 当前已完成的闭环为：
+
+- `frps` 在 `config.ack` 后按范围展开真实公网 TCP listener
+- `stream.open.remotePort` 回填实际命中的公网端口
+- `frpc` 按 `remotePort` 偏移计算目标 `localPort`
+- 最小 Python e2e 已验证 range 映射和 single regression
+
+当前仍未归档为“本轮总目标完成”的内容：
+
+- UDP range 执行链路
+- UDP range 的最小单测与 Python e2e
+- TCP/UDP range 的总回归与本轮清尾

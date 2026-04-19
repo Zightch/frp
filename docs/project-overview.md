@@ -34,7 +34,7 @@
 - `frps` / `frpc` 已支持 token challenge/response 登录。
 - 一个分组始终只允许 `1` 个在线 `frpc` 客户端。
 - `frps` 可从 SQLite/MySQL schema 中读取 `proxy_groups` / `tunnels` 运行数据。
-- `frps` 可在 `config.ack` 后启动启用状态的 TCP/UDP 单端口 listener。
+- `frps` 可在 `config.ack` 后启动启用状态的 TCP 单端口 / range listener，以及 UDP 单端口 listener。
 - `frpc` 可接收配置、处理 TCP `stream.*` 和 UDP `udp.*`，并回连本地 TCP/UDP 目标。
 - 管理面已切换为独立 `Vue 3 + Vite + TypeScript + Element Plus` 前端工程，由 `frps` 直接托管构建产物。
 - 管理认证已固定为本地 `auth.json` 单一管理密钥模型：只初始化一次，持续使用；删除 `auth.json` 后服务端自动回到未初始化态。
@@ -46,6 +46,9 @@
   - `disabled_group`
   - `disabled_tunnel`
   - `local_unavailable`
+- 已通过 `test/e2e_tcp_range.py` 验证：
+  - 同一个 TCP range tunnel 命中两个不同 `remotePort` 时，`frpc` 会按偏移转发到对应 `localPort`
+  - 同轮确认 TCP 单端口最小链路不回退
 - 已通过 `test/e2e_udp_single.py` 验证：
   - `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
   - `happy_path`

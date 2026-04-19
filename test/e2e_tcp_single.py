@@ -52,6 +52,10 @@ class TokenMaterial:
 @dataclass(frozen=True)
 class RuntimePaths:
     temp_root: Path
+    workspace_dir: Path
+    data_dir: Path
+    webui_dir: Path
+    webui_dist_dir: Path
     db_path: Path
     frps_config_path: Path
     frps_log_path: Path
@@ -121,6 +125,10 @@ def parse_args() -> argparse.Namespace:
         help="Existing frpc binary path. If omitted, the script builds one into a temp directory.",
     )
     parser.add_argument(
+        "--webui-dist",
+        help="Existing built webui dist directory. If omitted, reuse frps/webui/dist or build it.",
+    )
+    parser.add_argument(
         "--payload",
         default="frp-e2e-payload",
         help="Payload sent by the external client and expected back from the echo server.",
@@ -173,10 +181,17 @@ def main() -> int:
     observations = RunObservations()
 
     temp_root = Path(tempfile.mkdtemp(prefix="frp-e2e-"))
+    workspace_dir = temp_root / "workspace"
+    data_dir = workspace_dir / "data"
+    webui_dir = workspace_dir / "webui"
     paths = RuntimePaths(
         temp_root=temp_root,
-        db_path=temp_root / "frps.sqlite",
-        frps_config_path=temp_root / "frps.json",
+        workspace_dir=workspace_dir,
+        data_dir=data_dir,
+        webui_dir=webui_dir,
+        webui_dist_dir=webui_dir / "dist",
+        db_path=data_dir / "frps.db",
+        frps_config_path=data_dir / "config.json",
         frps_log_path=temp_root / "frps.log",
         frpc_log_path=temp_root / "frpc.log",
     )
@@ -185,10 +200,15 @@ def main() -> int:
         print(f"[info] scenario={args.scenario}")
         print(f"[stage] {stage}")
         ensure_go_available(args)
+        prepare_workspace(paths)
 
         stage = "build or resolve binaries"
         print(f"[stage] {stage}")
         binaries = build_or_resolve_binaries(args, repo_root, temp_root)
+
+        stage = "build or resolve webui dist"
+        print(f"[stage] {stage}")
+        copy_webui_dist(resolve_webui_dist(args, repo_root), paths.webui_dist_dir)
 
         stage = "allocate ports and token"
         print(f"[stage] {stage}")
@@ -204,8 +224,8 @@ def main() -> int:
         print(f"[stage] {stage}")
         frps_process = start_process(
             name="frps",
-            command=[str(binaries["frps"]), "--config", str(paths.frps_config_path)],
-            cwd=repo_root / "frps",
+            command=[str(binaries["frps"])],
+            cwd=paths.workspace_dir,
             log_path=paths.frps_log_path,
         )
         processes.append(frps_process)
@@ -355,12 +375,72 @@ def build_go_binary(module_dir: Path, package: str, output_path: Path) -> None:
         cwd=str(module_dir),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
             f"go build failed for {package} in {module_dir}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
+
+
+def prepare_workspace(paths: RuntimePaths) -> None:
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    paths.webui_dir.mkdir(parents=True, exist_ok=True)
+
+
+def resolve_webui_dist(args: argparse.Namespace, repo_root: Path) -> Path:
+    if args.webui_dist:
+        source = Path(args.webui_dist).resolve()
+        if not source.is_dir():
+            raise RuntimeError(f"webui dist directory does not exist: {source}")
+        index_path = source / "index.html"
+        if not index_path.is_file():
+            raise RuntimeError(f"webui dist directory is missing index.html: {index_path}")
+        return source
+
+    dist_dir = (repo_root / "frps" / "webui" / "dist").resolve()
+    if dist_dir.is_dir() and (dist_dir / "index.html").is_file():
+        return dist_dir
+
+    npm_executable = resolve_npm_executable()
+    if npm_executable is None:
+        raise RuntimeError("npm executable not found in PATH; pass --webui-dist to skip building")
+
+    result = subprocess.run(
+        [npm_executable, "run", "build"],
+        cwd=str(repo_root / "frps" / "webui"),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "npm run build failed for frps/webui\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+
+    if not dist_dir.is_dir() or not (dist_dir / "index.html").is_file():
+        raise RuntimeError(f"webui dist directory was not produced: {dist_dir}")
+    return dist_dir
+
+
+def resolve_npm_executable() -> str | None:
+    for candidate in ("npm.cmd", "npm"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
+def copy_webui_dist(source_dist: Path, target_dist: Path) -> None:
+    if target_dist.exists():
+        shutil.rmtree(target_dist)
+    shutil.copytree(source_dist, target_dist)
 
 
 def allocate_ports() -> Ports:
@@ -423,7 +503,7 @@ def init_sqlite_db(db_path: Path) -> None:
 
 def wait_sqlite_schema(db_path: Path, timeout_seconds: float) -> None:
     deadline = time.time() + timeout_seconds
-    required_tables = {"schema_migrations", "proxy_groups", "tunnels"}
+    required_tables = {"proxy_groups", "group_client_ip_rules", "group_tunnel_ip_rules", "tunnels"}
 
     while time.time() < deadline:
         try:
@@ -444,6 +524,7 @@ def wait_sqlite_schema(db_path: Path, timeout_seconds: float) -> None:
 
 
 def write_frps_config(config_path: Path, db_path: Path, ports: Ports, log_level: str) -> None:
+    _ = db_path
     config = {
         "control_listen_addr": f"127.0.0.1:{ports.control}",
         "management_listen_addr": f"127.0.0.1:{ports.management}",
@@ -451,7 +532,10 @@ def write_frps_config(config_path: Path, db_path: Path, ports: Ports, log_level:
         "shutdown_timeout": "10s",
         "database": {
             "type": "sqlite",
-            "path": str(db_path),
+            "path": "./frps.db",
+        },
+        "webui": {
+            "dist_dir": "../webui/dist",
         },
         "log": {
             "level": log_level,

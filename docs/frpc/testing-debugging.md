@@ -48,6 +48,7 @@ python test/e2e_tcp_single.py --scenario bad_token
 python test/e2e_tcp_single.py --scenario disabled_group
 python test/e2e_tcp_single.py --scenario disabled_tunnel
 python test/e2e_tcp_single.py --scenario local_unavailable
+python test/e2e_tcp_range.py
 python test/e2e_udp_single.py
 python test/e2e_udp_single.py --scenario idle_cleanup
 ```
