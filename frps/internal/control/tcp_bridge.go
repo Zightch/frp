@@ -124,3 +124,19 @@ func (s *Server) handleStreamClose(session *sessionState, frame protocol.Frame) 
 	session.closePublicStream(frame.StreamID)
 	return nil
 }
+
+func (s *Server) sendStreamClose(conn net.Conn, session *sessionState, streamID uint32, reasonCode uint16, message string) error {
+	body, err := protocol.MarshalStreamClose(protocol.StreamClose{
+		ReasonCode: reasonCode,
+		Initiator:  protocol.InitiatorFRPS,
+		Message:    message,
+	})
+	if err != nil {
+		return err
+	}
+	return s.writeFrameWithSession(conn, session, protocol.Frame{
+		Type:     protocol.TypeStreamClose,
+		StreamID: streamID,
+		Body:     body,
+	})
+}
