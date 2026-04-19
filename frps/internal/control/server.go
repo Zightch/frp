@@ -734,28 +734,6 @@ func (s *Server) releaseGroupSlot(groupID int64, sessionID uint64) {
 	}
 }
 
-func (s *sessionState) nextRequestID() uint32 {
-	requestID := s.nextServerRequestID.Add(1)
-	if requestID == 0 {
-		s.nextServerRequestID.Store(initialServerRequestID - 1)
-		requestID = s.nextServerRequestID.Add(1)
-	}
-	return requestID
-}
-
-func (s *sessionState) doneCh() <-chan struct{} {
-	return s.done
-}
-
-func (s *sessionState) closeDone() {
-	if s.done == nil {
-		return
-	}
-	s.shutdownOnce.Do(func() {
-		close(s.done)
-	})
-}
-
 func sessionReadTimeout(heartbeatInterval, minimum time.Duration) time.Duration {
 	timeout := heartbeatInterval * 3
 	if timeout < minimum {
