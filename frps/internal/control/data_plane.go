@@ -33,30 +33,6 @@ type udpTunnelListener struct {
 	listener   *net.UDPConn
 }
 
-func (s *Server) serveUDPTunnelListener(conn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, remotePort uint16, listener *net.UDPConn) {
-	buffer := make([]byte, protocol.MaxDataBodyLen)
-	for {
-		n, clientAddr, err := listener.ReadFromUDP(buffer)
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			logger.Warn("udp tunnel read failed", "tunnel_id", tunnel.TunnelID, "error", err)
-			continue
-		}
-		payload := append([]byte(nil), buffer[:n]...)
-		if err := s.handlePublicUDPDatagram(conn, logger, session, tunnel, remotePort, listener, clientAddr, payload); err != nil {
-			logger.Warn(
-				"udp tunnel forward failed",
-				"tunnel_id", tunnel.TunnelID,
-				"remote_port", remotePort,
-				"client_addr", clientAddr.String(),
-				"error", err,
-			)
-		}
-	}
-}
-
 func (s *Server) handlePublicConnection(controlConn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, remotePort uint16, publicConn net.Conn) {
 	streamID := session.nextTunnelStreamID()
 	requestID := session.nextRequestID()
