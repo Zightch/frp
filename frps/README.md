@@ -18,7 +18,7 @@ go build -o ./frps.exe ./cmd/frps
 .\frps.exe
 ```
 
-`frps` 启动时不需要任何参数，始终读取可执行文件同级的 `data/config.json`。因此在 Windows 下把 `frps.exe`、`data/config.json` 和 `webui/dist/` 放在同一套目录结构内后，直接双击 `frps.exe` 就能启动本地管理面。
+`frps` 启动时不需要任何参数，始终读取当前工作目录下的 `data/config.json`。因此在 Windows 下只要当前工作目录里存在 `data/config.json` 和 `webui/dist/`，直接启动 `frps.exe` 就能加载本地管理面。
 
 本地默认配置建议如下：
 

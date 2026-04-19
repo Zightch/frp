@@ -161,6 +161,7 @@ code {
 }
 
 .hero-grid,
+.management-hero-grid,
 .panel-grid,
 .metric-grid {
   display: grid;
@@ -169,6 +170,10 @@ code {
 
 .hero-grid {
   grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.9fr);
+}
+
+.management-hero-grid {
+  grid-template-columns: minmax(0, 1.5fr) minmax(260px, 0.9fr);
 }
 
 .metric-grid {
@@ -218,6 +223,60 @@ code {
 
 .panel-header {
   font-weight: 600;
+}
+
+.management-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.management-card-copy {
+  margin: 8px 0 0;
+  color: var(--muted);
+  max-width: 58ch;
+}
+
+.management-table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.management-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.management-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+.management-form-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.secret-panel {
+  margin-top: 16px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(32, 88, 72, 0.12);
+  background: rgba(248, 252, 249, 0.9);
+  overflow-x: auto;
+}
+
+.secret-code {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: transparent;
+  padding: 0;
 }
 
 .panel-list {
@@ -303,8 +362,10 @@ code {
   }
 
   .hero-grid,
+  .management-hero-grid,
   .panel-grid,
-  .auth-layout {
+  .auth-layout,
+  .management-form-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -315,5 +376,9 @@ code {
 
   .auth-page {
     padding: 16px;
+  }
+
+  .management-card-header {
+    flex-direction: column;
   }
 }

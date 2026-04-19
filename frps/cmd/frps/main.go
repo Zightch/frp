@@ -44,13 +44,13 @@ func main() {
 }
 
 func resolveConfigPath() (string, error) {
-	executablePath, err := os.Executable()
+	workingDir, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	return configPathForExecutable(executablePath), nil
+	return configPathForWorkingDir(workingDir), nil
 }
 
-func configPathForExecutable(executablePath string) string {
-	return filepath.Join(filepath.Dir(executablePath), "data", "config.json")
+func configPathForWorkingDir(workingDir string) string {
+	return filepath.Join(workingDir, "data", "config.json")
 }

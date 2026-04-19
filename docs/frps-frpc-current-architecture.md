@@ -74,7 +74,7 @@ flowchart TB
 
 主要职责：
 
-- `cmd/frps/main.go`：零参数启动，固定读取可执行文件同级 `data/config.json`，加载配置和日志，启动 `app.App`。
+- `cmd/frps/main.go`：零参数启动，固定读取当前工作目录下的 `data/config.json`，加载配置和日志，启动 `app.App`。
 - `internal/app`：打开数据库，执行当前必需表建表 / 校验，并并发启动管理面和控制面。
 - `internal/api`：提供内嵌 WebUI、健康检查、分组 CRUD、隧道 CRUD、token 重置。
 - `internal/control`：处理 `frpc` 登录、challenge/response、单分组单客户端槽位、配置下发、心跳和 TCP stream 转发。

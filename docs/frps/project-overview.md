@@ -15,7 +15,7 @@
 
 截至 2026-04-18，`frps` 已经落地的第一阶段能力包括：
 
-- `cmd/frps` 启动入口，零参数启动并固定读取可执行文件同级 `data/config.json`
+- `cmd/frps` 启动入口，零参数启动并固定读取当前工作目录下的 `data/config.json`
 - `internal/config` 基础配置加载、默认值和校验
 - `internal/logging` 结构化日志
 - `internal/api` 最小管理端 HTTP 服务，当前提供 `/`、`/healthz`、`/readyz`、`/api/v1/healthz`
@@ -154,7 +154,7 @@ frps/
 
 当前实现中的启动顺序如下：
 
-1. 零参数启动并读取可执行文件同级 `data/config.json`。
+1. 零参数启动并读取当前工作目录下的 `data/config.json`。
 2. 初始化日志。
 3. 按数据库类型打开 SQLite/MySQL 连接。
 4. 执行内嵌 schema bootstrap、版本检查和表结构校验；校验失败立即退出。

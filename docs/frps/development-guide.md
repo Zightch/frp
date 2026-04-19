@@ -232,7 +232,7 @@ pkg/
 当前首版约定：
 
 - 当前已建立 `frps/webui/` 独立工程，技术栈固定为 Vue 3 + Vite + TypeScript + Element Plus。
-- 当前服务端固定从可执行文件同级 `data/config.json` 读取启动配置，并从其中的 `webui.dist_dir` 直接托管 `frps/webui/dist/`。
+- 当前服务端固定从当前工作目录下的 `data/config.json` 读取启动配置，并从其中的 `webui.dist_dir` 直接托管 `frps/webui/dist/`。
 - 登录不新增 `admins` 表，统一走 `auth.json` 初始化和一次性盐 challenge。
 - 当前阶段先打通初始化与登录闭环，再迁移分组和隧道 CRUD，不先做 WebSocket 和管理仪表盘。
 - `VITE_MANAGEMENT_API_TARGET` 默认指向 `http://127.0.0.1:7500`，本地联调时按此约定接线。

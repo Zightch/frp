@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-func TestConfigPathForExecutable(t *testing.T) {
+func TestConfigPathForWorkingDir(t *testing.T) {
 	t.Parallel()
 
-	executablePath := filepath.Join("C:\\", "runtime", "frps", "frps.exe")
+	workingDir := filepath.Join("C:\\", "runtime", "frps")
 	want := filepath.Join("C:\\", "runtime", "frps", "data", "config.json")
 
-	if got := configPathForExecutable(executablePath); got != want {
+	if got := configPathForWorkingDir(workingDir); got != want {
 		t.Fatalf("unexpected config path: got %q want %q", got, want)
 	}
 }

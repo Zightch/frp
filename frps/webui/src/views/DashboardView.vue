@@ -12,10 +12,11 @@ const { authenticated, initialized, lastError, ready } = storeToRefs(authStore);
   <section class="page-stack">
     <div class="hero-grid">
       <el-card class="hero-card hero-card--feature">
-        <p class="page-eyebrow">Phase 3 已落地</p>
-        <h2 class="page-title">管理密钥初始化与 challenge 登录闭环已接通</h2>
+        <p class="page-eyebrow">Phase 4 已落地</p>
+        <h2 class="page-title">管理密钥登录与核心 CRUD 已接通</h2>
         <p class="page-copy">
-          当前 WebUI 已具备初始化管理密钥、恢复管理会话、登录、登出、路由守卫和未授权自动回跳能力。下一步进入分组与隧道管理页面迁移。
+          当前 WebUI 已具备初始化管理密钥、恢复管理会话、登录、登出、路由守卫，以及分组/隧道最小 CRUD。
+          下一步进入完整联调与一键启动闭环验证。
         </p>
 
         <div class="hero-actions">
@@ -94,9 +95,9 @@ const { authenticated, initialized, lastError, ready } = storeToRefs(authStore);
         </template>
 
         <ul class="panel-list">
-          <li>迁移 proxy-groups 列表、创建、编辑、删除和 token 重置。</li>
-          <li>迁移 tunnels 列表、创建、编辑和删除。</li>
-          <li>最终把构建产物嵌入到 frps 服务端。</li>
+          <li>验证管理密钥初始化、challenge 登录和会话恢复闭环。</li>
+          <li>验证分组 CRUD、token 重置与隧道 CRUD 的端到端流程。</li>
+          <li>验证直接启动 frps.exe 时的固定 data/config.json 一键启动路径。</li>
         </ul>
       </el-card>
     </div>
