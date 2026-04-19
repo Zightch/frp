@@ -498,3 +498,5 @@ python test/e2e_management_webui.py
 - 同一公网客户端后续 datagram 会复用既有 `sessionId`；`frps` 也已支持把来自 `frpc` 的 `udp.data` 按 `sessionId` 回写给对应公网客户端
 - `frps` 已在公网收包和 `frpc` 回包路径刷新 UDP session 活跃时间，并固定向 `frpc` 下发 `30s` idle timeout 元数据，为后续 cleanup 收口复用
 - 已新增 `frps/internal/control/server_test.go` 的 UDP listener/session 回归测试，覆盖首包建会话、同客户端 session 复用和公网回包写出；`go test ./...` 已在 `frps/` 模块通过
+- `frpc` 已按 `sessionId` 建立真实本地 `UDPConn`，把来自 `frps` 的 `udp.data` 写入本地 UDP 服务，并把本地 UDP 回包按原 `sessionId` 回发给 `frps`
+- `frpc` 当前只在收到 `udp.close`、本地不可恢复错误或控制会话结束时释放本地 UDP session，不做本地 idle timer；已新增 `frpc/internal/client/client_test.go` 的 UDP happy path 回归测试，`go test ./...` 已在 `frpc/` 模块通过

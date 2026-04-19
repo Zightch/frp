@@ -1,16 +1,21 @@
 package client
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
+	"sync"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
 type localUDPSession struct {
-	target string
-	open   protocol.UDPOpen
+	conn      *net.UDPConn
+	target    string
+	open      protocol.UDPOpen
+	closeOnce sync.Once
 }
 
 func (c *Client) handleUDPOpen(conn net.Conn, state *sessionState, frame protocol.Frame) error {
@@ -31,13 +36,27 @@ func (c *Client) handleUDPOpen(conn net.Conn, state *sessionState, frame protoco
 		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonProtocolError, err.Error())
 	}
 
+	localAddr, err := net.ResolveUDPAddr("udp", target)
+	if err != nil {
+		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonLocalDialFailed, err.Error())
+	}
+
+	localConn, err := net.DialUDP("udp", nil, localAddr)
+	if err != nil {
+		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonLocalDialFailed, err.Error())
+	}
+
 	udpSession := &localUDPSession{
+		conn:   localConn,
 		target: target,
 		open:   open,
 	}
 	if !state.addUDPSession(frame.StreamID, udpSession) {
+		udpSession.close()
 		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonProtocolError, fmt.Sprintf("udp session %d already exists", frame.StreamID))
 	}
+
+	go c.copyLocalUDPToServer(conn, state, frame.StreamID, udpSession)
 	return nil
 }
 
@@ -57,10 +76,19 @@ func (c *Client) handleUDPData(conn net.Conn, state *sessionState, frame protoco
 		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonProtocolError, "udp session not found")
 	}
 
-	// The actual local UDP forwarding path is added in the next step.
-	_ = udpSession
-	state.closeUDPSession(frame.StreamID)
-	return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonProtocolError, "udp session not ready")
+	n, err := udpSession.conn.Write(frame.Body)
+	if err == nil && n == len(frame.Body) {
+		return nil
+	}
+
+	message := fmt.Sprintf("short udp write: %d/%d", n, len(frame.Body))
+	if err != nil {
+		message = err.Error()
+	}
+	if state.closeUDPSession(frame.StreamID) {
+		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonWriteError, message)
+	}
+	return nil
 }
 
 func (c *Client) handleUDPClose(state *sessionState, frame protocol.Frame) error {
@@ -114,22 +142,34 @@ func (s *sessionState) udpSession(sessionID uint32) *localUDPSession {
 
 func (s *sessionState) closeUDPSession(sessionID uint32) bool {
 	s.udpMu.Lock()
-	_, ok := s.udpSessions[sessionID]
+	udpSession, ok := s.udpSessions[sessionID]
 	if ok {
 		delete(s.udpSessions, sessionID)
 		s.activeUDPSessions.Add(^uint32(0))
 	}
 	s.udpMu.Unlock()
+
+	if !ok {
+		return false
+	}
+
+	udpSession.close()
 	return ok
 }
 
 func (s *sessionState) closeAllUDPSessions() {
 	s.udpMu.Lock()
+	sessions := make([]*localUDPSession, 0, len(s.udpSessions))
 	for sessionID := range s.udpSessions {
+		sessions = append(sessions, s.udpSessions[sessionID])
 		delete(s.udpSessions, sessionID)
 	}
 	s.activeUDPSessions.Store(0)
 	s.udpMu.Unlock()
+
+	for _, udpSession := range sessions {
+		udpSession.close()
+	}
 }
 
 func (s *sessionState) localUDPTarget(open protocol.UDPOpen) (string, error) {
@@ -162,4 +202,48 @@ func (s *sessionState) localUDPTarget(open protocol.UDPOpen) (string, error) {
 	}
 
 	return net.JoinHostPort(host, strconv.Itoa(localPort)), nil
+}
+
+func (c *Client) copyLocalUDPToServer(conn net.Conn, state *sessionState, sessionID uint32, udpSession *localUDPSession) {
+	buffer := make([]byte, protocol.MaxDataBodyLen)
+	for {
+		n, err := udpSession.conn.Read(buffer)
+		if n > 0 {
+			payload := append([]byte(nil), buffer[:n]...)
+			writeErr := c.writeMessage(conn, &state.writeMu, protocol.Frame{
+				Type:     protocol.TypeUDPData,
+				StreamID: sessionID,
+				Body:     payload,
+			})
+			if writeErr != nil {
+				state.closeUDPSession(sessionID)
+				return
+			}
+		}
+
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
+
+		reasonCode := protocol.CloseReasonReadError
+		message := err.Error()
+		if errors.Is(err, io.EOF) {
+			reasonCode = protocol.CloseReasonEOF
+			message = "eof"
+		}
+
+		if state.closeUDPSession(sessionID) {
+			_ = c.sendUDPClose(conn, state, sessionID, reasonCode, message)
+		}
+		return
+	}
+}
+
+func (s *localUDPSession) close() {
+	s.closeOnce.Do(func() {
+		_ = s.conn.Close()
+	})
 }

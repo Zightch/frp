@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -469,6 +470,148 @@ func TestClientReadLoopHandlesUDPOpenAndClose(t *testing.T) {
 	})
 
 	deadline = time.Now().Add(time.Second)
+	for state.activeUDPSessions.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("udp session was not closed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	_ = clientConn.Close()
+
+	select {
+	case err := <-readDone:
+		if err != nil && !isNetClosed(err) {
+			t.Fatalf("read loop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("read loop did not exit")
+	}
+}
+
+func TestClientReadLoopForwardsUDPDatagramsToLocalService(t *testing.T) {
+	localServer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1").To4(), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp echo server: %v", err)
+	}
+	defer localServer.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		buffer := make([]byte, protocol.MaxDataBodyLen)
+		_ = localServer.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, addr, err := localServer.ReadFromUDP(buffer)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if string(buffer[:n]) != "ping" {
+			serverDone <- fmt.Errorf("unexpected udp request payload: %q", string(buffer[:n]))
+			return
+		}
+		if _, err := localServer.WriteToUDP([]byte("pong"), addr); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- nil
+	}()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	client := New(
+		appconfig.Config{
+			Server: "127.0.0.1:7000",
+			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-client",
+	)
+
+	localPort := uint16(localServer.LocalAddr().(*net.UDPAddr).Port)
+	state := newSessionState(1000)
+	state.setSnapshot(protocol.ConfigPush{
+		ConfigVersion: 1,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    9,
+				Protocol:    protocol.ProtocolUDP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: 21000,
+				RemoteEnd:   21000,
+				LocalHost:   mustHost(t, "127.0.0.1"),
+				LocalStart:  localPort,
+				LocalEnd:    localPort,
+			},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- client.readLoop(ctx, clientConn, state)
+	}()
+
+	openBody, err := protocol.MarshalUDPOpen(protocol.UDPOpen{
+		TunnelID:      9,
+		RemotePort:    21000,
+		ClientAddr:    protocol.SockAddr{IP: net.ParseIP("203.0.113.11").To4(), Port: 40001},
+		IdleTimeoutMs: 30000,
+	})
+	if err != nil {
+		t.Fatalf("marshal udp.open: %v", err)
+	}
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:      protocol.TypeUDPOpen,
+		RequestID: 7,
+		StreamID:  33,
+		Body:      openBody,
+	})
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:     protocol.TypeUDPData,
+		StreamID: 33,
+		Body:     []byte("ping"),
+	})
+
+	responseFrame := readFrame(t, serverConn)
+	if responseFrame.Type != protocol.TypeUDPData {
+		t.Fatalf("expected udp.data, got %s", responseFrame.Type.String())
+	}
+	if responseFrame.StreamID != 33 {
+		t.Fatalf("unexpected udp session id: %d", responseFrame.StreamID)
+	}
+	if string(responseFrame.Body) != "pong" {
+		t.Fatalf("unexpected udp response payload: %q", string(responseFrame.Body))
+	}
+
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatalf("udp local server: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("udp local server did not exit")
+	}
+
+	closeBody, err := protocol.MarshalUDPClose(protocol.UDPClose{
+		ReasonCode: protocol.CloseReasonIdleTimeout,
+		Initiator:  protocol.InitiatorFRPS,
+		Message:    "cleanup",
+	})
+	if err != nil {
+		t.Fatalf("marshal udp.close: %v", err)
+	}
+	writeFrame(t, serverConn, protocol.Frame{
+		Type:     protocol.TypeUDPClose,
+		StreamID: 33,
+		Body:     closeBody,
+	})
+
+	deadline := time.Now().Add(time.Second)
 	for state.activeUDPSessions.Load() != 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("udp session was not closed")
