@@ -12,21 +12,21 @@ const { authenticated, initialized, lastError, ready } = storeToRefs(authStore);
   <section class="page-stack">
     <div class="hero-grid">
       <el-card class="hero-card hero-card--feature">
-        <p class="page-eyebrow">Phase 2 已落地</p>
-        <h2 class="page-title">Vue 3 + Vite + Element Plus 基础工程已接线</h2>
+        <p class="page-eyebrow">Phase 3 已落地</p>
+        <h2 class="page-title">管理密钥初始化与 challenge 登录闭环已接通</h2>
         <p class="page-copy">
-          当前阶段先完成工程骨架、依赖接入、路由、Pinia 和 Axios 基础封装。下一步进入真正的管理密钥初始化页与 challenge 登录页。
+          当前 WebUI 已具备初始化管理密钥、恢复管理会话、登录、登出、路由守卫和未授权自动回跳能力。下一步进入分组与隧道管理页面迁移。
         </p>
 
         <div class="hero-actions">
-          <RouterLink to="/init">
+          <RouterLink to="/proxy-groups">
             <el-button type="primary">
-              查看初始化页占位
+              进入分组管理
             </el-button>
           </RouterLink>
-          <RouterLink to="/login">
+          <RouterLink to="/tunnels">
             <el-button plain>
-              查看登录页占位
+              进入隧道管理
             </el-button>
           </RouterLink>
         </div>
@@ -82,7 +82,7 @@ const { authenticated, initialized, lastError, ready } = storeToRefs(authStore);
           <li>不再引入任何 admin/admins 账号体系。</li>
           <li>管理认证只依赖本地 auth.json 中保存的管理密钥 hash。</li>
           <li>浏览器登录固定走一次性盐 challenge proof。</li>
-          <li>当前页面仍以占位为主，真实表单和守卫在下一阶段补齐。</li>
+          <li>管理会话当前只保存在内存中，服务端重启后需要重新登录。</li>
         </ul>
       </el-card>
 
@@ -94,9 +94,9 @@ const { authenticated, initialized, lastError, ready } = storeToRefs(authStore);
         </template>
 
         <ul class="panel-list">
-          <li>实现 InitSecret 页面和密钥 hash 初始化提交。</li>
-          <li>实现 Login 页面与浏览器本地 proof 计算。</li>
-          <li>补齐路由守卫、Axios 会话失效处理和会话恢复。</li>
+          <li>迁移 proxy-groups 列表、创建、编辑、删除和 token 重置。</li>
+          <li>迁移 tunnels 列表、创建、编辑和删除。</li>
+          <li>最终把构建产物嵌入到 frps 服务端。</li>
         </ul>
       </el-card>
     </div>

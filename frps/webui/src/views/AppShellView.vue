@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { RouterLink } from "vue-router";
 import { storeToRefs } from "pinia";
+import { ElMessage } from "element-plus";
+import { useRouter } from "vue-router";
 
 import { useAuthStore } from "@/stores/auth";
 
+const router = useRouter();
 const authStore = useAuthStore();
-const { authenticated, expiresAt, initialized, loading, ready } = storeToRefs(authStore);
+const { authenticated, expiresAt, initialized, lastError, loading, loggingOut, ready } = storeToRefs(authStore);
 
 const authStatusLabel = computed(() => {
   if (!ready.value || loading.value) {
@@ -33,6 +35,31 @@ const authStatusType = computed(() => {
   }
   return "info";
 });
+
+const formattedExpiry = computed(() => {
+  if (!expiresAt.value) {
+    return "";
+  }
+
+  const date = new Date(expiresAt.value);
+  if (Number.isNaN(date.getTime())) {
+    return expiresAt.value;
+  }
+
+  return date.toLocaleString("zh-CN", {
+    hour12: false,
+  });
+});
+
+async function handleRefresh(): Promise<void> {
+  await authStore.bootstrap(true);
+}
+
+async function handleLogout(): Promise<void> {
+  await authStore.logout();
+  ElMessage.success("已退出管理会话。");
+  await router.replace({ name: "login" });
+}
 </script>
 
 <template>
@@ -72,12 +99,37 @@ const authStatusType = computed(() => {
           v-if="authenticated && expiresAt"
           class="shell-expiry"
         >
-          到期 {{ expiresAt }}
+          到期 {{ formattedExpiry }}
         </span>
+        <div class="shell-actions">
+          <el-button
+            plain
+            :disabled="loggingOut"
+            @click="handleRefresh"
+          >
+            刷新状态
+          </el-button>
+          <el-button
+            type="danger"
+            plain
+            :loading="loggingOut"
+            @click="handleLogout"
+          >
+            退出登录
+          </el-button>
+        </div>
       </div>
     </header>
 
     <main class="shell-main">
+      <el-alert
+        v-if="lastError"
+        class="shell-alert"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="lastError"
+      />
       <RouterView />
     </main>
   </div>

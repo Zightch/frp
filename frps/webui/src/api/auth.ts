@@ -2,7 +2,7 @@ import { http } from "@/api/http";
 
 type AuthResponseShape = {
   initialized: boolean;
-  authenticated: boolean;
+  authenticated?: boolean;
   expires_at?: string;
 };
 
@@ -32,20 +32,28 @@ export type LoginPayload = {
 function normalizeAuthResponse(payload: AuthResponseShape): AuthStateResponse {
   return {
     initialized: payload.initialized,
-    authenticated: payload.authenticated,
+    authenticated: payload.authenticated ?? false,
     expiresAt: payload.expires_at,
   };
 }
 
 export async function fetchAuthState(): Promise<AuthStateResponse> {
-  const response = await http.get<AuthResponseShape>("/auth/state");
+  const response = await http.get<AuthResponseShape>("/auth/state", {
+    skipAuthRedirect: true,
+  });
   return normalizeAuthResponse(response.data);
 }
 
 export async function initializeManagementSecret(payload: InitSecretPayload): Promise<AuthStateResponse> {
-  const response = await http.post<AuthResponseShape>("/auth/init", {
-    key_hash: payload.keyHash,
-  });
+  const response = await http.post<AuthResponseShape>(
+    "/auth/init",
+    {
+      key_hash: payload.keyHash,
+    },
+    {
+      skipAuthRedirect: true,
+    },
+  );
   return normalizeAuthResponse(response.data);
 }
 
@@ -54,7 +62,13 @@ export async function requestLoginChallenge(): Promise<AuthChallengeResponse> {
     challenge_id: string;
     salt: string;
     expires_at: string;
-  }>("/auth/challenge");
+  }>(
+    "/auth/challenge",
+    undefined,
+    {
+      skipAuthRedirect: true,
+    },
+  );
 
   return {
     challengeId: response.data.challenge_id,
@@ -64,18 +78,32 @@ export async function requestLoginChallenge(): Promise<AuthChallengeResponse> {
 }
 
 export async function loginWithProof(payload: LoginPayload): Promise<AuthSessionResponse> {
-  const response = await http.post<AuthResponseShape>("/auth/login", {
-    challenge_id: payload.challengeId,
-    proof: payload.proof,
-  });
+  const response = await http.post<AuthResponseShape>(
+    "/auth/login",
+    {
+      challenge_id: payload.challengeId,
+      proof: payload.proof,
+    },
+    {
+      skipAuthRedirect: true,
+    },
+  );
   return normalizeAuthResponse(response.data);
 }
 
 export async function fetchAuthSession(): Promise<AuthSessionResponse> {
-  const response = await http.get<AuthResponseShape>("/auth/session");
+  const response = await http.get<AuthResponseShape>("/auth/session", {
+    skipAuthRedirect: true,
+  });
   return normalizeAuthResponse(response.data);
 }
 
 export async function logoutManagementSession(): Promise<void> {
-  await http.post("/auth/logout");
+  await http.post(
+    "/auth/logout",
+    undefined,
+    {
+      skipAuthRedirect: true,
+    },
+  );
 }

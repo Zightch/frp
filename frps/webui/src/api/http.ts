@@ -1,5 +1,15 @@
 import axios from "axios";
 
+declare module "axios" {
+  interface AxiosRequestConfig<D = any> {
+    skipAuthRedirect?: boolean;
+  }
+
+  interface InternalAxiosRequestConfig<D = any> {
+    skipAuthRedirect?: boolean;
+  }
+}
+
 export class ApiError extends Error {
   readonly status?: number;
 
@@ -10,10 +20,23 @@ export class ApiError extends Error {
   }
 }
 
+type UnauthorizedHandler = (error: ApiError) => void | Promise<void>;
+
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler;
+}
+
 export const http = axios.create({
   baseURL: "/api/v1",
   timeout: 10000,
   withCredentials: true,
+});
+
+http.interceptors.request.use((config) => {
+  config.headers.set("Accept", "application/json");
+  return config;
 });
 
 http.interceptors.response.use(
@@ -26,7 +49,12 @@ http.interceptors.response.use(
           ? payload.error
           : error.message || "request failed";
 
-      return Promise.reject(new ApiError(message, error.response?.status));
+      const apiError = new ApiError(message, error.response?.status);
+      if (apiError.status === 401 && !error.config?.skipAuthRedirect && unauthorizedHandler) {
+        void unauthorizedHandler(apiError);
+      }
+
+      return Promise.reject(apiError);
     }
 
     return Promise.reject(error);
