@@ -1,6 +1,7 @@
 package control
 
 import (
+	"fmt"
 	"net"
 	"time"
 
@@ -54,4 +55,37 @@ func (s *Server) handlePublicConnection(controlConn net.Conn, logger Logger, ses
 	}
 
 	go s.copyPublicToClient(controlConn, session, streamID, stream)
+}
+
+func (s *Server) handleStreamOpened(conn net.Conn, session *sessionState, frame protocol.Frame) error {
+	if frame.RequestID == 0 {
+		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "stream.opened requestId must be non-zero")
+	}
+	if frame.StreamID == 0 {
+		return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeProtocolBadBody, "stream.opened streamId must be non-zero")
+	}
+
+	opened, err := protocol.UnmarshalStreamOpened(frame.Body)
+	if err != nil {
+		return s.replyProtocolErrorWithSession(conn, session, frame, err)
+	}
+
+	stream := session.publicStream(frame.StreamID)
+	if stream == nil {
+		return s.sendStreamClose(conn, session, frame.StreamID, protocol.CloseReasonProtocolError, "stream not found")
+	}
+	if frame.RequestID != stream.openRequestID {
+		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unexpected stream.opened requestId %d", frame.RequestID)
+	}
+
+	switch opened.Status {
+	case protocol.StatusOK:
+		stream.signalReady(nil)
+	case protocol.StatusError:
+		stream.signalReady(fmt.Errorf("%s", opened.Message))
+	default:
+		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unsupported stream.opened status %d", opened.Status)
+	}
+
+	return nil
 }
