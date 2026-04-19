@@ -477,12 +477,6 @@ func (s *Server) pushConfig(conn net.Conn, session *sessionState) error {
 	})
 }
 
-func (s *Server) writeFrameWithSession(conn net.Conn, session *sessionState, frame protocol.Frame) error {
-	session.writeMu.Lock()
-	defer session.writeMu.Unlock()
-	return s.writeFrame(conn, frame)
-}
-
 func (s *Server) writeFramesWithSession(conn net.Conn, session *sessionState, frames ...protocol.Frame) error {
 	session.writeMu.Lock()
 	defer session.writeMu.Unlock()

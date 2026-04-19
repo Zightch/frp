@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
 const initialServerRequestID = uint32(1 << 31)
@@ -51,4 +53,10 @@ func (s *sessionState) closeDone() {
 	s.shutdownOnce.Do(func() {
 		close(s.done)
 	})
+}
+
+func (s *Server) writeFrameWithSession(conn net.Conn, session *sessionState, frame protocol.Frame) error {
+	session.writeMu.Lock()
+	defer session.writeMu.Unlock()
+	return s.writeFrame(conn, frame)
 }

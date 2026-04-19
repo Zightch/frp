@@ -43,13 +43,12 @@
 ## 当前子步骤细分
 
 - 当前正在推进：把 `frps/internal/control/server.go` 中最核心的 session 壳先迁到 `session.go`，继续收束 `control` 包的职责边界。
-1. 先只迁移 `(*Server).writeFrameWithSession` 到 `session.go`，保持 session 写锁语义和单帧写入路径不变。
-2. 再单独迁移 `(*Server).writeFramesWithSession` 到 `session.go`，保持多帧写入顺序和复用关系不变。
-3. 再单独迁移 `(*Server).replyProtocolErrorWithSession` 到 `session.go`，保持错误码和回复路径不变。
-4. 再单独迁移 `(*Server).replyErrorWithSession` 到 `session.go`，保持通用错误回复行为不变。
-5. 最后单独迁移 `(*Server).writeErrorWithSession` 到 `session.go`，保持日志和写回路径不变。
-6. 运行 `go test ./internal/control`，确认 `server.go` 继续缩责后行为不变，再决定是否继续收窄其它内容。
+1. 先只迁移 `(*Server).writeFramesWithSession` 到 `session.go`，保持多帧写入顺序和复用关系不变。
+2. 再单独迁移 `(*Server).replyProtocolErrorWithSession` 到 `session.go`，保持错误码和回复路径不变。
+3. 再单独迁移 `(*Server).replyErrorWithSession` 到 `session.go`，保持通用错误回复行为不变。
+4. 最后单独迁移 `(*Server).writeErrorWithSession` 到 `session.go`，保持日志和写回路径不变。
+5. 运行 `go test ./internal/control`，确认 `server.go` 继续缩责后行为不变，再决定是否继续收窄其它内容。
 
 ## 当前唯一下一步
 
-- 先只把 `(*Server).writeFrameWithSession` 迁移到 `frps/internal/control/session.go`；不移动 `writeFramesWithSession`、不移动任何错误辅助，不改任何调用点，不改行为。
+- 先只把 `(*Server).writeFramesWithSession` 迁移到 `frps/internal/control/session.go`；不移动任何错误辅助，不改任何调用点，不改行为。
