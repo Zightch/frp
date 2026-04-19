@@ -1,0 +1,241 @@
+:root {
+  color-scheme: light;
+  font-family: "Aptos", "Bahnschrift", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #17212b;
+  background:
+    radial-gradient(circle at top left, rgba(242, 209, 150, 0.42), transparent 28%),
+    radial-gradient(circle at 80% 20%, rgba(105, 165, 145, 0.18), transparent 26%),
+    linear-gradient(180deg, #f8f2e8 0%, #ecf3ef 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --page-width: 1180px;
+  --surface: rgba(255, 252, 247, 0.84);
+  --surface-strong: rgba(255, 255, 255, 0.92);
+  --line: rgba(32, 57, 48, 0.12);
+  --ink: #17212b;
+  --muted: #5f6c78;
+  --brand: #205848;
+  --brand-soft: rgba(32, 88, 72, 0.08);
+  --warm: #b76c2d;
+  --shadow: 0 24px 60px rgba(28, 40, 31, 0.12);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+code {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  padding: 0.12rem 0.35rem;
+  border-radius: 0.45rem;
+  background: rgba(23, 33, 43, 0.06);
+}
+
+.glass-panel {
+  border: 1px solid var(--line);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--shadow);
+}
+
+.shell-page {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.shell-header {
+  width: min(100%, var(--page-width));
+  margin: 0 auto 24px;
+  padding: 22px 24px;
+  border-radius: 28px;
+  background: rgba(255, 249, 240, 0.72);
+  display: grid;
+  gap: 18px;
+}
+
+.shell-eyebrow,
+.page-eyebrow {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--warm);
+}
+
+.shell-title,
+.page-title {
+  margin: 0;
+  letter-spacing: -0.03em;
+}
+
+.shell-title {
+  font-size: clamp(2rem, 4vw, 2.8rem);
+}
+
+.page-title {
+  font-size: clamp(1.6rem, 3vw, 2.25rem);
+}
+
+.page-copy {
+  margin: 14px 0 0;
+  color: var(--muted);
+  max-width: 62ch;
+}
+
+.shell-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.shell-link {
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid transparent;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease;
+}
+
+.shell-link:hover,
+.shell-link.router-link-active {
+  transform: translateY(-1px);
+  border-color: rgba(32, 88, 72, 0.18);
+  background: rgba(32, 88, 72, 0.1);
+}
+
+.shell-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.shell-expiry {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.shell-main {
+  width: min(100%, var(--page-width));
+  margin: 0 auto;
+}
+
+.page-stack {
+  display: grid;
+  gap: 20px;
+}
+
+.hero-grid,
+.panel-grid,
+.metric-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.hero-grid {
+  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.9fr);
+}
+
+.metric-grid {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+.panel-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hero-card,
+.metric-card {
+  border-radius: 26px;
+}
+
+.hero-card {
+  min-height: 100%;
+}
+
+.hero-card--feature {
+  background:
+    linear-gradient(135deg, rgba(255, 249, 240, 0.96) 0%, rgba(233, 244, 239, 0.96) 100%);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.metric-card {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.metric-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.metric-value {
+  display: block;
+  margin-top: 10px;
+  font-size: 1.5rem;
+}
+
+.panel-header {
+  font-weight: 600;
+}
+
+.panel-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+.panel-list li + li {
+  margin-top: 10px;
+}
+
+.narrow-panel {
+  max-width: 760px;
+}
+
+@media (max-width: 900px) {
+  .shell-page {
+    padding: 16px;
+  }
+
+  .hero-grid,
+  .panel-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shell-header {
+    padding: 18px;
+    border-radius: 22px;
+  }
+}

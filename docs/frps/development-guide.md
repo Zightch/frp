@@ -89,8 +89,10 @@ pkg/
 
 - Go 1.23 或更高版本
 - SQLite 3 或 MySQL 8.0
+- Node.js 20 或更高版本
+- npm 10 或更高版本
 
-当前极简 WebUI 首版不要求 Node.js、npm 或 pnpm；如果后续管理面复杂度真实上升，再评估是否引入独立前端工程。
+当前管理面已经进入独立前端工程阶段，`frps/webui/` 使用 Vue 3 + Vite + TypeScript。Windows PowerShell 如遇 `npm.ps1` 执行策略限制，可直接使用 `npm.cmd`。
 
 推荐本地开发环境：
 
@@ -121,17 +123,16 @@ pkg/
 
 ### 4.2 第二步：极简 WebUI 起步
 
-- 首版不引入独立前端工程。
-- 由 `frps management api` 直接返回一个内嵌静态 HTML 页面。
-- 页面只做最简单的列表、表单和按钮。
-- 页面只调用最小 JSON API，不先做 WebSocket。
-- 当前只覆盖 `proxy_groups` 和 `tunnels` 的数据库增删改查。
+- 已创建 `frps/webui/` 独立前端工程。
+- 当前服务端仍暂时返回一个内嵌占位 HTML 页面，直到后续阶段把 `webui/dist` 嵌入 `frps`。
+- 当前前端工程已接入 Vue Router、Pinia、Axios 和 Element Plus。
+- 当前页面仍以初始化/登录占位和业务页占位为主，真实表单与 CRUD 在后续阶段补齐。
 
 阶段目标：
 
-- 浏览器可打开管理页。
-- 可查看、创建、编辑、删除 `proxy_groups` / `tunnels`。
-- token 创建或重置时只在当次显示原值，数据库仍只保存 `token_id + token_hash`。
+- 能以独立前端工程方式启动管理面开发环境。
+- 能通过开发代理访问 `frps` 管理 API。
+- 为后续初始化页、登录页和分组/隧道迁移提供稳定骨架。
 
 ### 4.3 第三步：数据库
 
@@ -230,10 +231,11 @@ pkg/
 
 当前首版约定：
 
-- 首版优先内嵌在 `internal/api`，不急着建立 `frps/webui/` 独立工程。
-- 首版只做分组和隧道 CRUD，不做登录、不做 WebSocket、不做管理仪表盘。
-- 后续接入登录时，不新增 `admins` 表，统一走 `auth.json` 初始化和一次性盐 challenge。
-- 如果页面复杂度后续真实上升，再演进到独立前端目录。
+- 当前已建立 `frps/webui/` 独立工程，技术栈固定为 Vue 3 + Vite + TypeScript + Element Plus。
+- 当前服务端首页仍保留内嵌占位页；等 `dist/` 接入 `embed` 后，再切到真实前端静态资源。
+- 登录不新增 `admins` 表，统一走 `auth.json` 初始化和一次性盐 challenge。
+- 当前阶段先打通初始化与登录闭环，再迁移分组和隧道 CRUD，不先做 WebSocket 和管理仪表盘。
+- `VITE_MANAGEMENT_API_TARGET` 默认指向 `http://127.0.0.1:7500`，本地联调时按此约定接线。
 
 后续如需独立前端工程，可参考目录：
 

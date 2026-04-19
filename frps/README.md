@@ -64,6 +64,37 @@ curl http://127.0.0.1:7500/api/v1/healthz
 
 管理 CRUD 接口已经要求有效管理会话。
 
+## WebUI 开发
+
+当前仓库已创建独立前端工程 `frps/webui/`，用于后续管理密钥初始化、challenge 登录以及分组/隧道管理页面迁移。
+
+首次安装依赖：
+
+```powershell
+cd frps/webui
+npm.cmd install
+```
+
+如当前 PowerShell 未限制脚本执行，也可以直接使用 `npm install`。
+
+启动前端开发环境：
+
+```powershell
+cd frps/webui
+npm.cmd run dev
+```
+
+Vite 默认通过开发代理把 `/api`、`/healthz`、`/readyz` 转发到 `http://127.0.0.1:7500`。如需改到其他管理端地址，可设置环境变量 `VITE_MANAGEMENT_API_TARGET`。
+
+执行前端构建：
+
+```powershell
+cd frps/webui
+npm.cmd run build
+```
+
+构建产物输出到 `frps/webui/dist/`，后续阶段会再把该目录嵌入到 `frps` 管理端服务中。
+
 空库会在启动时自动创建当前必需表；如果现有 SQLite/MySQL 表结构与服务内置 schema 不一致，`frps` 会直接退出，避免带着错误库结构继续运行。当前开发阶段不做数据库 schema 兼容或自动迁移。
 `internal/storage/sql.go` 仍只负责统一封装数据库对象，不承载驱动打开和 schema 迁移逻辑。
 当前 `sql.go` 已支持：
