@@ -117,12 +117,6 @@ func (s *sessionState) closePublicStream(streamID uint32) bool {
 	return true
 }
 
-func (s *publicStream) close() {
-	s.closeOnce.Do(func() {
-		_ = s.conn.Close()
-	})
-}
-
 type Logger interface {
 	Info(msg string, args ...any)
 	Warn(msg string, args ...any)

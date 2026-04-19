@@ -192,3 +192,9 @@ func (s *publicStream) signalReady(err error) {
 		s.ready <- err
 	})
 }
+
+func (s *publicStream) close() {
+	s.closeOnce.Do(func() {
+		_ = s.conn.Close()
+	})
+}
