@@ -43,16 +43,21 @@ func (a *App) Run(parent context.Context) error {
 		return err
 	}
 
-	a.api = api.NewServer(
+	apiServer, err := api.NewServer(
 		api.Options{
 			Addr:              a.config.ManagementListenAddr,
 			ReadHeaderTimeout: a.config.ReadHeaderTimeoutDuration(),
 			Store:             a.store,
 			Auth:              a.auth,
+			WebUIDistDir:      a.config.WebUI.DistDir,
 		},
 		a.logger.With("subsystem", "api"),
 		a.version,
 	)
+	if err != nil {
+		return fmt.Errorf("init management api: %w", err)
+	}
+	a.api = apiServer
 	a.control = control.NewServer(
 		control.Options{
 			Addr:        a.config.ControlListenAddr,
@@ -81,6 +86,7 @@ func (a *App) Run(parent context.Context) error {
 		"frps started",
 		"control_addr", a.config.ControlListenAddr,
 		"management_addr", a.config.ManagementListenAddr,
+		"webui_dist_dir", a.config.WebUI.DistDir,
 		"version", a.version,
 	)
 

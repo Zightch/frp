@@ -54,7 +54,7 @@ flowchart TB
     App --> API[internal/api Server]
     App --> Control[internal/control Server]
 
-    API --> WebUI[embedded indexHTML]
+    API --> WebUI[configured webui.dist_dir static assets]
     API --> Mgmt[managementService]
     Mgmt --> Store
 

@@ -22,7 +22,7 @@ import (
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	server := NewServer(
+	server, err := NewServer(
 		Options{
 			Addr:              "127.0.0.1:7500",
 			ReadHeaderTimeout: 5 * time.Second,
@@ -31,6 +31,9 @@ func TestHealthEndpoint(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		"test",
 	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	recorder := httptest.NewRecorder()
@@ -61,7 +64,7 @@ func TestAuthInitializationLoginAndSessionEndpoints(t *testing.T) {
 		t.Fatalf("new auth manager: %v", err)
 	}
 
-	server := NewServer(
+	server, err := NewServer(
 		Options{
 			Addr:              "127.0.0.1:7500",
 			ReadHeaderTimeout: 5 * time.Second,
@@ -71,6 +74,9 @@ func TestAuthInitializationLoginAndSessionEndpoints(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		"test",
 	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -271,7 +277,7 @@ func TestManagementKeySmokeFlow(t *testing.T) {
 		t.Fatalf("new auth manager: %v", err)
 	}
 
-	server := NewServer(
+	server, err := NewServer(
 		Options{
 			Addr:              "127.0.0.1:7500",
 			ReadHeaderTimeout: 5 * time.Second,
@@ -281,6 +287,9 @@ func TestManagementKeySmokeFlow(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		"test",
 	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
@@ -429,6 +438,71 @@ func TestManagementKeySmokeFlow(t *testing.T) {
 	)
 }
 
+func TestWebUIHandlerServesStaticFilesAndSPAFallback(t *testing.T) {
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Auth:              newTestAuthManager(t, false),
+			WebUIDistDir:      newTestWebUIDist(t),
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	indexRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(indexRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if indexRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected index status: %d body=%s", indexRecorder.Code, indexRecorder.Body.String())
+	}
+	if !bytes.Contains(indexRecorder.Body.Bytes(), []byte(`<div id="app"></div>`)) {
+		t.Fatalf("unexpected index body: %s", indexRecorder.Body.String())
+	}
+
+	assetRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(assetRecorder, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if assetRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected asset status: %d body=%s", assetRecorder.Code, assetRecorder.Body.String())
+	}
+	if assetRecorder.Body.String() != "console.log('webui-ok');" {
+		t.Fatalf("unexpected asset body: %s", assetRecorder.Body.String())
+	}
+
+	spaRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(spaRecorder, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if spaRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected spa status: %d body=%s", spaRecorder.Code, spaRecorder.Body.String())
+	}
+	if !bytes.Contains(spaRecorder.Body.Bytes(), []byte(`<div id="app"></div>`)) {
+		t.Fatalf("unexpected spa body: %s", spaRecorder.Body.String())
+	}
+
+	missingAssetRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(missingAssetRecorder, httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil))
+	if missingAssetRecorder.Code != http.StatusNotFound {
+		t.Fatalf("unexpected missing asset status: %d body=%s", missingAssetRecorder.Code, missingAssetRecorder.Body.String())
+	}
+}
+
+func TestNewServerRejectsMissingWebUIDistDir(t *testing.T) {
+	_, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Auth:              newTestAuthManager(t, false),
+			WebUIDistDir:      filepath.Join(t.TempDir(), "missing-dist"),
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err == nil {
+		t.Fatal("expected missing webui dist dir to fail")
+	}
+}
+
 func newTestStore(t *testing.T) *storage.SQL {
 	t.Helper()
 
@@ -503,6 +577,26 @@ CREATE TABLE tunnels (
 	}
 
 	return store
+}
+
+func newTestWebUIDist(t *testing.T) string {
+	t.Helper()
+
+	distDir := filepath.Join(t.TempDir(), "dist")
+	assetsDir := filepath.Join(distDir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("create webui dist dir: %v", err)
+	}
+
+	indexHTML := `<!doctype html><html lang="zh-CN"><body><div id="app"></div><script type="module" src="/assets/app.js"></script></body></html>`
+	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte(indexHTML), 0o644); err != nil {
+		t.Fatalf("write webui index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsDir, "app.js"), []byte("console.log('webui-ok');"), 0o644); err != nil {
+		t.Fatalf("write webui asset: %v", err)
+	}
+
+	return distDir
 }
 
 func newTestAuthManager(t *testing.T, initialize bool) *authn.Manager {

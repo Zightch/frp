@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 
 	"github.com/zightch/frp/frps/internal/app"
 	"github.com/zightch/frp/frps/internal/config"
@@ -29,6 +30,10 @@ func main() {
 		return
 	}
 
+	if configPath == "" {
+		configPath = discoverConfigPath()
+	}
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
@@ -49,4 +54,26 @@ func main() {
 		logger.Error("frps exited with error", "error", err)
 		os.Exit(1)
 	}
+}
+
+func discoverConfigPath() string {
+	executablePath, err := os.Executable()
+	if err == nil {
+		candidate := filepath.Join(filepath.Dir(executablePath), "configs", "frps.json")
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+
+	candidate := filepath.Join(".", "configs", "frps.json")
+	if fileExists(candidate) {
+		return candidate
+	}
+
+	return ""
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }

@@ -1,6 +1,15 @@
 package api
 
-const indexHTML = `<!DOCTYPE html>
+import (
+	"fmt"
+	"net/http"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+)
+
+const placeholderIndexHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -82,3 +91,92 @@ const indexHTML = `<!DOCTYPE html>
 </body>
 </html>
 `
+
+func newWebUIHandler(distDir string) (http.Handler, error) {
+	distDir = strings.TrimSpace(distDir)
+	if distDir == "" {
+		return http.HandlerFunc(handlePlaceholderIndex), nil
+	}
+
+	info, err := os.Stat(distDir)
+	if err != nil {
+		return nil, fmt.Errorf("stat webui.dist_dir %q: %w", distDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("webui.dist_dir %q must be a directory", distDir)
+	}
+
+	indexPath := filepath.Join(distDir, "index.html")
+	indexInfo, err := os.Stat(indexPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat webui index %q: %w", indexPath, err)
+	}
+	if indexInfo.IsDir() {
+		return nil, fmt.Errorf("webui index %q must be a file", indexPath)
+	}
+
+	return &webUIHandler{
+		distDir:    distDir,
+		indexPath:  indexPath,
+		fileServer: http.FileServer(http.Dir(distDir)),
+	}, nil
+}
+
+type webUIHandler struct {
+	distDir    string
+	indexPath  string
+	fileServer http.Handler
+}
+
+func (h *webUIHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet && request.Method != http.MethodHead {
+		http.NotFound(writer, request)
+		return
+	}
+
+	if request.URL.Path == "/" {
+		h.serveIndex(writer, request)
+		return
+	}
+
+	cleanPath := path.Clean("/" + request.URL.Path)
+	relativePath := strings.TrimPrefix(cleanPath, "/")
+	if relativePath == "" || relativePath == "." {
+		h.serveIndex(writer, request)
+		return
+	}
+
+	targetPath := filepath.Join(h.distDir, filepath.FromSlash(relativePath))
+	info, err := os.Stat(targetPath)
+	switch {
+	case err == nil && info.IsDir():
+		http.NotFound(writer, request)
+		return
+	case err == nil:
+		h.fileServer.ServeHTTP(writer, request)
+		return
+	case !os.IsNotExist(err):
+		http.Error(writer, "webui asset lookup failed", http.StatusInternalServerError)
+		return
+	case path.Ext(cleanPath) != "":
+		http.NotFound(writer, request)
+		return
+	default:
+		h.serveIndex(writer, request)
+	}
+}
+
+func (h *webUIHandler) serveIndex(writer http.ResponseWriter, request *http.Request) {
+	http.ServeFile(writer, request, h.indexPath)
+}
+
+func handlePlaceholderIndex(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Path != "/" {
+		http.NotFound(writer, request)
+		return
+	}
+
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte(placeholderIndexHTML))
+}

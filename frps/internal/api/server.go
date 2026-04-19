@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -17,6 +18,7 @@ type Options struct {
 	ReadHeaderTimeout time.Duration
 	Store             *storage.SQL
 	Auth              *authn.Manager
+	WebUIDistDir      string
 }
 
 type Server struct {
@@ -26,19 +28,26 @@ type Server struct {
 	version   string
 	auth      *authn.Manager
 	manager   *managementService
+	webui     http.Handler
 }
 
-func NewServer(options Options, logger *slog.Logger, version string) *Server {
+func NewServer(options Options, logger *slog.Logger, version string) (*Server, error) {
+	webuiHandler, err := newWebUIHandler(options.WebUIDistDir)
+	if err != nil {
+		return nil, fmt.Errorf("init webui handler: %w", err)
+	}
+
 	srv := &Server{
 		logger:    logger,
 		startedAt: time.Now().UTC(),
 		version:   version,
 		auth:      options.Auth,
 		manager:   newManagementService(options.Store),
+		webui:     webuiHandler,
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", srv.handleIndex)
+	mux.Handle("/", srv.webui)
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/readyz", srv.handleHealth)
 	mux.HandleFunc("/api/v1/healthz", srv.handleHealth)
@@ -59,7 +68,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		ReadHeaderTimeout: options.ReadHeaderTimeout,
 	}
 
-	return srv
+	return srv, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -77,17 +86,6 @@ func (s *Server) ListenAndServe() error {
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
-}
-
-func (s *Server) handleIndex(writer http.ResponseWriter, request *http.Request) {
-	if request.URL.Path != "/" {
-		http.NotFound(writer, request)
-		return
-	}
-
-	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writer.WriteHeader(http.StatusOK)
-	_, _ = writer.Write([]byte(indexHTML))
 }
 
 func (s *Server) handleHealth(writer http.ResponseWriter, request *http.Request) {

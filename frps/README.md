@@ -17,7 +17,9 @@ cd frps
 go run ./cmd/frps
 ```
 
-使用自定义配置：
+启动时如果未显式传入 `--config`，程序会优先自动读取当前工作目录或可执行文件同级的 `configs/frps.json`；找不到时才退回内置默认配置。因此在 Windows 下把 `frps.exe`、`configs/frps.json` 和 `webui/dist/` 放在同一套目录结构内后，直接双击 `frps.exe` 就能启动本地管理面。
+
+显式指定配置文件也仍然支持：
 
 ```powershell
 cd frps
@@ -32,16 +34,23 @@ curl http://127.0.0.1:7500/readyz
 curl http://127.0.0.1:7500/api/v1/healthz
 ```
 
-数据库默认使用 SQLite 文件 `./data/frps.sqlite`。如需切换到 MySQL，可在配置中设置：
+数据库默认使用 SQLite 文件 `./data/frps.sqlite`。仓库内置的 `configs/frps.json` 也已改为本地 SQLite 与本地 WebUI `dist` 目录，适合直接本机启动。
+
+如需切换到 MySQL，可在配置中设置：
 
 ```json
 {
   "database": {
     "type": "mysql",
     "dsn": "frps:123456@tcp(staticplant.top:3306)/frps"
+  },
+  "webui": {
+    "dist_dir": "../webui/dist"
   }
 }
 ```
+
+`frps.json` 中的相对路径当前按配置文件所在目录解析，因此仓库默认配置里的 `../data/frps.sqlite` 与 `../webui/dist` 都是相对于 `frps/configs/` 生效。
 
 应用启动时会在上层按配置打开数据库，并自动执行当前必需表的建表与严格校验。
 当前第一阶段内置的核心表包括：
@@ -93,7 +102,7 @@ cd frps/webui
 npm.cmd run build
 ```
 
-构建产物输出到 `frps/webui/dist/`，后续阶段会再把该目录嵌入到 `frps` 管理端服务中。
+构建产物输出到 `frps/webui/dist/`。当前阶段 `frps` 管理端会直接读取配置中的 `webui.dist_dir` 并托管该目录，浏览器访问 `http://127.0.0.1:7500/` 即可进入初始化 / 登录页面。
 
 空库会在启动时自动创建当前必需表；如果现有 SQLite/MySQL 表结构与服务内置 schema 不一致，`frps` 会直接退出，避免带着错误库结构继续运行。当前开发阶段不做数据库 schema 兼容或自动迁移。
 `internal/storage/sql.go` 仍只负责统一封装数据库对象，不承载驱动打开和 schema 迁移逻辑。

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -18,6 +19,7 @@ const (
 	defaultLogFormat            = "text"
 	defaultDatabaseType         = "sqlite"
 	defaultDatabasePath         = "./data/frps.sqlite"
+	defaultWebUIDistDir         = "./webui/dist"
 )
 
 type Config struct {
@@ -26,6 +28,7 @@ type Config struct {
 	ReadHeaderTimeout    string         `json:"read_header_timeout"`
 	ShutdownTimeout      string         `json:"shutdown_timeout"`
 	Database             DatabaseConfig `json:"database"`
+	WebUI                WebUIConfig    `json:"webui"`
 	Log                  LogConfig      `json:"log"`
 }
 
@@ -40,6 +43,10 @@ type DatabaseConfig struct {
 	Path string `json:"path"`
 }
 
+type WebUIConfig struct {
+	DistDir string `json:"dist_dir"`
+}
+
 func Default() Config {
 	return Config{
 		ControlListenAddr:    defaultControlListenAddr,
@@ -49,6 +56,9 @@ func Default() Config {
 		Database: DatabaseConfig{
 			Type: defaultDatabaseType,
 			Path: defaultDatabasePath,
+		},
+		WebUI: WebUIConfig{
+			DistDir: defaultWebUIDistDir,
 		},
 		Log: LogConfig{
 			Level:  defaultLogLevel,
@@ -63,7 +73,12 @@ func Load(path string) (Config, error) {
 		return cfg, cfg.Validate()
 	}
 
-	file, err := os.Open(path)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve config file path: %w", err)
+	}
+
+	file, err := os.Open(absPath)
 	if err != nil {
 		return Config{}, fmt.Errorf("open config file: %w", err)
 	}
@@ -74,6 +89,8 @@ func Load(path string) (Config, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config file: %w", err)
 	}
+
+	cfg.resolveRelativePaths(filepath.Dir(absPath))
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -90,6 +107,7 @@ func (c *Config) Validate() error {
 	c.Database.Type = strings.ToLower(strings.TrimSpace(c.Database.Type))
 	c.Database.DSN = strings.TrimSpace(c.Database.DSN)
 	c.Database.Path = strings.TrimSpace(c.Database.Path)
+	c.WebUI.DistDir = strings.TrimSpace(c.WebUI.DistDir)
 	c.Log.Level = strings.ToLower(strings.TrimSpace(c.Log.Level))
 	c.Log.Format = strings.ToLower(strings.TrimSpace(c.Log.Format))
 
@@ -114,6 +132,9 @@ func (c *Config) Validate() error {
 	if err := c.Database.Validate(); err != nil {
 		return fmt.Errorf("database: %w", err)
 	}
+	if c.WebUI.DistDir == "" {
+		return fmt.Errorf("webui.dist_dir is required")
+	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
 	default:
@@ -126,6 +147,21 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+func (c *Config) resolveRelativePaths(baseDir string) {
+	if strings.ToLower(strings.TrimSpace(c.Database.Type)) != "mysql" {
+		c.Database.Path = resolveRelativePath(baseDir, c.Database.Path)
+	}
+	c.WebUI.DistDir = resolveRelativePath(baseDir, c.WebUI.DistDir)
+}
+
+func resolveRelativePath(baseDir, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || filepath.IsAbs(value) {
+		return value
+	}
+	return filepath.Clean(filepath.Join(baseDir, value))
 }
 
 func (c Config) ReadHeaderTimeoutDuration() time.Duration {
