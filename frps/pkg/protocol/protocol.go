@@ -93,7 +93,6 @@ const (
 	ErrorCodeAuthGroupDisabled      uint16 = 1103
 	ErrorCodeAuthChallengeExpired   uint16 = 1104
 	ErrorCodeAuthChallengeReplayed  uint16 = 1105
-	ErrorCodeAuthVersionUnsupported uint16 = 1106
 	ErrorCodeAuthClientLimitReached uint16 = 1107
 	ErrorCodeConfigApplyFailed      uint16 = 1201
 	ErrorCodeStreamTunnelNotFound   uint16 = 1301
@@ -309,7 +308,6 @@ type ServerHello struct {
 	SessionID           uint64
 	CapabilityBits      uint32
 	ServerVersion       string
-	MinSupportedVersion string
 }
 
 type ConfigPush struct {
@@ -513,9 +511,6 @@ func MarshalServerHello(message ServerHello) ([]byte, error) {
 	if err := enc.shortstr(message.ServerVersion); err != nil {
 		return nil, err
 	}
-	if err := enc.shortstr(message.MinSupportedVersion); err != nil {
-		return nil, err
-	}
 	return enc.bytesValue(), nil
 }
 
@@ -533,9 +528,6 @@ func UnmarshalServerHello(data []byte) (ServerHello, error) {
 		return message, err
 	}
 	if message.ServerVersion, err = dec.shortstr(); err != nil {
-		return message, err
-	}
-	if message.MinSupportedVersion, err = dec.shortstr(); err != nil {
 		return message, err
 	}
 	return message, dec.done()

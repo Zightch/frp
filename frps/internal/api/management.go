@@ -110,6 +110,10 @@ func newManagementService(store *storage.SQL) *managementService {
 }
 
 func (s *Server) handleProxyGroups(writer http.ResponseWriter, request *http.Request) {
+	if !s.requireManagementSession(writer) {
+		return
+	}
+
 	manager := s.requireManager(writer)
 	if manager == nil {
 		return
@@ -145,6 +149,10 @@ func (s *Server) handleProxyGroups(writer http.ResponseWriter, request *http.Req
 }
 
 func (s *Server) handleProxyGroupResource(writer http.ResponseWriter, request *http.Request) {
+	if !s.requireManagementSession(writer) {
+		return
+	}
+
 	manager := s.requireManager(writer)
 	if manager == nil {
 		return
@@ -192,6 +200,10 @@ func (s *Server) handleProxyGroupResource(writer http.ResponseWriter, request *h
 }
 
 func (s *Server) handleTunnels(writer http.ResponseWriter, request *http.Request) {
+	if !s.requireManagementSession(writer) {
+		return
+	}
+
 	manager := s.requireManager(writer)
 	if manager == nil {
 		return
@@ -224,6 +236,10 @@ func (s *Server) handleTunnels(writer http.ResponseWriter, request *http.Request
 }
 
 func (s *Server) handleTunnelResource(writer http.ResponseWriter, request *http.Request) {
+	if !s.requireManagementSession(writer) {
+		return
+	}
+
 	manager := s.requireManager(writer)
 	if manager == nil {
 		return

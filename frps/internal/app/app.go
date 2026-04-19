@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/zightch/frp/frps/internal/api"
+	"github.com/zightch/frp/frps/internal/auth"
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/control"
 	"github.com/zightch/frp/frps/internal/storage"
@@ -17,6 +18,7 @@ type App struct {
 	logger  *slog.Logger
 	version string
 	api     *api.Server
+	auth    *auth.Manager
 	control *control.Server
 	store   *storage.SQL
 }
@@ -33,6 +35,10 @@ func (a *App) Run(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
+	if err := a.initAuth(); err != nil {
+		return err
+	}
+
 	if err := a.initDatabase(ctx); err != nil {
 		return err
 	}
@@ -42,6 +48,7 @@ func (a *App) Run(parent context.Context) error {
 			Addr:              a.config.ManagementListenAddr,
 			ReadHeaderTimeout: a.config.ReadHeaderTimeoutDuration(),
 			Store:             a.store,
+			Auth:              a.auth,
 		},
 		a.logger.With("subsystem", "api"),
 		a.version,

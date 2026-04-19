@@ -93,7 +93,6 @@ func TestClientRunSession(t *testing.T) {
 			HeartbeatIntervalMs: 50,
 			SessionID:           11,
 			ServerVersion:       "test-server",
-			MinSupportedVersion: "test-client",
 		})
 		if err != nil {
 			t.Errorf("marshal server.hello: %v", err)

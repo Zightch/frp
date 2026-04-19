@@ -399,9 +399,11 @@ HTTPS：
 
 登录阶段拆成三类业务消息，但具体字段不再使用 JSON，而是按协议文档中的二进制 body 编码：
 
-- `auth.begin`：携带 `tokenId` 原始字节、客户端版本、主机名、OS、架构和能力位。
+- `auth.begin`：携带 `tokenId` 原始字节、客户端构建标识、主机名、OS、架构和能力位。
 - `auth.challenge`：携带一次性 `challengeId`、`nonce` 和过期时间。
 - `auth.finish`：携带 `challengeId` 和 `sha256(token_hash + nonce)` 的原始摘要。
+
+当前开发阶段不做 `frps/frpc` 协议版本兼容协商；`clientVersion/serverVersion` 只用于日志和排查，同仓代码按同步升级处理。
 
 首版消息类型固定为：
 
@@ -630,8 +632,8 @@ UDP 以会话维度记录：
 - 表结构优先使用 SQLite 和 MySQL 的公共能力。
 - 首版避免依赖 JSON 列、触发器、生成列、数据库枚举等方言特性。
 - 数据库差异尽量收敛在 `internal/storage`，不向业务层扩散。
-- 当前 schema 版本和建表语句以内嵌代码维护，不单独引入 `.sql` 迁移目录。
-- `frps` 启动时必须先完成 `schema_migrations` bootstrap、版本推进和表结构校验；如果现有库结构不符合预期，服务立即退出。
+- 当前 schema 定义和建表语句以内嵌代码维护，不单独引入 `.sql` 迁移目录。
+- `frps` 启动时直接创建当前必需表并做严格表结构校验；当前开发阶段不做独立 schema 版本记录、自动迁移或向后兼容，如果现有库结构不符合预期，服务立即退出。
 - 空库允许自动初始化；非空库要求列定义、主键、自增属性和唯一索引与内置 schema 完全一致。
 
 运行态数据放内存，不能让数据库成为数据面瓶颈。

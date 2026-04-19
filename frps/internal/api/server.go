@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	authn "github.com/zightch/frp/frps/internal/auth"
 	"github.com/zightch/frp/frps/internal/storage"
 )
 
@@ -15,6 +16,7 @@ type Options struct {
 	Addr              string
 	ReadHeaderTimeout time.Duration
 	Store             *storage.SQL
+	Auth              *authn.Manager
 }
 
 type Server struct {
@@ -22,6 +24,7 @@ type Server struct {
 	logger    *slog.Logger
 	startedAt time.Time
 	version   string
+	auth      *authn.Manager
 	manager   *managementService
 }
 
@@ -30,6 +33,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		logger:    logger,
 		startedAt: time.Now().UTC(),
 		version:   version,
+		auth:      options.Auth,
 		manager:   newManagementService(options.Store),
 	}
 
@@ -38,6 +42,9 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/readyz", srv.handleHealth)
 	mux.HandleFunc("/api/v1/healthz", srv.handleHealth)
+	mux.HandleFunc("/api/v1/auth/state", srv.handleAuthState)
+	mux.HandleFunc("/api/v1/auth/init", srv.handleAuthInit)
+	mux.HandleFunc("/api/v1/auth/challenge", srv.handleAuthChallenge)
 	mux.HandleFunc("/api/v1/proxy-groups", srv.handleProxyGroups)
 	mux.HandleFunc("/api/v1/proxy-groups/", srv.handleProxyGroupResource)
 	mux.HandleFunc("/api/v1/tunnels", srv.handleTunnels)

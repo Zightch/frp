@@ -36,7 +36,6 @@ func (a *App) initDatabase(ctx context.Context) error {
 	a.logger.Info(
 		"database ready",
 		"type", a.config.Database.Type,
-		"schema_version", currentSchemaVersion,
 	)
 	return nil
 }

@@ -75,7 +75,7 @@ flowchart TB
 主要职责：
 
 - `cmd/frps/main.go`：解析 `-config` / `-version`，加载配置和日志，启动 `app.App`。
-- `internal/app`：打开数据库，执行 schema bootstrap / 校验，并并发启动管理面和控制面。
+- `internal/app`：打开数据库，执行当前必需表建表 / 校验，并并发启动管理面和控制面。
 - `internal/api`：提供内嵌 WebUI、健康检查、分组 CRUD、隧道 CRUD、token 重置。
 - `internal/control`：处理 `frpc` 登录、challenge/response、单分组单客户端槽位、配置下发、心跳和 TCP stream 转发。
 - `internal/storage`：包装已打开的 `*sql.DB` / `*sql.Tx`，提供统一查询、执行、事务接口。
@@ -264,7 +264,7 @@ erDiagram
 - `proxy_groups` 和 `tunnels` 是当前 WebUI 和控制面共同使用的核心表。
 - `group_client_ip_rules` 已被 `frps` 登录校验读取。
 - `group_tunnel_ip_rules` 当前只在 schema / 删除依赖中出现，数据面未使用。
-- `schema_migrations` 用于记录 schema 版本，但不参与上述业务关系图。
+- 当前代码不维护 `schema_migrations` 或独立 schema 版本记录；启动时只校验当前代码依赖的业务表，额外残留表不参与业务关系图。
 
 ## 7. 源码依据
 

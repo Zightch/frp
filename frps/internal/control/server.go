@@ -28,14 +28,13 @@ const (
 )
 
 type Options struct {
-	Addr                string
-	Store               *storage.SQL
-	Repository          Repository
-	ReadTimeout         time.Duration
-	WriteTimeout        time.Duration
-	ChallengeTTL        time.Duration
-	HeartbeatInterval   time.Duration
-	MinSupportedVersion string
+	Addr              string
+	Store             *storage.SQL
+	Repository        Repository
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	ChallengeTTL      time.Duration
+	HeartbeatInterval time.Duration
 }
 
 type Server struct {
@@ -95,9 +94,6 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 	}
 	if options.HeartbeatInterval <= 0 {
 		options.HeartbeatInterval = defaultHeartbeatInterval
-	}
-	if options.MinSupportedVersion == "" {
-		options.MinSupportedVersion = version
 	}
 	if options.Repository == nil && options.Store != nil {
 		options.Repository = NewRepository(options.Store)
@@ -326,7 +322,6 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		SessionID:           session.ID,
 		CapabilityBits:      0,
 		ServerVersion:       s.version,
-		MinSupportedVersion: s.options.MinSupportedVersion,
 	})
 	if err != nil {
 		s.releaseGroupSlot(session.Group.ID, session.ID)

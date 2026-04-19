@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	authn "github.com/zightch/frp/frps/internal/auth"
 	"github.com/zightch/frp/frps/internal/storage"
 	_ "github.com/zightch/frp/frps/internal/storage/drivers"
 )
@@ -21,6 +23,7 @@ func TestHealthEndpoint(t *testing.T) {
 		Options{
 			Addr:              "127.0.0.1:7500",
 			ReadHeaderTimeout: 5 * time.Second,
+			Auth:              newTestAuthManager(t, false),
 		},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		"test",
@@ -47,13 +50,20 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestManagementUIAndCRUD(t *testing.T) {
+func TestAuthInitializationAndChallengeEndpoints(t *testing.T) {
 	store := newTestStore(t)
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	manager, err := authn.NewManager(authn.Options{Path: authPath})
+	if err != nil {
+		t.Fatalf("new auth manager: %v", err)
+	}
+
 	server := NewServer(
 		Options{
 			Addr:              "127.0.0.1:7500",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
+			Auth:              manager,
 		},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		"test",
@@ -64,186 +74,99 @@ func TestManagementUIAndCRUD(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected index status: %d", recorder.Code)
 	}
-	if body := recorder.Body.String(); !bytes.Contains([]byte(body), []byte("frps 极简管理页")) {
+	if body := recorder.Body.String(); !bytes.Contains([]byte(body), []byte("frps 管理面改造中")) {
 		t.Fatalf("unexpected index body: %s", body)
 	}
-	if body := recorder.Body.String(); bytes.Contains([]byte(body), []byte("最大客户端数")) ||
-		bytes.Contains([]byte(body), []byte("max_clients")) ||
-		bytes.Contains([]byte(body), []byte("maxclient")) {
-		t.Fatalf("group max clients must not be configurable in webui: %s", body)
+
+	state := performJSONRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/auth/state",
+		nil,
+		http.StatusOK,
+	)
+	if state["initialized"] != false {
+		t.Fatalf("unexpected initialization state: %#v", state)
 	}
 
-	createGroup := performJSONRequest(
+	performJSONRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/proxy-groups",
+		nil,
+		http.StatusConflict,
+	)
+
+	initResponse := performJSONRequest(
 		t,
 		server.Handler(),
 		http.MethodPost,
-		"/api/v1/proxy-groups",
+		"/api/v1/auth/init",
 		map[string]any{
-			"name":        "group-a",
-			"enabled":     true,
-			"max_clients": 2,
+			"key_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		},
 		http.StatusCreated,
 	)
-
-	groupItem := createGroup["item"].(map[string]any)
-	groupID := int64(groupItem["id"].(float64))
-	if _, ok := groupItem["max_clients"]; ok {
-		t.Fatalf("proxy group response must not expose max_clients, got %#v", groupItem)
-	}
-	firstToken := createGroup["token"].(string)
-	if len(firstToken) != 96 {
-		t.Fatalf("unexpected token length: %d", len(firstToken))
+	if initResponse["initialized"] != true {
+		t.Fatalf("unexpected init response: %#v", initResponse)
 	}
 
-	groupRow, err := store.QueryOne(
-		"SELECT token_id, token_hash FROM proxy_groups WHERE id = ?",
-		groupID,
-	)
+	rawAuth, err := os.ReadFile(authPath)
 	if err != nil {
-		t.Fatalf("query proxy group: %v", err)
+		t.Fatalf("read auth file: %v", err)
 	}
-	tokenID := rowString(groupRow, "token_id")
-	tokenHash := rowString(groupRow, "token_hash")
-	if tokenID == "" || tokenHash == "" {
-		t.Fatalf("expected token columns, got %#v", groupRow)
-	}
-	if firstToken[:32] != tokenID {
-		t.Fatalf("token prefix does not match token_id: %s vs %s", firstToken[:32], tokenID)
-	}
-	if tokenHash == firstToken {
-		t.Fatal("database must not store plaintext token")
+	if string(rawAuth) != `{"key_hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}` {
+		t.Fatalf("unexpected auth.json content: %s", rawAuth)
 	}
 
-	listGroups := performJSONRequest(
+	stateAfterInit := performJSONRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/auth/state",
+		nil,
+		http.StatusOK,
+	)
+	if stateAfterInit["initialized"] != true {
+		t.Fatalf("unexpected state after init: %#v", stateAfterInit)
+	}
+
+	performJSONRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/auth/init",
+		map[string]any{
+			"key_hash": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		},
+		http.StatusConflict,
+	)
+
+	challenge := performJSONRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/auth/challenge",
+		nil,
+		http.StatusOK,
+	)
+	if len(challenge["challenge_id"].(string)) == 0 || len(challenge["salt"].(string)) == 0 {
+		t.Fatalf("challenge payload must include identifiers: %#v", challenge)
+	}
+	if len(challenge["expires_at"].(string)) == 0 {
+		t.Fatalf("challenge payload must include expires_at: %#v", challenge)
+	}
+
+	performJSONRequest(
 		t,
 		server.Handler(),
 		http.MethodGet,
 		"/api/v1/proxy-groups",
 		nil,
-		http.StatusOK,
+		http.StatusUnauthorized,
 	)
-	groupItems := listGroups["items"].([]any)
-	if len(groupItems) != 1 {
-		t.Fatalf("unexpected group count: %d", len(groupItems))
-	}
-	if _, ok := groupItems[0].(map[string]any)["token"]; ok {
-		t.Fatal("group list must not expose plaintext token")
-	}
-
-	updateGroup := performJSONRequest(
-		t,
-		server.Handler(),
-		http.MethodPatch,
-		"/api/v1/proxy-groups/1",
-		map[string]any{
-			"name":        "group-b",
-			"enabled":     false,
-			"max_clients": 9,
-		},
-		http.StatusOK,
-	)
-	if _, ok := updateGroup["item"].(map[string]any)["max_clients"]; ok {
-		t.Fatalf("updated proxy group response must not expose max_clients, got %#v", updateGroup["item"])
-	}
-
-	resetToken := performJSONRequest(
-		t,
-		server.Handler(),
-		http.MethodPost,
-		"/api/v1/proxy-groups/1/token",
-		nil,
-		http.StatusOK,
-	)
-	secondToken := resetToken["token"].(string)
-	if secondToken == firstToken {
-		t.Fatal("expected token reset to issue a new token")
-	}
-
-	createTunnel := performJSONRequest(
-		t,
-		server.Handler(),
-		http.MethodPost,
-		"/api/v1/tunnels",
-		map[string]any{
-			"group_id":     groupID,
-			"name":         "ssh",
-			"protocol":     "tcp",
-			"remote_type":  "single",
-			"remote_start": 20000,
-			"remote_end":   20000,
-			"local_host":   "127.0.0.1",
-			"local_start":  22,
-			"local_end":    22,
-			"enabled":      true,
-		},
-		http.StatusCreated,
-	)
-	tunnelItem := createTunnel["item"].(map[string]any)
-	tunnelID := int64(tunnelItem["id"].(float64))
-
-	performJSONRequest(
-		t,
-		server.Handler(),
-		http.MethodPatch,
-		"/api/v1/tunnels/1",
-		map[string]any{
-			"group_id":     groupID,
-			"name":         "ssh-updated",
-			"protocol":     "tcp",
-			"remote_type":  "single",
-			"remote_start": 21000,
-			"remote_end":   21000,
-			"local_host":   "127.0.0.1",
-			"local_start":  2222,
-			"local_end":    2222,
-			"enabled":      false,
-		},
-		http.StatusOK,
-	)
-
-	listTunnels := performJSONRequest(
-		t,
-		server.Handler(),
-		http.MethodGet,
-		"/api/v1/tunnels",
-		nil,
-		http.StatusOK,
-	)
-	tunnelItems := listTunnels["items"].([]any)
-	if len(tunnelItems) != 1 {
-		t.Fatalf("unexpected tunnel count: %d", len(tunnelItems))
-	}
-	if tunnelItems[0].(map[string]any)["group_name"] != "group-b" {
-		t.Fatalf("unexpected tunnel group name: %#v", tunnelItems[0].(map[string]any)["group_name"])
-	}
-
-	performJSONRequest(
-		t,
-		server.Handler(),
-		http.MethodDelete,
-		"/api/v1/tunnels/1",
-		nil,
-		http.StatusOK,
-	)
-	performJSONRequest(
-		t,
-		server.Handler(),
-		http.MethodDelete,
-		"/api/v1/proxy-groups/1",
-		nil,
-		http.StatusOK,
-	)
-
-	if tunnelID == 0 {
-		t.Fatal("expected tunnel id")
-	}
-	if _, err := store.QueryOne("SELECT id FROM tunnels WHERE id = ?", tunnelID); err == nil {
-		t.Fatal("expected tunnel to be deleted")
-	}
-	if _, err := store.QueryOne("SELECT id FROM proxy_groups WHERE id = ?", groupID); err == nil {
-		t.Fatal("expected proxy group to be deleted")
-	}
 }
 
 func newTestStore(t *testing.T) *storage.SQL {
@@ -320,6 +243,23 @@ CREATE TABLE tunnels (
 	}
 
 	return store
+}
+
+func newTestAuthManager(t *testing.T, initialize bool) *authn.Manager {
+	t.Helper()
+
+	manager, err := authn.NewManager(authn.Options{
+		Path: filepath.Join(t.TempDir(), "auth.json"),
+	})
+	if err != nil {
+		t.Fatalf("new auth manager: %v", err)
+	}
+	if initialize {
+		if err := manager.Initialize("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"); err != nil {
+			t.Fatalf("initialize auth manager: %v", err)
+		}
+	}
+	return manager
 }
 
 func performJSONRequest(

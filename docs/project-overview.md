@@ -713,7 +713,7 @@ save group/tunnel config from WebUI
 - 端口范围映射。
 - 工作连接多路复用。
 - 连接断线重连。
-- 客户端版本兼容检查。
+- `frps/frpc` 同仓同步升级约束与构建标识上报。
 
 ### 阶段四：反向代理
 

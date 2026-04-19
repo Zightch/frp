@@ -248,7 +248,7 @@ body：
 | 顺序 | 字段 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | 1 | `tokenId` | `bytes16` | token 公开定位段的原始 16 字节，不传 32 位 hex 文本 |
-| 2 | `clientVersion` | `shortstr` | 客户端版本 |
+| 2 | `clientVersion` | `shortstr` | 客户端构建标识，仅用于日志和排查 |
 | 3 | `hostname` | `shortstr` | 客户端主机名 |
 | 4 | `os` | `u8` | 操作系统枚举 |
 | 5 | `arch` | `u8` | CPU 架构枚举 |
@@ -310,9 +310,9 @@ body：
 | 2 | `sessionId` | `u64` | 当前控制连接运行态 ID |
 | 3 | `capabilityBits` | `u32` | 服务端能力位，首版固定为 `0` |
 | 4 | `serverVersion` | `shortstr` | 服务端版本 |
-| 5 | `minSupportedVersion` | `shortstr` | 最低兼容客户端版本 |
-
 登录失败时，`frps` 不发送 `server.hello`，而是发送 `error` 后关闭连接。
+
+当前开发阶段不做 `frps/frpc` 版本兼容协商；`clientVersion` 和 `serverVersion` 只用于诊断，同仓代码按同步升级处理。
 
 ## 6.5 登录时序
 
@@ -678,7 +678,6 @@ body：
 | `1103` | `auth_group_disabled` |
 | `1104` | `auth_challenge_expired` |
 | `1105` | `auth_challenge_replayed` |
-| `1106` | `auth_version_unsupported` |
 | `1107` | `auth_client_limit_reached` |
 | `1201` | `config_apply_failed` |
 | `1301` | `stream_tunnel_not_found` |

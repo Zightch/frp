@@ -6,22 +6,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/zightch/frp/frps/internal/storage"
 )
 
-const currentSchemaVersion int64 = 1
-
 type schemaDefinition struct {
-	bootstrapStatement string
-	migrations         []schemaMigration
-	tables             []tableSpec
-}
-
-type schemaMigration struct {
-	version    int64
-	statements []string
+	bootstrapStatements []string
+	tables              []tableSpec
 }
 
 type tableSpec struct {
@@ -52,25 +43,8 @@ type columnState struct {
 
 var schemaDefinitions = map[string]schemaDefinition{
 	"sqlite": {
-		bootstrapStatement: `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-	version INTEGER PRIMARY KEY,
-	applied_at TEXT NOT NULL
-)`,
-		migrations: []schemaMigration{
-			{
-				version: 1,
-				statements: []string{
-					`
-CREATE TABLE IF NOT EXISTS admins (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	username TEXT NOT NULL UNIQUE,
-	password_hash TEXT NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-					`
+		bootstrapStatements: []string{
+			`
 CREATE TABLE IF NOT EXISTS proxy_groups (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL UNIQUE,
@@ -83,7 +57,7 @@ CREATE TABLE IF NOT EXISTS proxy_groups (
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 )`,
-					`
+			`
 CREATE TABLE IF NOT EXISTS group_client_ip_rules (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	group_id INTEGER NOT NULL,
@@ -93,7 +67,7 @@ CREATE TABLE IF NOT EXISTS group_client_ip_rules (
 	created_at TEXT NOT NULL,
 	UNIQUE(group_id, action, cidr)
 )`,
-					`
+			`
 CREATE TABLE IF NOT EXISTS group_tunnel_ip_rules (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	group_id INTEGER NOT NULL,
@@ -103,7 +77,7 @@ CREATE TABLE IF NOT EXISTS group_tunnel_ip_rules (
 	created_at TEXT NOT NULL,
 	UNIQUE(group_id, action, cidr)
 )`,
-					`
+			`
 CREATE TABLE IF NOT EXISTS tunnels (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	group_id INTEGER NOT NULL,
@@ -122,31 +96,8 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	updated_at TEXT NOT NULL,
 	UNIQUE(group_id, name)
 )`,
-				},
-			},
 		},
 		tables: []tableSpec{
-			{
-				name: "schema_migrations",
-				columns: []columnSpec{
-					{name: "version", columnType: "integer", nullable: false, primaryKey: true},
-					{name: "applied_at", columnType: "text", nullable: false},
-				},
-			},
-			{
-				name: "admins",
-				columns: []columnSpec{
-					{name: "id", columnType: "integer", nullable: false, primaryKey: true},
-					{name: "username", columnType: "text", nullable: false},
-					{name: "password_hash", columnType: "text", nullable: false},
-					{name: "enabled", columnType: "integer", nullable: false},
-					{name: "created_at", columnType: "text", nullable: false},
-					{name: "updated_at", columnType: "text", nullable: false},
-				},
-				uniqueIndexes: [][]string{
-					{"username"},
-				},
-			},
 			{
 				name: "proxy_groups",
 				columns: []columnSpec{
@@ -220,28 +171,8 @@ CREATE TABLE IF NOT EXISTS tunnels (
 		},
 	},
 	"mysql": {
-		bootstrapStatement: `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-	version BIGINT NOT NULL,
-	applied_at DATETIME(6) NOT NULL,
-	PRIMARY KEY (version)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-		migrations: []schemaMigration{
-			{
-				version: 1,
-				statements: []string{
-					`
-CREATE TABLE IF NOT EXISTS admins (
-	id BIGINT NOT NULL AUTO_INCREMENT,
-	username VARCHAR(128) NOT NULL,
-	password_hash VARCHAR(255) NOT NULL,
-	enabled TINYINT(1) NOT NULL DEFAULT 1,
-	created_at DATETIME(6) NOT NULL,
-	updated_at DATETIME(6) NOT NULL,
-	PRIMARY KEY (id),
-	UNIQUE KEY uk_admins_username (username)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-					`
+		bootstrapStatements: []string{
+			`
 CREATE TABLE IF NOT EXISTS proxy_groups (
 	id BIGINT NOT NULL AUTO_INCREMENT,
 	name VARCHAR(128) NOT NULL,
@@ -257,7 +188,7 @@ CREATE TABLE IF NOT EXISTS proxy_groups (
 	UNIQUE KEY uk_proxy_groups_name (name),
 	UNIQUE KEY uk_proxy_groups_token_id (token_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-					`
+			`
 CREATE TABLE IF NOT EXISTS group_client_ip_rules (
 	id BIGINT NOT NULL AUTO_INCREMENT,
 	group_id BIGINT NOT NULL,
@@ -268,7 +199,7 @@ CREATE TABLE IF NOT EXISTS group_client_ip_rules (
 	PRIMARY KEY (id),
 	UNIQUE KEY uk_group_client_ip_rules_group_action_cidr (group_id, action, cidr)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-					`
+			`
 CREATE TABLE IF NOT EXISTS group_tunnel_ip_rules (
 	id BIGINT NOT NULL AUTO_INCREMENT,
 	group_id BIGINT NOT NULL,
@@ -279,7 +210,7 @@ CREATE TABLE IF NOT EXISTS group_tunnel_ip_rules (
 	PRIMARY KEY (id),
 	UNIQUE KEY uk_group_tunnel_ip_rules_group_action_cidr (group_id, action, cidr)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-					`
+			`
 CREATE TABLE IF NOT EXISTS tunnels (
 	id BIGINT NOT NULL AUTO_INCREMENT,
 	group_id BIGINT NOT NULL,
@@ -299,31 +230,8 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	PRIMARY KEY (id),
 	UNIQUE KEY uk_tunnels_group_name (group_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-				},
-			},
 		},
 		tables: []tableSpec{
-			{
-				name: "schema_migrations",
-				columns: []columnSpec{
-					{name: "version", columnType: "bigint", nullable: false, primaryKey: true},
-					{name: "applied_at", columnType: "datetime(6)", nullable: false},
-				},
-			},
-			{
-				name: "admins",
-				columns: []columnSpec{
-					{name: "id", columnType: "bigint", nullable: false, primaryKey: true, autoIncrement: true},
-					{name: "username", columnType: "varchar(128)", nullable: false},
-					{name: "password_hash", columnType: "varchar(255)", nullable: false},
-					{name: "enabled", columnType: "tinyint(1)", nullable: false},
-					{name: "created_at", columnType: "datetime(6)", nullable: false},
-					{name: "updated_at", columnType: "datetime(6)", nullable: false},
-				},
-				uniqueIndexes: [][]string{
-					{"username"},
-				},
-			},
 			{
 				name: "proxy_groups",
 				columns: []columnSpec{
@@ -404,63 +312,20 @@ func ensureDatabaseSchema(ctx context.Context, store *storage.SQL, databaseType 
 		return fmt.Errorf("unsupported database type %q", databaseType)
 	}
 
-	if _, err := store.ExecContext(ctx, definition.bootstrapStatement); err != nil {
-		return fmt.Errorf("bootstrap schema migrations table: %w", err)
-	}
-
-	currentVersion, err := loadSchemaVersion(ctx, store)
-	if err != nil {
-		return fmt.Errorf("load schema version: %w", err)
-	}
-
-	if currentVersion > currentSchemaVersion {
-		return fmt.Errorf(
-			"database schema version %d is newer than supported version %d",
-			currentVersion,
-			currentSchemaVersion,
-		)
-	}
-
-	for _, migration := range definition.migrations {
-		if migration.version <= currentVersion {
-			continue
+	for _, statement := range definition.bootstrapStatements {
+		if _, err := store.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("bootstrap required tables: %w", err)
 		}
-
-		if err := applySchemaMigration(ctx, store, migration); err != nil {
-			return fmt.Errorf("apply schema migration %d: %w", migration.version, err)
-		}
-		currentVersion = migration.version
-	}
-
-	if currentVersion != currentSchemaVersion {
-		return fmt.Errorf(
-			"database schema version %d does not match expected version %d",
-			currentVersion,
-			currentSchemaVersion,
-		)
 	}
 
 	if err := validateSchemaDefinition(ctx, store, databaseType, definition); err != nil {
-		return err
+		return fmt.Errorf(
+			"database schema validation failed; development stage does not support schema compatibility or migration: %w",
+			err,
+		)
 	}
 
 	return nil
-}
-
-func applySchemaMigration(ctx context.Context, store *storage.SQL, migration schemaMigration) error {
-	for _, statement := range migration.statements {
-		if _, err := store.ExecContext(ctx, statement); err != nil {
-			return err
-		}
-	}
-
-	_, err := store.ExecContext(
-		ctx,
-		"INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-		migration.version,
-		schemaTimestamp(),
-	)
-	return err
 }
 
 func validateSchemaDefinition(ctx context.Context, store *storage.SQL, databaseType string, definition schemaDefinition) error {
@@ -542,15 +407,6 @@ func validateTable(expected tableSpec, actual tableState) error {
 	}
 
 	return nil
-}
-
-func loadSchemaVersion(ctx context.Context, store *storage.SQL) (int64, error) {
-	row, err := store.QueryOneContext(ctx, "SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations")
-	if err != nil {
-		return 0, err
-	}
-
-	return rowInt64(row, "version")
 }
 
 func loadTableState(ctx context.Context, store *storage.SQL, databaseType, tableName string) (tableState, error) {
@@ -828,8 +684,4 @@ func uniqueIndexSignature(columns []string) string {
 
 func sqliteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-}
-
-func schemaTimestamp() string {
-	return time.Now().UTC().Format("2006-01-02 15:04:05.000000")
 }

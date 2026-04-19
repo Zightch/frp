@@ -208,15 +208,15 @@ UDP 采用短会话模式：
 - stream ID
 - 错误摘要
 
-## 11. 协议兼容性
+## 11. 开发阶段版本策略
 
-`frpc` 必须与 `frps` 明确版本协商。
+当前开发阶段不做 `frpc` 与 `frps` 的协议版本兼容协商。
 
-建议：
+约定：
 
-- 登录时上报 `clientVersion`
-- `frps` 返回 `minSupportedVersion` 或兼容范围
-- 严重不兼容时直接拒绝登录
+- 登录时仍可上报 `clientVersion`，但它只用于日志和排查
+- `server.hello` 返回的 `serverVersion` 也只用于诊断
+- 如果协议有破坏性调整，按同仓同步升级 `frps` / `frpc` 处理，不维护兼容层
 
 ## 12. 安全要求
 

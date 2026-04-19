@@ -20,7 +20,7 @@
 - `storage.SQL` 的 `Begin` / `BeginTx` / `WithTx` 事务测试
 - MySQL 简写 DSN 规范化测试
 - SQLite 数据目录自动创建测试
-- 应用启动时自动建表和 schema 版本写入测试
+- 应用启动时自动建表和必需表校验测试
 - SQLite 现有表结构错误时启动立即失败测试
 - 控制面单元测试：
   - token challenge/response
@@ -81,13 +81,13 @@ go test ./...
 - 用 Go 集成测试拉起 `frps`
 - 用假 `frpc` 或真实 `frpc` 二进制做接入
 - 快速集成测试使用本地临时端口和临时 SQLite 数据库
-- 数据库兼容性测试额外覆盖 MySQL
+- 数据库双引擎测试额外覆盖 MySQL
 
-## 2.3 存储兼容性测试
+## 2.3 存储启动一致性测试
 
 必须验证：
 
-- SQLite 和 MySQL 都能完成启动期 schema bootstrap 或版本推进
+- SQLite 和 MySQL 都能完成启动期当前必需表建表或校验
 - 相同仓储接口在两种数据库下行为一致
 - 唯一约束、索引、事务边界符合预期
 - 分组、隧道等核心 CRUD 在两种数据库下结果一致
@@ -170,7 +170,7 @@ python test/e2e_tcp_single.py --scenario happy_path --keep-temp
 
 - `127.0.0.1:8080`：测试 TCP echo
 - `127.0.0.1:8081`：测试 HTTP echo
-- 可选本地 MySQL 8.0 实例：用于数据库兼容性测试
+- 可选本地 MySQL 8.0 实例：用于数据库双引擎测试
 
 ## 4. 核心测试清单
 
@@ -332,8 +332,8 @@ curl https://demo.local:18443/ --resolve demo.local:18443:127.0.0.1 -k
 - 配置文件 JSON 是否合法
 - SQLite `path` 或 MySQL `dsn` 是否配置正确
 - 数据库是否可连通
-- 现有库结构是否和服务内嵌 schema 一致
-- `schema_migrations.version` 是否高于当前服务支持版本
+- 现有库结构是否和当前代码内嵌 schema 一致
+- 如果是旧开发库，是否需要直接重建或手工调整；当前阶段不做 schema 迁移兼容
 
 ## 6.1 `frpc` 无法上线
 
@@ -343,7 +343,7 @@ curl https://demo.local:18443/ --resolve demo.local:18443:127.0.0.1 -k
 - token 是否正确
 - 分组是否启用
 - 来源 IP 是否被 `client` 黑白名单拒绝
-- 控制协议版本是否兼容
+- `frps` / `frpc` 是否来自同一轮代码或同步升级后的构建
 
 ## 6.2 公网端口无法访问
 
