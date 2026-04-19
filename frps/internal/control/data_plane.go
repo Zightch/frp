@@ -2,7 +2,6 @@ package control
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -30,20 +29,6 @@ type udpTunnelListener struct {
 	tunnel     protocol.TunnelEntry
 	remotePort uint16
 	listener   *net.UDPConn
-}
-
-func (s *Server) handleStreamClose(session *sessionState, frame protocol.Frame) error {
-	if frame.RequestID != 0 {
-		return fmt.Errorf("stream.close requestId must be zero")
-	}
-	if frame.StreamID == 0 {
-		return fmt.Errorf("stream.close streamId must be non-zero")
-	}
-	if _, err := protocol.UnmarshalStreamClose(frame.Body); err != nil {
-		return err
-	}
-	session.closePublicStream(frame.StreamID)
-	return nil
 }
 
 func (s *Server) sendStreamClose(conn net.Conn, session *sessionState, streamID uint32, reasonCode uint16, message string) error {

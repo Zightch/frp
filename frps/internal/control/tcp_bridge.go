@@ -110,3 +110,17 @@ func (s *Server) handleStreamData(conn net.Conn, session *sessionState, frame pr
 	}
 	return nil
 }
+
+func (s *Server) handleStreamClose(session *sessionState, frame protocol.Frame) error {
+	if frame.RequestID != 0 {
+		return fmt.Errorf("stream.close requestId must be zero")
+	}
+	if frame.StreamID == 0 {
+		return fmt.Errorf("stream.close streamId must be non-zero")
+	}
+	if _, err := protocol.UnmarshalStreamClose(frame.Body); err != nil {
+		return err
+	}
+	session.closePublicStream(frame.StreamID)
+	return nil
+}
