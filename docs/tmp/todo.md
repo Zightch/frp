@@ -42,12 +42,12 @@
 
 ## 当前子步骤细分
 
-- 当前正在推进：把 `frps/internal/control/data_plane.go` 中的 listener 展开与启动逻辑迁到 `listeners.go`，继续收束 `control` 包的 listener / tcp bridge / udp bridge 边界。
-1. 先只新建 `listeners.go`，并迁移 `ensureTunnelListeners` 与其直接依赖的 `closeStartedTunnelListeners`，保持 tunnel 展开、listener 启动顺序和失败回滚路径不变。
-2. 再单独迁移 `serveTunnelListener`，保持 TCP accept 循环和错误日志路径不变。
-3. 再单独迁移 `serveUDPTunnelListener`，保持 UDP 读循环、payload 复制和日志路径不变。
-4. 最后重新运行 `go test ./internal/control`，确认 `data_plane.go` 继续缩责后行为不变，再决定是否继续收窄 `handlePublicConnection`、`shutdownSession` 等剩余数据面逻辑。
+- 当前正在推进：继续把 `frps/internal/control/data_plane.go` 中的 listener 相关逻辑迁到 `listeners.go`，收束 listener 与 tcp/udp bridge 的文件边界。
+1. 先只迁移 `serveTunnelListener`，保持 TCP accept 循环、`net.ErrClosed` 退出条件和错误日志路径不变。
+2. 再只迁移 `serveUDPTunnelListener`，保持 UDP 读循环、payload 复制、`net.ErrClosed` 退出条件和错误日志路径不变。
+3. 再新建 `tcp_bridge.go`，只迁移 `handlePublicConnection`，保持 `stream.open` request id / stream id 分配、等待打开超时和 `copyPublicToClient` 启动时机不变。
+4. 再继续把 `stream.opened` / `stream.data` / `stream.close` 等 TCP stream 生命周期处理从 `data_plane.go` 收出去，最后再决定 `shutdownSession` 的最终归属。
 
 ## 当前唯一下一步
 
-- 先只新建 `frps/internal/control/listeners.go`，并把 `ensureTunnelListeners` 与 `closeStartedTunnelListeners` 迁移进去；不移动 `serveTunnelListener`、不移动 `serveUDPTunnelListener`、不移动 `handlePublicConnection`、不移动 `shutdownSession`，不改任何调用点，不改行为。
+- 先只把 `(*Server).serveTunnelListener` 迁移到 `frps/internal/control/listeners.go`；不移动 `serveUDPTunnelListener`、不移动 `handlePublicConnection`、不移动任何 `stream.*` 或 `shutdownSession` 逻辑，不改调用点，不改行为。
