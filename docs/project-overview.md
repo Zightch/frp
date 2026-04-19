@@ -74,7 +74,7 @@
 - 抓包与限速
 - 完整连接观测与 WebSocket 实时态
 
-当前代码现状、执行工作流、协议边界和已收口停止线，应优先结合 `docs/workflow.md`、`docs/progress.md` 与 `docs/frps-frpc-current-architecture.md` 一起阅读，不再按早期“TCP 已完成、UDP 未开始”的旧阶段理解当前仓库。
+当前代码现状、执行工作流、协议边界和已收口停止线，应优先结合 `docs/workflow.md`、`docs/progress/README.md` 与 `docs/frps-frpc-current-architecture.md` 一起阅读，不再按早期“TCP 已完成、UDP 未开始”的旧阶段理解当前仓库。
 
 ## 2. 能力范围
 
