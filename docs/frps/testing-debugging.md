@@ -39,6 +39,13 @@
   - `stability`
   - `upload`
   - `download`
+- 管理面端到端联调脚本：
+  - `test/e2e_management_webui.py`
+  - `frps.exe` 固定 `data/config.json` 直启
+  - 管理密钥初始化
+  - challenge 登录与会话恢复
+  - 分组 CRUD 与 token 重置
+  - 隧道 CRUD
 
 ## 2. 测试分层
 
@@ -108,6 +115,7 @@ go test ./...
 
 - `test/e2e_tcp_single.py`
 - `test/e2e_tcp_perf.py`
+- `test/e2e_management_webui.py`
 
 当前脚本职责：
 
@@ -148,6 +156,21 @@ python test/e2e_tcp_perf.py
 python test/e2e_tcp_perf.py --stability-concurrency 128 --stability-duration 30
 python test/e2e_tcp_perf.py --transfer-concurrency 8 --transfer-bytes-per-connection 67108864
 ```
+
+管理面闭环联调：
+
+```powershell
+python test/e2e_management_webui.py
+```
+
+该脚本会：
+
+- 构建或复用 `frps.exe`
+- 构建或复用 `frps/webui/dist`
+- 在隔离工作目录中写入固定 `data/config.json`
+- 直接启动 `frps.exe`
+- 通过真实 HTTP 请求验证管理认证和管理 CRUD 闭环
+- 输出 `result.json`、`frps.log`、隔离 SQLite 和 `auth.json`
 
 如需查看脚本实际写入的 SQLite 数据库，可加：
 

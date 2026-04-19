@@ -4,7 +4,7 @@
 
 当前轮执行只看 `docs/tmp/todo.md`。`docs/tmp/todo.md` 必须只保留当前轮目标、边界、当前轮完成项和当前唯一下一步；上一轮及更早内容统一收口到本文档，不回填到当前轮 `todo`，当前轮只保留必要引用。
 
-更新时间：2026-04-18
+更新时间：2026-04-19
 
 ## 0. 进度与 Todo 分工
 
@@ -389,3 +389,95 @@ Python 外网客户端
 - 让 `frpc` 按现有重连机制重新登录并重新领取配置
 
 这样可以先实现“配置最终生效”的闭环，而不把系统复杂度提前推高到真正的在线热更新协议。
+
+## 13. WebUI 重构与管理认证闭环
+
+WebUI 重构这一轮已经完成收口。
+
+当前已确认落地的能力：
+
+- `frps` 管理面已切换为独立的 `Vue 3 + Vite + TypeScript + Element Plus` 前端工程。
+- 管理认证已固定为本地 `auth.json` 单一管理密钥方案，不再引入数据库 `admins` 表或管理员账号密码体系。
+- 浏览器初始化和登录已固定为：
+  - 初始化时提交 `sha256(secret)`
+  - 登录时先申请一次性 challenge
+  - 再提交 `sha256(key_hash + salt)`
+- 管理 API 已全部置于真实管理会话门禁后。
+- 分组管理已支持：
+  - 列表
+  - 新增
+  - 编辑
+  - 删除
+  - token 重置
+- 隧道管理已支持：
+  - 列表
+  - 新增
+  - 编辑
+  - 删除
+- `frps` 已固定从当前工作目录下的 `data/config.json` 读取配置，并从配置中的 `webui.dist_dir` 直接托管构建产物。
+- 直接启动 `frps.exe` 已不再依赖启动参数。
+
+这一轮新增了真实联调脚本：
+
+- `test/e2e_management_webui.py`
+
+脚本固定验证以下闭环：
+
+- 在隔离工作目录中写入固定 `data/config.json`
+- 直接启动真实 `frps.exe`
+- 托管真实 `webui/dist`
+- 初始化管理密钥
+- challenge 登录与会话恢复
+- `proxy_groups` CRUD
+- token 重置
+- `tunnels` CRUD
+- 登出与受保护接口拒绝
+
+脚本还额外固定了两个执行边界：
+
+- 联调使用隔离工作目录，不污染仓库下现有 `frps/data/` 的 `auth.json` 和 SQLite 数据。
+- token 重置会直接回读 SQLite 校验 `token_id` / `token_hash`，确认服务端只保存校验材料，不保存 token 明文。
+
+本轮已实际执行：
+
+```powershell
+python test/e2e_management_webui.py
+```
+
+当前结果是：
+
+- 构建 `frps.exe` 和 `frps/webui/dist` 成功
+- 直接启动 `frps.exe` 成功读取固定 `data/config.json`
+- 管理认证与管理 CRUD 真实闭环通过
+- 结果产物会落到 `test/tmp/management-e2e-<timestamp>/`
+
+## 14. 当前停止线与下一步
+
+当前 WebUI 重构与管理认证这一轮已经达到停止线。
+
+当前不继续扩展：
+
+- 管理员账号体系
+- 多用户 / RBAC
+- 多因素认证
+- 密钥找回
+- 在线客户端状态展示
+- 连接管理页
+- WebSocket 实时推送
+- 真正的在线配置热更新协议
+
+下一轮最小方向切换为：管理密钥轮换。
+
+选择这个方向的原因是：
+
+- 当前初始化、challenge 登录、会话保护和管理 CRUD 已经闭环
+- 但功能规格里仍要求支持管理密钥轮换
+- 这是当前 `auth.json` 管理认证方案里唯一还未补齐的核心能力
+
+下一轮当前倾向的最小实现方式是：
+
+- 增加最小管理密钥轮换接口
+- 轮换时原子更新本地 `auth.json`
+- 轮换后立即使旧 challenge 和旧管理会话失效
+- 前端只补最小必要入口和确认流程
+- 在 `test/e2e_management_webui.py` 上继续扩展轮换回归验证

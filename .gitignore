@@ -1,6 +1,7 @@
 .idea/
 
 **/node_modules/
+**/dist/
 **/.vite/
 **/*.tsbuildinfo
 **/config.toml
@@ -13,4 +14,3 @@
 
 frps/data/
 frps/configs/
-frps/webui/dist/
