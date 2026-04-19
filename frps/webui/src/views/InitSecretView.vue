@@ -97,7 +97,7 @@ async function handleRefresh(): Promise<void> {
           </div>
           <div class="auth-detail">
             <strong>注意事项</strong>
-            <span>初始化完成后请妥善保存该管理密钥，当前阶段不提供找回能力。</span>
+            <span>初始化完成后请妥善保存该管理密钥；如需重置，需删除服务端本地 <code>auth.json</code> 后重新初始化。</span>
           </div>
         </div>
       </el-card>

@@ -98,7 +98,7 @@ go test ./...
 - 相同仓储接口在两种数据库下行为一致
 - 唯一约束、索引、事务边界符合预期
 - 分组、隧道等核心 CRUD 在两种数据库下结果一致
-- 管理认证改用本地 `auth.json` 后，应单独验证初始化、读取和一次性盐 challenge 流程
+- 管理认证改用本地 `auth.json` 后，应单独验证初始化、读取、删除后自动复位和一次性盐 challenge 流程
 
 ## 2.4 端到端测试
 
@@ -170,6 +170,7 @@ python test/e2e_management_webui.py
 - 在隔离工作目录中写入固定 `data/config.json`
 - 直接启动 `frps.exe`
 - 通过真实 HTTP 请求验证管理认证和管理 CRUD 闭环
+- 删除 `auth.json` 后验证管理面自动回到未初始化态并允许重新初始化
 - 输出 `result.json`、`frps.log`、隔离 SQLite 和 `auth.json`
 
 如需查看脚本实际写入的 SQLite 数据库，可加：

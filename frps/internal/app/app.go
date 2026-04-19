@@ -40,6 +40,7 @@ func (a *App) Run(parent context.Context) error {
 	}
 
 	if err := a.initDatabase(ctx); err != nil {
+		a.closeAuth()
 		return err
 	}
 
@@ -55,6 +56,7 @@ func (a *App) Run(parent context.Context) error {
 		a.version,
 	)
 	if err != nil {
+		a.closeAuth()
 		return fmt.Errorf("init management api: %w", err)
 	}
 	a.api = apiServer
@@ -123,6 +125,7 @@ func (a *App) shutdown() error {
 	}
 
 	a.closeDatabase()
+	a.closeAuth()
 
 	if len(errs) == 0 {
 		a.logger.Info("frps shutdown completed")
@@ -130,4 +133,12 @@ func (a *App) shutdown() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+func (a *App) closeAuth() {
+	if a.auth == nil {
+		return
+	}
+	_ = a.auth.Close()
+	a.auth = nil
 }

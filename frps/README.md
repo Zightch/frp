@@ -76,7 +76,7 @@ curl http://127.0.0.1:7500/api/v1/healthz
 - `group_tunnel_ip_rules`
 - `tunnels`
 
-管理认证设计不再依赖数据库 `admins` 表。服务启动时应先检查本地 `auth.json`；如果文件不存在，管理面只允许用户初始化管理密钥。`auth.json` 只保存管理密钥的 hash，不保存明文，后续 WebUI 登录通过一次性盐 challenge 校验 `sha256(key_hash + salt)`。
+管理认证设计不再依赖数据库 `admins` 表。服务启动时应先检查本地 `auth.json`；如果文件不存在，管理面只允许用户初始化管理密钥。`auth.json` 只保存管理密钥的 hash，不保存明文，后续 WebUI 登录通过一次性盐 challenge 校验 `sha256(key_hash + salt)`。如需重置管理密钥，删除本地 `auth.json` 即可让服务端自动回到未初始化态。
 
 当前最小认证接口包括：
 

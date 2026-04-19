@@ -59,10 +59,16 @@ func TestHealthEndpoint(t *testing.T) {
 func TestAuthInitializationLoginAndSessionEndpoints(t *testing.T) {
 	store := newTestStore(t)
 	authPath := filepath.Join(t.TempDir(), "auth.json")
-	manager, err := authn.NewManager(authn.Options{Path: authPath})
+	manager, err := authn.NewManager(authn.Options{
+		Path:          authPath,
+		WatchInterval: 5 * time.Millisecond,
+	})
 	if err != nil {
 		t.Fatalf("new auth manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
 
 	server, err := NewServer(
 		Options{
@@ -270,12 +276,129 @@ func TestAuthInitializationLoginAndSessionEndpoints(t *testing.T) {
 	)
 }
 
-func TestManagementKeySmokeFlow(t *testing.T) {
+func TestAuthStateResetsAfterAuthFileDeletion(t *testing.T) {
 	store := newTestStore(t)
-	manager, err := authn.NewManager(authn.Options{Path: filepath.Join(t.TempDir(), "auth.json")})
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	manager, err := authn.NewManager(authn.Options{
+		Path:          authPath,
+		WatchInterval: 5 * time.Millisecond,
+	})
 	if err != nil {
 		t.Fatalf("new auth manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	keyHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if err := manager.Initialize(keyHash); err != nil {
+		t.Fatalf("initialize auth manager: %v", err)
+	}
+
+	challenge, err := manager.IssueChallenge()
+	if err != nil {
+		t.Fatalf("issue challenge: %v", err)
+	}
+
+	_, token, err := manager.Login(challenge.ID, buildManagementProof(keyHash, challenge.Salt))
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	sessionCookie := &http.Cookie{
+		Name:  managementSessionCookieName,
+		Value: token,
+		Path:  "/",
+	}
+
+	if err := os.Remove(authPath); err != nil {
+		t.Fatalf("remove auth file: %v", err)
+	}
+
+	resetObserved := false
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		state := performRequest(
+			t,
+			server.Handler(),
+			http.MethodGet,
+			"/api/v1/auth/state",
+			nil,
+			http.StatusOK,
+			sessionCookie,
+		)
+		if state.JSON["initialized"] == false {
+			if state.JSON["authenticated"] != false {
+				t.Fatalf("unexpected auth state after deletion: %#v", state.JSON)
+			}
+			clearedCookie := findCookie(state.Cookies, managementSessionCookieName)
+			if clearedCookie == nil || clearedCookie.MaxAge != -1 {
+				t.Fatalf("state endpoint must clear stale management cookie after auth reset: %#v", state.Cookies)
+			}
+			resetObserved = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !resetObserved {
+		t.Fatal("auth state did not reset after auth.json deletion")
+	}
+
+	protected := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/proxy-groups",
+		nil,
+		http.StatusConflict,
+		sessionCookie,
+	)
+	clearedCookie := findCookie(protected.Cookies, managementSessionCookieName)
+	if clearedCookie == nil || clearedCookie.MaxAge != -1 {
+		t.Fatalf("protected endpoint must clear stale management cookie after auth reset: %#v", protected.Cookies)
+	}
+
+	reinit := performJSONRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/auth/init",
+		map[string]any{
+			"key_hash": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		},
+		http.StatusCreated,
+	)
+	if reinit["initialized"] != true {
+		t.Fatalf("unexpected re-init response: %#v", reinit)
+	}
+}
+
+func TestManagementKeySmokeFlow(t *testing.T) {
+	store := newTestStore(t)
+	manager, err := authn.NewManager(authn.Options{
+		Path:          filepath.Join(t.TempDir(), "auth.json"),
+		WatchInterval: 5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new auth manager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
 
 	server, err := NewServer(
 		Options{
@@ -603,11 +726,15 @@ func newTestAuthManager(t *testing.T, initialize bool) *authn.Manager {
 	t.Helper()
 
 	manager, err := authn.NewManager(authn.Options{
-		Path: filepath.Join(t.TempDir(), "auth.json"),
+		Path:          filepath.Join(t.TempDir(), "auth.json"),
+		WatchInterval: 5 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new auth manager: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
 	if initialize {
 		if err := manager.Initialize("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"); err != nil {
 			t.Fatalf("initialize auth manager: %v", err)

@@ -79,6 +79,10 @@ async function handleRefresh(): Promise<void> {
             <strong>第三步</strong>
             <span>调用 <code>POST /api/v1/auth/login</code> 建立管理会话。</span>
           </div>
+          <div class="auth-detail">
+            <strong>重置方式</strong>
+            <span>当前阶段不提供在线轮换；如需重置管理密钥，请删除服务端本地 <code>auth.json</code>。</span>
+          </div>
         </div>
       </el-card>
 

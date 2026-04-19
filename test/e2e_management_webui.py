@@ -218,6 +218,55 @@ def main() -> int:
         session_after_login = request_json(opener, "GET", f"{base_url}/api/v1/auth/session", expected_status=200)
         assert_equal(session_after_login.get("authenticated"), True, "session authenticated")
 
+        stage = "delete auth.json and confirm automatic auth reset"
+        print(f"[stage] {stage}")
+        paths.auth_path.unlink()
+
+        state_after_delete = wait_for_auth_reset(opener, base_url, min(args.timeout, 10.0))
+        assert_equal(state_after_delete.get("initialized"), False, "post-delete initialized")
+        assert_equal(state_after_delete.get("authenticated"), False, "post-delete authenticated")
+
+        protected_after_delete = request_json(
+            opener,
+            "GET",
+            f"{base_url}/api/v1/proxy-groups",
+            expected_status=409,
+        )
+        assert_equal(
+            protected_after_delete.get("error"),
+            "management secret is not initialized",
+            "post-delete protected api error",
+        )
+
+        stage = "reinitialize management secret after auth reset"
+        print(f"[stage] {stage}")
+        reinit_result = request_json(
+            opener,
+            "POST",
+            f"{base_url}/api/v1/auth/init",
+            payload={"key_hash": key_hash},
+            expected_status=201,
+        )
+        assert_equal(reinit_result.get("initialized"), True, "reinit response initialized")
+
+        challenge_after_reset = request_json(opener, "POST", f"{base_url}/api/v1/auth/challenge", expected_status=200)
+        challenge_id = str(challenge_after_reset.get("challenge_id") or "").strip()
+        salt = str(challenge_after_reset.get("salt") or "").strip()
+        if not challenge_id or not salt:
+            raise RuntimeError(f"invalid challenge payload after reset: {challenge_after_reset!r}")
+
+        relogin_result = request_json(
+            opener,
+            "POST",
+            f"{base_url}/api/v1/auth/login",
+            payload={
+                "challenge_id": challenge_id,
+                "proof": build_management_proof(key_hash, salt),
+            },
+            expected_status=200,
+        )
+        assert_equal(relogin_result.get("authenticated"), True, "relogin response authenticated")
+
         stage = "create and update proxy group"
         print(f"[stage] {stage}")
         created_group = request_json(
@@ -364,6 +413,8 @@ def main() -> int:
                 "management auth state before initialization",
                 "management secret initialization to auth.json",
                 "challenge login and session recovery",
+                "auth.json deletion resets management auth state",
+                "management secret reinitialization after auth reset",
                 "proxy group create/list/update/delete",
                 "proxy group token reset with sqlite verification",
                 "tunnel create/list/update/delete",
@@ -622,6 +673,21 @@ def wait_sqlite_schema(db_path: Path, timeout_seconds: float) -> None:
         time.sleep(0.25)
 
     raise TimeoutError(f"sqlite schema was not bootstrapped in time: {db_path}")
+
+
+def wait_for_auth_reset(
+    opener: urllib.request.OpenerDirector,
+    base_url: str,
+    timeout_seconds: float,
+) -> dict[str, object]:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        state = request_json(opener, "GET", f"{base_url}/api/v1/auth/state", expected_status=200)
+        if state.get("initialized") is False and state.get("authenticated") is False:
+            return state
+        time.sleep(0.25)
+
+    raise TimeoutError("management auth did not reset after auth.json deletion")
 
 
 def request_text(

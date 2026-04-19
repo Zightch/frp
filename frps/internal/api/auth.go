@@ -188,6 +188,9 @@ func (s *Server) requireManagementSession(writer http.ResponseWriter, request *h
 		return false
 	}
 	if !s.auth.Initialized() {
+		if hasManagementSessionCookie(request) {
+			s.clearManagementSessionCookie(writer)
+		}
 		writeError(writer, &apiError{Status: http.StatusConflict, Message: "management secret is not initialized"})
 		return false
 	}

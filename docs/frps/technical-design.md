@@ -97,7 +97,7 @@ Storage / Runtime State
 
 ### 3.2 `internal/auth`
 
-- `auth.json` 读取、初始化和管理密钥轮换。
+- `auth.json` 读取、初始化和删除后的自动复位。
 - 管理端一次性盐 challenge 签发与消费。
 - 管理端认证。
 - API/WS 鉴权中间件。

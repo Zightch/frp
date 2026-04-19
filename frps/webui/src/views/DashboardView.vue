@@ -84,6 +84,7 @@ const { authenticated, initialized, lastError, ready } = storeToRefs(authStore);
           <li>管理认证只依赖本地 auth.json 中保存的管理密钥 hash。</li>
           <li>浏览器登录固定走一次性盐 challenge proof。</li>
           <li>管理会话当前只保存在内存中，服务端重启后需要重新登录。</li>
+          <li>删除服务端本地 auth.json 后，管理面会自动回到未初始化态并清空旧会话。</li>
         </ul>
       </el-card>
 
