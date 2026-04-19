@@ -60,3 +60,14 @@ func (s *Server) writeFrameWithSession(conn net.Conn, session *sessionState, fra
 	defer session.writeMu.Unlock()
 	return s.writeFrame(conn, frame)
 }
+
+func (s *Server) writeFramesWithSession(conn net.Conn, session *sessionState, frames ...protocol.Frame) error {
+	session.writeMu.Lock()
+	defer session.writeMu.Unlock()
+	for _, frame := range frames {
+		if err := s.writeFrame(conn, frame); err != nil {
+			return err
+		}
+	}
+	return nil
+}
