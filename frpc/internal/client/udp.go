@@ -56,6 +56,12 @@ func (c *Client) handleUDPOpen(conn net.Conn, state *sessionState, frame protoco
 		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonProtocolError, fmt.Sprintf("udp session %d already exists", frame.StreamID))
 	}
 
+	c.logger.Info(
+		"udp session opened",
+		"session_id", frame.StreamID,
+		"tunnel_id", open.TunnelID,
+		"target", target,
+	)
 	go c.copyLocalUDPToServer(conn, state, frame.StreamID, udpSession)
 	return nil
 }
@@ -99,10 +105,18 @@ func (c *Client) handleUDPClose(state *sessionState, frame protocol.Frame) error
 		return fmt.Errorf("udp.close streamId must be non-zero")
 	}
 
-	if _, err := protocol.UnmarshalUDPClose(frame.Body); err != nil {
+	closeMessage, err := protocol.UnmarshalUDPClose(frame.Body)
+	if err != nil {
 		return err
 	}
-	state.closeUDPSession(frame.StreamID)
+	if state.closeUDPSession(frame.StreamID) {
+		c.logger.Info(
+			"udp session closed",
+			"session_id", frame.StreamID,
+			"reason_code", closeMessage.ReasonCode,
+			"message", closeMessage.Message,
+		)
+	}
 	return nil
 }
 

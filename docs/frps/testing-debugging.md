@@ -34,6 +34,10 @@
   - `disabled_group`
   - `disabled_tunnel`
   - `local_unavailable`
+- 最小 UDP 单端口端到端脚本：
+  - `test/e2e_udp_single.py`
+  - `happy_path`
+  - `idle_cleanup`
 - 最小 TCP 代码健康压测脚本：
   - `test/e2e_tcp_perf.py`
   - `stability`
@@ -109,11 +113,13 @@ go test ./...
 - 冷启动
 - SQLite 预注入
 - TCP 单端口
+- UDP 单端口 happy path
 - 加最小必要负向场景
 
 当前脚本：
 
 - `test/e2e_tcp_single.py`
+- `test/e2e_udp_single.py`
 - `test/e2e_tcp_perf.py`
 - `test/e2e_management_webui.py`
 
@@ -135,11 +141,13 @@ go test ./...
 
 当前固定场景：
 
-- `happy_path`
-- `bad_token`
-- `disabled_group`
-- `disabled_tunnel`
-- `local_unavailable`
+- UDP：`happy_path`
+- UDP：`idle_cleanup`
+- TCP：`happy_path`
+- TCP：`bad_token`
+- TCP：`disabled_group`
+- TCP：`disabled_tunnel`
+- TCP：`local_unavailable`
 
 建议命令：
 
@@ -149,6 +157,11 @@ python test/e2e_tcp_single.py --scenario bad_token
 python test/e2e_tcp_single.py --scenario disabled_group
 python test/e2e_tcp_single.py --scenario disabled_tunnel
 python test/e2e_tcp_single.py --scenario local_unavailable
+```
+
+```powershell
+python test/e2e_udp_single.py
+python test/e2e_udp_single.py --scenario idle_cleanup
 ```
 
 ```powershell
@@ -163,7 +176,23 @@ python test/e2e_tcp_perf.py --transfer-concurrency 8 --transfer-bytes-per-connec
 python test/e2e_management_webui.py
 ```
 
-该脚本会：
+UDP happy path 联调：
+
+- 在隔离工作目录中直启真实 `frps`
+- 直接 seed 一个启用的单端口 UDP tunnel
+- 启动 Python UDP 本地 echo server 和 Python UDP 公网客户端
+- 断言单个 datagram 能经 `frps <-> frpc` 闭环转发
+- 输出 `result.json`、`frps.log`、`frpc.log` 到 `test/tmp/udp-e2e-<timestamp>/`
+
+UDP idle cleanup 联调：
+
+- 复用同一条真实 UDP e2e 链路
+- 先跑通一次 datagram round-trip
+- 保持同一公网 UDP 客户端空闲约 `30s`
+- 断言 `frps` 记录 idle cleanup 并向 `frpc` 下发 `udp.close`
+- 断言 `frpc` 记录 `udp session closed` 后，同一公网客户端再次发包可重建会话并重新收发
+
+管理面脚本会：
 
 - 构建或复用 `frps.exe`
 - 构建或复用 `frps/webui/dist`
@@ -173,7 +202,7 @@ python test/e2e_management_webui.py
 - 删除 `auth.json` 后验证管理面自动回到未初始化态并允许重新初始化
 - 输出 `result.json`、`frps.log`、隔离 SQLite 和 `auth.json`
 
-如需查看脚本实际写入的 SQLite 数据库，可加：
+如需查看 TCP 单端口脚本实际写入的 SQLite 数据库，可加：
 
 ```powershell
 python test/e2e_tcp_single.py --scenario happy_path --keep-temp

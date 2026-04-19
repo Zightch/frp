@@ -48,6 +48,8 @@ python test/e2e_tcp_single.py --scenario bad_token
 python test/e2e_tcp_single.py --scenario disabled_group
 python test/e2e_tcp_single.py --scenario disabled_tunnel
 python test/e2e_tcp_single.py --scenario local_unavailable
+python test/e2e_udp_single.py
+python test/e2e_udp_single.py --scenario idle_cleanup
 ```
 
 脚本会自动：
@@ -55,7 +57,7 @@ python test/e2e_tcp_single.py --scenario local_unavailable
 - 创建临时 SQLite 数据库
 - 写入 `proxy_groups` / `tunnels`
 - 启动真实 `frps` / `frpc`
-- 启动 Python echo server 和 Python 外网客户端
+- 启动 Python TCP/UDP echo server 和 Python 外网客户端
 - 断言最小控制面与数据面行为
 
 如需手工联调，最小环境为：
@@ -120,6 +122,8 @@ python test/e2e_tcp_single.py --scenario local_unavailable
 必须验证：
 
 - 数据报可正常来回转发
+- 当前已落地：`happy_path`
+- 当前已落地：`idle_cleanup`
 - 会话闲置后自动超时
 - 会话回收后可重新建立
 

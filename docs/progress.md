@@ -502,3 +502,6 @@ python test/e2e_management_webui.py
 - `frpc` 当前只在收到 `udp.close`、本地不可恢复错误或控制会话结束时释放本地 UDP session，不做本地 idle timer；已新增 `frpc/internal/client/client_test.go` 的 UDP happy path 回归测试，`go test ./...` 已在 `frpc/` 模块通过
 - `frps` 已补上 UDP session 级 `30s` idle cleanup：在 UDP tunnel listener 启动后后台定期扫描空闲会话，超时后删除本地 session，并向 `frpc` 发送 `udp.close`
 - 已新增 `frps/internal/control/server_test.go` 的 UDP idle cleanup 回归测试，覆盖真实 UDP listener 建会话、空闲超时清理和向 `frpc` 下发 `udp.close`；`go test ./internal/control` 与 `go test ./...` 已在 `frps/` 模块通过
+- 已新增 `test/e2e_udp_single.py`，在隔离工作目录中直启真实 `frps`、seed 单端口 UDP tunnel，并分别用 Python UDP 客户端和 Python UDP 服务器跑通 `公网客户端 -> frps -> frpc -> 本地 UDP 服务 -> frps -> 公网客户端` 的 happy path；`python test/e2e_udp_single.py` 已于 2026-04-19 本地通过
+- `test/e2e_udp_single.py` 已扩展 `idle_cleanup` 场景：同一公网 UDP 客户端在一次 datagram round-trip 后空闲约 `30s`，`frps` 会记录 idle cleanup 并向 `frpc` 发送 `udp.close`，`frpc` 会记录 `udp session closed`，随后同一公网客户端再次发包可重建新 UDP session 并重新打通闭环；`python test/e2e_udp_single.py --scenario idle_cleanup` 已于 2026-04-19 本地通过
+- 至此，单端口 UDP 隧道这一轮的真实公网入口、本地 UDP 转发、回包、`frps` `30s` idle cleanup、`frpc` 收到清理通知后的收口，以及最小 Python e2e 验证已全部闭环；本轮 `todo` 已清空
