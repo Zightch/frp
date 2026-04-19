@@ -1,7 +1,9 @@
 package control
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"time"
 
@@ -139,4 +141,38 @@ func (s *Server) sendStreamClose(conn net.Conn, session *sessionState, streamID 
 		StreamID: streamID,
 		Body:     body,
 	})
+}
+
+func (s *Server) copyPublicToClient(conn net.Conn, session *sessionState, streamID uint32, stream *publicStream) {
+	buffer := make([]byte, protocol.MaxDataBodyLen)
+	for {
+		n, err := stream.conn.Read(buffer)
+		if n > 0 {
+			payload := append([]byte(nil), buffer[:n]...)
+			writeErr := s.writeFrameWithSession(conn, session, protocol.Frame{
+				Type:     protocol.TypeStreamData,
+				StreamID: streamID,
+				Body:     payload,
+			})
+			if writeErr != nil {
+				session.closePublicStream(streamID)
+				return
+			}
+		}
+
+		if err == nil {
+			continue
+		}
+
+		reasonCode := protocol.CloseReasonReadError
+		message := err.Error()
+		if errors.Is(err, io.EOF) {
+			reasonCode = protocol.CloseReasonEOF
+			message = "eof"
+		}
+		if session.closePublicStream(streamID) {
+			_ = s.sendStreamClose(conn, session, streamID, reasonCode, message)
+		}
+		return
+	}
 }
