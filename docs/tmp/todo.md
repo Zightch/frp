@@ -43,12 +43,11 @@
 ## 当前子步骤细分
 
 - 当前正在推进：把 `frps/internal/control/server.go` 中最核心的 session 壳先迁到 `session.go`，继续收束 `control` 包的职责边界。
-1. 新建 `session.go`，只迁移 `initialServerRequestID` 和 `sessionState` 结构体定义；保持所有方法仍留在原文件，不改调用方式。
-2. 迁移 `(*sessionState).nextRequestID`、`doneCh`、`closeDone` 到 `session.go`，不改行为。
-3. 迁移 `writeFrameWithSession`、`writeFramesWithSession`，保持写锁语义和写入顺序不变。
-4. 迁移 `replyProtocolErrorWithSession`、`replyErrorWithSession`、`writeErrorWithSession`，保持错误码和回复路径不变。
-5. 运行 `go test ./internal/control`，确认 `server.go` 缩责后的行为不变，再决定是否继续收窄其它内容。
+1. 迁移 `(*sessionState).nextRequestID`、`doneCh`、`closeDone` 到 `session.go`，不改行为。
+2. 迁移 `writeFrameWithSession`、`writeFramesWithSession`，保持写锁语义和写入顺序不变。
+3. 迁移 `replyProtocolErrorWithSession`、`replyErrorWithSession`、`writeErrorWithSession`，保持错误码和回复路径不变。
+4. 运行 `go test ./internal/control`，确认 `server.go` 缩责后的行为不变，再决定是否继续收窄其它内容。
 
 ## 当前唯一下一步
 
-- 先只新建 `frps/internal/control/session.go`，把 `initialServerRequestID` 和 `sessionState` 结构体定义迁过去；不移动任何方法，不改任何调用点，不改行为。
+- 先只把 `(*sessionState).nextRequestID`、`doneCh`、`closeDone` 迁移到 `frps/internal/control/session.go`；不移动任何 `Server` 方法，不改任何调用点，不改行为。
