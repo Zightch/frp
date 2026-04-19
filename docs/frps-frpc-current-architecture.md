@@ -197,12 +197,12 @@ sequenceDiagram
 
 当前实际数据面边界：
 
-- `frps` 会为 `enabled` 的 TCP 单端口 / range 隧道，以及 `enabled` 的 UDP 单端口隧道启动公网 listener；UDP range 还没有进入真实运行态。
-- `frps` 当前已经能把公网 UDP datagram 按 `tunnelId + 公网客户端地址` 绑定到 `sessionId`，并向 `frpc` 顺序发送 `udp.open` / `udp.data`，同时接收来自 `frpc` 的 `udp.data` 回写公网客户端。
+- `frps` 会为 `enabled` 的 TCP 单端口 / range 隧道，以及 `enabled` 的 UDP 单端口 / range 隧道启动公网 listener。
+- `frps` 当前已经能把公网 UDP datagram 按 `tunnelId + remotePort + 公网客户端地址` 绑定到 `sessionId`，并向 `frpc` 顺序发送 `udp.open` / `udp.data`，同时接收来自 `frpc` 的 `udp.data` 回写公网客户端。
 - `frps` 是 UDP session 生命周期的唯一裁决方；当前会在公网收包和 `frpc` 回包时立即刷新 UDP session 活跃时间，并由后台每 `1s` sweep 一次空闲会话，在“最后一次成功双向转发后空闲约 `30s`”时删除本地 session、向 `frpc` 发送 `udp.close`。
 - `frpc` 当前会在收到 `udp.open` 后按 `sessionId` 建立真实本地 `UDPConn`，收到 `udp.data` 后把 datagram 写到本地 UDP 服务，并由后台读循环把本地响应按同一 `sessionId` 回发给 `frps`。
 - `frpc` 当前不做本地 idle timer；只有在收到 `udp.close`、发生本地不可恢复读写错误，或控制会话结束时才释放本地 UDP session。
-- TCP range 当前已经完成最小闭环：`config.ack` 后会按 `remoteStart..remoteEnd` 展开 listener，把实际命中的公网端口写入 `stream.open.remotePort`，并已由 `test/e2e_tcp_range.py` 验证同一个 range tunnel 命中不同 `remotePort` 时会按偏移转发到对应 `localPort`；`test/e2e_tcp_single.py` 的 `happy_path` 也已重新通过。UDP 当前已经完成“公网入口、本地转发、`frps` `30s` idle cleanup、`frpc` 收口，以及 Python happy path / idle cleanup e2e”的最小闭环；UDP range、隧道入口 ACL、限速、抓包、在线观测等能力仍未进入真实执行链路。
+- TCP range 当前已经完成最小闭环：`config.ack` 后会按 `remoteStart..remoteEnd` 展开 listener，把实际命中的公网端口写入 `stream.open.remotePort`，并已由 `test/e2e_tcp_range.py` 验证同一个 range tunnel 命中不同 `remotePort` 时会按偏移转发到对应 `localPort`；`test/e2e_tcp_single.py` 的 `happy_path` 也已重新通过。UDP 当前已经完成“公网入口、本地转发、`frps` `30s` idle cleanup、`frpc` 收口，以及 Python happy path / idle cleanup e2e”的最小闭环；同时，UDP range 的 `frps` 入口已经进入真实运行态：`config.ack` 后会按 `remoteStart..remoteEnd` 展开 UDP listener、把实际命中的公网端口写入 `udp.open.remotePort`，并按 `tunnelId + remotePort + public client addr` 区分 session。当前仍未完成的是 `frpc` 的 UDP range 本地端口映射、最小 Python e2e，以及范围链路总回归；隧道入口 ACL、限速、抓包、在线观测等能力也仍未进入真实执行链路。
 
 ## 6. 数据库模型关系
 

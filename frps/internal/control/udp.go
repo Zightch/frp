@@ -109,9 +109,9 @@ func (s *Server) cleanupIdlePublicUDPSessions(conn net.Conn, logger Logger, sess
 	return nil
 }
 
-func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, listener *net.UDPConn, clientAddr *net.UDPAddr, payload []byte) error {
+func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, remotePort uint16, listener *net.UDPConn, clientAddr *net.UDPAddr, payload []byte) error {
 	now := time.Now().UTC()
-	udpSession := newPublicUDPSession(session.nextTunnelStreamID(), tunnel, listener, clientAddr, now)
+	udpSession := newPublicUDPSession(session.nextTunnelStreamID(), tunnel, remotePort, listener, clientAddr, now)
 	udpSession, created := session.bindPublicUDPSession(udpSession)
 	if !created {
 		udpSession.touch(now)
@@ -125,7 +125,7 @@ func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, se
 	requestID := session.nextRequestID()
 	openBody, err := protocol.MarshalUDPOpen(protocol.UDPOpen{
 		TunnelID:      tunnel.TunnelID,
-		RemotePort:    tunnel.RemoteStart,
+		RemotePort:    udpSession.remotePort,
 		ClientAddr:    udpSession.clientAddr,
 		IdleTimeoutMs: uint32(udpSession.idleTimeout / time.Millisecond),
 	})
@@ -213,11 +213,11 @@ func (s *sessionState) takeIdlePublicUDPSessions(now time.Time) []*publicUDPSess
 	return idleSessions
 }
 
-func newPublicUDPSession(sessionID uint32, tunnel protocol.TunnelEntry, listener *net.UDPConn, clientAddr *net.UDPAddr, now time.Time) *publicUDPSession {
+func newPublicUDPSession(sessionID uint32, tunnel protocol.TunnelEntry, remotePort uint16, listener *net.UDPConn, clientAddr *net.UDPAddr, now time.Time) *publicUDPSession {
 	udpSession := &publicUDPSession{
 		sessionID:   sessionID,
 		tunnelID:    tunnel.TunnelID,
-		remotePort:  tunnel.RemoteStart,
+		remotePort:  remotePort,
 		clientAddr:  sockAddrFromNetAddr(clientAddr),
 		publicAddr:  cloneUDPAddr(clientAddr),
 		listener:    listener,
@@ -232,17 +232,20 @@ func (s *publicUDPSession) touch(now time.Time) {
 }
 
 func (s *publicUDPSession) key() string {
-	return publicUDPSessionKey(s.tunnelID, s.clientAddr)
+	return publicUDPSessionKey(s.tunnelID, s.remotePort, s.clientAddr)
 }
 
-func publicUDPSessionKey(tunnelID uint32, clientAddr protocol.SockAddr) string {
+func publicUDPSessionKey(tunnelID uint32, remotePort uint16, clientAddr protocol.SockAddr) string {
 	ip := clientAddr.IP
 	if ip4 := ip.To4(); ip4 != nil {
 		ip = ip4
 	} else {
 		ip = ip.To16()
 	}
-	return strconv.FormatUint(uint64(tunnelID), 10) + "|" + ip.String() + "|" + strconv.FormatUint(uint64(clientAddr.Port), 10)
+	return strconv.FormatUint(uint64(tunnelID), 10) +
+		"|" + strconv.FormatUint(uint64(remotePort), 10) +
+		"|" + ip.String() +
+		"|" + strconv.FormatUint(uint64(clientAddr.Port), 10)
 }
 
 func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {

@@ -28,8 +28,9 @@ type tcpTunnelListener struct {
 }
 
 type udpTunnelListener struct {
-	tunnel   protocol.TunnelEntry
-	listener *net.UDPConn
+	tunnel     protocol.TunnelEntry
+	remotePort uint16
+	listener   *net.UDPConn
 }
 
 func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *sessionState) error {
@@ -69,26 +70,26 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 				})
 			}
 		case protocol.ProtocolUDP:
-			if tunnel.TunnelFlags&protocol.TunnelFlagRange != 0 {
-				continue
+			for remotePort := int(tunnel.RemoteStart); remotePort <= int(tunnel.RemoteEnd); remotePort++ {
+				addr := net.JoinHostPort("", strconv.Itoa(remotePort))
+				udpAddr, err := net.ResolveUDPAddr("udp", addr)
+				if err != nil {
+					closeStartedTunnelListeners(startedTCP, startedUDP)
+					return err
+				}
+				listener, err := net.ListenUDP("udp", udpAddr)
+				if err != nil {
+					closeStartedTunnelListeners(startedTCP, startedUDP)
+					return err
+				}
+				startedUDP = append(startedUDP, listener)
+				startedUDPByTunnel[tunnel.TunnelID] = append(startedUDPByTunnel[tunnel.TunnelID], listener)
+				startedUDPRuntimes = append(startedUDPRuntimes, udpTunnelListener{
+					tunnel:     tunnel,
+					remotePort: uint16(remotePort),
+					listener:   listener,
+				})
 			}
-			addr := net.JoinHostPort("", strconv.Itoa(int(tunnel.RemoteStart)))
-			udpAddr, err := net.ResolveUDPAddr("udp", addr)
-			if err != nil {
-				closeStartedTunnelListeners(startedTCP, startedUDP)
-				return err
-			}
-			listener, err := net.ListenUDP("udp", udpAddr)
-			if err != nil {
-				closeStartedTunnelListeners(startedTCP, startedUDP)
-				return err
-			}
-			startedUDP = append(startedUDP, listener)
-			startedUDPByTunnel[tunnel.TunnelID] = append(startedUDPByTunnel[tunnel.TunnelID], listener)
-			startedUDPRuntimes = append(startedUDPRuntimes, udpTunnelListener{
-				tunnel:   tunnel,
-				listener: listener,
-			})
 		default:
 			continue
 		}
@@ -123,8 +124,13 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 		go s.serveTunnelListener(conn, logger, session, runtime.tunnel, runtime.remotePort, runtime.listener)
 	}
 	for _, runtime := range startedUDPRuntimes {
-		logger.Info("udp tunnel listener ready", "tunnel_id", runtime.tunnel.TunnelID, "addr", runtime.listener.LocalAddr().String())
-		go s.serveUDPTunnelListener(conn, logger, session, runtime.tunnel, runtime.listener)
+		logger.Info(
+			"udp tunnel listener ready",
+			"tunnel_id", runtime.tunnel.TunnelID,
+			"remote_port", runtime.remotePort,
+			"addr", runtime.listener.LocalAddr().String(),
+		)
+		go s.serveUDPTunnelListener(conn, logger, session, runtime.tunnel, runtime.remotePort, runtime.listener)
 	}
 
 	return nil
@@ -139,7 +145,7 @@ func closeStartedTunnelListeners(tcpListeners []net.Listener, udpListeners []*ne
 	}
 }
 
-func (s *Server) serveUDPTunnelListener(conn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, listener *net.UDPConn) {
+func (s *Server) serveUDPTunnelListener(conn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, remotePort uint16, listener *net.UDPConn) {
 	buffer := make([]byte, protocol.MaxDataBodyLen)
 	for {
 		n, clientAddr, err := listener.ReadFromUDP(buffer)
@@ -151,8 +157,14 @@ func (s *Server) serveUDPTunnelListener(conn net.Conn, logger Logger, session *s
 			continue
 		}
 		payload := append([]byte(nil), buffer[:n]...)
-		if err := s.handlePublicUDPDatagram(conn, logger, session, tunnel, listener, clientAddr, payload); err != nil {
-			logger.Warn("udp tunnel forward failed", "tunnel_id", tunnel.TunnelID, "client_addr", clientAddr.String(), "error", err)
+		if err := s.handlePublicUDPDatagram(conn, logger, session, tunnel, remotePort, listener, clientAddr, payload); err != nil {
+			logger.Warn(
+				"udp tunnel forward failed",
+				"tunnel_id", tunnel.TunnelID,
+				"remote_port", remotePort,
+				"client_addr", clientAddr.String(),
+				"error", err,
+			)
 		}
 	}
 }

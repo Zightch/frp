@@ -34,7 +34,7 @@
 - `frps` / `frpc` 已支持 token challenge/response 登录。
 - 一个分组始终只允许 `1` 个在线 `frpc` 客户端。
 - `frps` 可从 SQLite/MySQL schema 中读取 `proxy_groups` / `tunnels` 运行数据。
-- `frps` 可在 `config.ack` 后启动启用状态的 TCP 单端口 / range listener，以及 UDP 单端口 listener。
+- `frps` 可在 `config.ack` 后启动启用状态的 TCP 单端口 / range listener，以及 UDP 单端口 / range listener。
 - `frpc` 可接收配置、处理 TCP `stream.*` 和 UDP `udp.*`，并回连本地 TCP/UDP 目标。
 - 管理面已切换为独立 `Vue 3 + Vite + TypeScript + Element Plus` 前端工程，由 `frps` 直接托管构建产物。
 - 管理认证已固定为本地 `auth.json` 单一管理密钥模型：只初始化一次，持续使用；删除 `auth.json` 后服务端自动回到未初始化态。
