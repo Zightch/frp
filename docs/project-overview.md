@@ -71,7 +71,7 @@
 - 抓包与限速
 - 完整连接观测与 WebSocket 实时态
 
-当前代码现状、协议边界和已收口停止线，应优先结合 `docs/progress.md` 与 `docs/frps-frpc-current-architecture.md` 一起阅读，不再按早期“TCP 已完成、UDP 未开始”的旧阶段理解当前仓库。
+当前代码现状、执行工作流、协议边界和已收口停止线，应优先结合 `docs/workflow.md`、`docs/progress.md` 与 `docs/frps-frpc-current-architecture.md` 一起阅读，不再按早期“TCP 已完成、UDP 未开始”的旧阶段理解当前仓库。
 
 ## 2. 能力范围
 
@@ -801,4 +801,4 @@ save group/tunnel config from WebUI
 - MVP 先单端口闭环，再扩端口范围与高级观测；当前 TCP/UDP 单端口最小闭环已经完成。
 - 字段及时收束：目标端只消费必要字段，不代表源端可以继续保留废字段；确认无用的字段要尽早从 schema、仓储、API、WebUI、测试数据和文档中移除，避免堆积。
 - 字段变更必须落实：字段名、语义或归属边界一旦调整，源端写库、出参、测试 seed 和文档必须同步改到位；额外入参可以忽略，但旧字段不能继续由源端产出。
-- `todo` 轮换信息隔离：`docs/tmp/todo.md` 只保留当前总目标、该目标下的子步骤、当前轮边界和当前唯一下一步，不写已完成内容；任一任务完成后先同步到 `docs/progress.md`，当前总目标完成后立即清空 `todo`，进入下一轮时再写入新的目标和子步骤。
+- `todo` 轮换信息隔离：统一按 `docs/workflow.md` 执行；当前轮 `docs/tmp/todo.md` 只保留当前总目标、该目标下的子步骤、当前轮边界和当前唯一下一步，不写已完成内容。
