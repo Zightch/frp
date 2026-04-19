@@ -224,6 +224,13 @@ ProxyGroup
 - 范围不可与现有正向代理端口重叠
 - 范围不可与固定反向代理端口冲突
 
+范围执行约定：
+
+- TCP/UDP range tunnel 在运行态按 `remote_start..remote_end` 展开为逐端口公网 listener。
+- 展开后的 listener 仍归属于同一个 tunnel 配置和同一个 wire `tunnelId`，不为每个端口单独分配新的 tunnel id。
+- 某个 listener 命中后，`frps` 必须把实际命中的公网端口写入 `stream.open.remotePort` 或 `udp.open.remotePort`。
+- UDP range session 键必须包含 `tunnelId + remotePort + public client addr`；idle cleanup 语义与单端口 UDP 保持一致，不因为 range 改为另一套生命周期模型。
+
 ## 4.5 `ReverseProxy`
 
 ```text

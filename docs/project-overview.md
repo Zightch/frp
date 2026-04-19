@@ -360,6 +360,18 @@ local:  30000-30010
 
 则 `20003` 会映射到 `30003`。
 
+范围映射的通用执行约定固定如下：
+
+- TCP 和 UDP 共用同一套偏移规则：
+
+```text
+offset = remotePort - remoteStart
+localPort = localStart + offset
+```
+
+- `frps` 运行时可以按范围展开为逐端口 listener，但协议侧仍保持单个 tunnel 配置；因此 `stream.open.remotePort` / `udp.open.remotePort` 必须始终携带真实命中的公网端口。
+- UDP 范围会话键必须包含 `tunnelId + remotePort + public client addr`，避免同一公网客户端命中同一 range tunnel 的不同端口时复用到错误 session。
+
 ### 6.3 反向代理 ReverseProxy
 
 反向代理完全由服务端执行。

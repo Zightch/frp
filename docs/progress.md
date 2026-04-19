@@ -505,3 +505,30 @@ python test/e2e_management_webui.py
 - 已新增 `test/e2e_udp_single.py`，在隔离工作目录中直启真实 `frps`、seed 单端口 UDP tunnel，并分别用 Python UDP 客户端和 Python UDP 服务器跑通 `公网客户端 -> frps -> frpc -> 本地 UDP 服务 -> frps -> 公网客户端` 的 happy path；`python test/e2e_udp_single.py` 已于 2026-04-19 本地通过
 - `test/e2e_udp_single.py` 已扩展 `idle_cleanup` 场景：同一公网 UDP 客户端在一次 datagram round-trip 后空闲约 `30s`，`frps` 会记录 idle cleanup 并向 `frpc` 发送 `udp.close`，`frpc` 会记录 `udp session closed`，随后同一公网客户端再次发包可重建新 UDP session 并重新打通闭环；`python test/e2e_udp_single.py --scenario idle_cleanup` 已于 2026-04-19 本地通过
 - 至此，单端口 UDP 隧道这一轮的真实公网入口、本地 UDP 转发、回包、`frps` `30s` idle cleanup、`frpc` 收到清理通知后的收口，以及最小 Python e2e 验证已全部闭环；本轮 `todo` 已清空
+
+## 16. TCP/UDP 范围隧道执行约定收束
+
+截至 2026-04-19，TCP/UDP 范围隧道这一轮的第一个子步骤已经完成；本次先收束长期有效的执行约定，还没有进入代码实现。
+
+本次固定下来的边界如下：
+
+- 这一轮只做连续、跨度一致的一一对应范围映射，不做稀疏映射。
+- TCP 和 UDP 共用同一套端口偏移公式：
+
+```text
+offset = remotePort - remoteStart
+localPort = localStart + offset
+```
+
+- `frps` 在运行态可以把一个 range tunnel 展开成逐端口公网 listener，但协议仍只保留同一个 wire `tunnelId`。
+- 因此，`stream.open.remotePort` 和 `udp.open.remotePort` 的语义已固定为“本次实际命中的公网端口”，不能在 range 模式下退化为固定写 `remoteStart`。
+- `frpc` 目标端口计算只依据当前配置快照和消息中的 `remotePort`，不依赖 listener 创建顺序、配置顺序或额外的子 tunnel 标识。
+- UDP range 的 session 键已固定为 `tunnelId + remotePort + public client addr`；单端口 UDP 只是 `remotePort` 固定不变的特例。
+- UDP 范围模式下仍保持当前生命周期模型不变：`frps` 是唯一 session 裁决方，活动发生后立即刷新最后活跃时间，空闲约 `30s` 后清理，`frpc` 只响应 `udp.close`，不做本地 idle timeout。
+- 这些约定已同步到正式文档：
+  - `docs/protocol.md`
+  - `docs/project-overview.md`
+  - `docs/frps/technical-design.md`
+  - `docs/frpc/technical-design.md`
+
+本子步骤属于文档收束，不包含代码改动验证；本次未运行测试。

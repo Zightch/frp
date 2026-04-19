@@ -130,6 +130,18 @@ connect server
 - 单端口映射时直接使用配置的 `local_host:local_port`
 - 端口范围映射时按 `remotePort` 计算偏移
 
+固定约定：
+
+- `remotePort` 始终表示公网侧真实命中的 `frps` 监听端口。
+- TCP 与 UDP 范围映射共用同一套公式：
+
+```text
+offset = remotePort - remoteStart
+localPort = localStart + offset
+```
+
+- `frpc` 只依据当前配置快照和消息中的 `remotePort` 计算目标本地端口，不依赖 listener 创建顺序或额外拆分出来的子 tunnel 标识。
+
 ## 7. UDP 工作流设计
 
 UDP 采用短会话模式，但当前生命周期约定已经固定：
@@ -138,6 +150,7 @@ UDP 采用短会话模式，但当前生命周期约定已经固定：
 - `frpc` 在收到 `udp.open` 后建立真实本地 `UDPConn`
 - `frpc` 收到 `udp.data` 后把单个 datagram 原样写给本地 UDP 服务
 - 本地 UDP 回包由 `frpc` 按原 `sessionId` 回发给 `frps`
+- UDP 范围映射的目标端口计算规则与 TCP 完全一致，同样依据 `udp.open.remotePort` 做偏移换算
 - `frps` 是 UDP session 生命周期的唯一裁决方，空闲 `30s` cleanup 也由 `frps` 判断
 - `frpc` 不做本地 idle timer；只在收到 `udp.close`、发生本地不可恢复错误，或控制连接结束时释放本地 UDP session
 

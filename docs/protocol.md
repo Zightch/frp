@@ -413,6 +413,7 @@ body：
 - body 只包含 `frpc` 执行转发所需字段。
 - `client/tunnel` ACL、限速、抓包策略等只在 `frps` 执行的字段，不得下发到 `frpc`。
 - `wire tunnel id` 由 `frps` 分配，只要求在当前连接与当前配置快照下稳定。
+- 当 `tunnelFlags` 含 `range` 时，`remoteStart..remoteEnd` 与 `localStart..localEnd` 表示连续且跨度一致的一一对应范围。
 
 ## 8.2 `config.ack`
 
@@ -440,6 +441,20 @@ body：
 - `frpc` 收到新的 `config.push` 后，必须先构造新快照，再原子替换运行态。
 - `config.ack.status = ok` 后，表示后续新建工作流必须使用该版本。
 - 已经打开的 TCP `stream` 继续绑定其打开瞬间的隧道快照，不因配置更新被强制改写。
+
+## 8.4 端口范围执行约定
+
+- TCP 与 UDP 范围映射共用同一套固定偏移公式：
+
+```text
+offset = remotePort - remoteStart
+localPort = localStart + offset
+```
+
+- 单端口映射是上述规则的特例：`remoteStart = remoteEnd` 且 `localStart = localEnd`。
+- `frps` 在运行态可以把一个 range tunnel 展开为多个真实公网 listener，但协议里仍只使用同一个 `tunnelId`。
+- 因此，`stream.open.remotePort` 和 `udp.open.remotePort` 都必须携带“本次实际命中的公网端口”，不能把 range tunnel 固定写回 `remoteStart`。
+- `frpc` 不得依赖 listener 创建顺序、配置项顺序或额外分配的子 tunnel id 来推导目标端口；它只依据当前配置快照和消息中的实际 `remotePort` 计算本地目标端口。
 
 ## 9. TCP 工作流协议
 
@@ -471,6 +486,12 @@ body：
 4. 拨号本地 TCP 服务。
 5. 成功则回复 `stream.opened`。
 6. 失败则回复 `stream.opened` 失败结果，随后结束该 `streamId`。
+
+补充约定：
+
+- `remotePort` 始终表示公网侧真实命中的 `frps` 监听端口。
+- 对单端口 tunnel，`remotePort = remoteStart`。
+- 对 range tunnel，`frpc` 必须按 `offset = remotePort - remoteStart` 计算 `localPort = localStart + offset`。
 
 ## 9.2 `stream.opened`
 
@@ -624,6 +645,8 @@ frps receives first public datagram
 
 - `frps` 是 UDP session 生命周期的唯一裁决方：`sessionId` 由 `frps` 分配，空闲超时也由 `frps` 判断并下发 `udp.close`。
 - `frpc` 不做本地 idle timeout 判断；只有在收到 `udp.close`、发生本地不可恢复错误，或底层控制连接结束时才释放本地 UDP session。
+- `udp.open.remotePort` 始终表示该 UDP session 首次命中的真实公网端口；对 range tunnel，`frpc` 也按 `offset = remotePort - remoteStart` 计算本地目标端口。
+- 对 UDP range，`frps` 必须按 `tunnelId + remotePort + public client addr` 识别 session；单端口只是该规则中 `remotePort` 固定不变的特例。
 - `idleTimeoutMs` 的语义是“距离最后一次成功转发 datagram 已经空闲多久”，不是固定 `30s` 轮询窗口。
 - 只要该 session 有任一路径的数据成功转发，`frps` 就必须立即刷新该 session 的活跃时间；也就是最新 datagram 发完后重新开始计算空闲时间。
 - 实现可以用周期性 sweep 来检查超时，但行为语义必须等价于“按最后一次活动时间计算空闲时长”；因此实际清理可以发生在阈值附近，而不要求精确绑定某个独立定时器。
