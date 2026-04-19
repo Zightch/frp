@@ -1,10 +1,12 @@
 .idea/
-config.toml
-go.sum
-*.exe
-*.log
+
+**/config.toml
+**/go.sum
+**/*.exe
+**/*.log
 **/tmp/
 **/__pycache__/
 **/*.sqlite
-**/*.db
+
+frps/data/
 frps/configs/

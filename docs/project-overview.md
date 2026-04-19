@@ -117,7 +117,7 @@
 ├── frps/
 │   ├── cmd/frps/                 # frps 启动入口
 │   ├── internal/api/             # REST API 与 WebSocket API
-│   ├── internal/auth/            # 管理端登录、token 校验、权限控制
+│   ├── internal/auth/            # 管理密钥初始化、挑战登录、token 校验、权限控制
 │   ├── internal/control/         # frpc 控制连接、心跳、配置下发
 │   ├── internal/proxy/           # 正向代理与反向代理统一数据面
 │   ├── internal/reverse/         # TCP/HTTP/HTTPS 反向代理规则和分发
@@ -479,11 +479,19 @@ WebUI 归属于 `frps` 管理面。当前极简首版已完成：不做登录，
 - 改库后以“刷新可见、SQLite 查询可验证”为验收，不要求在线 session 热更新。
 - 管理界面不展示任何 `maxclient` / `max_clients` 配置项。
 
+后续补上管理端登录时，不再依赖数据库 `admin/admins` 表，而是改为：
+
+- `frps` 启动时检查本地 `auth.json`。
+- 如果 `auth.json` 不存在，WebUI 进入初始化态，只允许设置一次管理密钥。
+- `auth.json` 只保存管理密钥的 hash，不保存明文。
+- 浏览器登录时先获取一次性盐，再本地计算 `key_hash = sha256(secret)` 和 `proof = sha256(key_hash + salt)`，把 `proof` 发回服务器校验。
+- 校验通过后由服务端签发管理会话，REST API 和 WebSocket 复用同一会话。
+
 当管理面复杂度真实上升后，再演进到独立前端工程。长期方案可以使用 Vue 3 + Element Plus。
 
 后端提供：
 
-- REST API：用于增删改查、登录、配置保存。
+- REST API：用于增删改查、管理密钥初始化、一次性盐登录挑战、配置保存。
 - WebSocket：用于实时状态、连接列表、速率、日志、抓包进度推送。
 
 WebSocket 事件建议统一格式：
@@ -506,7 +514,7 @@ WebSocket 事件建议统一格式：
 - 连接管理：所有在线 TCP 连接、双端 IP、速率、总流量、所属隧道。
 - 连接管理支持按分组、隧道筛选，并允许管理员主动断开单条连接。
 - 抓包中心：任务列表、下载 pcap、过滤条件。
-- 系统设置：监听端口、管理员账号、存储配置、日志级别。
+- 系统设置：监听端口、管理密钥初始化/轮换、存储配置、日志级别。
 
 ## 9. 流量管理设计
 
@@ -614,7 +622,6 @@ save group/tunnel config from WebUI
 - MySQL 适合独立数据库部署和更标准的生产环境。
 - 存储层从第一阶段开始就要兼容这两种数据库，但只做支持这两种数据库所必需的最小抽象。
 
-- 管理员账号。
 - 分组。
 - 分组 tokenId、tokenHash。
 - `frpc` 客户端接入黑白名单。
@@ -624,6 +631,8 @@ save group/tunnel config from WebUI
 - 证书配置。
 - 审计日志。
 - 抓包任务元数据。
+
+管理认证材料不进入业务数据库，而是单独保存在本地 `auth.json`。
 
 在线连接、实时速率、客户端心跳不建议直接写数据库，应保存在内存中，并通过事件总线推送。
 
@@ -637,10 +646,12 @@ save group/tunnel config from WebUI
 - token 登录使用一次性临时盐挑战，服务端校验 `sha256(tokenHash + challengeNonce)` 时必须使用常量时间比较。
 - token 的私密段只在创建和重置时展示一次，不写入普通日志。
 - 当前 challenge 方案下，`tokenHash` 是可用于生成登录响应的校验材料，必须按敏感凭据保护；如果数据库泄漏，攻击者可用泄漏的 `tokenHash` 伪造登录。
-- WebUI 管理端使用独立管理员账号和 session/JWT。
+- WebUI 管理端不使用数据库中的管理员记录，而是使用本地 `auth.json` 中保存的管理密钥 hash。
+- 管理端登录先领取一次性盐，再提交 `sha256(key_hash + salt)` 作为证明；盐必须短时有效、只能使用一次，比较时必须使用常量时间算法。
+- `auth.json` 中的 `key_hash` 同样属于可登录校验材料，一旦泄漏，攻击者可伪造管理端登录证明，因此必须按敏感凭据保护。
 - frpc 控制连接必须鉴权成功后才能领取配置。
 - WebSocket 复用管理端鉴权。
-- 抓包权限单独控制，避免普通管理员误抓敏感流量。
+- 抓包能力需要单独控制开关，避免管理端误抓敏感流量。
 - HTTPS 证书私钥加密存储或限制文件权限。
 - 管理 API 默认只监听内网地址，生产环境再通过 HTTPS 暴露。
 

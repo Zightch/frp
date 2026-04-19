@@ -90,7 +90,8 @@ go test ./...
 - SQLite 和 MySQL 都能完成启动期 schema bootstrap 或版本推进
 - 相同仓储接口在两种数据库下行为一致
 - 唯一约束、索引、事务边界符合预期
-- 管理员、分组、隧道等核心 CRUD 在两种数据库下结果一致
+- 分组、隧道等核心 CRUD 在两种数据库下结果一致
+- 管理认证改用本地 `auth.json` 后，应单独验证初始化、读取和一次性盐 challenge 流程
 
 ## 2.4 端到端测试
 
@@ -393,7 +394,7 @@ HTTPS：
 cd frps
 go test ./...
 go build -o NUL ./cmd/frps
-go run ./cmd/frps --config ./configs/frps.json.example
+go run ./cmd/frps --config ./configs/frps.json
 ```
 
 如果只想验证服务是否已经正常启动，可直接访问：
