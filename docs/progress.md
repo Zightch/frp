@@ -482,9 +482,9 @@ python test/e2e_management_webui.py
 - 前端说明统一改为“删除 `auth.json` 重置”，不再引入在线轮换入口
 - `test/e2e_management_webui.py` 已扩展覆盖删除 `auth.json` 后自动重置与重新初始化
 
-## 15. UDP 最小闭环当前归档
+## 15. UDP 最小闭环归档
 
-截至 2026-04-19，UDP 最小闭环这一轮尚未收口，但以下已完成子任务已经从 `todo` 即时归档到这里：
+截至 2026-04-19，UDP 最小闭环这一轮已经完成并收口；以下内容为本轮归档结论：
 
 - 管理面 `proxy_groups` / `tunnels` CRUD 已完成，隧道模型已支持 `protocol = tcp | udp`
 - 协议文档已定义 UDP 会话时序、`sessionId` 语义和 `idleTimeoutMs` 字段

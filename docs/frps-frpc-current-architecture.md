@@ -36,7 +36,7 @@ flowchart LR
 - `frps` 的公网隧道监听器由控制会话在收到 `config.ack` 后启动。
 - `frpc` 只通过 `--server` 和 `--token` 启动，不保存复杂隧道配置。
 - 当前数据面把多个 stream 复用在同一条 `frpc <-> frps` 控制 TCP 连接上，没有单独工作连接池。
-- UDP 当前已经具备 `frps` 公网 listener、控制帧桥接、`frpc` 本地 UDP 转发，以及 `frps` 侧空闲 `30s` cleanup；剩余缺口只剩最小 e2e 验证。
+- UDP 当前已经具备 `frps` 公网 listener、控制帧桥接、`frpc` 本地 UDP 转发、`frps` 侧空闲 `30s` cleanup，以及 Python happy path / idle cleanup e2e。
 
 ## 2. frps 进程内架构
 
@@ -199,7 +199,7 @@ sequenceDiagram
 
 - `frps` 会为 `enabled`、非 `range` 的单端口 `ProtocolTCP` / `ProtocolUDP` 隧道启动公网 listener。
 - `frps` 当前已经能把公网 UDP datagram 按 `tunnelId + 公网客户端地址` 绑定到 `sessionId`，并向 `frpc` 顺序发送 `udp.open` / `udp.data`，同时接收来自 `frpc` 的 `udp.data` 回写公网客户端。
-- `frps` 当前会在公网收包和 `frpc` 回包时刷新 UDP session 活跃时间，并由后台 sweep 在空闲 `30s` 后删除本地 session、向 `frpc` 发送 `udp.close`。
+- `frps` 是 UDP session 生命周期的唯一裁决方；当前会在公网收包和 `frpc` 回包时立即刷新 UDP session 活跃时间，并由后台每 `1s` sweep 一次空闲会话，在“最后一次成功双向转发后空闲约 `30s`”时删除本地 session、向 `frpc` 发送 `udp.close`。
 - `frpc` 当前会在收到 `udp.open` 后按 `sessionId` 建立真实本地 `UDPConn`，收到 `udp.data` 后把 datagram 写到本地 UDP 服务，并由后台读循环把本地响应按同一 `sessionId` 回发给 `frps`。
 - `frpc` 当前不做本地 idle timer；只有在收到 `udp.close`、发生本地不可恢复读写错误，或控制会话结束时才释放本地 UDP session。
 - 因此，UDP 当前已经完成“公网入口、本地转发、`frps` `30s` idle cleanup、`frpc` 收口，以及 Python happy path / idle cleanup e2e”的最小闭环；端口范围、隧道入口 ACL、限速、抓包、在线观测等能力仍未进入真实执行链路。

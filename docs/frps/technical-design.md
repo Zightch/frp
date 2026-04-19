@@ -72,28 +72,29 @@ Storage / Runtime State
 
 ## 3. 进程内模块划分
 
-建议模块职责如下：
+建议模块职责如下，但当前实现状态必须以本节的“当前已落地模块”为准。
 
 ### 3.0 当前已落地模块
 
-截至 2026-04-18，下面这些模块已经有第一阶段实现：
+截至 2026-04-19，下面这些模块已经有当前阶段实现：
 
 - `cmd/frps`：启动入口、参数解析和应用生命周期接线
 - `internal/config`：JSON 配置、默认值和校验
 - `internal/logging`：`slog` 日志初始化
-- `internal/api`：最小管理端 HTTP 服务和健康检查
-- `internal/control`：token challenge/response、配置下发、配置确认和最小 TCP 单端口数据面
+- `internal/api`：WebUI 静态资源托管、健康检查、管理认证、`proxy_groups` / `tunnels` 最小 CRUD 和 token 重置
+- `internal/auth`：`auth.json` 读取、初始化、challenge 管理和删除后的自动复位
+- `internal/control`：token challenge/response、配置下发、配置确认、TCP/UDP 单端口数据面，以及 `frps` 侧 UDP `30s` idle cleanup
 - `internal/storage`：数据库对象封装
 - `internal/app`：数据库打开、schema bootstrap/校验、服务启动和关闭编排
 
-其余模块目前仍处于设计阶段。
+其余模块目前仍处于长期设计阶段。
 
 ### 3.1 `internal/api`
 
-- 暴露 REST API。
-- 维护 WebSocket 会话。
-- 将后台事件映射为前端可消费的消息。
-- 提供在线连接查询和连接管理接口。
+- 托管 WebUI 构建产物。
+- 暴露最小 REST API。
+- 维护管理认证入口和健康检查。
+- 后续如果接入 WebSocket、连接管理和抓包中心，再继续向该层扩展。
 
 ### 3.2 `internal/auth`
 
@@ -109,47 +110,19 @@ Storage / Runtime State
 - 心跳处理。
 - 配置推送。
 - 配置应答跟踪。
-- 工作流打开/关闭。
+- TCP/UDP listener 与工作流打开/关闭。
+- UDP session 建会话、回包和空闲超时回收。
 - 管理端触发的 stream 关闭。
 
-### 3.4 `internal/tunnel`
+### 3.4 后续设计中的拆分方向
 
-- 分组、隧道、端口范围的配置模型。
-- 正向代理规则编排。
-- 公网监听器和分组关系维护。
-- 正向代理配置 diff 和监听器重建。
+如果后续补齐长期能力，再考虑按职责继续拆分：
 
-### 3.5 `internal/reverse`
-
-- TCP/HTTP/HTTPS 反向代理规则。
-- Host/SNI 路由。
-- 证书选择与热更新。
-
-### 3.6 `internal/proxy`
-
-- 双向拷贝。
-- 本地连接与远程连接装配。
-- TCP/UDP 统一转发抽象。
-
-### 3.7 `internal/traffic`
-
-- 连接注册表。
-- 字节计数。
-- 速率计算。
-- 限速器绑定。
-- 连接关闭句柄和关闭原因维护。
-
-### 3.8 `internal/capture`
-
-- 抓包会话管理。
-- pcap 文件写出。
-- 截断策略。
-
-### 3.9 `internal/eventbus`
-
-- 后台统一事件总线。
-- WebSocket 订阅与推送。
-- 事件版本号递增。
+- 正向代理规则编排与端口范围映射
+- TCP/HTTP/HTTPS 反向代理
+- 连接注册表、速率统计和限速
+- 抓包任务与 pcap 写出
+- 事件总线与 WebSocket 推送
 
 ### 3.10 `internal/storage`
 
@@ -683,7 +656,7 @@ UDP 以会话维度记录：
 2. `7000` 控制连接与 token 登录。
 3. 单端口 TCP 正向代理。
 4. 管理 API 和最小 WebUI。
-5. 实时连接列表和速率统计。
-6. UDP 与端口范围映射。
+5. UDP 单端口闭环。
+6. 端口范围映射与 UDP 细节扩展。
 7. 反向代理。
 8. 抓包和高级限速。

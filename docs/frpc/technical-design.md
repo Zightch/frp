@@ -11,7 +11,7 @@
 
 ## 2. 模块划分
 
-建议拆为以下模块：
+当前代码拆为以下模块：
 
 ### 2.1 `cmd/frpc`
 
@@ -26,33 +26,12 @@
 - 断线重连
 - 退出控制
 
-### 2.3 `internal/session`
-
-- 登录协议
-- 心跳
-- 配置同步
-- 配置应答
-- 服务端事件接收
-
-### 2.4 `internal/proxy`
-
-- TCP 工作流
-- UDP 工作流
-- 本地目标拨号
-- 数据收发复制
-
-### 2.5 `internal/runtime`
-
-- 当前配置版本
-- 当前隧道索引
-- 当前活跃 stream
-- 当前 UDP session
-- 活跃 stream 绑定的隧道快照
-
-### 2.6 `internal/config`
+### 2.3 `internal/config`
 
 - 启动参数解析
 - 最小运行配置结构
+
+当前实现中，登录协议、心跳、配置同步、TCP 工作流、UDP 工作流和运行态管理都集中在 `internal/client` 下，分别由 `client.go`、`runtime.go`、`streams.go`、`udp.go` 等文件承载。
 
 ## 3. 启动参数设计
 
@@ -153,13 +132,16 @@ connect server
 
 ## 7. UDP 工作流设计
 
-UDP 采用短会话模式：
+UDP 采用短会话模式，但当前生命周期约定已经固定：
 
-- 按五元组或服务端分配的 session id 维护
-- 长时间无活动自动回收
-- 每次发送后刷新最后活跃时间
+- `sessionId` 由 `frps` 分配，`frpc` 按 `sessionId` 维护本地 UDP session
+- `frpc` 在收到 `udp.open` 后建立真实本地 `UDPConn`
+- `frpc` 收到 `udp.data` 后把单个 datagram 原样写给本地 UDP 服务
+- 本地 UDP 回包由 `frpc` 按原 `sessionId` 回发给 `frps`
+- `frps` 是 UDP session 生命周期的唯一裁决方，空闲 `30s` cleanup 也由 `frps` 判断
+- `frpc` 不做本地 idle timer；只在收到 `udp.close`、发生本地不可恢复错误，或控制连接结束时释放本地 UDP session
 
-第一阶段可接受功能优先，不强求复杂 UDP 优化。
+当前实现优先保证功能闭环，不引入更复杂的 UDP 优化、限速感知或本地定时器状态机。
 
 ## 8. 重连设计
 

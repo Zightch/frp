@@ -13,20 +13,26 @@
 
 ## 1.1 当前实现状态
 
-截至 2026-04-18，`frpc` 当前已落地：
+截至 2026-04-19，`frpc` 当前已落地：
 
 - 只接受 `server` 和 `token` 两个启动参数
 - 按固定长度拆分 `token_id` / `token_secret`
 - challenge/response 登录
 - 接收 `config.push` 并返回 `config.ack`
 - 最小 TCP 单端口 `stream.open` / `stream.data` / `stream.close`
+- 最小 UDP 单端口 `udp.open` / `udp.data` / `udp.close`
+- 真实本地 UDP 转发与会话回收
+- 收到 `udp.close` 后释放本地 UDP session，不做本地 idle timer
 - 本地拨号失败时返回确定性错误
 - 已通过 `test/e2e_tcp_single.py` 与真实 `frps` 打通：
   - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+- 已通过 `test/e2e_udp_single.py` 与真实 `frps` 打通：
+  - `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
+  - `happy_path`
+  - `idle_cleanup`
 
 当前还没有进入的范围包括：
 
-- UDP 工作流
 - 端口范围
 - 多客户端竞争语义
 - 本地观测面
@@ -42,6 +48,7 @@
 - 接收服务端下发的隧道配置
 - 根据服务端指令打开工作流
 - 把流量转发到本地或内网目标
+- 对 UDP 会话只执行服务端指令，不自行做空闲超时裁决
 - 上报基础状态与错误
 
 ## 3. 不负责的事情
@@ -100,25 +107,20 @@ frpc --server 1.2.3.4:7000 --token your-token
 - 本地配置中心
 - 本地规则系统
 
-## 7. 推荐目录
+## 7. 当前目录
 
 ```text
 frpc/
 ├── cmd/frpc/
 ├── internal/client/
-├── internal/session/
-├── internal/proxy/
-├── internal/runtime/
 ├── internal/config/
-└── configs/
+└── go.mod
 ```
 
 其中：
 
-- `internal/client` 负责启动和重连
-- `internal/session` 负责控制协议与配置同步
-- `internal/proxy` 负责 TCP/UDP 本地转发
-- `internal/runtime` 负责当前在线流和会话状态
+- `internal/client` 负责启动和重连、控制协议、配置同步、TCP 转发、UDP 转发和运行态管理
+- `internal/config` 负责启动参数和 token 解析
 
 ## 8. 设计原则
 

@@ -620,6 +620,14 @@ frps receives first public datagram
 -> either side sends udp.close
 ```
 
+## 10.5 UDP 生命周期约定
+
+- `frps` 是 UDP session 生命周期的唯一裁决方：`sessionId` 由 `frps` 分配，空闲超时也由 `frps` 判断并下发 `udp.close`。
+- `frpc` 不做本地 idle timeout 判断；只有在收到 `udp.close`、发生本地不可恢复错误，或底层控制连接结束时才释放本地 UDP session。
+- `idleTimeoutMs` 的语义是“距离最后一次成功转发 datagram 已经空闲多久”，不是固定 `30s` 轮询窗口。
+- 只要该 session 有任一路径的数据成功转发，`frps` 就必须立即刷新该 session 的活跃时间；也就是最新 datagram 发完后重新开始计算空闲时间。
+- 实现可以用周期性 sweep 来检查超时，但行为语义必须等价于“按最后一次活动时间计算空闲时长”；因此实际清理可以发生在阈值附近，而不要求精确绑定某个独立定时器。
+
 ## 11. 事件与错误协议
 
 ## 11.1 `event.report`

@@ -23,7 +23,7 @@
 
 ## 1.1 当前进度
 
-截至 2026-04-18，`frps` 已完成的当前主线包括：
+截至 2026-04-19，`frps` 已完成的当前主线包括：
 
 - 独立 Go 子模块和 `cmd/frps` 启动入口
 - 基础配置、日志和生命周期管理
@@ -35,7 +35,10 @@
 - token challenge/response 登录
 - `config.push` / `config.ack`
 - `config.ack` 后启动启用状态的 TCP 单端口 listener
-- `stream.open` / `stream.data` / `stream.close` 最小数据面
+- `stream.open` / `stream.data` / `stream.close` 最小 TCP 数据面
+- UDP 单端口 listener、session 映射、`udp.open` / `udp.data` / `udp.close`
+- `frps` 统一执行 UDP session 空闲 `30s` cleanup
+- 管理面独立前端工程、`auth.json` 管理认证、分组/隧道最小 CRUD 和 token 重置
 - 最小失败路径：
   - `bad_token`
   - `disabled_group`
@@ -43,47 +46,37 @@
   - `local_unavailable`
 - 已通过 `test/e2e_tcp_single.py` 打通：
   - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+- 已通过 `test/e2e_udp_single.py` 打通：
+  - `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
+- 已通过 `test/e2e_management_webui.py` 验证管理认证、`auth.json` 删除重置和最小管理 CRUD
+- 已通过 `test/e2e_tcp_perf.py` 建立最小 TCP 代码健康压测基线
 
 当前仍未进入的范围包括：
 
-- WebUI 业务页
 - 在线改库热更新
 - ACL
-- UDP
 - 端口范围
 - 反向代理
 - 抓包、限速、完整连接观测
 
-## 2. 建议目录
+## 2. 当前目录
 
 ```text
 frps/
 ├── cmd/frps/
 ├── internal/api/
 ├── internal/auth/
-├── internal/control/
-├── internal/tunnel/
-├── internal/reverse/
-├── internal/proxy/
-├── internal/traffic/
-├── internal/capture/
-├── internal/storage/
-├── internal/eventbus/
-├── internal/runtime/
+├── internal/app/
 ├── internal/config/
+├── internal/control/
+├── internal/logging/
+├── internal/storage/
+├── pkg/
 ├── webui/
 └── data/
 ```
 
-共享库建议放在根目录：
-
-```text
-pkg/
-├── protocol/
-├── model/
-├── transport/
-└── limiter/
-```
+共享协议与传输层代码当前放在 `frps/pkg/`。
 
 ## 3. 环境要求
 
@@ -123,16 +116,15 @@ pkg/
 
 ### 4.2 第二步：极简 WebUI 起步
 
-- 已创建 `frps/webui/` 独立前端工程。
-- 当前服务端仍暂时返回一个内嵌占位 HTML 页面，直到后续阶段把 `webui/dist` 嵌入 `frps`。
+- 已创建 `frps/webui/` 独立前端工程，并由 `frps` 从 `webui.dist_dir` 直接托管构建产物。
 - 当前前端工程已接入 Vue Router、Pinia、Axios 和 Element Plus。
-- 当前页面仍以初始化/登录占位和业务页占位为主，真实表单与 CRUD 在后续阶段补齐。
+- 当前已打通初始化、challenge 登录、会话恢复、分组 CRUD、token 重置和隧道 CRUD。
+- 当前仍未做 WebSocket、连接页、统计页和日志页。
 
 阶段目标：
 
-- 能以独立前端工程方式启动管理面开发环境。
-- 能通过开发代理访问 `frps` 管理 API。
-- 为后续初始化页、登录页和分组/隧道迁移提供稳定骨架。
+- 能以独立前端工程方式维护管理页面，并由真实 `frps` 直接托管。
+- 能通过真实管理 API 完成最小认证与配置管理闭环。
 
 ### 4.3 第三步：数据库
 
@@ -151,7 +143,7 @@ pkg/
 
 - 数据库打开、驱动注册、统一封装、当前必需表建表/校验已完成。
 - 控制面运行时读取已开始并可支撑最小链路。
-- 管理面业务 CRUD 尚未开始。
+- 管理面业务 CRUD 已完成最小闭环。
 
 ### 4.4 第四步：`frps/frpc` 协议设计
 
@@ -204,9 +196,14 @@ pkg/
 
 - 管理员可以通过 WebUI 完成最小配置闭环，并实时看到核心状态。
 
+当前状态：
+
+- 初始化、challenge 登录、会话恢复和删除 `auth.json` 自动重置已完成。
+- `proxy_groups` / `tunnels` 最小 CRUD 和 token 重置已完成。
+- 当前仍未接入 WebSocket 状态推送、连接管理、抓包、限速和在线热更新。
+
 ### 4.8 第八步：增强能力
 
-- UDP 正向代理。
 - 端口范围映射。
 - TCP/HTTP/HTTPS 反向代理。
 - 连接注册表、速率统计、限速。
@@ -234,6 +231,7 @@ pkg/
 - 当前已建立 `frps/webui/` 独立工程，技术栈固定为 Vue 3 + Vite + TypeScript + Element Plus。
 - 当前服务端固定从当前工作目录下的 `data/config.json` 读取启动配置，并从其中的 `webui.dist_dir` 直接托管 `frps/webui/dist/`。
 - 登录不新增 `admins` 表，统一走 `auth.json` 初始化和一次性盐 challenge。
+- 管理密钥只初始化一次，不做在线轮换；当前固定通过删除 `auth.json` 触发重置。
 - 当前阶段先打通初始化与登录闭环，再迁移分组和隧道 CRUD，不先做 WebSocket 和管理仪表盘。
 - `VITE_MANAGEMENT_API_TARGET` 默认指向 `http://127.0.0.1:7500`，本地联调时按此约定接线。
 
@@ -401,6 +399,10 @@ python test/e2e_tcp_single.py --scenario bad_token
 python test/e2e_tcp_single.py --scenario disabled_group
 python test/e2e_tcp_single.py --scenario disabled_tunnel
 python test/e2e_tcp_single.py --scenario local_unavailable
+python test/e2e_udp_single.py
+python test/e2e_udp_single.py --scenario idle_cleanup
+python test/e2e_management_webui.py
+python test/e2e_tcp_perf.py
 ```
 
 脚本职责只限测试编排：
@@ -434,5 +436,7 @@ python test/e2e_tcp_single.py --scenario local_unavailable
 - 单元测试是否通过
 - 与当前功能相关的本地集成测试是否通过
 - 如果改动控制面或数据面，`test/e2e_tcp_single.py` 的 5 个场景是否通过
+- 如果改动 UDP 数据面，`test/e2e_udp_single.py` 的 `happy_path` / `idle_cleanup` 是否通过
+- 如果改动管理认证或 WebUI，`test/e2e_management_webui.py` 是否通过
 - 如果改动 WebUI 首版，是否能通过页面和 SQLite 查询同时验证 `proxy_groups` / `tunnels` 写库结果
 - 文档是否同步更新

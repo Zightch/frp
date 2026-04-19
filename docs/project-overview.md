@@ -29,13 +29,16 @@
 
 ## 1.1 当前实现状态和短期边界
 
-截至 2026-04-18，当前已完成的是正向代理最小核心链路，不是完整平台能力：
+截至 2026-04-19，当前已完成的是“单客户端、单端口、服务端托管配置”的最小可运行闭环，不是完整平台能力：
 
 - `frps` / `frpc` 已支持 token challenge/response 登录。
+- 一个分组始终只允许 `1` 个在线 `frpc` 客户端。
 - `frps` 可从 SQLite/MySQL schema 中读取 `proxy_groups` / `tunnels` 运行数据。
-- `frps` 可在 `config.ack` 后启动启用状态的 TCP 单端口 listener。
-- `frpc` 可接收配置、处理 `stream.open` / `stream.data` / `stream.close`，并回连本地 TCP 目标。
-- 极简 WebUI 首版已支持 `proxy_groups` / `tunnels` 最小 CRUD，不做登录和在线状态展示。
+- `frps` 可在 `config.ack` 后启动启用状态的 TCP/UDP 单端口 listener。
+- `frpc` 可接收配置、处理 TCP `stream.*` 和 UDP `udp.*`，并回连本地 TCP/UDP 目标。
+- 管理面已切换为独立 `Vue 3 + Vite + TypeScript + Element Plus` 前端工程，由 `frps` 直接托管构建产物。
+- 管理认证已固定为本地 `auth.json` 单一管理密钥模型：只初始化一次，持续使用；删除 `auth.json` 后服务端自动回到未初始化态。
+- WebUI 已完成 challenge 登录、`proxy_groups` / `tunnels` 最小 CRUD 和 token 重置。
 - 已通过 `test/e2e_tcp_single.py` 验证：
   - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
   - `happy_path`
@@ -43,22 +46,32 @@
   - `disabled_group`
   - `disabled_tunnel`
   - `local_unavailable`
+- 已通过 `test/e2e_udp_single.py` 验证：
+  - `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
+  - `happy_path`
+  - `idle_cleanup`
+- 已通过 `test/e2e_management_webui.py` 验证：
+  - 管理密钥初始化
+  - challenge 登录与会话恢复
+  - 删除 `auth.json` 后自动重置并允许重新初始化
+  - `proxy_groups` / `tunnels` 最小 CRUD
+  - token 重置
 - 已通过 `test/e2e_tcp_perf.py` 建立最小 TCP 代码健康压测基线：
   - 高并发短连接稳定性
   - 上行传输正确性与方向性退化检查
   - 下行传输正确性与方向性退化检查
 
-当前已明确暂不纳入上一轮最小链路的能力包括：
+当前已明确暂不纳入当前已完成主线的能力包括：
 
 - 在线改库热更新
 - ACL
 - 多客户端扩展
 - 反向代理
-- UDP
 - 端口范围
 - 抓包与限速
+- 完整连接观测与 WebSocket 实时态
 
-当前短期目标已经转为代码健康压测基线：先在不扩产品功能的前提下，持续验证 `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机` 在压力下是否出现明确代码异常；吞吐和延迟数字只作为发现退化的辅助手段，避免在核心链路未验证前继续堆叠高级功能。
+当前代码现状、协议边界和已收口停止线，应优先结合 `docs/progress.md` 与 `docs/frps-frpc-current-architecture.md` 一起阅读，不再按早期“TCP 已完成、UDP 未开始”的旧阶段理解当前仓库。
 
 ## 2. 能力范围
 
@@ -110,40 +123,32 @@
 - 支持对指定连接或隧道开启抓包。
 - 支持查看运行日志、事件日志和告警事件。
 
-## 3. 推荐仓库结构
+## 3. 当前仓库结构（概要）
 
 ```text
 .
 ├── frps/
 │   ├── cmd/frps/                 # frps 启动入口
-│   ├── internal/api/             # REST API 与 WebSocket API
-│   ├── internal/auth/            # 管理密钥初始化、挑战登录、token 校验、权限控制
-│   ├── internal/control/         # frpc 控制连接、心跳、配置下发
-│   ├── internal/proxy/           # 正向代理与反向代理统一数据面
-│   ├── internal/reverse/         # TCP/HTTP/HTTPS 反向代理规则和分发
-│   ├── internal/tunnel/          # 分组、隧道、端口范围映射
-│   ├── internal/traffic/         # 速率统计、限速、连接注册表
-│   ├── internal/capture/         # 抓包、pcap 输出、过滤规则
+│   ├── internal/api/             # WebUI 托管与 management API
+│   ├── internal/app/             # 启动编排、数据库打开、schema 校验
+│   ├── internal/auth/            # 管理认证与 auth.json 状态
+│   ├── internal/config/          # 启动配置加载与校验
+│   ├── internal/control/         # frpc 控制连接、配置下发、TCP/UDP 数据面
+│   ├── internal/logging/         # 日志初始化
 │   ├── internal/storage/         # 数据持久化
-│   ├── internal/eventbus/        # 后端事件总线，推送 WebSocket
-│   ├── webui/                    # 后续复杂 WebUI 目录，当前首版可先内嵌在 management api
-│   └── configs/                  # frps 示例配置
+│   ├── pkg/                      # 协议与传输层
+│   ├── webui/                    # 独立前端工程
+│   └── data/                     # 默认运行目录
 ├── frpc/
 │   ├── cmd/frpc/                 # frpc 启动入口
-│   ├── internal/client/          # 连接、鉴权、心跳、配置同步
-│   ├── internal/proxy/           # 本地 TCP/UDP 转发
-│   └── configs/                  # frpc 示例配置，仅保留最小参数
-├── pkg/
-│   ├── protocol/                 # frps/frpc 共享协议、消息结构
-│   ├── transport/                # 复用连接、加密、帧协议
-│   ├── model/                    # 共享领域模型
-│   └── limiter/                  # 通用限速组件
+│   ├── internal/client/          # 连接、鉴权、心跳、配置同步、TCP/UDP 转发
+│   └── internal/config/          # 启动参数与 token 解析
 ├── docs/
 │   └── project-overview.md
 └── README.md
 ```
 
-`webui` 归属于 `frps`，因为它只服务于服务端管理，不应成为第三个独立子项目。
+`webui` 归属于 `frps`，因为它只服务于服务端管理，不应成为第三个独立子项目。仓库根目录当前不是统一 Go 模块；`frps/` 和 `frpc/` 分别维护自己的 `go.mod`。
 
 ## 4. 核心架构
 
@@ -404,7 +409,7 @@ ActiveConnection
 - closeRequestedBy
 ```
 
-UDP 没有天然连接生命周期，建议按五元组维护短生命周期会话，超时后自动清理。
+UDP 没有天然连接生命周期。当前代码已经固定为：`frps` 按 `tunnelId + 公网客户端地址` 维护短生命周期会话，在最后一次成功转发 datagram 后重新开始计算空闲时间，空闲约 `30s` 后清理并下发 `udp.close`；`frpc` 不做本地 idle timer。
 
 ## 7. frps 与 frpc 通信协议
 
@@ -469,25 +474,23 @@ TrafficReport
 
 ## 8. WebUI 与实时同步
 
-WebUI 归属于 `frps` 管理面。当前极简首版已完成：不做登录，不引入独立前端工程，只用 `frps management api` 提供一个内嵌静态页面和最小 JSON CRUD API。
+WebUI 归属于 `frps` 管理面。当前最小正式形态已经完成：使用独立 `Vue 3 + Vite + TypeScript + Element Plus` 前端工程，由 `frps` 从 `webui.dist_dir` 直接托管构建产物。
 
-当前首版只覆盖：
+当前已落地：
 
+- 初始化管理密钥。
+- challenge 登录与会话恢复。
+- 删除 `auth.json` 后自动回到未初始化态，并使旧 challenge 和旧会话失效。
 - 分组列表、新增、编辑、删除。
 - 隧道列表、新增、编辑、删除。
 - 创建或重置分组 token 时只在当次返回原始 token，数据库仍只保存 `token_id + token_hash`。
-- 改库后以“刷新可见、SQLite 查询可验证”为验收，不要求在线 session 热更新。
 - 管理界面不展示任何 `maxclient` / `max_clients` 配置项。
 
-后续补上管理端登录时，不再依赖数据库 `admin/admins` 表，而是改为：
+当前固定边界：
 
-- `frps` 启动时检查本地 `auth.json`。
-- 如果 `auth.json` 不存在，WebUI 进入初始化态，只允许设置一次管理密钥。
-- `auth.json` 只保存管理密钥的 hash，不保存明文。
-- 浏览器登录时先获取一次性盐，再本地计算 `key_hash = sha256(secret)` 和 `proof = sha256(key_hash + salt)`，把 `proof` 发回服务器校验。
-- 校验通过后由服务端签发管理会话，REST API 和 WebSocket 复用同一会话。
-
-当管理面复杂度真实上升后，再演进到独立前端工程。长期方案可以使用 Vue 3 + Element Plus。
+- 管理密钥只初始化一次，不做在线轮换；重置路径固定为删除 `auth.json`。
+- 当前验收以真实管理 API 与 SQLite/MySQL 写库正确为准，不包含在线 `frpc` 热更新。
+- 当前不做 WebSocket、连接管理页、统计页、日志页或独立管理员体系。
 
 后端提供：
 
@@ -674,17 +677,21 @@ save group/tunnel config from WebUI
 - TCP 单端口映射可用。
 - WebUI 可以看到客户端在线和隧道状态。
 
-截至 2026-04-18，当前已经完成的实际收口是：
+截至 2026-04-19，当前已经完成的实际收口是：
 
 - `frps` / `frpc` 最小 challenge 登录
 - SQLite 冷启动配置读取
 - TCP 单端口映射
+- UDP 单端口映射
 - `config.push` / `config.ack`
 - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+- `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
 - 4 个最小负向场景
+- UDP `happy_path` / `idle_cleanup`
+- 管理认证最小闭环与 `auth.json` 删除重置
 - 最小 TCP 代码健康压测基线
 
-其中“WebUI 可以看到客户端在线和隧道状态”尚未进入这一轮完成定义，被明确后移。
+其中“WebUI 可以看到客户端在线和隧道状态”“在线热更新”“完整连接观测”仍未进入这一轮完成定义，被明确后移。
 
 ### 阶段二：管理面成型
 
@@ -696,9 +703,11 @@ save group/tunnel config from WebUI
 
 当前已经完成这个阶段里的最小子集：
 
-- 无登录的极简 WebUI
+- 基于 `auth.json` 的初始化、challenge 登录与会话恢复
+- 删除 `auth.json` 后自动重置
 - `proxy_groups` / `tunnels` 最小 CRUD
-- 通过 `frps management api` 写库
+- token 重置
+- 通过真实 `frps management api` 写库与回读校验
 
 该最小子集不包含：
 
@@ -709,7 +718,6 @@ save group/tunnel config from WebUI
 
 ### 阶段三：协议扩展
 
-- UDP 隧道。
 - 端口范围映射。
 - 工作连接多路复用。
 - 连接断线重连。
@@ -765,9 +773,9 @@ save group/tunnel config from WebUI
 
 前端：
 
-- 当前极简 WebUI 首版可直接内嵌静态 HTML/CSS/JS，不引入 Node 或打包链。
-- 当页面和状态复杂度真实上升后，再引入 Vue 3、Element Plus 和轻量状态管理。
-- WebSocket 驱动实时数据刷新属于后续管理面成型阶段，不属于当前极简 CRUD 首版。
+- 当前管理面已是 `Vue 3 + Vite + TypeScript + Element Plus` 独立前端工程。
+- 构建产物由 `frps` 从 `webui.dist_dir` 直接托管。
+- WebSocket 驱动实时数据刷新仍属于后续管理面成型阶段，不属于当前已完成主线。
 - REST API 负责配置型操作。
 
 ## 15. 关键设计原则
@@ -778,7 +786,7 @@ save group/tunnel config from WebUI
 - 热更新优先：WebUI 修改隧道或反代规则后，不应要求重启服务或在线 `frpc`。
 - 限速只在服务端执行：`frps` 负责节流，`frpc` 只负责转发。
 - 限速和抓包做成转发链路插件：避免代理核心逻辑被观测逻辑污染。
-- MVP 先 TCP 后 UDP，先单端口后端口范围，先可用后高级观测。
+- MVP 先单端口闭环，再扩端口范围与高级观测；当前 TCP/UDP 单端口最小闭环已经完成。
 - 字段及时收束：目标端只消费必要字段，不代表源端可以继续保留废字段；确认无用的字段要尽早从 schema、仓储、API、WebUI、测试数据和文档中移除，避免堆积。
 - 字段变更必须落实：字段名、语义或归属边界一旦调整，源端写库、出参、测试 seed 和文档必须同步改到位；额外入参可以忽略，但旧字段不能继续由源端产出。
 - `todo` 轮换信息隔离：`docs/tmp/todo.md` 只保留当前总目标、该目标下的子步骤、当前轮边界和当前唯一下一步，不写已完成内容；任一任务完成后先同步到 `docs/progress.md`，当前总目标完成后立即清空 `todo`，进入下一轮时再写入新的目标和子步骤。

@@ -17,13 +17,15 @@
 
 ## 1.1 当前进度
 
-截至 2026-04-18，`frpc` 当前已完成：
+截至 2026-04-19，`frpc` 当前已完成：
 
 - `server` / `token` 参数解析与校验
 - 固定长度 token 解析
 - challenge/response 登录
 - `config.push` / `config.ack`
 - 最小 TCP 单端口 stream 生命周期处理
+- 最小 UDP 单端口 session 生命周期处理
+- 真实本地 UDP 转发与 `udp.close` 收口
 - 本地拨号失败错误回传
 - 与真实 `frps` 的最小端到端脚本联调：
   - `test/e2e_tcp_single.py`
@@ -32,28 +34,27 @@
   - `disabled_group`
   - `disabled_tunnel`
   - `local_unavailable`
+  - `test/e2e_udp_single.py`
+  - `happy_path`
+  - `idle_cleanup`
 
 当前仍未进入：
 
-- UDP
 - 端口范围
 - 在线热更新的更完整矩阵
 - 多客户端竞争场景
 
-## 2. 目录建议
+## 2. 当前目录
 
 ```text
 frpc/
 ├── cmd/frpc/
 ├── internal/client/
-├── internal/session/
-├── internal/proxy/
-├── internal/runtime/
 ├── internal/config/
-└── configs/
+└── go.mod
 ```
 
-共享协议与模型放在根目录 `pkg/`。
+共享协议与传输层代码当前复用 `frps/pkg/`。
 
 ## 3. 环境要求
 
@@ -107,10 +108,14 @@ frpc/
 
 ### 4.5 第五阶段：补增强能力
 
-- UDP 工作流
 - 运行态管理
 - 错误事件上报
 - 端口范围映射配合支持
+
+当前状态：
+
+- UDP 最小闭环已完成。
+- 当前 UDP 约定固定为：`frps` 统一裁决 session 生命周期和空闲 `30s` cleanup，`frpc` 不做本地 idle timeout 判断，只执行 `udp.close` 收口。
 
 ## 5. 编码约定
 
@@ -167,6 +172,12 @@ frpc/
 - 替换完成后回 `config.ack`。
 - 配置变更不允许通过重启进程实现。
 
+UDP 额外约定：
+
+- `sessionId` 由 `frps` 分配。
+- `frps` 是 UDP session 生命周期唯一裁决方。
+- `frpc` 只在收到 `udp.close`、发生本地不可恢复错误，或控制连接结束时释放本地 UDP session。
+
 ## 7. 本地测试服务建议
 
 用于联调的本地服务：
@@ -200,6 +211,7 @@ frpc/
 
 - 能否正常登录 `frps`
 - TCP 透传是否正常
+- 如果改动 UDP 数据面，`python test/e2e_udp_single.py` 和 `python test/e2e_udp_single.py --scenario idle_cleanup` 是否通过
 - 重连是否正常
 - 配置热更新是否无需重启即可生效
 - 日志是否可读

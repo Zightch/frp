@@ -13,21 +13,26 @@
 
 ## 1.1 当前实现状态
 
-截至 2026-04-18，`frps` 已经落地的第一阶段能力包括：
+截至 2026-04-19，`frps` 已经落地的当前主线能力包括：
 
 - `cmd/frps` 启动入口，零参数启动并固定读取当前工作目录下的 `data/config.json`
 - `internal/config` 基础配置加载、默认值和校验
 - `internal/logging` 结构化日志
-- `internal/api` 最小管理端 HTTP 服务，当前提供 `/`、`/healthz`、`/readyz`、`/api/v1/healthz`
+- `internal/api` 管理端 HTTP 服务，当前已提供 WebUI 静态资源托管、健康检查、管理认证、`proxy_groups` / `tunnels` 最小 CRUD 和 token 重置
+- 管理认证固定为本地 `auth.json` 单一管理密钥模型：只初始化一次，删除 `auth.json` 后自动回到未初始化态
 - `internal/control` 控制端口监听、token challenge/response 登录、心跳、配置下发和配置确认
-- `internal/control` 最小 TCP 单端口数据面，`config.ack` 后启动公网 listener
-- `internal/control` 可处理 `stream.open` / `stream.opened` / `stream.data` / `stream.close`
+- `internal/control` 已落地 TCP/UDP 单端口数据面，`config.ack` 后启动公网 listener
+- `internal/control` 可处理 TCP `stream.open` / `stream.opened` / `stream.data` / `stream.close`
+- `internal/control` 可处理 UDP `udp.open` / `udp.data` / `udp.close`，并由 `frps` 统一做空闲 `30s` cleanup
 - 分组禁用、隧道禁用、本地目标不可达等最小失败路径已经有确定性行为
 - `internal/storage/sql.go` 统一数据库封装，支持 `*sql.DB` / `*sql.Tx`、结构化查询结果和事务
 - SQLite/MySQL 启动期建连、MySQL DSN 规范化、内嵌 schema bootstrap 与严格表结构校验
 - 已通过 `test/e2e_tcp_single.py` 验证 `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+- 已通过 `test/e2e_udp_single.py` 验证 `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
+- 已通过 `test/e2e_management_webui.py` 验证管理认证、`auth.json` 删除重置、分组 CRUD、token 重置和隧道 CRUD
+- 已通过 `test/e2e_tcp_perf.py` 建立最小 TCP 代码健康压测基线
 
-当前已经完成最小正向代理链路，但还没有落地 WebUI 业务页、在线改库热更新、ACL、UDP、端口范围、反向代理、抓包、限速和完整观测面。因此本文件后续章节仍同时描述长期目标架构和当前边界。
+当前已经完成的主线是：管理认证最小闭环、TCP/UDP 单端口正向代理最小闭环，以及最小 Python e2e/压测基线。当前仍未进入已完成主线的范围包括在线改库热更新、ACL、端口范围、反向代理、抓包、限速和完整观测面。
 
 ## 2. 目标
 
@@ -95,21 +100,25 @@
 - REST API：配置增删改查、管理密钥初始化与挑战登录、证书上传、抓包任务管理、在线连接管理。
 - WebSocket：在线状态、速率、连接列表、日志和抓包进度的实时推送。
 
-当前代码中已实现的管理接口只有最小健康检查：
+当前代码中已实现的基础健康检查包括：
 
 - `GET /`
 - `GET /healthz`
 - `GET /readyz`
 - `GET /api/v1/healthz`
 
-下一轮短期目标是极简 WebUI：
+当前代码中已额外实现：
 
-- 不做登录。
-- 只做 `proxy_groups` 和 `tunnels` 编辑。
-- 通过 `frps management api` 完成数据库增删改查。
-- 首版不做 WebSocket、在线热更新、连接列表、抓包、限速或独立前端工程。
+- 管理认证初始化与 challenge 登录
+- `proxy_groups` 最小 CRUD
+- `proxy_groups/{id}/token` token 重置
+- `tunnels` 最小 CRUD
 
-后续补上管理端登录时，不再引入数据库 `admins` 表，而是由 `frps` 在启动时检查本地 `auth.json`。未初始化时只开放管理密钥初始化流程；完成初始化后，浏览器通过一次性盐 challenge 提交 `sha256(key_hash + salt)` 登录证明。
+当前固定边界：
+
+- 管理密钥只初始化一次，不做在线轮换；重置路径固定为删除 `auth.json`
+- 当前不做 WebSocket、连接管理、抓包、限速或反向代理管理页
+- 当前 WebUI 只管理 `proxy_groups` 和 `tunnels`
 
 ## 6. 与 frpc 的关系
 
@@ -122,33 +131,30 @@
 - `frps` 负责判断是否允许某个 `frpc` 来源 IP 登录。
 - `frps` 负责判断某个公网用户是否允许进入某个隧道。
 - `frps` 负责记录全局连接状态和推送事件。
+- UDP session 生命周期由 `frps` 统一裁决：`sessionId` 由 `frps` 分配，空闲超时由 `frps` 触发并通过 `udp.close` 通知 `frpc`。
 
-## 7. 推荐目录
+## 7. 当前目录
 
 ```text
 frps/
 ├── cmd/frps/
 ├── internal/api/
 ├── internal/auth/
-├── internal/control/
-├── internal/tunnel/
-├── internal/reverse/
-├── internal/proxy/
-├── internal/traffic/
-├── internal/capture/
-├── internal/eventbus/
-├── internal/storage/
-├── internal/runtime/
+├── internal/app/
 ├── internal/config/
-├── webui/                    # 后续复杂 WebUI 目录，当前首版可先内嵌在 internal/api
+├── internal/control/
+├── internal/logging/
+├── internal/storage/
+├── pkg/
+├── webui/
 └── data/
 ```
 
 目录设计原则：
 
-- 业务功能按边界拆分，而不是按“工具类”拆分。
-- 管理面、控制面、数据面、观测面分开，避免互相污染。
-- 共享模型下沉到 `pkg/`，服务端内部实现留在 `frps/internal/`。
+- 以当前已落地代码为准，不按尚未出现的目录预留抽象位。
+- 管理面、控制面、数据面尽量按当前真实边界拆分，避免互相污染。
+- 协议与传输层共享代码放在 `frps/pkg/`，服务端内部实现留在 `frps/internal/`。
 
 ## 8. 启动流程
 
