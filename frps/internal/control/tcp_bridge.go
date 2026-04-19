@@ -5,10 +5,20 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
+
+type publicStream struct {
+	conn          net.Conn
+	tunnel        protocol.TunnelEntry
+	openRequestID uint32
+	ready         chan error
+	readyOnce     sync.Once
+	closeOnce     sync.Once
+}
 
 func (s *Server) handlePublicConnection(controlConn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, remotePort uint16, publicConn net.Conn) {
 	streamID := session.nextTunnelStreamID()

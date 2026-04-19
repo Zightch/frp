@@ -3,19 +3,9 @@ package control
 import (
 	"net"
 	"strconv"
-	"sync"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
-
-type publicStream struct {
-	conn          net.Conn
-	tunnel        protocol.TunnelEntry
-	openRequestID uint32
-	ready         chan error
-	readyOnce     sync.Once
-	closeOnce     sync.Once
-}
 
 type tcpTunnelListener struct {
 	tunnel     protocol.TunnelEntry

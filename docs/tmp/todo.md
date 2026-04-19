@@ -43,11 +43,11 @@
 ## 当前子步骤细分
 
 - 当前正在推进：继续把 `frps/internal/control/data_plane.go` 中残留的 TCP stream runtime 结构收束到 `tcp_bridge.go`，让 `data_plane.go` 进一步逼近“UDP 数据面 + session shutdown 总收口”。
-1. 先只迁移 `publicStream` 结构体定义，保持字段、初始化方式和引用点不变。
-2. 再只迁移 `(*publicStream).signalReady`，不调整 ready 信号语义。
-3. 再只迁移 `(*publicStream).close`，不调整 closeOnce 和底层连接关闭语义。
-4. 最后再继续评估 `nextTunnelStreamID`、`addPublicStream`、`publicStream`、`closePublicStream` 这些 session stream 辅助是否逐个迁入 `tcp_bridge.go`，或是否需要和 `shutdownSession` 一起再收一刀。
+1. 先只迁移 `(*publicStream).signalReady`，不调整 ready 信号语义。
+2. 再只迁移 `(*publicStream).close`，不调整 closeOnce 和底层连接关闭语义。
+3. 再只迁移 `(*sessionState).nextTunnelStreamID`，让 stream id 分配跟随 TCP stream runtime 边界移动。
+4. 再继续评估 `addPublicStream`、`publicStream`、`closePublicStream` 是否逐个迁入 `tcp_bridge.go`，或是否需要和 `shutdownSession` 一起再收一刀。
 
 ## 当前唯一下一步
 
-- 先只把 `publicStream` 结构体从 `frps/internal/control/data_plane.go` 迁移到 `frps/internal/control/tcp_bridge.go`；不移动其方法、不移动 session stream 辅助、不移动任何 `udp.*` 或 `shutdownSession` 逻辑，不改字段，不改行为。
+- 先只把 `(*publicStream).signalReady` 从 `frps/internal/control/data_plane.go` 迁移到 `frps/internal/control/tcp_bridge.go`；不移动 `close`、不移动 session stream 辅助、不移动任何 `udp.*` 或 `shutdownSession` 逻辑，不改行为。
