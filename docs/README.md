@@ -8,15 +8,17 @@
 2. [工作流](workflow.md)
 3. [进度归档](progress/README.md)
 4. [当前轮 Todo](tmp/todo.md)
-5. [frps/frpc 协议文档](protocol.md)
-6. `frps` 子项目文档
-7. `frpc` 子项目文档
+5. [初步框架重构蓝图](initial-architecture-refactor-blueprint.md)
+6. [frps/frpc 协议文档](protocol.md)
+7. `frps` 子项目文档
+8. `frpc` 子项目文档
 
 ## 2. 平台级文档
 
 - [总体项目概述](project-overview.md)
 - [工作流](workflow.md)
 - [进度归档](progress/README.md)
+- [初步框架重构蓝图](initial-architecture-refactor-blueprint.md)
 - [frps/frpc 协议文档](protocol.md)
 
 ## 2.1 当前轮执行文档

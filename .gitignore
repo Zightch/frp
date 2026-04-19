@@ -10,6 +10,9 @@
 **/*.exe
 **/*.log
 **/tmp/
+!docs/tmp/
+docs/tmp/*
+!docs/tmp/todo.md
 **/__pycache__/
 **/.pytest_cache/
 **/.ruff_cache/
