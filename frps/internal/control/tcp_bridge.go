@@ -186,3 +186,9 @@ func (s *Server) copyPublicToClient(conn net.Conn, session *sessionState, stream
 		return
 	}
 }
+
+func (s *publicStream) signalReady(err error) {
+	s.readyOnce.Do(func() {
+		s.ready <- err
+	})
+}

@@ -117,12 +117,6 @@ func (s *sessionState) closePublicStream(streamID uint32) bool {
 	return true
 }
 
-func (s *publicStream) signalReady(err error) {
-	s.readyOnce.Do(func() {
-		s.ready <- err
-	})
-}
-
 func (s *publicStream) close() {
 	s.closeOnce.Do(func() {
 		_ = s.conn.Close()
