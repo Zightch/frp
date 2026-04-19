@@ -89,3 +89,24 @@ func (s *Server) handleStreamOpened(conn net.Conn, session *sessionState, frame 
 
 	return nil
 }
+
+func (s *Server) handleStreamData(conn net.Conn, session *sessionState, frame protocol.Frame) error {
+	if frame.RequestID != 0 {
+		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "stream.data requestId must be zero")
+	}
+	if frame.StreamID == 0 {
+		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "stream.data streamId must be non-zero")
+	}
+
+	stream := session.publicStream(frame.StreamID)
+	if stream == nil {
+		return s.sendStreamClose(conn, session, frame.StreamID, protocol.CloseReasonProtocolError, "stream not found")
+	}
+
+	if err := writeConnFull(stream.conn, frame.Body); err != nil {
+		if session.closePublicStream(frame.StreamID) {
+			return s.sendStreamClose(conn, session, frame.StreamID, protocol.CloseReasonWriteError, err.Error())
+		}
+	}
+	return nil
+}
