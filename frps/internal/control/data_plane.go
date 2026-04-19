@@ -57,21 +57,6 @@ func (s *Server) serveUDPTunnelListener(conn net.Conn, logger Logger, session *s
 	}
 }
 
-func (s *Server) serveTunnelListener(conn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, remotePort uint16, listener net.Listener) {
-	for {
-		publicConn, err := listener.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			logger.Warn("tcp tunnel accept failed", "tunnel_id", tunnel.TunnelID, "error", err)
-			continue
-		}
-
-		go s.handlePublicConnection(conn, logger, session, tunnel, remotePort, publicConn)
-	}
-}
-
 func (s *Server) handlePublicConnection(controlConn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, remotePort uint16, publicConn net.Conn) {
 	streamID := session.nextTunnelStreamID()
 	requestID := session.nextRequestID()
