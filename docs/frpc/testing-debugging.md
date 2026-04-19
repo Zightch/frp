@@ -51,6 +51,7 @@ python test/e2e_tcp_single.py --scenario local_unavailable
 python test/e2e_tcp_range.py
 python test/e2e_udp_single.py
 python test/e2e_udp_single.py --scenario idle_cleanup
+python test/e2e_udp_range.py
 ```
 
 脚本会自动：
@@ -125,6 +126,7 @@ python test/e2e_udp_single.py --scenario idle_cleanup
 - 数据报可正常来回转发
 - 当前已落地：`happy_path`
 - 当前已落地：`idle_cleanup`
+- 当前已落地：range 端口偏移映射正确
 - 会话闲置后自动超时
 - 会话回收后可重新建立
 

@@ -34,9 +34,9 @@
 - 分组运行态读取：`proxy_groups` / `tunnels`
 - token challenge/response 登录
 - `config.push` / `config.ack`
-- `config.ack` 后启动启用状态的 TCP 单端口 listener
+- `config.ack` 后启动启用状态的 TCP/UDP 单端口与连续范围 listener
 - `stream.open` / `stream.data` / `stream.close` 最小 TCP 数据面
-- UDP 单端口 listener、session 映射、`udp.open` / `udp.data` / `udp.close`
+- UDP listener、session 映射、`udp.open` / `udp.data` / `udp.close`
 - `frps` 统一执行 UDP session 空闲 `30s` cleanup
 - 管理面独立前端工程、`auth.json` 管理认证、分组/隧道最小 CRUD 和 token 重置
 - 最小失败路径：
@@ -46,8 +46,10 @@
   - `local_unavailable`
 - 已通过 `test/e2e_tcp_single.py` 打通：
   - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+- 已通过 `test/e2e_tcp_range.py` 打通 TCP range 偏移映射与 TCP 单端口回归
 - 已通过 `test/e2e_udp_single.py` 打通：
   - `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
+- 已通过 `test/e2e_udp_range.py` 打通 UDP range 偏移映射与 UDP 单端口回归
 - 已通过 `test/e2e_management_webui.py` 验证管理认证、`auth.json` 删除重置和最小管理 CRUD
 - 已通过 `test/e2e_tcp_perf.py` 建立最小 TCP 代码健康压测基线
 
@@ -55,7 +57,6 @@
 
 - 在线改库热更新
 - ACL
-- 端口范围
 - 反向代理
 - 抓包、限速、完整连接观测
 

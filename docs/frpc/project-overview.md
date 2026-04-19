@@ -19,21 +19,26 @@
 - 按固定长度拆分 `token_id` / `token_secret`
 - challenge/response 登录
 - 接收 `config.push` 并返回 `config.ack`
-- 最小 TCP 单端口 `stream.open` / `stream.data` / `stream.close`
-- 最小 UDP 单端口 `udp.open` / `udp.data` / `udp.close`
+- 最小 TCP 单端口 / range `stream.open` / `stream.data` / `stream.close`
+- 最小 UDP 单端口 / range `udp.open` / `udp.data` / `udp.close`
 - 真实本地 UDP 转发与会话回收
 - 收到 `udp.close` 后释放本地 UDP session，不做本地 idle timer
 - 本地拨号失败时返回确定性错误
 - 已通过 `test/e2e_tcp_single.py` 与真实 `frps` 打通：
   - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+- 已通过 `test/e2e_tcp_range.py` 与真实 `frps` 打通：
+  - 同一个 TCP range tunnel 命中两个不同 `remotePort` 时，按偏移转发到对应 `localPort`
+  - 同轮确认 TCP 单端口最小链路不回退
 - 已通过 `test/e2e_udp_single.py` 与真实 `frps` 打通：
   - `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
   - `happy_path`
   - `idle_cleanup`
+- 已通过 `test/e2e_udp_range.py` 与真实 `frps` 打通：
+  - 同一个 UDP range tunnel 命中两个不同 `remotePort` 时，按偏移转发到对应 `localPort`
+  - 同轮确认 UDP 单端口最小链路不回退
 
 当前还没有进入的范围包括：
 
-- 端口范围
 - 多客户端竞争语义
 - 本地观测面
 - 任何本地管理页面

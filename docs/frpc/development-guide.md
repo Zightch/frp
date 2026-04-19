@@ -24,8 +24,8 @@
 - 固定长度 token 解析
 - challenge/response 登录
 - `config.push` / `config.ack`
-- 最小 TCP 单端口 stream 生命周期处理
-- 最小 UDP 单端口 session 生命周期处理
+- 最小 TCP 单端口 / range stream 生命周期处理
+- 最小 UDP 单端口 / range session 生命周期处理
 - 真实本地 UDP 转发与 `udp.close` 收口
 - 本地拨号失败错误回传
 - 与真实 `frps` 的最小端到端脚本联调：
@@ -35,13 +35,14 @@
   - `disabled_group`
   - `disabled_tunnel`
   - `local_unavailable`
+  - `test/e2e_tcp_range.py`
   - `test/e2e_udp_single.py`
   - `happy_path`
   - `idle_cleanup`
+  - `test/e2e_udp_range.py`
 
 当前仍未进入：
 
-- 端口范围
 - 在线热更新的更完整矩阵
 - 多客户端竞争场景
 

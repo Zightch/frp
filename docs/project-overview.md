@@ -29,7 +29,7 @@
 
 ## 1.1 当前实现状态和短期边界
 
-截至 2026-04-19，当前已完成的是“单客户端、单端口、服务端托管配置”的最小可运行闭环，不是完整平台能力：
+截至 2026-04-19，当前已完成的是“单客户端、服务端托管配置”的最小可运行闭环；正向代理执行链路已经包含 TCP/UDP 单端口与连续端口范围映射，但还不是完整平台能力：
 
 - `frps` / `frpc` 已支持 token challenge/response 登录。
 - 一个分组始终只允许 `1` 个在线 `frpc` 客户端。
@@ -53,6 +53,9 @@
   - `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
   - `happy_path`
   - `idle_cleanup`
+- 已通过 `test/e2e_udp_range.py` 验证：
+  - 同一个 UDP range tunnel 命中两个不同 `remotePort` 时，`frpc` 会按偏移转发到对应 `localPort`
+  - 同轮确认 UDP 单端口最小链路不回退
 - 已通过 `test/e2e_management_webui.py` 验证：
   - 管理密钥初始化
   - challenge 登录与会话恢复
@@ -70,7 +73,6 @@
 - ACL
 - 多客户端扩展
 - 反向代理
-- 端口范围
 - 抓包与限速
 - 完整连接观测与 WebSocket 实时态
 
@@ -738,6 +740,12 @@ save group/tunnel config from WebUI
 - 连接断线重连。
 - `frps/frpc` 同仓同步升级约束与构建标识上报。
 
+当前已经完成这个阶段里的最小子集：
+
+- TCP/UDP 端口范围映射最小闭环
+- `stream.open.remotePort` / `udp.open.remotePort` 实际公网端口回填
+- TCP/UDP 范围映射的最小 Python e2e
+
 ### 阶段四：反向代理
 
 - TCP 反向代理。
@@ -801,7 +809,7 @@ save group/tunnel config from WebUI
 - 热更新优先：WebUI 修改隧道或反代规则后，不应要求重启服务或在线 `frpc`。
 - 限速只在服务端执行：`frps` 负责节流，`frpc` 只负责转发。
 - 限速和抓包做成转发链路插件：避免代理核心逻辑被观测逻辑污染。
-- MVP 先单端口闭环，再扩端口范围与高级观测；当前 TCP/UDP 单端口最小闭环已经完成。
+- MVP 先单端口闭环，再扩端口范围与高级观测；当前 TCP/UDP 单端口与连续范围映射最小闭环已经完成。
 - 字段及时收束：目标端只消费必要字段，不代表源端可以继续保留废字段；确认无用的字段要尽早从 schema、仓储、API、WebUI、测试数据和文档中移除，避免堆积。
 - 字段变更必须落实：字段名、语义或归属边界一旦调整，源端写库、出参、测试 seed 和文档必须同步改到位；额外入参可以忽略，但旧字段不能继续由源端产出。
 - `todo` 轮换信息隔离：统一按 `docs/workflow.md` 执行；当前轮 `docs/tmp/todo.md` 只保留当前总目标、该目标下的子步骤、当前轮边界和当前唯一下一步，不写已完成内容。

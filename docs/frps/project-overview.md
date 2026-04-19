@@ -21,18 +21,20 @@
 - `internal/api` 管理端 HTTP 服务，当前已提供 WebUI 静态资源托管、健康检查、管理认证、`proxy_groups` / `tunnels` 最小 CRUD 和 token 重置
 - 管理认证固定为本地 `auth.json` 单一管理密钥模型：只初始化一次，删除 `auth.json` 后自动回到未初始化态
 - `internal/control` 控制端口监听、token challenge/response 登录、心跳、配置下发和配置确认
-- `internal/control` 已落地 TCP/UDP 单端口数据面，`config.ack` 后启动公网 listener
+- `internal/control` 已落地 TCP/UDP 单端口与连续范围数据面，`config.ack` 后启动公网 listener
 - `internal/control` 可处理 TCP `stream.open` / `stream.opened` / `stream.data` / `stream.close`
 - `internal/control` 可处理 UDP `udp.open` / `udp.data` / `udp.close`，并由 `frps` 统一做空闲 `30s` cleanup
 - 分组禁用、隧道禁用、本地目标不可达等最小失败路径已经有确定性行为
 - `internal/storage/sql.go` 统一数据库封装，支持 `*sql.DB` / `*sql.Tx`、结构化查询结果和事务
 - SQLite/MySQL 启动期建连、MySQL DSN 规范化、内嵌 schema bootstrap 与严格表结构校验
 - 已通过 `test/e2e_tcp_single.py` 验证 `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
+- 已通过 `test/e2e_tcp_range.py` 验证 TCP range 偏移映射与 TCP 单端口回归
 - 已通过 `test/e2e_udp_single.py` 验证 `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
+- 已通过 `test/e2e_udp_range.py` 验证 UDP range 偏移映射与 UDP 单端口回归
 - 已通过 `test/e2e_management_webui.py` 验证管理认证、`auth.json` 删除重置、分组 CRUD、token 重置和隧道 CRUD
 - 已通过 `test/e2e_tcp_perf.py` 建立最小 TCP 代码健康压测基线
 
-当前已经完成的主线是：管理认证最小闭环、TCP/UDP 单端口正向代理最小闭环，以及最小 Python e2e/压测基线。当前仍未进入已完成主线的范围包括在线改库热更新、ACL、端口范围、反向代理、抓包、限速和完整观测面。
+当前已经完成的主线是：管理认证最小闭环、TCP/UDP 单端口与连续范围正向代理最小闭环，以及最小 Python e2e/压测基线。当前仍未进入已完成主线的范围包括在线改库热更新、ACL、反向代理、抓包、限速和完整观测面。
 
 ## 2. 目标
 

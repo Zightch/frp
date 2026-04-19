@@ -42,6 +42,10 @@
   - `test/e2e_udp_single.py`
   - `happy_path`
   - `idle_cleanup`
+- 最小 UDP range 端到端脚本：
+  - `test/e2e_udp_range.py`
+  - 同一个 range tunnel 命中两个不同 `remotePort` 时映射到对应 `localPort`
+  - 同轮确认 UDP 单端口最小链路不回退
 - 最小 TCP 代码健康压测脚本：
   - `test/e2e_tcp_perf.py`
   - `stability`
@@ -117,6 +121,7 @@ go test ./...
 - 冷启动
 - SQLite 预注入
 - TCP 单端口
+- TCP/UDP 连续范围映射
 - UDP 单端口 happy path
 - 加最小必要负向场景
 
@@ -125,6 +130,7 @@ go test ./...
 - `test/e2e_tcp_single.py`
 - `test/e2e_tcp_range.py`
 - `test/e2e_udp_single.py`
+- `test/e2e_udp_range.py`
 - `test/e2e_tcp_perf.py`
 - `test/e2e_management_webui.py`
 
@@ -168,6 +174,7 @@ python test/e2e_tcp_range.py
 ```powershell
 python test/e2e_udp_single.py
 python test/e2e_udp_single.py --scenario idle_cleanup
+python test/e2e_udp_range.py
 ```
 
 ```powershell
@@ -197,6 +204,15 @@ UDP idle cleanup 联调：
 - 保持同一公网 UDP 客户端空闲约 `30s`
 - 断言 `frps` 记录 idle cleanup 并向 `frpc` 下发 `udp.close`
 - 断言 `frpc` 记录 `udp session closed` 后，同一公网客户端再次发包可重建会话并重新收发
+
+UDP range 联调：
+
+- 在隔离工作目录中直启真实 `frps` / `frpc`
+- 直接 seed 一个启用的 UDP single tunnel 和一个启用的 UDP range tunnel
+- 启动 1 个 single 本地 UDP 服务和 2 个 range 本地 UDP 服务
+- 通过不同响应前缀验证 single remote port 仍命中 single local port
+- 通过不同响应前缀验证同一个 range tunnel 的两个 `remotePort` 会命中两个不同 `localPort`
+- 输出 `result.json`、`frps.log`、`frpc.log` 到 `test/tmp/udp-range-e2e-<timestamp>/`
 
 管理面脚本会：
 
