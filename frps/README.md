@@ -8,22 +8,38 @@
 - `internal/api` 管理端 HTTP 服务与健康检查
 - `internal/control` `7000` 控制端口监听骨架
 - `internal/storage` SQLite/MySQL 统一数据库封装
-- `configs/frps.json` 默认配置样例
+- `data/config.json` 固定启动配置文件
 
 ## 运行
 
 ```powershell
 cd frps
-go run ./cmd/frps
+go build -o ./frps.exe ./cmd/frps
+.\frps.exe
 ```
 
-启动时如果未显式传入 `--config`，程序会优先自动读取当前工作目录或可执行文件同级的 `configs/frps.json`；找不到时才退回内置默认配置。因此在 Windows 下把 `frps.exe`、`configs/frps.json` 和 `webui/dist/` 放在同一套目录结构内后，直接双击 `frps.exe` 就能启动本地管理面。
+`frps` 启动时不需要任何参数，始终读取可执行文件同级的 `data/config.json`。因此在 Windows 下把 `frps.exe`、`data/config.json` 和 `webui/dist/` 放在同一套目录结构内后，直接双击 `frps.exe` 就能启动本地管理面。
 
-显式指定配置文件也仍然支持：
+本地默认配置建议如下：
 
-```powershell
-cd frps
-go run ./cmd/frps --config ./configs/frps.json
+```json
+{
+  "control_listen_addr": "0.0.0.0:7000",
+  "management_listen_addr": "127.0.0.1:7500",
+  "read_header_timeout": "5s",
+  "shutdown_timeout": "10s",
+  "database": {
+    "type": "sqlite",
+    "path": "./frps.db"
+  },
+  "webui": {
+    "dist_dir": "../webui/dist"
+  },
+  "log": {
+    "level": "info",
+    "format": "text"
+  }
+}
 ```
 
 管理端健康检查：
@@ -34,7 +50,7 @@ curl http://127.0.0.1:7500/readyz
 curl http://127.0.0.1:7500/api/v1/healthz
 ```
 
-数据库默认使用 SQLite 文件 `./data/frps.sqlite`。仓库内置的 `configs/frps.json` 也已改为本地 SQLite 与本地 WebUI `dist` 目录，适合直接本机启动。
+如上配置使用 SQLite 时，数据库文件会落在 `data/frps.db`。如果切到 MySQL，则改为在 `data/config.json` 中配置 `database.type = "mysql"` 与 `database.dsn`。
 
 如需切换到 MySQL，可在配置中设置：
 
@@ -50,7 +66,7 @@ curl http://127.0.0.1:7500/api/v1/healthz
 }
 ```
 
-`frps.json` 中的相对路径当前按配置文件所在目录解析，因此仓库默认配置里的 `../data/frps.sqlite` 与 `../webui/dist` 都是相对于 `frps/configs/` 生效。
+`data/config.json` 中的相对路径按配置文件所在目录解析，因此上面的 `./frps.db` 与 `../webui/dist` 都是相对于 `frps/data/` 生效。
 
 应用启动时会在上层按配置打开数据库，并自动执行当前必需表的建表与严格校验。
 当前第一阶段内置的核心表包括：

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -16,27 +15,15 @@ import (
 var version = "dev"
 
 func main() {
-	var (
-		configPath  string
-		showVersion bool
-	)
-
-	flag.StringVar(&configPath, "config", "", "path to frps JSON config file")
-	flag.BoolVar(&showVersion, "version", false, "print version and exit")
-	flag.Parse()
-
-	if showVersion {
-		fmt.Println(version)
-		return
-	}
-
-	if configPath == "" {
-		configPath = discoverConfigPath()
+	configPath, err := resolveConfigPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve config path: %v\n", err)
+		os.Exit(1)
 	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "load config %s: %v\n", configPath, err)
 		os.Exit(1)
 	}
 
@@ -56,24 +43,14 @@ func main() {
 	}
 }
 
-func discoverConfigPath() string {
+func resolveConfigPath() (string, error) {
 	executablePath, err := os.Executable()
-	if err == nil {
-		candidate := filepath.Join(filepath.Dir(executablePath), "configs", "frps.json")
-		if fileExists(candidate) {
-			return candidate
-		}
+	if err != nil {
+		return "", err
 	}
-
-	candidate := filepath.Join(".", "configs", "frps.json")
-	if fileExists(candidate) {
-		return candidate
-	}
-
-	return ""
+	return configPathForExecutable(executablePath), nil
 }
 
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+func configPathForExecutable(executablePath string) string {
+	return filepath.Join(filepath.Dir(executablePath), "data", "config.json")
 }

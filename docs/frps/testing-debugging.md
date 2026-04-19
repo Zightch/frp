@@ -394,8 +394,11 @@ HTTPS：
 cd frps
 go test ./...
 go build -o NUL ./cmd/frps
-go run ./cmd/frps --config ./configs/frps.json
+go build -o ./frps.exe ./cmd/frps
+.\frps.exe
 ```
+
+`frps` 本身不需要启动参数，实际启动时固定读取可执行文件同级 `data/config.json`。
 
 如果只想验证服务是否已经正常启动，可直接访问：
 

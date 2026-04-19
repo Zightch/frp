@@ -18,8 +18,8 @@ const (
 	defaultLogLevel             = "info"
 	defaultLogFormat            = "text"
 	defaultDatabaseType         = "sqlite"
-	defaultDatabasePath         = "./data/frps.sqlite"
-	defaultWebUIDistDir         = "./webui/dist"
+	defaultDatabasePath         = "./frps.db"
+	defaultWebUIDistDir         = "../webui/dist"
 )
 
 type Config struct {

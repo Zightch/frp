@@ -14,7 +14,7 @@ func TestDefaultConfigIsValid(t *testing.T) {
 }
 
 func TestLoadRejectsUnknownFields(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "frps.json")
+	path := filepath.Join(t.TempDir(), "config.json")
 	content := []byte(`{"control_listen_addr":"0.0.0.0:7000","unknown":true}`)
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatalf("write config file: %v", err)
@@ -27,7 +27,7 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 
 func TestLoadAppliesCustomConfig(t *testing.T) {
 	tempDir := t.TempDir()
-	path := filepath.Join(tempDir, "frps.json")
+	path := filepath.Join(tempDir, "config.json")
 	content := []byte(`{
 		"control_listen_addr":"127.0.0.1:7000",
 		"management_listen_addr":"127.0.0.1:7500",
@@ -65,7 +65,7 @@ func TestLoadAppliesCustomConfig(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidDatabaseConfig(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "frps.json")
+	path := filepath.Join(t.TempDir(), "config.json")
 	content := []byte(`{
 		"database":{"type":"mysql"}
 	}`)
@@ -79,10 +79,14 @@ func TestLoadRejectsInvalidDatabaseConfig(t *testing.T) {
 }
 
 func TestLoadResolvesSQLitePathRelativeToConfigFile(t *testing.T) {
-	tempDir := t.TempDir()
-	path := filepath.Join(tempDir, "frps.json")
+	rootDir := t.TempDir()
+	configDir := filepath.Join(rootDir, "data")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	path := filepath.Join(configDir, "config.json")
 	content := []byte(`{
-		"database":{"type":"sqlite","path":"../data/frps.sqlite"},
+		"database":{"type":"sqlite","path":"./frps.db"},
 		"webui":{"dist_dir":"../webui/dist"}
 	}`)
 	if err := os.WriteFile(path, content, 0o644); err != nil {
@@ -94,12 +98,12 @@ func TestLoadResolvesSQLitePathRelativeToConfigFile(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 
-	wantDatabasePath := filepath.Clean(filepath.Join(tempDir, "..", "data", "frps.sqlite"))
+	wantDatabasePath := filepath.Clean(filepath.Join(configDir, "frps.db"))
 	if cfg.Database.Path != wantDatabasePath {
 		t.Fatalf("unexpected sqlite path: got %q want %q", cfg.Database.Path, wantDatabasePath)
 	}
 
-	wantDistDir := filepath.Clean(filepath.Join(tempDir, "..", "webui", "dist"))
+	wantDistDir := filepath.Clean(filepath.Join(rootDir, "webui", "dist"))
 	if cfg.WebUI.DistDir != wantDistDir {
 		t.Fatalf("unexpected webui dist dir: got %q want %q", cfg.WebUI.DistDir, wantDistDir)
 	}
