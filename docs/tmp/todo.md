@@ -42,12 +42,12 @@
 
 ## 当前子步骤细分
 
-- 当前正在推进：把 `frps/internal/control/server.go` 中的配置下发与确认逻辑迁到 `config.go`，继续收束 `control` 包的职责边界。
-1. 先只新建 `config.go`，并迁移 `(*Server).pushConfig`，保持 `config.push` 请求号生成和写回路径不变。
-2. 再单独迁移 `(*Server).handleConfigAck`，保持 `config.ack` 校验、listener 启动时机和日志不变。
-3. 最后单独迁移 `(*Server).loadGroupRuntime`，保持 repository 读取路径和 timeout 边界不变。
-4. 运行 `go test ./internal/control`，确认 `server.go` 继续缩责后行为不变，再决定是否继续收窄其它内容。
+- 当前正在推进：把 `frps/internal/control/data_plane.go` 中的 listener 展开与启动逻辑迁到 `listeners.go`，继续收束 `control` 包的 listener / tcp bridge / udp bridge 边界。
+1. 先只新建 `listeners.go`，并迁移 `ensureTunnelListeners` 与其直接依赖的 `closeStartedTunnelListeners`，保持 tunnel 展开、listener 启动顺序和失败回滚路径不变。
+2. 再单独迁移 `serveTunnelListener`，保持 TCP accept 循环和错误日志路径不变。
+3. 再单独迁移 `serveUDPTunnelListener`，保持 UDP 读循环、payload 复制和日志路径不变。
+4. 最后重新运行 `go test ./internal/control`，确认 `data_plane.go` 继续缩责后行为不变，再决定是否继续收窄 `handlePublicConnection`、`shutdownSession` 等剩余数据面逻辑。
 
 ## 当前唯一下一步
 
-- 先只新建 `frps/internal/control/config.go` 并把 `(*Server).pushConfig` 迁移进去；不移动 `handleConfigAck`、不移动 `loadGroupRuntime`，不改任何调用点，不改行为。
+- 先只新建 `frps/internal/control/listeners.go`，并把 `ensureTunnelListeners` 与 `closeStartedTunnelListeners` 迁移进去；不移动 `serveTunnelListener`、不移动 `serveUDPTunnelListener`、不移动 `handlePublicConnection`、不移动 `shutdownSession`，不改任何调用点，不改行为。
