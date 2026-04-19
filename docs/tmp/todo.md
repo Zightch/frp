@@ -42,12 +42,12 @@
 
 ## 当前子步骤细分
 
-- 当前正在推进：把 `frps/internal/control/server.go` 中最核心的 session 壳先迁到 `session.go`，继续收束 `control` 包的职责边界。
-1. 先只迁移 `(*Server).replyProtocolErrorWithSession` 到 `session.go`，保持错误码和回复路径不变。
-2. 再单独迁移 `(*Server).replyErrorWithSession` 到 `session.go`，保持通用错误回复行为不变。
-3. 最后单独迁移 `(*Server).writeErrorWithSession` 到 `session.go`，保持日志和写回路径不变。
+- 当前正在推进：把 `frps/internal/control/server.go` 中的配置下发与确认逻辑迁到 `config.go`，继续收束 `control` 包的职责边界。
+1. 先只新建 `config.go`，并迁移 `(*Server).pushConfig`，保持 `config.push` 请求号生成和写回路径不变。
+2. 再单独迁移 `(*Server).handleConfigAck`，保持 `config.ack` 校验、listener 启动时机和日志不变。
+3. 最后单独迁移 `(*Server).loadGroupRuntime`，保持 repository 读取路径和 timeout 边界不变。
 4. 运行 `go test ./internal/control`，确认 `server.go` 继续缩责后行为不变，再决定是否继续收窄其它内容。
 
 ## 当前唯一下一步
 
-- 先只把 `(*Server).replyProtocolErrorWithSession` 迁移到 `frps/internal/control/session.go`；不移动 `replyErrorWithSession`、不移动 `writeErrorWithSession`，不改任何调用点，不改行为。
+- 先只新建 `frps/internal/control/config.go` 并把 `(*Server).pushConfig` 迁移进去；不移动 `handleConfigAck`、不移动 `loadGroupRuntime`，不改任何调用点，不改行为。

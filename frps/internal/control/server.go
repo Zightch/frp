@@ -477,42 +477,6 @@ func (s *Server) pushConfig(conn net.Conn, session *sessionState) error {
 	})
 }
 
-func (s *Server) replyProtocolErrorWithSession(conn net.Conn, session *sessionState, frame protocol.Frame, err error) error {
-	protocolErr := protocol.AsProtocolError(err)
-	if protocolErr == nil {
-		return err
-	}
-	if writeErr := s.writeErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocolErr.Code, false, protocolErr.Message); writeErr != nil {
-		return errors.Join(err, writeErr)
-	}
-	return err
-}
-
-func (s *Server) replyErrorWithSession(conn net.Conn, session *sessionState, requestID, streamID uint32, code uint16, format string, args ...any) error {
-	err := protocol.NewError(code, format, args...)
-	if writeErr := s.writeErrorWithSession(conn, session, requestID, streamID, code, false, err.Message); writeErr != nil {
-		return errors.Join(err, writeErr)
-	}
-	return err
-}
-
-func (s *Server) writeErrorWithSession(conn net.Conn, session *sessionState, requestID, streamID uint32, code uint16, retryable bool, message string) error {
-	body, err := protocol.MarshalErrorBody(protocol.ErrorBody{
-		ErrorCode: code,
-		Retryable: retryable,
-		Message:   message,
-	})
-	if err != nil {
-		return err
-	}
-	return s.writeFrameWithSession(conn, session, protocol.Frame{
-		Type:      protocol.TypeError,
-		RequestID: requestID,
-		StreamID:  streamID,
-		Body:      body,
-	})
-}
-
 func (s *Server) loadGroupRuntime(tokenID [16]byte) (GroupRuntime, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.options.ReadTimeout)
 	defer cancel()
