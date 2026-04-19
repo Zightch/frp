@@ -56,6 +56,93 @@ func (s *sessionState) closeDone() {
 	})
 }
 
+func sessionReadTimeout(heartbeatInterval, minimum time.Duration) time.Duration {
+	timeout := heartbeatInterval * 3
+	if timeout < minimum {
+		return minimum
+	}
+	return timeout
+}
+
+func (s *sessionState) nextTunnelStreamID() uint32 {
+	streamID := s.nextStreamID.Add(1)
+	if streamID == 0 {
+		streamID = s.nextStreamID.Add(1)
+	}
+	return streamID
+}
+
+func (s *sessionState) addPublicStream(streamID uint32, stream *publicStream) {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	s.streams[streamID] = stream
+}
+
+func (s *sessionState) publicStream(streamID uint32) *publicStream {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	return s.streams[streamID]
+}
+
+func (s *sessionState) closePublicStream(streamID uint32) bool {
+	s.runtimeMu.Lock()
+	stream, ok := s.streams[streamID]
+	if ok {
+		delete(s.streams, streamID)
+	}
+	s.runtimeMu.Unlock()
+
+	if !ok {
+		return false
+	}
+
+	stream.signalReady(net.ErrClosed)
+	stream.close()
+	return true
+}
+
+func (s *Server) shutdownSession(session *sessionState) {
+	session.closeDone()
+
+	session.runtimeMu.Lock()
+	listeners := make([]net.Listener, 0, len(session.listeners))
+	for tunnelID, tunnelListeners := range session.listeners {
+		delete(session.listeners, tunnelID)
+		listeners = append(listeners, tunnelListeners...)
+	}
+	udpListeners := make([]*net.UDPConn, 0, len(session.udpListeners))
+	for tunnelID, tunnelListeners := range session.udpListeners {
+		delete(session.udpListeners, tunnelID)
+		udpListeners = append(udpListeners, tunnelListeners...)
+	}
+
+	streams := make([]*publicStream, 0, len(session.streams))
+	for streamID, stream := range session.streams {
+		delete(session.streams, streamID)
+		streams = append(streams, stream)
+	}
+	for sessionID := range session.udpSessions {
+		delete(session.udpSessions, sessionID)
+	}
+	for key := range session.udpSessionKeys {
+		delete(session.udpSessionKeys, key)
+	}
+	session.listenersStarted = false
+	session.runtimeMu.Unlock()
+
+	for _, listener := range listeners {
+		_ = listener.Close()
+	}
+	for _, listener := range udpListeners {
+		_ = listener.Close()
+	}
+	for _, stream := range streams {
+		stream.signalReady(net.ErrClosed)
+		stream.close()
+	}
+	s.releaseGroupSlot(session.Group.ID, session.ID)
+}
+
 func (s *Server) writeFrameWithSession(conn net.Conn, session *sessionState, frame protocol.Frame) error {
 	session.writeMu.Lock()
 	defer session.writeMu.Unlock()

@@ -8,6 +8,18 @@ import (
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
+type tcpTunnelListener struct {
+	tunnel     protocol.TunnelEntry
+	remotePort uint16
+	listener   net.Listener
+}
+
+type udpTunnelListener struct {
+	tunnel     protocol.TunnelEntry
+	remotePort uint16
+	listener   *net.UDPConn
+}
+
 func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *sessionState) error {
 	session.runtimeMu.Lock()
 	if session.listenersStarted {

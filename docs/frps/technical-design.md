@@ -76,7 +76,7 @@ Storage / Runtime State
 
 ### 3.0 当前已落地模块
 
-截至 2026-04-19，下面这些模块已经有当前阶段实现：
+截至 2026-04-20，下面这些模块已经有当前阶段实现：
 
 - `cmd/frps`：启动入口、参数解析和应用生命周期接线
 - `internal/config`：JSON 配置、默认值和校验
@@ -113,6 +113,18 @@ Storage / Runtime State
 - TCP/UDP listener 与工作流打开/关闭。
 - UDP session 建会话、回包和空闲超时回收。
 - 管理端触发的 stream 关闭。
+
+截至 2026-04-20，`internal/control` 的第一轮初步骨架已经收束到下面这组稳定 ownership：
+
+- `server.go`：accept loop、shutdown、连接入口、session 读循环、心跳和底层帧读写。
+- `auth.go`：`frpc` 登录握手、challenge 生命周期、group slot 占用与释放。
+- `connections.go`：活动控制连接跟踪，以及连接结束原因和日志辅助。
+- `session.go`：`sessionState`、request/stream id、session 级写锁、错误回复和 shutdown 收口。
+- `config.go`：group runtime 加载、`config.push`、`config.ack`。
+- `listeners.go`：TCP/UDP tunnel listener 展开、启动和 serve loop。
+- `tcp_bridge.go`：TCP `stream.*` 生命周期与 `publicStream` runtime。
+- `udp.go`：UDP `udp.open` / `udp.data` / `udp.close`、session runtime 和 idle cleanup。
+- `sockaddr.go`：TCP/UDP 共用的 socket 地址转换辅助。
 
 ### 3.4 后续设计中的拆分方向
 

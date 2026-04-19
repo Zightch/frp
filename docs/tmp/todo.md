@@ -42,12 +42,12 @@
 
 ## 当前子步骤细分
 
-- 当前正在推进：继续把 `frps/internal/control/data_plane.go` 中残留的 TCP stream runtime 结构收束到 `tcp_bridge.go`，让 `data_plane.go` 进一步逼近“UDP 数据面 + session shutdown 总收口”。
-1. 先只迁移 `(*sessionState).nextTunnelStreamID`，让 stream id 分配跟随 TCP stream runtime 边界移动。
-2. 再继续评估 `addPublicStream`、`publicStream`、`closePublicStream` 是否逐个迁入 `tcp_bridge.go`，还是需要成组迁移。
-3. 再根据上一步结果决定 `writeConnFull` 是继续留作当前文件尾部小工具，还是跟随 TCP bridge 一并移动。
-4. 最后再重新判断 `shutdownSession` 是否仍保留在数据面总收口，或拆成单独生命周期文件。
+- 当前正在推进：开始收束 `frpc` 客户端骨架，优先把 `frpc/internal/client/client.go` 从“连接重连 + 登录握手 + 长会话编排 + 配置应用 + 心跳 + 帧 I/O”混合实现拆成更清晰的最小角色。
+1. 先抽离登录握手 ownership，目标是新建 `frpc/internal/client/login.go`，让 `client.go` 不再直接承接 `auth.begin` / `auth.challenge` / `auth.finish` / `server.hello` / 首次 `config.push` 登录闭环。
+2. 登录边界稳定后，再把 `readLoop`、`heartbeatLoop`、`sessionState` 快照读写和 request id 分配迁到 `session.go`，让 `client.go` 只保留 `Run`、`runOnce` 和 session 编排。
+3. 在 session 边界清楚后，再整理 `streams.go`、`udp.go` 和目标地址解析入口，形成 TCP bridge、UDP bridge、targets/range 计算三块稳定 ownership。
+4. 每完成一个小点后立即补 `frpc` 定向回归，检查 `.gitignore`，同步 `docs/progress/`，并提交稳定状态。
 
 ## 当前唯一下一步
 
-- 先只把 `(*sessionState).nextTunnelStreamID` 从 `frps/internal/control/data_plane.go` 迁移到 `frps/internal/control/tcp_bridge.go`；不移动 `addPublicStream`、`publicStream`、`closePublicStream`、`shutdownSession` 或任何 `udp.*` 逻辑，不改行为。
+- 先只新建 `frpc/internal/client/login.go`，把 `(*Client).login`、`authResponse` 以及它直接依赖的登录阶段帧校验逻辑迁移过去；本步不改 `Run`、`runOnce`、`runSession`、`readLoop`、`heartbeatLoop` 或 TCP/UDP bridge 行为。

@@ -187,6 +187,17 @@ func (s *Server) copyPublicToClient(conn net.Conn, session *sessionState, stream
 	}
 }
 
+func writeConnFull(conn net.Conn, payload []byte) error {
+	for len(payload) > 0 {
+		n, err := conn.Write(payload)
+		if err != nil {
+			return err
+		}
+		payload = payload[n:]
+	}
+	return nil
+}
+
 func (s *publicStream) signalReady(err error) {
 	s.readyOnce.Do(func() {
 		s.ready <- err
