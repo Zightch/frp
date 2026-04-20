@@ -26,12 +26,21 @@
 - 断线重连
 - 退出控制
 
+当前第一轮骨架收束后，`internal/client` 已形成下面这组最小文件 ownership：
+
+- `client.go`：`Run`、`runOnce`、`runSession`、通用帧读写和基础错误解码
+- `login.go`：`auth.begin` / `auth.finish` / `server.hello` / 首次 `config.push` 登录闭环
+- `session.go`：`sessionState`、request id / snapshot 基础设施、`readLoop`、`heartbeatLoop`
+- `streams.go`：TCP stream 打开、数据转发、关闭与本地 TCP copy
+- `udp.go`：UDP session 打开、数据转发、关闭与本地 UDP copy
+- `runtime.go`：主机名、OS、架构等运行时信息探测
+
 ### 2.3 `internal/config`
 
 - 启动参数解析
 - 最小运行配置结构
 
-当前实现中，登录协议、心跳、配置同步、TCP 工作流、UDP 工作流和运行态管理都集中在 `internal/client` 下，分别由 `client.go`、`runtime.go`、`streams.go`、`udp.go` 等文件承载。
+当前实现仍保持单一 `internal/client` package，不新增装配层或跨端共享 runtime 框架；后续只继续把 target 解析和桥接 ownership 收得更清楚，不改变现有协议和行为边界。
 
 ## 3. 启动参数设计
 
