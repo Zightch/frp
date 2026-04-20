@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 	"sync"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -184,35 +183,6 @@ func (s *sessionState) closeAllUDPSessions() {
 	for _, udpSession := range sessions {
 		udpSession.close()
 	}
-}
-
-func (s *sessionState) localUDPTarget(open protocol.UDPOpen) (string, error) {
-	tunnel, ok := s.tunnelByID(open.TunnelID)
-	if !ok {
-		return "", fmt.Errorf("tunnel %d not found", open.TunnelID)
-	}
-	if tunnel.Protocol != protocol.ProtocolUDP {
-		return "", fmt.Errorf("tunnel %d is not udp", open.TunnelID)
-	}
-	if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
-		return "", fmt.Errorf("tunnel %d is disabled", open.TunnelID)
-	}
-	if open.RemotePort < tunnel.RemoteStart || open.RemotePort > tunnel.RemoteEnd {
-		return "", fmt.Errorf("remote port %d is outside tunnel %d", open.RemotePort, open.TunnelID)
-	}
-
-	offset := int(open.RemotePort - tunnel.RemoteStart)
-	localPort := int(tunnel.LocalStart) + offset
-	if localPort > int(tunnel.LocalEnd) {
-		return "", fmt.Errorf("local port mapping is out of range for tunnel %d", open.TunnelID)
-	}
-
-	host := tunnel.LocalHost.String()
-	if host == "" {
-		return "", fmt.Errorf("tunnel %d has empty local host", open.TunnelID)
-	}
-
-	return net.JoinHostPort(host, strconv.Itoa(localPort)), nil
 }
 
 func (c *Client) copyLocalUDPToServer(conn net.Conn, state *sessionState, sessionID uint32, udpSession *localUDPSession) {

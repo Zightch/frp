@@ -37,12 +37,12 @@
 
 ## 当前子步骤细分
 
-- 当前正在推进：继续收束 `frpc` 客户端骨架，优先把 `frpc/internal/client` 中仍然散落在 `streams.go` / `udp.go` 里的目标地址解析和 range 端口换算收口为独立 ownership。
-1. 先抽离 target 解析 ownership，目标是新建 `frpc/internal/client/targets.go`，统一承接 `tunnelByID`、`localTarget`、`localUDPTarget` 和共享的 range 端口换算入口。
-2. target 边界稳定后，再把 `streams.go` 收紧为纯 TCP bridge 文件，不再混入 tunnel 查找和地址计算细节。
-3. TCP bridge 边界稳定后，再把 `udp.go` 收紧为纯 UDP bridge 文件，不再混入 tunnel 查找和地址计算细节。
-4. 每完成一个小点后立即补 `frpc` 定向回归，检查 `.gitignore`，同步 `docs/progress/`，并提交稳定状态。
+- 当前正在推进：继续收束 `frpc` 客户端骨架，把 `internal/client` 的 bridge 文件名和 ownership 进一步对齐蓝图中的稳定形态。
+1. 先把 `streams.go` 更名为 `tcp_bridge.go`，仅做文件名收束，不改 `stream.*` 和本地 TCP copy 行为。
+2. TCP bridge 文件名稳定后，再把 `udp.go` 更名为 `udp_bridge.go`，仅做文件名收束，不改 `udp.*` 和本地 UDP session copy 行为。
+3. UDP bridge 文件名稳定后，再把 `runtime.go` 更名为 `runtime_info.go`，让 `internal/client` 当前文件布局与蓝图一致。
+4. 文件名收束完成后，执行 `frpc` 全量回归，补正式文档和 `docs/progress/`，并把下一轮最小共享规则与回归入口写入新的 `todo`。
 
 ## 当前唯一下一步
 
-- 先只新建 `frpc/internal/client/targets.go`，把 `tunnelByID`、`localTarget`、`localUDPTarget` 以及它们直接依赖的 range 端口换算辅助迁移过去；本步不改 `stream.open` / `stream.data` / `stream.close`、`udp.open` / `udp.data` / `udp.close` 或 `applyConfigPush` 行为。
+- 先只把 `frpc/internal/client/streams.go` 更名为 `frpc/internal/client/tcp_bridge.go`；本步不改任何函数实现、行为路径或测试逻辑，只完成 TCP bridge 文件名收束。

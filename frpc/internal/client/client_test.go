@@ -456,6 +456,70 @@ func TestSessionStateLocalUDPTargetSupportsSingleAndRange(t *testing.T) {
 	}
 }
 
+func TestSessionStateLocalTargetSupportsSingleAndRange(t *testing.T) {
+	state := newSessionState(1000)
+	state.setSnapshot(protocol.ConfigPush{
+		ConfigVersion: 1,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    7,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: 20000,
+				RemoteEnd:   20000,
+				LocalHost:   mustHost(t, "127.0.0.1"),
+				LocalStart:  5100,
+				LocalEnd:    5100,
+			},
+			{
+				TunnelID:    8,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled | protocol.TunnelFlagRange,
+				RemoteStart: 20100,
+				RemoteEnd:   20101,
+				LocalHost:   mustHost(t, "127.0.0.1"),
+				LocalStart:  5200,
+				LocalEnd:    5201,
+			},
+		},
+	})
+
+	tests := []struct {
+		name string
+		open protocol.StreamOpen
+		want string
+	}{
+		{
+			name: "single",
+			open: protocol.StreamOpen{
+				TunnelID:   7,
+				RemotePort: 20000,
+			},
+			want: "127.0.0.1:5100",
+		},
+		{
+			name: "range",
+			open: protocol.StreamOpen{
+				TunnelID:   8,
+				RemotePort: 20101,
+			},
+			want: "127.0.0.1:5201",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := state.localTarget(tt.open)
+			if err != nil {
+				t.Fatalf("local target: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("unexpected local target: got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClientReadLoopHandlesUDPOpenAndClose(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

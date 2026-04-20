@@ -31,6 +31,7 @@
 - `client.go`：`Run`、`runOnce`、`runSession`、通用帧读写和基础错误解码
 - `login.go`：`auth.begin` / `auth.finish` / `server.hello` / 首次 `config.push` 登录闭环
 - `session.go`：`sessionState`、request id / snapshot 基础设施、`readLoop`、`heartbeatLoop`
+- `targets.go`：tunnel 查找、TCP/UDP 共用的 local target 解析和 range 端口换算
 - `streams.go`：TCP stream 打开、数据转发、关闭与本地 TCP copy
 - `udp.go`：UDP session 打开、数据转发、关闭与本地 UDP copy
 - `runtime.go`：主机名、OS、架构等运行时信息探测
@@ -40,7 +41,7 @@
 - 启动参数解析
 - 最小运行配置结构
 
-当前实现仍保持单一 `internal/client` package，不新增装配层或跨端共享 runtime 框架；后续只继续把 target 解析和桥接 ownership 收得更清楚，不改变现有协议和行为边界。
+当前实现仍保持单一 `internal/client` package，不新增装配层或跨端共享 runtime 框架；后续继续只收紧 bridge 文件名和 ownership，不改变现有协议和行为边界。
 
 ## 3. 启动参数设计
 
