@@ -18,7 +18,7 @@ go build -o ./frps.exe ./cmd/frps
 .\frps.exe
 ```
 
-`frps` 启动时不需要任何参数，始终读取当前工作目录下的 `data/config.json`。因此在 Windows 下只要当前工作目录里存在 `data/config.json` 和 `webui/dist/`，直接启动 `frps.exe` 就能加载本地管理面。
+`frps` 启动时不需要任何参数，始终读取当前工作目录下的 `data/config.json`。如果当前工作目录里已经存在 `data/config.json`，直接启动 `frps.exe` 即可加载管理 API；如同时存在 `webui/dist/`，则会一并托管本地 WebUI 静态资源。
 
 本地默认配置建议如下：
 
@@ -91,34 +91,23 @@ curl http://127.0.0.1:7500/api/v1/healthz
 
 ## WebUI 开发
 
-当前仓库已创建独立前端工程 `frps/webui/`，用于后续管理密钥初始化、challenge 登录以及分组/隧道管理页面迁移。
+`frps/webui/` 当前回到重建基线，只固定下面几点：
 
-首次安装依赖：
+- 前端目录仍然放在 `frps/webui/`
+- 技术栈固定为 `Node.js + Vue 3 + Element Plus`
+- 必要功能只保留管理密钥初始化、challenge 登录、分组管理、token 重置和隧道管理
+- 不再沿用旧版壳层、概览页或复杂页面结构描述
+
+前端工程重建完成后，开发和构建命令统一收口为：
 
 ```powershell
 cd frps/webui
 npm.cmd install
-```
-
-如当前 PowerShell 未限制脚本执行，也可以直接使用 `npm install`。
-
-启动前端开发环境：
-
-```powershell
-cd frps/webui
 npm.cmd run dev
-```
-
-Vite 默认通过开发代理把 `/api`、`/healthz`、`/readyz` 转发到 `http://127.0.0.1:7500`。如需改到其他管理端地址，可设置环境变量 `VITE_MANAGEMENT_API_TARGET`。
-
-执行前端构建：
-
-```powershell
-cd frps/webui
 npm.cmd run build
 ```
 
-构建产物输出到 `frps/webui/dist/`。当前阶段 `frps` 管理端会直接读取配置中的 `webui.dist_dir` 并托管该目录，浏览器访问 `http://127.0.0.1:7500/` 即可进入初始化 / 登录页面。
+构建产物仍输出到 `frps/webui/dist/`。`frps` 管理端会读取配置中的 `webui.dist_dir` 并托管该目录。
 
 空库会在启动时自动创建当前必需表；如果现有 SQLite/MySQL 表结构与服务内置 schema 不一致，`frps` 会直接退出，避免带着错误库结构继续运行。当前开发阶段不做数据库 schema 兼容或自动迁移。
 `internal/storage/sql.go` 仍只负责统一封装数据库对象，不承载驱动打开和 schema 迁移逻辑。

@@ -40,15 +40,11 @@
   - `POST /api/v1/tunnels`
   - `PATCH /api/v1/tunnels/{id}`
   - `DELETE /api/v1/tunnels/{id}`
-- 管理 WebUI：
-  - `/init`：管理密钥初始化页
-  - `/login`：极简 challenge 登录页
-  - `AppShell`：已登录管理态共用的侧边导航、薄顶栏会话状态和全局告警槽
-  - `/`：概览页
-  - `/proxy-groups`：统一接入管理主入口，上半区管理分组与 token，下半区管理当前选中分组下的隧道
-  - `/tunnels`：兼容路径，复用同一张接入管理页，不再作为一级导航
-  - 一级导航只保留“概览”“接入管理”
-  - 管理页只展示当前真实能力，不新增未来功能入口
+- 管理 WebUI 与静态托管：
+  - `frps` 继续按 `webui.dist_dir` 托管 `frps/webui/dist/`
+  - WebUI 当前回到重建基线，技术栈固定为 `Node.js + Vue 3 + Element Plus`
+  - 必要功能只保留管理密钥初始化、challenge 登录、分组管理、token 重置和隧道管理
+  - 旧版管理壳层、概览页和页面布局不再视为当前实现基线
 - 控制面：
   - token challenge/response 登录
   - 心跳
@@ -90,7 +86,7 @@ frps/
 ├── internal/storage/    # SQL 包装与驱动注册
 ├── pkg/protocol/        # 业务协议
 ├── pkg/transport/       # 长度前缀传输层
-└── webui/               # Vue 3 + Vite 前端工程
+└── webui/               # WebUI 前端目录（Node.js + Vue 3 + Element Plus 重建基线）
 ```
 
 ## 5. 当前外部接口

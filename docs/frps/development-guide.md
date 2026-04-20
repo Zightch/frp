@@ -93,47 +93,40 @@ frps/data/config.json
 
 ## 5. WebUI 开发
 
-### 5.1 安装依赖
+当前 `frps/webui/` 只保留重建基线，不再沿用旧版页面结构。当前固定约定如下：
+
+### 5.1 技术栈
+
+- Node.js `20+`
+- npm `10+`
+- Vue 3
+- Element Plus
+
+### 5.2 当前目标
+
+- 只先恢复最小管理前端。
+- 必要功能只保留管理密钥初始化、challenge 登录、分组 CRUD、token 重置和隧道 CRUD。
+- 不先做复杂壳层、额外概览页或未来功能导航。
+
+### 5.3 目录约定
+
+- `frps/webui/` 作为独立前端目录。
+- 当前目录如果为空，先补最小 `package.json`、基础入口和必要页面。
+- 推荐最小结构只有 `src/main`、`src/router`、`src/api`、`src/views`。
+- 只有在确实复用时，再补 `src/components` 或状态管理层。
+
+### 5.4 前端命令约定
+
+前端工程重建完成后，统一使用：
 
 ```powershell
 cd frps/webui
 npm.cmd install
-```
-
-### 5.2 开发模式
-
-```powershell
-cd frps/webui
 npm.cmd run dev
-```
-
-Vite 开发代理默认转发到 `http://127.0.0.1:7500`。
-
-### 5.3 构建
-
-```powershell
-cd frps/webui
 npm.cmd run build
 ```
 
-构建产物输出到 `frps/webui/dist/`，由 `frps` 按 `webui.dist_dir` 直接托管。
-
-### 5.4 当前页面组织
-
-- `webui/src/router/index.ts`
-  - 路由守卫、页面标题和管理态导航元数据都在这里收口；一级导航现在只保留“概览”“接入管理”，`/tunnels` 兼容高亮也通过这里的 `managementNavActiveName` 收口。
-- `webui/src/views/AppShellView.vue`
-  - 已登录管理壳层，只负责侧边导航、薄顶栏会话状态、全局提示和页面容器；不承接分组或隧道业务逻辑。
-- `webui/src/views/AccessManagementView.vue`
-  - 统一接入管理主页面，上半区负责分组 CRUD 与 token 重置，下半区只负责当前选中分组下的隧道 CRUD。
-- `webui/src/views/ProxyGroupsView.vue` / `webui/src/views/TunnelsView.vue`
-  - 当前都只是兼容包装层，统一复用 `AccessManagementView.vue`；不要再在这两个文件里分叉出第二套业务界面。
-- `webui/src/views/InitSecretView.vue`
-  - 未初始化态认证页，只负责一次性初始化管理密钥。
-- `webui/src/views/LoginView.vue`
-  - 极简 challenge 登录页，只负责建立管理会话和跳回受保护页。
-- `webui/src/styles/main.css`
-  - 统一维护 design tokens、管理壳层、概览页、接入管理页和认证页样式。
+构建产物仍输出到 `frps/webui/dist/`，由 `frps` 按 `webui.dist_dir` 直接托管。
 
 ## 6. 当前修改落点
 
@@ -158,10 +151,10 @@ npm.cmd run build
 - `internal/api/management.go`
 - `internal/app/schema.go`
 - `internal/control/repository.go`
-- `webui/src/api/management.ts`
-- `webui/src/views/AccessManagementView.vue`
+- `webui/src/api/*`
+- `webui/src/views/*`
 
-当前管理 API 只覆盖分组和隧道最小字段；新增管理字段时要先确认运行时是否真的消费。改动接入管理页时，还要保持“当前选中分组”这一单一业务上下文，不要把页面重新拆回两套独立主界面。
+当前管理 API 只覆盖分组和隧道最小字段；新增管理字段时要先确认运行时是否真的消费。WebUI 重建时也只围绕最小必要工作流组织页面，不要先扩成多套壳层或未来功能矩阵。
 
 ### 6.3 控制面或数据面相关
 
@@ -197,7 +190,7 @@ curl http://127.0.0.1:7500/api/v1/auth/state
 - `go test ./...`（`frps/`）
 - 如果改了控制面或数据面，运行相关 Python e2e
 - 如果改了管理认证或管理 API，运行 `python test/e2e_management_webui.py`
-- 如果改了 `webui` 路由、管理壳层、认证页或接入管理页，运行 `npm.cmd run build`（`frps/webui/`）
+- 如果新建或修改了 `frps/webui/` 前端工程，运行该工程当前 `package.json` 定义的最小构建命令
 - 文档是否同步到真实实现边界
 
 完整回归入口见 [../regression-entry.md](../regression-entry.md)。
