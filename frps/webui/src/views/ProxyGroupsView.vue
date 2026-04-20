@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { authApi, proxyGroupsApi, tunnelsApi, type ProxyGroup, type Tunnel } from '@/api'
+import { authApi, proxyGroupsApi, tunnelsApi, type ProxyGroup, type Tunnel, type TunnelPayload } from '@/api'
 
 const router = useRouter()
 
@@ -23,6 +23,7 @@ const groupDialogVisible = ref(false)
 const groupDialogMode = ref<'create' | 'edit'>('create')
 const groupFormRef = ref()
 const groupSubmitting = ref(false)
+const editingGroupId = ref<number | null>(null)
 const groupForm = ref({ name: '', enabled: true })
 const groupFormRules = {
   name: [{ required: true, message: '请输入分组名称', trigger: 'blur' }]
@@ -59,6 +60,7 @@ const tunnelFormRules = {
 
 // Editing tunnel ID (for edit mode)
 const editingTunnelId = ref<number | null>(null)
+const editingTunnelGroupId = ref<number | null>(null)
 
 // Computed
 const selectedGroup = computed(() =>
@@ -121,8 +123,8 @@ async function loadData() {
     groups.value = groupsResult.data?.items || []
     tunnels.value = tunnelsResult.data?.items || []
 
-    if (groups.value.length > 0 && selectedGroupId.value === null) {
-      selectedGroupId.value = groups.value[0].id
+    if (!groups.value.some(group => group.id === selectedGroupId.value)) {
+      selectedGroupId.value = groups.value[0]?.id ?? null
     }
   } catch {
     error.value = '加载数据失败'
@@ -159,6 +161,7 @@ function getGroupRowClass({ row }: { row: ProxyGroup }): string {
 
 function openCreateGroupDialog() {
   groupDialogMode.value = 'create'
+  editingGroupId.value = null
   groupForm.value = { name: '', enabled: true }
   groupDialogVisible.value = true
   nextTick(() => groupFormRef.value?.clearValidate())
@@ -166,6 +169,7 @@ function openCreateGroupDialog() {
 
 function openEditGroupDialog(group: ProxyGroup) {
   groupDialogMode.value = 'edit'
+  editingGroupId.value = group.id
   groupForm.value = { name: group.name, enabled: group.enabled }
   groupDialogVisible.value = true
   nextTick(() => groupFormRef.value?.clearValidate())
@@ -193,9 +197,8 @@ async function submitGroupForm() {
         newTokenVisible.value = true
       }
     } else {
-      const group = selectedGroup.value
-      if (!group) return
-      const result = await proxyGroupsApi.update(group.id, {
+      if (!editingGroupId.value) return
+      const result = await proxyGroupsApi.update(editingGroupId.value, {
         name: groupForm.value.name,
         enabled: groupForm.value.enabled
       })
@@ -249,6 +252,7 @@ function openCreateTunnelDrawer() {
   if (!selectedGroupId.value) return
   tunnelDrawerMode.value = 'create'
   editingTunnelId.value = null
+  editingTunnelGroupId.value = selectedGroupId.value
   tunnelForm.value = {
     name: '',
     protocol: 'tcp',
@@ -267,6 +271,7 @@ function openCreateTunnelDrawer() {
 function openEditTunnelDrawer(tunnel: Tunnel) {
   tunnelDrawerMode.value = 'edit'
   editingTunnelId.value = tunnel.id
+  editingTunnelGroupId.value = tunnel.group_id
   tunnelForm.value = {
     name: tunnel.name,
     protocol: tunnel.protocol,
@@ -282,6 +287,23 @@ function openEditTunnelDrawer(tunnel: Tunnel) {
   nextTick(() => tunnelFormRef.value?.clearValidate())
 }
 
+function buildTunnelPayload(groupId: number): TunnelPayload {
+  const isRange = tunnelForm.value.remote_type === 'range'
+
+  return {
+    group_id: groupId,
+    name: tunnelForm.value.name,
+    protocol: tunnelForm.value.protocol,
+    remote_type: tunnelForm.value.remote_type,
+    remote_start: tunnelForm.value.remote_start,
+    remote_end: isRange ? tunnelForm.value.remote_end : tunnelForm.value.remote_start,
+    local_host: tunnelForm.value.local_host,
+    local_start: tunnelForm.value.local_start,
+    local_end: isRange ? tunnelForm.value.local_end : tunnelForm.value.local_start,
+    enabled: tunnelForm.value.enabled
+  }
+}
+
 async function submitTunnelForm() {
   const valid = await tunnelFormRef.value?.validate().catch(() => false)
   if (!valid) return
@@ -289,32 +311,20 @@ async function submitTunnelForm() {
   tunnelSubmitting.value = true
 
   try {
-    const data = {
-      name: tunnelForm.value.name,
-      protocol: tunnelForm.value.protocol,
-      remote_type: tunnelForm.value.remote_type,
-      remote_start: tunnelForm.value.remote_start,
-      remote_end: tunnelForm.value.remote_type === 'range' ? tunnelForm.value.remote_end : undefined,
-      local_host: tunnelForm.value.local_host,
-      local_start: tunnelForm.value.local_start,
-      local_end: tunnelForm.value.remote_type === 'range' ? tunnelForm.value.local_end : undefined,
-      enabled: tunnelForm.value.enabled
-    }
-
     if (tunnelDrawerMode.value === 'create') {
       if (!selectedGroupId.value) return
-      const result = await tunnelsApi.create({
-        group_id: selectedGroupId.value,
-        ...data
-      })
+      const result = await tunnelsApi.create(buildTunnelPayload(selectedGroupId.value))
       if (result.error) {
         ElMessage.error(result.error)
         return
       }
       ElMessage.success('隧道创建成功')
     } else {
-      if (!editingTunnelId.value) return
-      const result = await tunnelsApi.update(editingTunnelId.value, data)
+      if (!editingTunnelId.value || !editingTunnelGroupId.value) return
+      const result = await tunnelsApi.update(
+        editingTunnelId.value,
+        buildTunnelPayload(editingTunnelGroupId.value)
+      )
       if (result.error) {
         ElMessage.error(result.error)
         return

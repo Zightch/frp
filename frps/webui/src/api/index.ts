@@ -30,6 +30,19 @@ export interface Tunnel {
   updated_at: string
 }
 
+export interface TunnelPayload {
+  group_id: number
+  name: string
+  protocol: 'tcp' | 'udp'
+  remote_type: 'single' | 'range'
+  remote_start: number
+  remote_end: number
+  local_host: string
+  local_start: number
+  local_end: number
+  enabled: boolean
+}
+
 // --- Request helper ---
 
 interface ApiResponse<T = unknown> {
@@ -121,33 +134,12 @@ export const tunnelsApi = {
     return request<{ items: Tunnel[] }>(`/tunnels${query}`)
   },
 
-  create: (data: {
-    group_id: number
-    name: string
-    protocol: 'tcp' | 'udp'
-    remote_type: 'single' | 'range'
-    remote_start: number
-    remote_end?: number
-    local_host: string
-    local_start: number
-    local_end?: number
-    enabled?: boolean
-  }) => request<{ item: Tunnel }>('/tunnels', {
+  create: (data: TunnelPayload) => request<{ item: Tunnel }>('/tunnels', {
     method: 'POST',
     body: JSON.stringify(data)
   }),
 
-  update: (id: number, data: Partial<{
-    name: string
-    protocol: 'tcp' | 'udp'
-    remote_type: 'single' | 'range'
-    remote_start: number
-    remote_end: number
-    local_host: string
-    local_start: number
-    local_end: number
-    enabled: boolean
-  }>) => request<{ item: Tunnel }>(`/tunnels/${id}`, {
+  update: (id: number, data: TunnelPayload) => request<{ item: Tunnel }>(`/tunnels/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(data)
   }),
