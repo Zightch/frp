@@ -32,11 +32,10 @@ func TestServerAuthenticateAndHeartbeat(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:               1,
-					Name:             "group-a",
-					Enabled:          true,
-					ClientAccessMode: "disabled",
-					TokenHash:        tokenHash,
+					ID:        1,
+					Name:      "group-a",
+					Enabled:   true,
+					TokenHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -199,11 +198,10 @@ func TestServerForwardsTCPStream(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:               1,
-					Name:             "group-a",
-					Enabled:          true,
-					ClientAccessMode: "disabled",
-					TokenHash:        tokenHash,
+					ID:        1,
+					Name:      "group-a",
+					Enabled:   true,
+					TokenHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -394,11 +392,10 @@ func TestServerForwardsPublicUDPDatagramsAndReusesSession(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:               1,
-					Name:             "group-a",
-					Enabled:          true,
-					ClientAccessMode: "disabled",
-					TokenHash:        tokenHash,
+					ID:        1,
+					Name:      "group-a",
+					Enabled:   true,
+					TokenHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -632,11 +629,10 @@ func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testi
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:               1,
-					Name:             "group-a",
-					Enabled:          true,
-					ClientAccessMode: "disabled",
-					TokenHash:        tokenHash,
+					ID:        1,
+					Name:      "group-a",
+					Enabled:   true,
+					TokenHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -730,11 +726,10 @@ func TestServerStartsListenersForEnabledTCPRangeTunnelAndUsesMatchedRemotePort(t
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:               1,
-					Name:             "group-a",
-					Enabled:          true,
-					ClientAccessMode: "disabled",
-					TokenHash:        tokenHash,
+					ID:        1,
+					Name:      "group-a",
+					Enabled:   true,
+					TokenHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -886,11 +881,10 @@ func TestServerStartsListenersForEnabledUDPRangeTunnelAndUsesMatchedRemotePort(t
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:               1,
-					Name:             "group-a",
-					Enabled:          true,
-					ClientAccessMode: "disabled",
-					TokenHash:        tokenHash,
+					ID:        1,
+					Name:      "group-a",
+					Enabled:   true,
+					TokenHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -1127,11 +1121,10 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:               1,
-					Name:             "group-a",
-					Enabled:          true,
-					ClientAccessMode: "disabled",
-					TokenHash:        tokenHash,
+					ID:        1,
+					Name:      "group-a",
+					Enabled:   true,
+					TokenHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -1269,11 +1262,10 @@ func TestServerHandlesUDPControlFramesWithoutEndingSession(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:               1,
-					Name:             "group-a",
-					Enabled:          true,
-					ClientAccessMode: "disabled",
-					TokenHash:        tokenHash,
+					ID:        1,
+					Name:      "group-a",
+					Enabled:   true,
+					TokenHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,

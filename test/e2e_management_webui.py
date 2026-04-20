@@ -650,8 +650,6 @@ def wait_sqlite_schema(db_path: Path, timeout_seconds: float) -> None:
     deadline = time.time() + timeout_seconds
     required_tables = {
         "proxy_groups",
-        "group_client_ip_rules",
-        "group_tunnel_ip_rules",
         "tunnels",
     }
     while time.time() < deadline:

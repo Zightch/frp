@@ -56,9 +56,6 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 	if !group.Enabled {
 		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthGroupDisabled, "proxy group is disabled")
 	}
-	if !clientIPAllowed(group.ClientAccessMode, group.ClientRules, remoteIP(conn.RemoteAddr())) {
-		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthDeniedByIP, "client IP is not allowed")
-	}
 
 	challenge, err := s.issueChallenge(group.TokenHash)
 	if err != nil {
@@ -213,43 +210,6 @@ func (s *Server) purgeExpiredChallengesLocked(now time.Time) {
 		if now.After(challenge.ExpiresAt) {
 			delete(s.challenges, challengeID)
 		}
-	}
-}
-
-func clientIPAllowed(mode string, rules []IPRule, ip net.IP) bool {
-	allowMatched := false
-	for _, rule := range rules {
-		if !rule.Matches(ip) {
-			continue
-		}
-		if rule.Action == "deny" {
-			return false
-		}
-		if rule.Action == "allow" {
-			allowMatched = true
-		}
-	}
-
-	switch mode {
-	case "allowlist", "allowlist_and_denylist":
-		return allowMatched
-	default:
-		return true
-	}
-}
-
-func remoteIP(addr net.Addr) net.IP {
-	switch typed := addr.(type) {
-	case *net.TCPAddr:
-		return typed.IP
-	case *net.UDPAddr:
-		return typed.IP
-	default:
-		host, _, err := net.SplitHostPort(addr.String())
-		if err != nil {
-			return nil
-		}
-		return net.ParseIP(host)
 	}
 }
 

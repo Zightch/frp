@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -29,25 +28,17 @@ type SQLRepository struct {
 }
 
 type GroupRuntime struct {
-	ID               int64
-	Name             string
-	Enabled          bool
-	ClientAccessMode string
-	ClientRules      []IPRule
-	TokenHash        [32]byte
-	Snapshot         ConfigSnapshot
+	ID        int64
+	Name      string
+	Enabled   bool
+	TokenHash [32]byte
+	Snapshot  ConfigSnapshot
 }
 
 type ConfigSnapshot struct {
 	Version       uint64
 	GeneratedAtMs uint64
 	Tunnels       []protocol.TunnelEntry
-}
-
-type IPRule struct {
-	Action  string
-	CIDR    string
-	network *net.IPNet
 }
 
 func NewRepository(store *storage.SQL) *SQLRepository {
@@ -67,7 +58,6 @@ SELECT
 	name,
 	token_hash,
 	enabled,
-	client_access_mode,
 	updated_at
 FROM proxy_groups
 WHERE token_id = ?
@@ -91,20 +81,11 @@ WHERE token_id = ?
 	if group.Enabled, err = rowBool(row, "enabled"); err != nil {
 		return GroupRuntime{}, fmt.Errorf("decode group enabled: %w", err)
 	}
-	if group.ClientAccessMode, err = validateAccessMode(rowString(row, "client_access_mode")); err != nil {
-		return GroupRuntime{}, fmt.Errorf("decode group client access mode: %w", err)
-	}
 	if group.TokenHash, err = decodeHex32(rowString(row, "token_hash")); err != nil {
 		return GroupRuntime{}, fmt.Errorf("decode group token hash: %w", err)
 	}
 
 	groupUpdatedAt := rowTime(row, "updated_at")
-
-	rules, err := r.loadClientRules(ctx, group.ID)
-	if err != nil {
-		return GroupRuntime{}, err
-	}
-	group.ClientRules = rules
 
 	tunnels, latestUpdatedAt, err := r.loadTunnels(ctx, group.ID)
 	if err != nil {
@@ -123,33 +104,6 @@ WHERE token_id = ?
 	}
 
 	return group, nil
-}
-
-func (r *SQLRepository) loadClientRules(ctx context.Context, groupID int64) ([]IPRule, error) {
-	result, err := r.store.QueryContext(
-		ctx,
-		`
-SELECT action, cidr
-FROM group_client_ip_rules
-WHERE group_id = ?
-ORDER BY id
-`,
-		groupID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("load group client rules: %w", err)
-	}
-
-	rules := make([]IPRule, 0, len(result.Rows))
-	for _, row := range result.Rows {
-		rule, err := parseIPRule(rowString(row, "action"), rowString(row, "cidr"))
-		if err != nil {
-			return nil, fmt.Errorf("decode group client rule: %w", err)
-		}
-		rules = append(rules, rule)
-	}
-
-	return rules, nil
 }
 
 func (r *SQLRepository) loadTunnels(ctx context.Context, groupID int64) ([]protocol.TunnelEntry, time.Time, error) {
@@ -189,13 +143,6 @@ ORDER BY id
 	}
 
 	return tunnels, latestUpdatedAt, nil
-}
-
-func (r IPRule) Matches(ip net.IP) bool {
-	if ip == nil || r.network == nil {
-		return false
-	}
-	return r.network.Contains(ip)
 }
 
 func decodeTunnelRow(row storage.Row) (protocol.TunnelEntry, error) {
@@ -307,57 +254,6 @@ func decodeTunnelFlags(remoteType string, enabled bool, remoteStart, remoteEnd, 
 
 func validPort(value int64) bool {
 	return value >= 1 && value <= math.MaxUint16
-}
-
-func validateAccessMode(value string) (string, error) {
-	value = strings.ToLower(strings.TrimSpace(value))
-	switch value {
-	case "", "disabled":
-		return "disabled", nil
-	case "allowlist", "denylist", "allowlist_and_denylist":
-		return value, nil
-	default:
-		return "", fmt.Errorf("unsupported access mode %q", value)
-	}
-}
-
-func parseIPRule(action, cidr string) (IPRule, error) {
-	action = strings.ToLower(strings.TrimSpace(action))
-	switch action {
-	case "allow", "deny":
-	default:
-		return IPRule{}, fmt.Errorf("unsupported rule action %q", action)
-	}
-
-	cidr = strings.TrimSpace(cidr)
-	if cidr == "" {
-		return IPRule{}, fmt.Errorf("cidr is required")
-	}
-
-	var network *net.IPNet
-	if strings.Contains(cidr, "/") {
-		_, parsedNetwork, err := net.ParseCIDR(cidr)
-		if err != nil {
-			return IPRule{}, fmt.Errorf("parse cidr %q: %w", cidr, err)
-		}
-		network = parsedNetwork
-	} else {
-		ip := net.ParseIP(cidr)
-		if ip == nil {
-			return IPRule{}, fmt.Errorf("parse ip %q", cidr)
-		}
-		if ip4 := ip.To4(); ip4 != nil {
-			network = &net.IPNet{IP: ip4, Mask: net.CIDRMask(32, 32)}
-		} else {
-			network = &net.IPNet{IP: ip.To16(), Mask: net.CIDRMask(128, 128)}
-		}
-	}
-
-	return IPRule{
-		Action:  action,
-		CIDR:    cidr,
-		network: network,
-	}, nil
 }
 
 func decodeHex32(value string) ([32]byte, error) {

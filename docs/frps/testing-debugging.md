@@ -96,7 +96,6 @@ Test-NetConnection 127.0.0.1 -Port 7000
 
 - 分组是否启用
 - token 是否正确
-- `group_client_ip_rules` 是否拒绝了来源 IP
 - 同分组是否已有在线客户端占用槽位
 
 ### 3.4 公网端口不可用

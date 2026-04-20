@@ -76,8 +76,6 @@ func TestAppInitDatabaseInjectsStore(t *testing.T) {
 
 	for _, tableName := range []string{
 		"proxy_groups",
-		"group_client_ip_rules",
-		"group_tunnel_ip_rules",
 		"tunnels",
 	} {
 		if _, err := application.store.QueryOne(
@@ -110,8 +108,6 @@ CREATE TABLE proxy_groups (
 	token_hash TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	rate_limit INTEGER NOT NULL DEFAULT 0,
-	client_access_mode TEXT NOT NULL DEFAULT 'disabled',
-	tunnel_access_mode TEXT NOT NULL DEFAULT 'disabled',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 )`)

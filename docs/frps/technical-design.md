@@ -128,6 +128,12 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 
 ## 4. 当前数据模型
 
+当前配置明确分成两层：
+
+- 持久化配置：管理面写入数据库中的 `proxy_groups`、`tunnels`。
+- 运行时配置：`internal/control/repository.go` 在 `frpc` 登录时把持久化配置投影成 `GroupRuntime` 和 `ConfigSnapshot`；`frps` listener 和 `frpc sessionState.snapshot` 后续都只消费这份运行时快照。
+- 抓包相关控制当前未实现；如果后续引入，只能进入运行时配置层，不能再设计成 `tunnels` 表字段。
+
 ### 4.1 `proxy_groups`
 
 当前控制面和管理面共用字段：
@@ -138,10 +144,10 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `token_hash`
 - `enabled`
 - `rate_limit`
-- `client_access_mode`
-- `tunnel_access_mode`
 - `created_at`
 - `updated_at`
+
+其中 `rate_limit` 语义固定为该分组下所有隧道共享总限速。
 
 当前运行时实际消费：
 
@@ -149,27 +155,9 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `name`
 - `token_hash`
 - `enabled`
-- `client_access_mode`
 - `updated_at`
 
-### 4.2 `group_client_ip_rules`
-
-字段：
-
-- `id`
-- `group_id`
-- `action`
-- `cidr`
-- `comment`
-- `created_at`
-
-当前已参与 `frpc` 登录来源 IP 校验。
-
-### 4.3 `group_tunnel_ip_rules`
-
-字段已经存在，但当前数据面没有消费。
-
-### 4.4 `tunnels`
+### 4.2 `tunnels`
 
 当前字段：
 
@@ -184,8 +172,6 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `local_start`
 - `local_end`
 - `enabled`
-- `rate_limit`
-- `capture_enabled`
 - `created_at`
 - `updated_at`
 
@@ -263,7 +249,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `range` 模式下本地和远端跨度必须一致
 - `local_host` 使用 `protocol.ParseHost` 校验
 
-当前不校验端口冲突，也不暴露 `rate_limit` / `capture_enabled` 管理入口。
+当前不校验端口冲突，也不暴露分组 `rate_limit` 管理入口；抓包控制也不作为 `tunnels` 持久化字段或管理入口出现。
 
 ## 6. 控制面设计
 
@@ -300,13 +286,12 @@ frps -> start listeners
 1. 读取 `auth.begin`
 2. 按 `token_id` 读取 `GroupRuntime`
 3. 校验分组是否启用
-4. 按 `group_client_ip_rules` 校验来源 IP
-5. 签发 challenge
-6. 用 `protocol.ChallengeResponse` 计算期望值
-7. 常量时间比较响应
-8. 抢占单分组单客户端槽位
-9. 返回 `server.hello`
-10. 下发首次 `config.push`
+4. 签发 challenge
+5. 用 `protocol.ChallengeResponse` 计算期望值
+6. 常量时间比较响应
+7. 抢占单分组单客户端槽位
+8. 返回 `server.hello`
+9. 下发首次 `config.push`
 
 ### 6.3 配置快照
 
@@ -321,6 +306,7 @@ frps -> start listeners
 - 配置只在登录阶段加载一次
 - `config.ack` 成功后才启动 listener
 - 管理 API 改库后不会主动推送给已在线 `frpc`
+- 当前快照只承载真实执行链路需要的隧道字段，不承载 `rate_limit` 或抓包控制
 
 ## 7. 数据面设计
 
@@ -386,4 +372,5 @@ localPort = localStart + offset
 - 反向代理应新增独立运行态，而不是塞回现有正向代理结构。
 - 连接注册表、速率统计、抓包、限速应建立在当前 TCP/UDP bridge 之上。
 - 在线热更新需要补 listener diff、配置推送和 ack 状态管理，不能误写成“仅写库”。
-- `group_tunnel_ip_rules`、`rate_limit`、`capture_enabled` 只有进入真实执行链路后，文档才允许改口为“已实现”。
+- `proxy_groups.rate_limit` 只有进入真实执行链路后，文档才允许改口为“已实现”。
+- 抓包控制如果后续落地，必须先定义运行时控制面和生效边界，不能再回填为 `tunnels` 持久化字段。

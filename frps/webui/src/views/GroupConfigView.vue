@@ -323,7 +323,9 @@ function handleGroupRowClick(row: ProxyGroup) {
 }
 
 function getGroupRowClass({ row }: { row: ProxyGroup }): string {
-  return row.id === selectedGroupId.value ? 'selected-row' : ''
+  return row.id === selectedGroupId.value
+    ? 'selectable-row selected-row'
+    : 'selectable-row'
 }
 
 // --- Group CRUD ---
@@ -1015,7 +1017,17 @@ function copyToken() {
   background-color: var(--color-primary-light-9);
 }
 
-:deep(.el-table) {
+:deep(.el-table__header-wrapper th),
+:deep(.el-table__header-wrapper .cell),
+:deep(.el-table__row:not(.selectable-row)),
+:deep(.el-table__row:not(.selectable-row) > td),
+:deep(.el-table__row:not(.selectable-row) .cell) {
+  cursor: default;
+}
+
+:deep(.el-table__row.selectable-row),
+:deep(.el-table__row.selectable-row > td),
+:deep(.el-table__row.selectable-row .cell) {
   cursor: pointer;
 }
 

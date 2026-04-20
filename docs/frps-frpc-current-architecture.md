@@ -142,9 +142,8 @@ sequenceDiagram
     C->>S: auth.begin(token_id, client metadata)
     S->>R: LoadGroupRuntime(token_id)
     R->>D: SELECT proxy_groups
-    R->>D: SELECT group_client_ip_rules
     R->>D: SELECT tunnels
-    S->>S: validate enabled and client IP rules
+    S->>S: validate enabled
     S->>C: auth.challenge(challenge_id, nonce)
     C->>C: token_hash = sha256(token_secret)
     C->>C: response = sha256(token_hash + nonce)
@@ -165,6 +164,8 @@ sequenceDiagram
 - `sha256(token_hash + nonce)` 这条跨端共享纯规则当前已固定收口到 `frps/pkg/protocol.ChallengeResponse`；本轮没有继续新增其他共享 helper。
 - `frps` 内存中的 `groupSlots` 固定表示每个分组只有一个已登录客户端槽位。
 - 当前配置快照在登录时加载并下发；管理面修改数据库后，当前代码没有把变更主动推送给已在线 `frpc` 的热更新通道。
+- 数据库当前只承担持久化配置层；`LoadGroupRuntime` 会在登录时把 `proxy_groups` / `tunnels` 投影成 `GroupRuntime` / `ConfigSnapshot`，之后 `frps` / `frpc` 只消费内存快照。
+- 抓包相关控制当前未实现；如果后续引入，应属于运行时配置，不应再作为 `tunnels` 表列。
 
 ## 5. TCP 转发时序
 
@@ -215,8 +216,6 @@ sequenceDiagram
 ```mermaid
 erDiagram
     proxy_groups ||--o{ tunnels : owns
-    proxy_groups ||--o{ group_client_ip_rules : controls_client_login
-    proxy_groups ||--o{ group_tunnel_ip_rules : defined_for_future
 
     proxy_groups {
         integer id
@@ -225,8 +224,6 @@ erDiagram
         text token_hash
         integer enabled
         integer rate_limit
-        text client_access_mode
-        text tunnel_access_mode
         text created_at
         text updated_at
     }
@@ -243,28 +240,8 @@ erDiagram
         integer local_start
         integer local_end
         integer enabled
-        integer rate_limit
-        integer capture_enabled
         text created_at
         text updated_at
-    }
-
-    group_client_ip_rules {
-        integer id
-        integer group_id
-        text action
-        text cidr
-        text comment
-        text created_at
-    }
-
-    group_tunnel_ip_rules {
-        integer id
-        integer group_id
-        text action
-        text cidr
-        text comment
-        text created_at
     }
 ```
 
@@ -272,8 +249,7 @@ erDiagram
 
 - 关系图表达的是当前代码中的逻辑关联，schema 中未声明外键约束。
 - `proxy_groups` 和 `tunnels` 是当前 WebUI 和控制面共同使用的核心表。
-- `group_client_ip_rules` 已被 `frps` 登录校验读取。
-- `group_tunnel_ip_rules` 当前只在 schema / 删除依赖中出现，数据面未使用。
+- `proxy_groups.rate_limit` 是当前仅剩的扩展持久化字段，仍未进入真实执行链路；抓包控制如果后续引入，应放在运行时配置层而不是关系图里的持久化表。
 - 当前代码不维护 `schema_migrations` 或独立 schema 版本记录；启动时只校验当前代码依赖的业务表，额外残留表不参与业务关系图。
 
 ## 7. 源码依据

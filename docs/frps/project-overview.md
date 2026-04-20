@@ -50,7 +50,6 @@
   - 心跳
   - 首次 `config.push` / `config.ack`
   - 单分组单客户端槽位
-  - 客户端来源 IP 规则校验
 - 数据面：
   - TCP 单端口转发
   - TCP 连续范围映射
@@ -63,14 +62,18 @@
 下面这些内容还不属于 `frps` 的已完成范围：
 
 - 反向代理。
-- 管理端编辑 `group_client_ip_rules` / `group_tunnel_ip_rules`。
 - 隧道入口 ACL 执行。
 - 在线配置变更后主动推送给已在线 `frpc`。
 - WebSocket、连接管理、实时速率统计、日志中心。
 - 限速执行、抓包执行。
 - 多客户端分组。
 
-当前 schema 中虽然已经存在 `rate_limit`、`capture_enabled` 和 `group_tunnel_ip_rules`，但运行时没有消费这些能力。
+当前配置明确分成两层：
+
+- 持久化配置：管理 API / WebUI 写入 `proxy_groups`、`tunnels` 表。
+- 运行时配置：`internal/control/repository.go` 在 `frpc` 登录时读取持久化配置，构造 `GroupRuntime` / `ConfigSnapshot`，后续 listener 启停和数据转发都只消费这份内存快照。
+
+当前 schema 中仍保留的扩展持久化字段只有 `proxy_groups.rate_limit`；其语义已收口为分组下所有隧道共享总限速，但运行时仍未消费。抓包相关控制当前未实现；如果后续引入，只应属于运行时配置，不应再持久化到 `tunnels` 表。
 
 ## 4. 当前子系统
 
@@ -108,21 +111,16 @@ frps/
 
 - `frpc` 登录第一步只发送 `token_id`。
 - `frps` 在数据库中按 `token_id` 定位分组，读取 `token_hash` 做 challenge 校验。
-- 客户端来源 IP 规则当前由 `group_client_ip_rules` 提供。
 
 ## 6. 当前核心数据
 
-`frps` 当前依赖的业务表只有 4 张：
+`frps` 当前依赖的业务表只有 2 张：
 
 - `proxy_groups`
-- `group_client_ip_rules`
-- `group_tunnel_ip_rules`
 - `tunnels`
 
 其中：
 
-- `group_client_ip_rules` 已参与登录校验。
-- `group_tunnel_ip_rules` 目前只保留在 schema 中，数据面未使用。
 - `tunnels` 当前只支持 `tcp` / `udp` 正向代理。
 
 ## 7. 启动与关闭

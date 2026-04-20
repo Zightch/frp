@@ -52,30 +52,8 @@ CREATE TABLE IF NOT EXISTS proxy_groups (
 	token_hash TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	rate_limit INTEGER NOT NULL DEFAULT 0,
-	client_access_mode TEXT NOT NULL DEFAULT 'disabled',
-	tunnel_access_mode TEXT NOT NULL DEFAULT 'disabled',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
-)`,
-			`
-CREATE TABLE IF NOT EXISTS group_client_ip_rules (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	group_id INTEGER NOT NULL,
-	action TEXT NOT NULL,
-	cidr TEXT NOT NULL,
-	comment TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	UNIQUE(group_id, action, cidr)
-)`,
-			`
-CREATE TABLE IF NOT EXISTS group_tunnel_ip_rules (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	group_id INTEGER NOT NULL,
-	action TEXT NOT NULL,
-	cidr TEXT NOT NULL,
-	comment TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	UNIQUE(group_id, action, cidr)
 )`,
 			`
 CREATE TABLE IF NOT EXISTS tunnels (
@@ -90,8 +68,6 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	local_start INTEGER NOT NULL,
 	local_end INTEGER NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
-	rate_limit INTEGER NOT NULL DEFAULT 0,
-	capture_enabled INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	UNIQUE(group_id, name)
@@ -107,42 +83,12 @@ CREATE TABLE IF NOT EXISTS tunnels (
 					{name: "token_hash", columnType: "text", nullable: false},
 					{name: "enabled", columnType: "integer", nullable: false},
 					{name: "rate_limit", columnType: "integer", nullable: false},
-					{name: "client_access_mode", columnType: "text", nullable: false},
-					{name: "tunnel_access_mode", columnType: "text", nullable: false},
 					{name: "created_at", columnType: "text", nullable: false},
 					{name: "updated_at", columnType: "text", nullable: false},
 				},
 				uniqueIndexes: [][]string{
 					{"name"},
 					{"token_id"},
-				},
-			},
-			{
-				name: "group_client_ip_rules",
-				columns: []columnSpec{
-					{name: "id", columnType: "integer", nullable: false, primaryKey: true},
-					{name: "group_id", columnType: "integer", nullable: false},
-					{name: "action", columnType: "text", nullable: false},
-					{name: "cidr", columnType: "text", nullable: false},
-					{name: "comment", columnType: "text", nullable: false},
-					{name: "created_at", columnType: "text", nullable: false},
-				},
-				uniqueIndexes: [][]string{
-					{"group_id", "action", "cidr"},
-				},
-			},
-			{
-				name: "group_tunnel_ip_rules",
-				columns: []columnSpec{
-					{name: "id", columnType: "integer", nullable: false, primaryKey: true},
-					{name: "group_id", columnType: "integer", nullable: false},
-					{name: "action", columnType: "text", nullable: false},
-					{name: "cidr", columnType: "text", nullable: false},
-					{name: "comment", columnType: "text", nullable: false},
-					{name: "created_at", columnType: "text", nullable: false},
-				},
-				uniqueIndexes: [][]string{
-					{"group_id", "action", "cidr"},
 				},
 			},
 			{
@@ -159,8 +105,6 @@ CREATE TABLE IF NOT EXISTS tunnels (
 					{name: "local_start", columnType: "integer", nullable: false},
 					{name: "local_end", columnType: "integer", nullable: false},
 					{name: "enabled", columnType: "integer", nullable: false},
-					{name: "rate_limit", columnType: "integer", nullable: false},
-					{name: "capture_enabled", columnType: "integer", nullable: false},
 					{name: "created_at", columnType: "text", nullable: false},
 					{name: "updated_at", columnType: "text", nullable: false},
 				},
@@ -180,35 +124,11 @@ CREATE TABLE IF NOT EXISTS proxy_groups (
 	token_hash CHAR(64) NOT NULL,
 	enabled TINYINT(1) NOT NULL DEFAULT 1,
 	rate_limit BIGINT NOT NULL DEFAULT 0,
-	client_access_mode VARCHAR(32) NOT NULL DEFAULT 'disabled',
-	tunnel_access_mode VARCHAR(32) NOT NULL DEFAULT 'disabled',
 	created_at DATETIME(6) NOT NULL,
 	updated_at DATETIME(6) NOT NULL,
 	PRIMARY KEY (id),
 	UNIQUE KEY uk_proxy_groups_name (name),
 	UNIQUE KEY uk_proxy_groups_token_id (token_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-			`
-CREATE TABLE IF NOT EXISTS group_client_ip_rules (
-	id BIGINT NOT NULL AUTO_INCREMENT,
-	group_id BIGINT NOT NULL,
-	action VARCHAR(16) NOT NULL,
-	cidr VARCHAR(128) NOT NULL,
-	comment TEXT NOT NULL,
-	created_at DATETIME(6) NOT NULL,
-	PRIMARY KEY (id),
-	UNIQUE KEY uk_group_client_ip_rules_group_action_cidr (group_id, action, cidr)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
-			`
-CREATE TABLE IF NOT EXISTS group_tunnel_ip_rules (
-	id BIGINT NOT NULL AUTO_INCREMENT,
-	group_id BIGINT NOT NULL,
-	action VARCHAR(16) NOT NULL,
-	cidr VARCHAR(128) NOT NULL,
-	comment TEXT NOT NULL,
-	created_at DATETIME(6) NOT NULL,
-	PRIMARY KEY (id),
-	UNIQUE KEY uk_group_tunnel_ip_rules_group_action_cidr (group_id, action, cidr)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 			`
 CREATE TABLE IF NOT EXISTS tunnels (
@@ -223,8 +143,6 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	local_start BIGINT NOT NULL,
 	local_end BIGINT NOT NULL,
 	enabled TINYINT(1) NOT NULL DEFAULT 1,
-	rate_limit BIGINT NOT NULL DEFAULT 0,
-	capture_enabled TINYINT(1) NOT NULL DEFAULT 0,
 	created_at DATETIME(6) NOT NULL,
 	updated_at DATETIME(6) NOT NULL,
 	PRIMARY KEY (id),
@@ -241,42 +159,12 @@ CREATE TABLE IF NOT EXISTS tunnels (
 					{name: "token_hash", columnType: "char(64)", nullable: false},
 					{name: "enabled", columnType: "tinyint(1)", nullable: false},
 					{name: "rate_limit", columnType: "bigint", nullable: false},
-					{name: "client_access_mode", columnType: "varchar(32)", nullable: false},
-					{name: "tunnel_access_mode", columnType: "varchar(32)", nullable: false},
 					{name: "created_at", columnType: "datetime(6)", nullable: false},
 					{name: "updated_at", columnType: "datetime(6)", nullable: false},
 				},
 				uniqueIndexes: [][]string{
 					{"name"},
 					{"token_id"},
-				},
-			},
-			{
-				name: "group_client_ip_rules",
-				columns: []columnSpec{
-					{name: "id", columnType: "bigint", nullable: false, primaryKey: true, autoIncrement: true},
-					{name: "group_id", columnType: "bigint", nullable: false},
-					{name: "action", columnType: "varchar(16)", nullable: false},
-					{name: "cidr", columnType: "varchar(128)", nullable: false},
-					{name: "comment", columnType: "text", nullable: false},
-					{name: "created_at", columnType: "datetime(6)", nullable: false},
-				},
-				uniqueIndexes: [][]string{
-					{"group_id", "action", "cidr"},
-				},
-			},
-			{
-				name: "group_tunnel_ip_rules",
-				columns: []columnSpec{
-					{name: "id", columnType: "bigint", nullable: false, primaryKey: true, autoIncrement: true},
-					{name: "group_id", columnType: "bigint", nullable: false},
-					{name: "action", columnType: "varchar(16)", nullable: false},
-					{name: "cidr", columnType: "varchar(128)", nullable: false},
-					{name: "comment", columnType: "text", nullable: false},
-					{name: "created_at", columnType: "datetime(6)", nullable: false},
-				},
-				uniqueIndexes: [][]string{
-					{"group_id", "action", "cidr"},
 				},
 			},
 			{
@@ -293,8 +181,6 @@ CREATE TABLE IF NOT EXISTS tunnels (
 					{name: "local_start", columnType: "bigint", nullable: false},
 					{name: "local_end", columnType: "bigint", nullable: false},
 					{name: "enabled", columnType: "tinyint(1)", nullable: false},
-					{name: "rate_limit", columnType: "bigint", nullable: false},
-					{name: "capture_enabled", columnType: "tinyint(1)", nullable: false},
 					{name: "created_at", columnType: "datetime(6)", nullable: false},
 					{name: "updated_at", columnType: "datetime(6)", nullable: false},
 				},

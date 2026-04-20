@@ -8,7 +8,6 @@
 - 分组最小 CRUD 与 token 重置
 - 隧道最小 CRUD
 - `frpc` token challenge/response 登录
-- 客户端来源 IP 规则校验
 - TCP/UDP 单端口与连续范围转发
 - `frps` 侧 UDP idle cleanup
 
@@ -100,15 +99,12 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 下面这些字段当前不会通过管理 API/WebUI 编辑：
 
-- `client_access_mode`
-- `tunnel_access_mode`
 - `rate_limit`
 
 其中：
 
-- `client_access_mode` 和 `group_client_ip_rules` 已经会被控制面读取
-- `tunnel_access_mode` 和 `group_tunnel_ip_rules` 当前未进入数据面执行
 - `rate_limit` 当前不生效
+- `rate_limit` 语义固定为分组下所有隧道共享总限速，不再定义单隧道限速字段
 
 ## 4. 隧道管理
 
@@ -136,13 +132,13 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 - 端口冲突检测
 - 隧道入口 ACL 配置
-- 限速配置
+- 分组总限速执行
 - 抓包配置
 
 当前 WebUI 最小基线还固定下面这些约束：
 
 - UI 中管理隧道时，必须明确隶属于某个现有分组
-- 不开放 `rate_limit`、`capture_enabled`、ACL 规则等未进入真实执行链路的字段
+- 不开放分组 `rate_limit` 等未进入真实执行链路的持久化字段，也不承载抓包开关这类仅属于运行时的控制
 
 ### 4.3 当前返回字段
 
@@ -163,7 +159,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `created_at`
 - `updated_at`
 
-`rate_limit` 和 `capture_enabled` 当前不会通过管理 API 返回或编辑。
+管理 API 当前只返回持久化隧道配置；分组 `rate_limit` 不会通过管理 API / WebUI 编辑，抓包这类运行时控制也不在隧道返回模型内。
 
 ## 5. frpc 登录与配置下发
 
@@ -173,7 +169,6 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 - `token_id` 是否存在
 - 分组是否启用
-- 客户端来源 IP 是否允许
 - challenge 是否有效且未重放
 - challenge 响应是否匹配
 - 当前分组单客户端槽位是否已被占用
@@ -181,6 +176,12 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 ### 5.2 当前配置下发规则
 
 当前只在登录阶段下发完整快照。
+
+当前配置边界：
+
+- 管理 API / WebUI 只编辑持久化配置。
+- `frps` 在 `frpc` 登录时把持久化配置投影成运行时快照，下发给 `frpc` 并在双方内存中生效。
+- 抓包相关控制当前未实现；如果后续引入，只应属于运行时配置，不应作为 `tunnels` 持久化字段。
 
 当前快照包含：
 
@@ -191,8 +192,8 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 当前不下发：
 
 - ACL
-- 限速
-- 抓包
+- 分组总限速
+- 抓包运行时控制
 - 任何反向代理配置
 
 ## 6. TCP 转发

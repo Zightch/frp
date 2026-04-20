@@ -42,14 +42,16 @@
 - 一个分组多个在线 `frpc`。
 - 数据库 schema 迁移兼容层。
 
-当前还存在但尚未进入真实执行链路的持久化字段或表：
+当前配置明确分成两层：
 
-- `proxy_groups.rate_limit`
-- `tunnels.rate_limit`
-- `tunnels.capture_enabled`
-- `group_tunnel_ip_rules`
+- 持久化配置：管理 API / WebUI 写入 SQLite / MySQL 中的 `proxy_groups`、`tunnels`。
+- 运行时配置：`frpc` 登录时，`frps` 从数据库读取持久化配置并构造内存里的 `GroupRuntime` / `ConfigSnapshot`，后续 listener 启停和实际转发只消费这份运行时快照。
 
-这些内容当前只保留在 schema 或管理返回体中，不代表已经实现对应运行时能力。
+当前仍保留但尚未进入真实执行链路的持久化字段只有：
+
+- `proxy_groups.rate_limit`（预留为分组下所有隧道共享总限速）
+
+抓包相关控制当前未实现；如果后续引入，只应属于运行时配置层，不应再落成 `tunnels` 表字段。
 
 ## 4. 当前运行模型
 

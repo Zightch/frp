@@ -68,7 +68,6 @@ python test/e2e_udp_range.py
 - `server:7000` 是否可达
 - token 是否正确
 - 分组是否启用
-- 来源 IP 是否被 `group_client_ip_rules` 拒绝
 - 同分组是否已有在线客户端
 
 ### 3.3 已登录但无转发

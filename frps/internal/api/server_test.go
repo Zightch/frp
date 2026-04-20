@@ -651,28 +651,8 @@ CREATE TABLE proxy_groups (
 	token_hash TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	rate_limit INTEGER NOT NULL DEFAULT 0,
-	client_access_mode TEXT NOT NULL DEFAULT 'disabled',
-	tunnel_access_mode TEXT NOT NULL DEFAULT 'disabled',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
-)`,
-		`
-CREATE TABLE group_client_ip_rules (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	group_id INTEGER NOT NULL,
-	action TEXT NOT NULL,
-	cidr TEXT NOT NULL,
-	comment TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL
-)`,
-		`
-CREATE TABLE group_tunnel_ip_rules (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	group_id INTEGER NOT NULL,
-	action TEXT NOT NULL,
-	cidr TEXT NOT NULL,
-	comment TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL
 )`,
 		`
 CREATE TABLE tunnels (
@@ -687,8 +667,6 @@ CREATE TABLE tunnels (
 	local_start INTEGER NOT NULL,
 	local_end INTEGER NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
-	rate_limit INTEGER NOT NULL DEFAULT 0,
-	capture_enabled INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	UNIQUE(group_id, name)

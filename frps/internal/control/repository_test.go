@@ -34,15 +34,7 @@ CREATE TABLE proxy_groups (
 	token_id TEXT NOT NULL,
 	token_hash TEXT NOT NULL,
 	enabled INTEGER NOT NULL,
-	client_access_mode TEXT NOT NULL,
 	updated_at TEXT NOT NULL
-)`,
-		`
-CREATE TABLE group_client_ip_rules (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	group_id INTEGER NOT NULL,
-	action TEXT NOT NULL,
-	cidr TEXT NOT NULL
 )`,
 		`
 CREATE TABLE tunnels (
@@ -71,25 +63,16 @@ CREATE TABLE tunnels (
 
 	if _, err := store.Exec(
 		`
-INSERT INTO proxy_groups (name, token_id, token_hash, enabled, client_access_mode, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO proxy_groups (name, token_id, token_hash, enabled, updated_at)
+VALUES (?, ?, ?, ?, ?)
 `,
 		"group-a",
 		hex.EncodeToString(tokenID[:]),
 		hex.EncodeToString(tokenHash[:]),
 		1,
-		"allowlist_and_denylist",
 		"2026-04-18 10:00:00.000001",
 	); err != nil {
 		t.Fatalf("insert proxy group: %v", err)
-	}
-
-	if _, err := store.Exec(
-		"INSERT INTO group_client_ip_rules (group_id, action, cidr) VALUES (?, ?, ?), (?, ?, ?)",
-		1, "allow", "127.0.0.1/32",
-		1, "deny", "10.0.0.0/8",
-	); err != nil {
-		t.Fatalf("insert client rules: %v", err)
 	}
 
 	if _, err := store.Exec(
@@ -114,12 +97,6 @@ INSERT INTO tunnels (
 
 	if !group.Enabled {
 		t.Fatal("expected group to be enabled")
-	}
-	if group.ClientAccessMode != "allowlist_and_denylist" {
-		t.Fatalf("unexpected access mode: %s", group.ClientAccessMode)
-	}
-	if len(group.ClientRules) != 2 {
-		t.Fatalf("unexpected client rule count: %d", len(group.ClientRules))
 	}
 	if group.TokenHash != tokenHash {
 		t.Fatal("unexpected token hash")

@@ -187,8 +187,6 @@ interface ProxyGroup {
   name: string
   token_id: string
   enabled: boolean
-  client_access_mode: string
-  tunnel_access_mode: string
   created_at: string
   updated_at: string
 }

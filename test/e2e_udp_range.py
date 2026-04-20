@@ -579,7 +579,7 @@ def write_config_file(config_path: Path, ports: Ports, log_level: str) -> None:
 
 def wait_sqlite_schema(db_path: Path, timeout_seconds: float) -> None:
     deadline = time.time() + timeout_seconds
-    required_tables = {"proxy_groups", "group_client_ip_rules", "group_tunnel_ip_rules", "tunnels"}
+    required_tables = {"proxy_groups", "tunnels"}
 
     while time.time() < deadline:
         try:
@@ -611,11 +611,9 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 token_hash,
                 enabled,
                 rate_limit,
-                client_access_mode,
-                tunnel_access_mode,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "e2e-group",
@@ -623,8 +621,6 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 token.token_hash,
                 1,
                 0,
-                "disabled",
-                "disabled",
                 created_at,
                 created_at,
             ),
@@ -646,11 +642,9 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 local_start,
                 local_end,
                 enabled,
-                rate_limit,
-                capture_enabled,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -664,8 +658,6 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                     ports.local_single,
                     ports.local_single,
                     1,
-                    0,
-                    0,
                     created_at,
                     created_at,
                 ),
@@ -680,8 +672,6 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                     ports.local_range_start,
                     ports.local_range_end,
                     1,
-                    0,
-                    0,
                     created_at,
                     created_at,
                 ),

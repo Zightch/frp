@@ -535,11 +535,9 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 token_hash,
                 enabled,
                 rate_limit,
-                client_access_mode,
-                tunnel_access_mode,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "e2e-group",
@@ -547,8 +545,6 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 token.token_hash,
                 1,
                 0,
-                "disabled",
-                "disabled",
                 created_at,
                 created_at,
             ),
@@ -570,11 +566,9 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 local_start,
                 local_end,
                 enabled,
-                rate_limit,
-                capture_enabled,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(group_id),
@@ -587,8 +581,6 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 ports.local_udp,
                 ports.local_udp,
                 1,
-                0,
-                0,
                 created_at,
                 created_at,
             ),

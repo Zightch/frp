@@ -27,14 +27,12 @@ type managementService struct {
 }
 
 type proxyGroupView struct {
-	ID               int64  `json:"id"`
-	Name             string `json:"name"`
-	TokenID          string `json:"token_id"`
-	Enabled          bool   `json:"enabled"`
-	ClientAccessMode string `json:"client_access_mode"`
-	TunnelAccessMode string `json:"tunnel_access_mode"`
-	CreatedAt        string `json:"created_at"`
-	UpdatedAt        string `json:"updated_at"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	TokenID   string `json:"token_id"`
+	Enabled   bool   `json:"enabled"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 type tunnelView struct {
@@ -297,8 +295,6 @@ SELECT
 	name,
 	token_id,
 	enabled,
-	client_access_mode,
-	tunnel_access_mode,
 	created_at,
 	updated_at
 FROM proxy_groups
@@ -347,11 +343,9 @@ INSERT INTO proxy_groups (
 	token_hash,
 	enabled,
 	rate_limit,
-	client_access_mode,
-	tunnel_access_mode,
 	created_at,
 	updated_at
-) VALUES (?, ?, ?, ?, 0, 'disabled', 'disabled', ?, ?)
+) VALUES (?, ?, ?, ?, 0, ?, ?)
 `,
 			normalized.Name,
 			tokenID,
@@ -419,8 +413,6 @@ func (m *managementService) deleteProxyGroup(ctx context.Context, id int64) erro
 	return m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
 		for _, statement := range []string{
 			"DELETE FROM tunnels WHERE group_id = ?",
-			"DELETE FROM group_client_ip_rules WHERE group_id = ?",
-			"DELETE FROM group_tunnel_ip_rules WHERE group_id = ?",
 		} {
 			if _, err := tx.ExecContext(ctx, statement, id); err != nil {
 				return fmt.Errorf("delete proxy group dependencies: %w", err)
@@ -549,11 +541,9 @@ INSERT INTO tunnels (
 	local_start,
 	local_end,
 	enabled,
-	rate_limit,
-	capture_enabled,
 	created_at,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 			normalized.GroupID,
 			normalized.Name,
@@ -662,8 +652,6 @@ SELECT
 	name,
 	token_id,
 	enabled,
-	client_access_mode,
-	tunnel_access_mode,
 	created_at,
 	updated_at
 FROM proxy_groups
@@ -813,8 +801,6 @@ func decodeProxyGroupRow(row storage.Row) (proxyGroupView, error) {
 	}
 	item.Name = rowString(row, "name")
 	item.TokenID = rowString(row, "token_id")
-	item.ClientAccessMode = rowString(row, "client_access_mode")
-	item.TunnelAccessMode = rowString(row, "tunnel_access_mode")
 	item.CreatedAt = rowTimeString(row, "created_at")
 	item.UpdatedAt = rowTimeString(row, "updated_at")
 	return item, nil
