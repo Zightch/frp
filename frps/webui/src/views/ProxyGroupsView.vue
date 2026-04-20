@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { authApi, proxyGroupsApi, tunnelsApi, type ProxyGroup, type Tunnel } from '@/api'
 
 const router = useRouter()
@@ -16,6 +17,20 @@ const tunnels = ref<Tunnel[]>([])
 const selectedGroupId = ref<number | null>(null)
 const loading = ref(false)
 const error = ref('')
+
+// Group dialog
+const groupDialogVisible = ref(false)
+const groupDialogMode = ref<'create' | 'edit'>('create')
+const groupFormRef = ref()
+const groupSubmitting = ref(false)
+const groupForm = ref({ name: '', enabled: true })
+const groupFormRules = {
+  name: [{ required: true, message: '请输入分组名称', trigger: 'blur' }]
+}
+
+// New token display
+const newTokenVisible = ref(false)
+const newTokenValue = ref('')
 
 // Computed
 const selectedGroup = computed(() =>
@@ -111,6 +126,131 @@ function handleGroupRowClick(row: ProxyGroup) {
 function getGroupRowClass({ row }: { row: ProxyGroup }): string {
   return row.id === selectedGroupId.value ? 'selected-row' : ''
 }
+
+// --- Group CRUD ---
+
+function openCreateGroupDialog() {
+  groupDialogMode.value = 'create'
+  groupForm.value = { name: '', enabled: true }
+  groupDialogVisible.value = true
+  nextTick(() => groupFormRef.value?.clearValidate())
+}
+
+function openEditGroupDialog(group: ProxyGroup) {
+  groupDialogMode.value = 'edit'
+  groupForm.value = { name: group.name, enabled: group.enabled }
+  groupDialogVisible.value = true
+  nextTick(() => groupFormRef.value?.clearValidate())
+}
+
+async function submitGroupForm() {
+  const valid = await groupFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+
+  groupSubmitting.value = true
+
+  try {
+    if (groupDialogMode.value === 'create') {
+      const result = await proxyGroupsApi.create({
+        name: groupForm.value.name,
+        enabled: groupForm.value.enabled
+      })
+      if (result.error) {
+        ElMessage.error(result.error)
+        return
+      }
+      ElMessage.success('分组创建成功')
+      if (result.data?.token) {
+        newTokenValue.value = result.data.token
+        newTokenVisible.value = true
+      }
+    } else {
+      const group = selectedGroup.value
+      if (!group) return
+      const result = await proxyGroupsApi.update(group.id, {
+        name: groupForm.value.name,
+        enabled: groupForm.value.enabled
+      })
+      if (result.error) {
+        ElMessage.error(result.error)
+        return
+      }
+      ElMessage.success('分组更新成功')
+    }
+
+    groupDialogVisible.value = false
+    await loadData()
+  } finally {
+    groupSubmitting.value = false
+  }
+}
+
+async function handleDeleteGroup(group: ProxyGroup) {
+  const tunnelCount = tunnels.value.filter(t => t.group_id === group.id).length
+  const message = tunnelCount > 0
+    ? `确定删除分组"${group.name}"吗？该分组下有 ${tunnelCount} 条隧道将一并删除，此操作不可恢复。`
+    : `确定删除分组"${group.name}"吗？此操作不可恢复。`
+
+  try {
+    await ElMessageBox.confirm(message, '删除分组', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger'
+    })
+  } catch {
+    return
+  }
+
+  const result = await proxyGroupsApi.delete(group.id)
+  if (result.error) {
+    ElMessage.error(result.error)
+    return
+  }
+
+  if (selectedGroupId.value === group.id) {
+    selectedGroupId.value = null
+  }
+  ElMessage.success('分组已删除')
+  await loadData()
+}
+
+async function handleResetToken(group: ProxyGroup) {
+  try {
+    await ElMessageBox.confirm(
+      `确定重置分组"${group.name}"的 Token 吗？重置后旧 Token 将立即失效。`,
+      '重置 Token',
+      {
+        confirmButtonText: '重置',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    return
+  }
+
+  const result = await proxyGroupsApi.resetToken(group.id)
+  if (result.error) {
+    ElMessage.error(result.error)
+    return
+  }
+
+  ElMessage.success('Token 已重置')
+  if (result.data?.token) {
+    newTokenValue.value = result.data.token
+    newTokenVisible.value = true
+  }
+  await loadData()
+}
+
+function copyToken() {
+  navigator.clipboard.writeText(newTokenValue.value).then(() => {
+    ElMessage.success('已复制到剪贴板')
+  }).catch(() => {
+    ElMessage.error('复制失败')
+  })
+}
 </script>
 
 <template>
@@ -150,9 +290,9 @@ function getGroupRowClass({ row }: { row: ProxyGroup }): string {
           </span>
         </div>
         <div class="operation-actions">
-          <el-button size="small">重置 Token</el-button>
-          <el-button size="small">编辑</el-button>
-          <el-button size="small" type="danger">删除</el-button>
+          <el-button size="small" @click="handleResetToken(selectedGroup)">重置 Token</el-button>
+          <el-button size="small" @click="openEditGroupDialog(selectedGroup)">编辑</el-button>
+          <el-button size="small" type="danger" @click="handleDeleteGroup(selectedGroup)">删除</el-button>
         </div>
       </div>
 
@@ -167,7 +307,7 @@ function getGroupRowClass({ row }: { row: ProxyGroup }): string {
         <section class="panel groups-panel">
           <div class="panel-header">
             <h2>分组列表</h2>
-            <el-button type="primary" size="small">新建分组</el-button>
+            <el-button type="primary" size="small" @click="openCreateGroupDialog">新建分组</el-button>
           </div>
           <div class="panel-body">
             <div v-if="groups.length === 0" class="empty-message">
@@ -190,9 +330,10 @@ function getGroupRowClass({ row }: { row: ProxyGroup }): string {
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="100" align="center" fixed="right">
-                <template #default>
-                  <el-button link type="primary" size="small">编辑</el-button>
+              <el-table-column label="操作" width="150" align="center" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" size="small" @click.stop="openEditGroupDialog(row)">编辑</el-button>
+                  <el-button link type="danger" size="small" @click.stop="handleDeleteGroup(row)">删除</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -256,6 +397,54 @@ function getGroupRowClass({ row }: { row: ProxyGroup }): string {
         </section>
       </div>
     </template>
+
+    <!-- Group create/edit dialog -->
+    <el-dialog
+      v-model="groupDialogVisible"
+      :title="groupDialogMode === 'create' ? '新建分组' : '编辑分组'"
+      width="400px"
+      :close-on-click-modal="false"
+    >
+      <el-form
+        ref="groupFormRef"
+        :model="groupForm"
+        :rules="groupFormRules"
+        label-width="80px"
+      >
+        <el-form-item label="名称" prop="name">
+          <el-input v-model="groupForm.name" placeholder="请输入分组名称" />
+        </el-form-item>
+        <el-form-item label="启用">
+          <el-switch v-model="groupForm.enabled" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="groupDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="groupSubmitting" @click="submitGroupForm">
+          {{ groupDialogMode === 'create' ? '创建' : '保存' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- New token display dialog -->
+    <el-dialog
+      v-model="newTokenVisible"
+      title="Token 已生成"
+      width="500px"
+      :close-on-click-modal="false"
+    >
+      <div class="token-display">
+        <p class="token-hint">请保存以下 Token，用于客户端配置：</p>
+        <div class="token-box">
+          <code class="token-code">{{ newTokenValue }}</code>
+          <el-button type="primary" size="small" @click="copyToken">复制</el-button>
+        </div>
+        <p class="token-warning">此 Token 仅显示一次，关闭后将无法再次查看。</p>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="newTokenVisible = false">我已保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -431,5 +620,38 @@ function getGroupRowClass({ row }: { row: ProxyGroup }): string {
 
 :deep(.el-table) {
   cursor: pointer;
+}
+
+/* Token display dialog */
+.token-display {
+  text-align: center;
+}
+
+.token-hint {
+  margin-bottom: var(--spacing-md);
+  color: var(--color-text-primary);
+}
+
+.token-box {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-base);
+  background: var(--color-bg-fill);
+  border-radius: var(--radius-base);
+  margin-bottom: var(--spacing-md);
+}
+
+.token-code {
+  flex: 1;
+  font-family: monospace;
+  font-size: var(--font-size-body);
+  word-break: break-all;
+  text-align: left;
+}
+
+.token-warning {
+  color: var(--color-warning);
+  font-size: var(--font-size-small);
 }
 </style>
