@@ -8,6 +8,7 @@ declare module "vue-router" {
   interface RouteMeta {
     description?: string;
     eyebrow?: string;
+    managementNavActiveName?: string;
     managementNav?: boolean;
     navLabel?: string;
     navOrder?: number;
@@ -59,7 +60,7 @@ export const router = createRouter({
           name: "dashboard",
           component: () => import("@/views/DashboardView.vue"),
           meta: {
-            description: "查看当前管理认证状态、系统边界和两类核心管理入口。",
+            description: "查看当前管理认证状态与统一接入管理入口。",
             eyebrow: "overview",
             managementNav: true,
             navLabel: "概览",
@@ -72,12 +73,12 @@ export const router = createRouter({
           name: "proxy-groups",
           component: () => import("@/views/ProxyGroupsView.vue"),
           meta: {
-            description: "管理接入分组、启停状态和对应 token 生命周期。",
-            eyebrow: "proxy groups",
+            description: "统一管理接入分组、分组 token 和当前选中分组下的隧道配置。",
+            eyebrow: "access",
             managementNav: true,
-            navLabel: "分组管理",
+            navLabel: "接入管理",
             navOrder: 2,
-            title: "分组管理",
+            title: "接入管理",
           },
         },
         {
@@ -85,12 +86,10 @@ export const router = createRouter({
           name: "tunnels",
           component: () => import("@/views/TunnelsView.vue"),
           meta: {
-            description: "管理 TCP/UDP 单端口映射与端口范围映射配置。",
-            eyebrow: "tunnels",
-            managementNav: true,
-            navLabel: "隧道管理",
-            navOrder: 3,
-            title: "隧道管理",
+            description: "统一管理接入分组、分组 token 和当前选中分组下的隧道配置。",
+            eyebrow: "access",
+            managementNavActiveName: "proxy-groups",
+            title: "接入管理",
           },
         },
       ],

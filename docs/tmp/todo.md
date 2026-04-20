@@ -8,7 +8,6 @@
 
 ## 子步骤
 
-- 调整管理壳层与页面布局，参考 1Panel 收紧顶部和导航占位，让标签页贴住左侧边栏，并为主内容区留出更充足的展示空间。
 - 完成收束与验收：同步正式文档、执行构建检查、归档并清空当前轮 `todo`。
 
 ## 当前轮边界
@@ -21,4 +20,4 @@
 
 ## 当前唯一下一步
 
-- 先收紧 `frps/webui/src/views/AppShellView.vue`、`frps/webui/src/router/index.ts` 和 `frps/webui/src/styles/main.css`：去掉侧栏里的常驻边界说明块，压缩顶部状态区和主内容外边距，让一级导航直接贴住左侧边栏，并把 `/tunnels` 从一级导航里收掉，只保留兼容路径语义；暂不进入最终收束。
+- 先按当前代码实际同步正式文档，重点更新 `docs/project-overview.md`、`docs/frps/project-overview.md`、`docs/frps/functional-spec.md`、`docs/frps/development-guide.md` 与 `docs/frps/webui-redesign-plan.md` 中关于管理壳层、一级导航和统一接入管理入口的描述，然后完成最终验收、归档并清空当前轮 `todo`。

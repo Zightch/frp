@@ -16,6 +16,13 @@ type ManagementNavItem = {
   order: number;
 };
 
+type PageMeta = {
+  title?: string;
+  eyebrow?: string;
+  description?: string;
+  managementNavActiveName?: string;
+};
+
 const router = useRouter();
 const route = useRoute();
 const authStore = useAuthStore();
@@ -109,7 +116,8 @@ const managementNavItems = computed<ManagementNavItem[]>(() =>
 );
 
 const currentManagementItem = computed<ManagementNavItem | undefined>(() => {
-  const currentName = route.name?.toString();
+  const routeMeta = route.meta as PageMeta;
+  const currentName = routeMeta.managementNavActiveName ?? route.name?.toString();
   if (!currentName) {
     return undefined;
   }
@@ -117,10 +125,11 @@ const currentManagementItem = computed<ManagementNavItem | undefined>(() => {
   return managementNavItems.value.find((item) => item.name === currentName);
 });
 
-const pageEyebrow = computed(() => currentManagementItem.value?.eyebrow ?? "management");
-const pageTitle = computed(() => currentManagementItem.value?.title ?? "管理面板");
+const pageMeta = computed<PageMeta>(() => route.meta as PageMeta);
+const pageEyebrow = computed(() => pageMeta.value.eyebrow ?? currentManagementItem.value?.eyebrow ?? "management");
+const pageTitle = computed(() => pageMeta.value.title ?? currentManagementItem.value?.title ?? "管理面板");
 const pageDescription = computed(
-  () => currentManagementItem.value?.description ?? "查看当前系统状态与管理入口。",
+  () => pageMeta.value.description ?? currentManagementItem.value?.description ?? "查看当前系统状态与管理入口。",
 );
 
 watch(
@@ -158,9 +167,6 @@ async function handleLogout(): Promise<void> {
       <div class="shell-sidebar__brand">
         <p class="shell-sidebar__eyebrow">frps control</p>
         <h1 class="shell-sidebar__title">管理面板</h1>
-        <p class="shell-sidebar__copy">
-          当前管理面只承接概览、分组管理和隧道管理，不额外包装未来功能入口。
-        </p>
       </div>
 
       <nav
@@ -176,15 +182,8 @@ async function handleLogout(): Promise<void> {
         >
           <span class="shell-nav-link__eyebrow">{{ item.eyebrow }}</span>
           <strong class="shell-nav-link__title">{{ item.navLabel }}</strong>
-          <span class="shell-nav-link__copy">{{ item.description }}</span>
         </RouterLink>
       </nav>
-
-      <div class="shell-side-note">
-        <span class="shell-side-note__label">当前边界</span>
-        <p class="shell-side-note__copy">管理密钥只初始化一次并持久化在服务端本地 `auth.json`。</p>
-        <p class="shell-side-note__copy">删除 `auth.json` 后，服务端会自动回到未初始化态并清空旧会话。</p>
-      </div>
     </aside>
 
     <div class="shell-stage">
@@ -198,24 +197,26 @@ async function handleLogout(): Promise<void> {
             菜单
           </el-button>
 
-          <p class="shell-topbar__eyebrow">{{ pageEyebrow }}</p>
-          <h2 class="shell-topbar__title">{{ pageTitle }}</h2>
-          <p class="shell-topbar__description">{{ pageDescription }}</p>
+          <div class="shell-topbar__title-group">
+            <p class="shell-topbar__eyebrow">{{ pageEyebrow }}</p>
+            <h2 class="shell-topbar__title">{{ pageTitle }}</h2>
+            <p class="shell-topbar__description">{{ pageDescription }}</p>
+          </div>
         </div>
 
         <div class="shell-topbar__session">
-          <div class="shell-status-grid">
-            <div class="shell-status-card">
-              <span class="shell-status-card__label">认证状态</span>
+          <div class="shell-status-chip">
+            <span class="shell-status-chip__label">认证状态</span>
+            <span class="shell-status-chip__value">
               <el-tag :type="authStatusType">
                 {{ authStatusLabel }}
               </el-tag>
-            </div>
+            </span>
+          </div>
 
-            <div class="shell-status-card">
-              <span class="shell-status-card__label">会话到期</span>
-              <strong class="shell-status-card__value">{{ sessionExpiryLabel }}</strong>
-            </div>
+          <div class="shell-status-chip">
+            <span class="shell-status-chip__label">会话到期</span>
+            <strong class="shell-status-chip__text">{{ sessionExpiryLabel }}</strong>
           </div>
 
           <div class="shell-topbar__actions">
