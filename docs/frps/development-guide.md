@@ -121,15 +121,19 @@ npm.cmd run build
 ### 5.4 当前页面组织
 
 - `webui/src/router/index.ts`
-  - 路由守卫、页面标题和管理态导航元数据都在这里收口；改导航顺序、页面眉标或说明文案时优先改这里。
+  - 路由守卫、页面标题和管理态导航元数据都在这里收口；一级导航现在只保留“概览”“接入管理”，`/tunnels` 兼容高亮也通过这里的 `managementNavActiveName` 收口。
 - `webui/src/views/AppShellView.vue`
-  - 已登录管理壳层，只承接 `/`、`/proxy-groups`、`/tunnels` 的侧边导航、顶部状态区和全局提示。
+  - 已登录管理壳层，只负责侧边导航、薄顶栏会话状态、全局提示和页面容器；不承接分组或隧道业务逻辑。
+- `webui/src/views/AccessManagementView.vue`
+  - 统一接入管理主页面，上半区负责分组 CRUD 与 token 重置，下半区只负责当前选中分组下的隧道 CRUD。
+- `webui/src/views/ProxyGroupsView.vue` / `webui/src/views/TunnelsView.vue`
+  - 当前都只是兼容包装层，统一复用 `AccessManagementView.vue`；不要再在这两个文件里分叉出第二套业务界面。
 - `webui/src/views/InitSecretView.vue`
   - 未初始化态认证页，只负责一次性初始化管理密钥。
 - `webui/src/views/LoginView.vue`
-  - challenge 登录页，只负责建立管理会话和跳回受保护页。
+  - 极简 challenge 登录页，只负责建立管理会话和跳回受保护页。
 - `webui/src/styles/main.css`
-  - 统一维护 design tokens、管理壳层、通用页面骨架和认证页样式。
+  - 统一维护 design tokens、管理壳层、概览页、接入管理页和认证页样式。
 
 ## 6. 当前修改落点
 
@@ -155,9 +159,9 @@ npm.cmd run build
 - `internal/app/schema.go`
 - `internal/control/repository.go`
 - `webui/src/api/management.ts`
-- `webui/src/views/*`
+- `webui/src/views/AccessManagementView.vue`
 
-当前管理 API 只覆盖分组和隧道最小字段；新增管理字段时要先确认运行时是否真的消费。
+当前管理 API 只覆盖分组和隧道最小字段；新增管理字段时要先确认运行时是否真的消费。改动接入管理页时，还要保持“当前选中分组”这一单一业务上下文，不要把页面重新拆回两套独立主界面。
 
 ### 6.3 控制面或数据面相关
 
@@ -193,6 +197,7 @@ curl http://127.0.0.1:7500/api/v1/auth/state
 - `go test ./...`（`frps/`）
 - 如果改了控制面或数据面，运行相关 Python e2e
 - 如果改了管理认证或管理 API，运行 `python test/e2e_management_webui.py`
+- 如果改了 `webui` 路由、管理壳层、认证页或接入管理页，运行 `npm.cmd run build`（`frps/webui/`）
 - 文档是否同步到真实实现边界
 
 完整回归入口见 [../regression-entry.md](../regression-entry.md)。

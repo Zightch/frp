@@ -26,13 +26,12 @@
 - `auth.json` 删除检测已落地：认证管理器会按固定间隔轮询文件是否被删除，并清空旧 challenge 和旧会话。
 - 管理面已具备最小 WebUI 和真实管理 API：
   - `/init`：一次性初始化管理密钥
-  - `/login`：challenge 登录与管理会话恢复入口
-  - `/`、`/proxy-groups`、`/tunnels`：统一管理壳层下的概览、分组管理和隧道管理
-  - 管理壳层统一承接侧边导航、顶部认证状态、会话到期信息和全局错误提示
+  - `/login`：极简 challenge 登录与管理会话恢复入口
+  - `/`、`/proxy-groups`：统一管理壳层下的概览与接入管理两个一级入口
+  - `/tunnels`：兼容访问路径，复用“接入管理”页，不再作为一级导航
+  - 管理壳层统一承接侧边导航、顶部认证状态、会话到期信息和全局错误提示；一级导航只保留“概览”“接入管理”
+  - 接入管理页上半区负责分组 CRUD 和 token 重置，下半区只展示当前选中分组下的隧道 CRUD
   - 页面只暴露当前真实已实现入口，不包装未来功能导航
-  - 分组 CRUD
-  - token 重置
-  - 隧道 CRUD
 - 存储层已支持 SQLite 和 MySQL 两种数据库。
 - 启动时会自动建当前必需表，并对现有表结构做严格校验；不做 schema 迁移兼容。
 
@@ -128,7 +127,7 @@ External clients
 - [frps/frpc 当前代码架构图](frps-frpc-current-architecture.md)
 - [frps/frpc 协议文档](protocol.md)
 - [frps 项目概览](frps/project-overview.md)
-- [frps WebUI 管理面板基线](frps/webui-redesign-plan.md)
+- [frps WebUI 当前管理基线](frps/webui-redesign-plan.md)
 - [frps 技术设计](frps/technical-design.md)
 - [frpc 项目概览](frpc/project-overview.md)
 - [frpc 技术设计](frpc/technical-design.md)

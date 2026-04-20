@@ -42,11 +42,12 @@
   - `DELETE /api/v1/tunnels/{id}`
 - 管理 WebUI：
   - `/init`：管理密钥初始化页
-  - `/login`：challenge 登录页
-  - `AppShell`：已登录管理态共用的侧边导航、顶部会话状态和全局告警槽
+  - `/login`：极简 challenge 登录页
+  - `AppShell`：已登录管理态共用的侧边导航、薄顶栏会话状态和全局告警槽
   - `/`：概览页
-  - `/proxy-groups`：分组页
-  - `/tunnels`：隧道页
+  - `/proxy-groups`：统一接入管理主入口，上半区管理分组与 token，下半区管理当前选中分组下的隧道
+  - `/tunnels`：兼容路径，复用同一张接入管理页，不再作为一级导航
+  - 一级导航只保留“概览”“接入管理”
   - 管理页只展示当前真实能力，不新增未来功能入口
 - 控制面：
   - token challenge/response 登录
@@ -105,7 +106,7 @@ frps/
 - 管理会话可通过 `frps_management_session` Cookie 传递。
 - 也支持 `Authorization: Bearer <token>`。
 - `auth.json` 默认路径是 `./data/auth.json`。
-- 删除 `auth.json` 后，旧 challenge 和旧 session 会立即失效。
+- 删除 `auth.json` 后，认证管理器会在删除检测周期内自动回到未初始化态，并清空旧 challenge 和旧 session。
 
 ### 5.3 控制面
 
