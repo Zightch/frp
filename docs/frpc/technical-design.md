@@ -34,7 +34,7 @@
 - `targets.go`：tunnel 查找、TCP/UDP 共用的 local target 解析和 range 端口换算
 - `tcp_bridge.go`：TCP stream 打开、数据转发、关闭与本地 TCP copy
 - `udp_bridge.go`：UDP session 打开、数据转发、关闭与本地 UDP copy
-- `runtime.go`：主机名、OS、架构等运行时信息探测
+- `runtime_info.go`：主机名、OS、架构等运行时信息探测
 
 ### 2.3 `internal/config`
 

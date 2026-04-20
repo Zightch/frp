@@ -11,17 +11,12 @@
 
 ## 子步骤
 
-1. 继续收束 `frpc` 客户端骨架
-- 让 `internal/client` 从“登录与 session 基础设施已收住”继续演进到“target 解析、TCP bridge、UDP bridge ownership 清晰”的状态。
-- 保持 `frpc` 仍只接收 `--server` 和 `--token`，不引入额外客户端配置体系。
-- 继续沿用当前 UDP 生命周期边界：`frpc` 不做本地 idle timeout，只响应 `frps` 的 `udp.close`。
-
-2. 提炼最小共享规则与回归入口
+1. 提炼最小共享规则与回归入口
 - 只抽取已经稳定且确实重复的进程内规则，例如 tunnel 目标解析、range 端口换算、session 收口约束、消息分发边界。
 - 不在 `frps` 和 `frpc` 之间强行建立复杂共享框架；能各自简单实现的，优先各自保持简单。
 - 同步整理单测和 Python e2e 入口，保证重构过程持续可回归。
 
-3. 完成总回归与收束
+2. 完成总回归与收束
 - 执行 TCP/UDP single/range 关键回归，确认行为不变。
 - 把稳定边界同步到正式文档和 `docs/progress/`。
 - 每完成一个子步骤后检查 `.gitignore` 并提交稳定状态；本轮总目标完成后先归档，再清空当前 `todo`。
@@ -37,12 +32,12 @@
 
 ## 当前子步骤细分
 
-- 当前正在推进：继续收束 `frpc` 客户端骨架，把 `internal/client` 的 bridge 文件名和 ownership 进一步对齐蓝图中的稳定形态。
-1. 先把 `runtime.go` 更名为 `runtime_info.go`，让 `internal/client` 当前文件布局与蓝图一致。
-2. runtime 文件名稳定后，执行 `frpc` 全量回归，补正式文档和 `docs/progress/`，并把当前轮“客户端骨架收束”标记为完成。
-3. 客户端骨架收束完成后，下一轮 `todo` 再切到“最小共享规则与回归入口”，只保留新的未完成目标、子步骤和唯一下一步。
-4. 下一轮如需继续细化共享规则，仍保持“一次只推进一个最小可独立回归点”的约束。
+- 当前正在推进：整理仓库级最小回归入口，先把当前真实有效的 Go 定向测试和 Python e2e 入口收口成统一文档，再决定是否需要自动化脚本。
+1. 先新建统一回归入口文档，列出当前核心 `go test` 与 Python e2e 矩阵，覆盖 TCP/UDP single、TCP/UDP range、UDP idle cleanup 和管理面最小闭环。
+2. 回归入口文档稳定后，再评估是否确实需要新增最小自动化入口；如果只是命令清单即可满足，就不引入新脚本。
+3. 再回看 `frps` / `frpc` 内是否存在第二处“明确重复且已经稳定”的纯规则；只有满足这两个条件，才考虑抽成极小共享 helper。
+4. 每完成一个小点后立即补进度归档、检查 `.gitignore`、提交稳定状态，并重写 `todo` 只保留新的未完成项。
 
 ## 当前唯一下一步
 
-- 先只把 `frpc/internal/client/runtime.go` 更名为 `frpc/internal/client/runtime_info.go`；本步不改任何函数实现、行为路径或测试逻辑，只完成 runtime 文件名收束。
+- 先只新建一个统一回归入口文档，收口当前核心 `go test` 与 Python e2e 命令矩阵；本步不新增脚本，不改任何测试实现或产品代码。
