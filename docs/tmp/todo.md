@@ -12,7 +12,7 @@
 
 2. **配置 Element Plus 与基础样式**：引入 Element Plus 组件库和基础 CSS 变量，确保构建产物可被 `frps` 正确托管。✅ 已完成
 
-3. **实现认证页面骨架**：创建 `/init` 初始化页和 `/login` 登录页的最小骨架，复用现有 `/api/v1/auth/*` 接口。
+3. **实现认证页面骨架**：创建 `/init` 初始化页和 `/login` 登录页的最小骨架，复用现有 `/api/v1/auth/*` 接口。✅ 已完成
 
 4. **实现管理页面骨架**：创建 `/proxy-groups` 管理页骨架，包含分组列表、隧道列表的最小布局，复用现有 `/api/v1/proxy-groups` 和 `/api/v1/tunnels` 接口。
 
@@ -28,4 +28,4 @@
 
 ## 当前唯一下一步
 
-实现认证页面骨架：在 `src/views/InitView.vue` 中实现初始化页最小骨架，调用 `/api/v1/auth/init` 接口；在 `src/views/LoginView.vue` 中实现登录页最小骨架，调用 `/api/v1/auth/login` 接口。
+实现管理页面骨架：在 `src/views/ProxyGroupsView.vue` 中实现 `/proxy-groups` 管理页最小骨架，包含分组列表和隧道列表的最小布局，复用现有 `/api/v1/proxy-groups` 和 `/api/v1/tunnels` 接口。

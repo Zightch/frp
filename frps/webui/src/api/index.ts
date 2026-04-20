@@ -32,18 +32,35 @@ async function request<T>(
 
 // Auth API
 export const authApi = {
-  checkInit: () => request<{ initialized: boolean }>('/auth/init'),
-  init: (secret: string) => request('/auth/init', {
+  // Check authentication state
+  state: () => request<{ initialized: boolean; authenticated: boolean; expires_at?: string }>('/auth/state'),
+
+  // Initialize management secret (one-time setup)
+  // key_hash must be 64 lowercase hex characters (SHA256 of the raw secret)
+  init: (keyHash: string) => request<{ initialized: boolean }>('/auth/init', {
     method: 'POST',
-    body: JSON.stringify({ secret })
+    body: JSON.stringify({ key_hash: keyHash })
   }),
-  getChallenge: () => request<{ challenge: string }>('/auth/challenge'),
-  login: (challenge: string, response: string) => request('/auth/login', {
+
+  // Request a challenge for login
+  // Returns challenge_id and salt; proof = SHA256(key_hash + salt)
+  challenge: () => request<{ challenge_id: string; salt: string; expires_at: string }>('/auth/challenge', {
+    method: 'POST'
+  }),
+
+  // Login with challenge proof
+  login: (challengeId: string, proof: string) => request<{ initialized: boolean; authenticated: boolean; expires_at: string }>('/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ challenge, response })
+    body: JSON.stringify({ challenge_id: challengeId, proof })
   }),
-  logout: () => request('/auth/logout', { method: 'POST' }),
-  checkSession: () => request<{ authenticated: boolean }>('/auth/session')
+
+  // Logout
+  logout: () => request<{ initialized: boolean; authenticated: boolean; logged_out: boolean }>('/auth/logout', {
+    method: 'POST'
+  }),
+
+  // Check current session (requires authentication)
+  session: () => request<{ initialized: boolean; authenticated: boolean; expires_at: string }>('/auth/session')
 }
 
 // Proxy Groups API
