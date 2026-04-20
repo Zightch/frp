@@ -572,6 +572,94 @@ code {
   word-break: break-word;
 }
 
+.access-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.access-section-card .el-card__body {
+  display: grid;
+  gap: 18px;
+}
+
+.access-section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.access-selected-banner {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.access-selected-banner__item {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.access-selected-banner__item strong {
+  color: var(--ink-soft);
+  font-size: 1rem;
+  word-break: break-word;
+}
+
+.access-selected-banner__item code {
+  display: inline-block;
+  max-width: 100%;
+  word-break: break-all;
+}
+
+.access-selected-banner__meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.access-group-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.access-table-count {
+  display: grid;
+  gap: 4px;
+}
+
+.access-table-count__value {
+  color: var(--ink-soft);
+  font-size: 1rem;
+}
+
+.access-table-count__meta {
+  color: var(--muted);
+  font-size: 0.89rem;
+}
+
+.management-group-table {
+  min-width: 1120px;
+}
+
+.management-tunnel-table {
+  min-width: 1080px;
+}
+
+.management-group-table .el-table__body tr.group-row--selected > td.el-table__cell {
+  background: rgba(29, 99, 82, 0.08);
+}
+
+.management-group-table .el-table__body tr.group-row--selected:hover > td.el-table__cell {
+  background: rgba(29, 99, 82, 0.12);
+}
+
 .tunnel-badge-stack {
   display: flex;
   flex-wrap: wrap;
@@ -933,6 +1021,10 @@ code {
     grid-column: 1 / -1;
     justify-content: flex-start;
   }
+
+  .access-selected-banner {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1024px) {
@@ -1020,6 +1112,10 @@ code {
     justify-content: flex-start;
   }
 
+  .access-section-actions {
+    justify-content: flex-start;
+  }
+
   .auth-page {
     padding: 16px;
   }
@@ -1050,6 +1146,10 @@ code {
   }
 
   .token-reveal-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .access-selected-banner {
     grid-template-columns: minmax(0, 1fr);
   }
 
