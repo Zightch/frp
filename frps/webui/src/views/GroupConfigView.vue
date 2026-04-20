@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import {
   authApi,
   proxyGroupsApi as groupConfigApi,
@@ -14,6 +15,21 @@ import {
 defineOptions({
   name: 'GroupConfigView'
 })
+
+type TunnelFormModel = {
+  name: string
+  protocol: 'tcp' | 'udp'
+  remote_type: 'single' | 'range'
+  remote_start: number | null
+  remote_end: number | null
+  local_host: string
+  local_start: number | null
+  local_end: number | null
+  enabled: boolean
+}
+
+const PORT_MIN = 1
+const PORT_MAX = 65535
 
 const router = useRouter()
 
@@ -47,26 +63,19 @@ const newTokenValue = ref('')
 // Tunnel drawer
 const tunnelDrawerVisible = ref(false)
 const tunnelDrawerMode = ref<'create' | 'edit'>('create')
-const tunnelFormRef = ref()
+const tunnelFormRef = ref<FormInstance>()
 const tunnelSubmitting = ref(false)
-const tunnelForm = ref({
-  name: '',
-  protocol: 'tcp' as 'tcp' | 'udp',
-  remote_type: 'single' as 'single' | 'range',
-  remote_start: 0,
-  remote_end: 0,
-  local_host: '127.0.0.1',
-  local_start: 0,
-  local_end: 0,
-  enabled: true
-})
-const tunnelFormRules = {
-  name: [{ required: true, message: '请输入隧道名称', trigger: 'blur' }],
+const tunnelForm = ref<TunnelFormModel>(createTunnelForm())
+const tunnelFormRules: FormRules<TunnelFormModel> = {
+  name: [{ asyncValidator: createRequiredTextValidator('隧道名称'), trigger: 'blur' }],
   protocol: [{ required: true, message: '请选择协议', trigger: 'change' }],
   remote_type: [{ required: true, message: '请选择远端类型', trigger: 'change' }],
-  remote_start: [{ required: true, message: '请输入远端端口', trigger: 'blur' }],
-  local_host: [{ required: true, message: '请输入本地地址', trigger: 'blur' }],
-  local_start: [{ required: true, message: '请输入本地端口', trigger: 'blur' }]
+  remote_start: [{ asyncValidator: createPortStartValidator('remote_start'), trigger: ['blur', 'change'] }],
+  remote_end: [{ asyncValidator: createPortEndValidator('remote_end'), trigger: ['blur', 'change'] }],
+  local_host: [{ asyncValidator: createRequiredTextValidator('本地地址'), trigger: 'blur' }],
+  local_start: [{ asyncValidator: createPortStartValidator('local_start'), trigger: ['blur', 'change'] }],
+  local_end: [{ asyncValidator: createPortEndValidator('local_end'), trigger: ['blur', 'change'] }],
+  enabled: [{ asyncValidator: createEnabledValidator(), trigger: 'change' }]
 }
 
 // Editing tunnel ID (for edit mode)
@@ -157,6 +166,155 @@ function formatLocalAddr(tunnel: Tunnel): string {
     ? `${tunnel.local_start}-${tunnel.local_end}`
     : String(tunnel.local_start)
   return `${tunnel.local_host}:${port}`
+}
+
+function createTunnelForm(): TunnelFormModel {
+  return {
+    name: '',
+    protocol: 'tcp',
+    remote_type: 'single',
+    remote_start: null,
+    remote_end: null,
+    local_host: '127.0.0.1',
+    local_start: null,
+    local_end: null,
+    enabled: true
+  }
+}
+
+function createRequiredTextValidator(label: string) {
+  return (_rule: unknown, value: string) => {
+    if (!value?.trim()) {
+      return Promise.reject(new Error(`请输入${label}`))
+    }
+    return Promise.resolve()
+  }
+}
+
+function createEnabledValidator() {
+  return (_rule: unknown, value: boolean) => {
+    if (typeof value !== 'boolean') {
+      return Promise.reject(new Error('请选择启用状态'))
+    }
+    return Promise.resolve()
+  }
+}
+
+function getPortError(value: number | null, label: string): Error | null {
+  if (value == null) {
+    return new Error(`请输入${label}`)
+  }
+
+  if (!Number.isInteger(value) || value < PORT_MIN || value > PORT_MAX) {
+    return new Error(`${label}必须为 ${PORT_MIN}-${PORT_MAX} 的整数`)
+  }
+
+  return null
+}
+
+function getRangeOrderError(start: number | null, end: number | null, labelPrefix: string): Error | null {
+  if (start == null || end == null) {
+    return null
+  }
+
+  if (start >= end) {
+    return new Error(`${labelPrefix}开始端口必须小于结束端口`)
+  }
+
+  return null
+}
+
+function getRangeCountError(): Error | null {
+  if (tunnelForm.value.remote_type !== 'range') {
+    return null
+  }
+
+  const { remote_start, remote_end, local_start, local_end } = tunnelForm.value
+  if (remote_start == null || remote_end == null || local_start == null || local_end == null) {
+    return null
+  }
+
+  const remoteRangeCount = remote_end - remote_start
+  const localRangeCount = local_end - local_start
+  if (remoteRangeCount !== localRangeCount) {
+    return new Error('远端与本地端口范围数量必须一致')
+  }
+
+  return null
+}
+
+function createPortStartValidator(field: 'remote_start' | 'local_start') {
+  return (_rule: unknown, value: number | null) => {
+    const labelPrefix = field === 'remote_start' ? '远端' : '本地'
+    const label = `${labelPrefix}端口`
+    const orderError = field === 'remote_start'
+      ? getRangeOrderError(value, tunnelForm.value.remote_end, labelPrefix)
+      : getRangeOrderError(value, tunnelForm.value.local_end, labelPrefix)
+
+    return Promise.resolve()
+      .then(() => {
+        const portError = getPortError(value, label)
+        if (portError) {
+          throw portError
+        }
+      })
+      .then(() => {
+        if (tunnelForm.value.remote_type !== 'range') {
+          return
+        }
+        if (orderError) {
+          throw orderError
+        }
+        const countError = getRangeCountError()
+        if (countError) {
+          throw countError
+        }
+      })
+  }
+}
+
+function createPortEndValidator(field: 'remote_end' | 'local_end') {
+  return (_rule: unknown, value: number | null) => {
+    if (tunnelForm.value.remote_type !== 'range') {
+      return Promise.resolve()
+    }
+
+    const labelPrefix = field === 'remote_end' ? '远端' : '本地'
+    const label = `${labelPrefix}结束端口`
+    const start = field === 'remote_end' ? tunnelForm.value.remote_start : tunnelForm.value.local_start
+
+    return Promise.resolve()
+      .then(() => {
+        const portError = getPortError(value, label)
+        if (portError) {
+          throw portError
+        }
+      })
+      .then(() => {
+        const orderError = getRangeOrderError(start, value, labelPrefix)
+        if (orderError) {
+          throw orderError
+        }
+        const countError = getRangeCountError()
+        if (countError) {
+          throw countError
+        }
+      })
+  }
+}
+
+function validateTunnelPortFields() {
+  const fields: Array<keyof TunnelFormModel> = ['remote_start', 'local_start']
+
+  if (tunnelForm.value.remote_type === 'range') {
+    fields.push('remote_end', 'local_end')
+  } else {
+    tunnelFormRef.value?.clearValidate(['remote_end', 'local_end'])
+  }
+
+  nextTick(() => {
+    tunnelFormRef.value?.validateField(fields).catch(() => undefined)
+  })
 }
 
 // Group selection
@@ -264,17 +422,7 @@ function openCreateTunnelDrawer() {
   tunnelDrawerMode.value = 'create'
   editingTunnelId.value = null
   editingTunnelGroupId.value = selectedGroupId.value
-  tunnelForm.value = {
-    name: '',
-    protocol: 'tcp',
-    remote_type: 'single',
-    remote_start: 0,
-    remote_end: 0,
-    local_host: '127.0.0.1',
-    local_start: 0,
-    local_end: 0,
-    enabled: true
-  }
+  tunnelForm.value = createTunnelForm()
   tunnelDrawerVisible.value = true
   nextTick(() => tunnelFormRef.value?.clearValidate())
 }
@@ -300,17 +448,19 @@ function openEditTunnelDrawer(tunnel: Tunnel) {
 
 function buildTunnelPayload(groupId: number): TunnelPayload {
   const isRange = tunnelForm.value.remote_type === 'range'
+  const remoteStart = tunnelForm.value.remote_start as number
+  const localStart = tunnelForm.value.local_start as number
 
   return {
     group_id: groupId,
-    name: tunnelForm.value.name,
+    name: tunnelForm.value.name.trim(),
     protocol: tunnelForm.value.protocol,
     remote_type: tunnelForm.value.remote_type,
-    remote_start: tunnelForm.value.remote_start,
-    remote_end: isRange ? tunnelForm.value.remote_end : tunnelForm.value.remote_start,
-    local_host: tunnelForm.value.local_host,
-    local_start: tunnelForm.value.local_start,
-    local_end: isRange ? tunnelForm.value.local_end : tunnelForm.value.local_start,
+    remote_start: remoteStart,
+    remote_end: isRange ? (tunnelForm.value.remote_end as number) : remoteStart,
+    local_host: tunnelForm.value.local_host.trim(),
+    local_start: localStart,
+    local_end: isRange ? (tunnelForm.value.local_end as number) : localStart,
     enabled: tunnelForm.value.enabled
   }
 }
@@ -625,7 +775,11 @@ function copyToken() {
           </el-select>
         </el-form-item>
         <el-form-item label="远端类型" prop="remote_type">
-          <el-select v-model="tunnelForm.remote_type" style="width: 100%">
+          <el-select
+            v-model="tunnelForm.remote_type"
+            style="width: 100%"
+            @change="validateTunnelPortFields"
+          >
             <el-option label="单端口" value="single" />
             <el-option label="端口范围" value="range" />
           </el-select>
@@ -638,6 +792,7 @@ function copyToken() {
             :controls="false"
             style="width: 100%"
             placeholder="端口号"
+            @change="validateTunnelPortFields"
           />
         </el-form-item>
         <el-form-item v-if="tunnelForm.remote_type === 'range'" label="远端结束" prop="remote_end">
@@ -648,6 +803,7 @@ function copyToken() {
             :controls="false"
             style="width: 100%"
             placeholder="结束端口"
+            @change="validateTunnelPortFields"
           />
         </el-form-item>
         <el-form-item label="本地地址" prop="local_host">
@@ -661,6 +817,7 @@ function copyToken() {
             :controls="false"
             style="width: 100%"
             placeholder="端口号"
+            @change="validateTunnelPortFields"
           />
         </el-form-item>
         <el-form-item v-if="tunnelForm.remote_type === 'range'" label="本地结束" prop="local_end">
@@ -671,9 +828,10 @@ function copyToken() {
             :controls="false"
             style="width: 100%"
             placeholder="结束端口"
+            @change="validateTunnelPortFields"
           />
         </el-form-item>
-        <el-form-item label="启用">
+        <el-form-item label="启用" prop="enabled">
           <el-switch v-model="tunnelForm.enabled" />
         </el-form-item>
       </el-form>

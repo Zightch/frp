@@ -41,7 +41,7 @@
 
 - [概览](webui/overview.md)
 - [视觉风格规范](webui/style-guide.md)
-- [代理组管理页](webui/proxy-groups.md)
+- [分组配置页](webui/proxy-groups.md)
 - [仪表盘页面](webui/dashboard.md)
 
 ### 3.3 frpc
