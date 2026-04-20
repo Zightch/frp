@@ -727,10 +727,50 @@ code {
   align-content: start;
 }
 
+.auth-page--minimal {
+  align-content: center;
+}
+
 .auth-stage {
   width: min(100%, 1180px);
   display: grid;
   gap: 18px;
+}
+
+.auth-login-panel {
+  width: min(100%, 460px);
+  padding: 40px 36px 36px;
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(145deg, rgba(255, 248, 238, 0.92) 0%, rgba(236, 247, 242, 0.96) 100%);
+  display: grid;
+  gap: 24px;
+}
+
+.auth-login-header,
+.auth-login-form {
+  display: grid;
+  gap: 18px;
+}
+
+.auth-login-title {
+  font-size: clamp(2.2rem, 5vw, 3rem);
+}
+
+.auth-login-form .el-form-item {
+  margin-bottom: 0;
+}
+
+.auth-login-form .el-input__wrapper {
+  min-height: 52px;
+  border-radius: 18px;
+  box-shadow: 0 0 0 1px rgba(26, 54, 47, 0.06) inset;
+}
+
+.auth-login-actions .el-button {
+  width: 100%;
+  min-height: 52px;
+  border-radius: 18px;
 }
 
 .auth-hero {
@@ -982,6 +1022,14 @@ code {
 
   .auth-page {
     padding: 16px;
+  }
+
+  .auth-page--minimal {
+    align-content: center;
+  }
+
+  .auth-login-panel {
+    padding: 30px 24px 24px;
   }
 
   .management-card-header {
