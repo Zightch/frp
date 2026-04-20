@@ -118,6 +118,19 @@ npm.cmd run build
 
 构建产物输出到 `frps/webui/dist/`，由 `frps` 按 `webui.dist_dir` 直接托管。
 
+### 5.4 当前页面组织
+
+- `webui/src/router/index.ts`
+  - 路由守卫、页面标题和管理态导航元数据都在这里收口；改导航顺序、页面眉标或说明文案时优先改这里。
+- `webui/src/views/AppShellView.vue`
+  - 已登录管理壳层，只承接 `/`、`/proxy-groups`、`/tunnels` 的侧边导航、顶部状态区和全局提示。
+- `webui/src/views/InitSecretView.vue`
+  - 未初始化态认证页，只负责一次性初始化管理密钥。
+- `webui/src/views/LoginView.vue`
+  - challenge 登录页，只负责建立管理会话和跳回受保护页。
+- `webui/src/styles/main.css`
+  - 统一维护 design tokens、管理壳层、通用页面骨架和认证页样式。
+
 ## 6. 当前修改落点
 
 ### 6.1 管理认证相关

@@ -41,11 +41,13 @@
   - `PATCH /api/v1/tunnels/{id}`
   - `DELETE /api/v1/tunnels/{id}`
 - 管理 WebUI：
-  - 初始化页
-  - 登录页
-  - 概览页
-  - 分组页
-  - 隧道页
+  - `/init`：管理密钥初始化页
+  - `/login`：challenge 登录页
+  - `AppShell`：已登录管理态共用的侧边导航、顶部会话状态和全局告警槽
+  - `/`：概览页
+  - `/proxy-groups`：分组页
+  - `/tunnels`：隧道页
+  - 管理页只展示当前真实能力，不新增未来功能入口
 - 控制面：
   - token challenge/response 登录
   - 心跳
