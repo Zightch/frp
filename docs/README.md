@@ -33,6 +33,7 @@
 
 - [项目概览](frps/project-overview.md)
 - [技术设计](frps/technical-design.md)
+- [WebUI 管理面板重构方案](frps/webui-redesign-plan.md)
 - [开发文档](frps/development-guide.md)
 - [功能文档](frps/functional-spec.md)
 - [测试与调试文档](frps/testing-debugging.md)
@@ -51,9 +52,10 @@
 - `workflow.md` 负责定义统一执行流程、`todo` 轮换、归档时机和 `.gitignore` / 提交约定。
 - `regression-entry.md` 负责收口仓库级最小 Go / Python 回归入口，不展开子项目内部测试设计细节。
 - `progress/README.md` 负责说明进度归档目录和索引；`progress/*.md` 负责记录跨轮历史进度、当前停止线和已收口内容。
-- `tmp/todo.md` 只负责当前轮未完成执行项，必须明确当前总目标、实现该目标的子步骤、当前轮边界、当前正在推进子步骤的更细子任务拆分和当前唯一下一步；不能混放前几轮信息，也不记录已完成内容；需要追溯历史时只引用 `progress/README.md` 和对应日期归档。
+- `tmp/todo.md` 只负责当前轮未完成执行项，必须明确当前总目标、实现该目标的子步骤、当前轮边界和当前唯一下一步；不能混放前几轮信息，也不记录已完成内容；需要追溯历史时只引用 `progress/README.md` 和对应日期归档。
 - 协议文档负责定义 `frps/frpc` 之间的传输层分包格式和业务消息语义。
 - `frps` 文档负责定义服务端架构、管理面、控制面、数据面、观测面。
+- `frps/webui-redesign-plan.md` 负责固定当前这一轮前端重构的全局壳层、导航和页面骨架方案。
 - `frpc` 文档负责定义客户端连接、配置领取、工作流量转发与重连机制。
 - 具体代码实现时，如果设计有变化，应优先同步更新对应子项目文档，而不是只修改总体概览。
 
