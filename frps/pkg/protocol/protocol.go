@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -301,6 +302,13 @@ type AuthChallenge struct {
 type AuthFinish struct {
 	ChallengeID uint32
 	Response    [32]byte
+}
+
+func ChallengeResponse(tokenHash [32]byte, nonce [16]byte) [32]byte {
+	var payload [48]byte
+	copy(payload[:32], tokenHash[:])
+	copy(payload[32:], nonce[:])
+	return sha256.Sum256(payload[:])
 }
 
 type ServerHello struct {

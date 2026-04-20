@@ -108,7 +108,7 @@ func TestServerAuthenticateAndHeartbeat(t *testing.T) {
 		t.Fatalf("unmarshal auth.challenge: %v", err)
 	}
 
-	response := challengeResponse(tokenHash, challenge.Nonce)
+	response := protocol.ChallengeResponse(tokenHash, challenge.Nonce)
 	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
 		ChallengeID: challenge.ChallengeID,
 		Response:    response,
@@ -274,7 +274,7 @@ func TestServerForwardsTCPStream(t *testing.T) {
 
 	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
 		ChallengeID: challenge.ChallengeID,
-		Response:    challengeResponse(tokenHash, challenge.Nonce),
+		Response:    protocol.ChallengeResponse(tokenHash, challenge.Nonce),
 	})
 	if err != nil {
 		t.Fatalf("marshal auth.finish: %v", err)
@@ -1206,7 +1206,7 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 
 	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
 		ChallengeID: challenge.ChallengeID,
-		Response:    challengeResponse(tokenHash, challenge.Nonce),
+		Response:    protocol.ChallengeResponse(tokenHash, challenge.Nonce),
 	})
 	if err != nil {
 		t.Fatalf("marshal auth.finish: %v", err)
@@ -1713,7 +1713,7 @@ func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, t
 
 	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
 		ChallengeID: challenge.ChallengeID,
-		Response:    challengeResponse(tokenHash, challenge.Nonce),
+		Response:    protocol.ChallengeResponse(tokenHash, challenge.Nonce),
 	})
 	if err != nil {
 		t.Fatalf("marshal auth.finish: %v", err)

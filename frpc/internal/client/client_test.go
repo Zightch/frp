@@ -84,7 +84,7 @@ func TestClientRunSession(t *testing.T) {
 			return
 		}
 		tokenHash := sha256.Sum256(token.Secret[:])
-		expected := authResponse(tokenHash, challenge.Nonce)
+		expected := protocol.ChallengeResponse(tokenHash, challenge.Nonce)
 		if finish.Response != expected {
 			t.Errorf("unexpected auth response")
 			return

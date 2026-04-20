@@ -6,6 +6,27 @@ import (
 	"testing"
 )
 
+func TestChallengeResponseStable(t *testing.T) {
+	var tokenHash [32]byte
+	for i := range tokenHash {
+		tokenHash[i] = byte(i)
+	}
+
+	var nonce [16]byte
+	copy(nonce[:], []byte("nonce-1234567890"))
+
+	got := ChallengeResponse(tokenHash, nonce)
+	want := [32]byte{
+		0xea, 0x7b, 0x82, 0xcb, 0x92, 0x6b, 0xc5, 0x6f,
+		0x20, 0x45, 0x61, 0xab, 0xb7, 0x82, 0xa4, 0x3c,
+		0x00, 0xb3, 0xdf, 0xbd, 0x53, 0x1d, 0x60, 0xba,
+		0x42, 0x7a, 0x1d, 0x5b, 0x7f, 0x4d, 0x36, 0x14,
+	}
+	if got != want {
+		t.Fatalf("unexpected challenge response: %x", got)
+	}
+}
+
 func TestFrameRoundTrip(t *testing.T) {
 	original := Frame{
 		Type:      TypeHeartbeatPing,

@@ -2,7 +2,6 @@ package control
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"net"
@@ -201,7 +200,7 @@ func (s *Server) consumeChallenge(challengeID uint32, response [32]byte) error {
 	}
 
 	challenge.Used = true
-	expected := challengeResponse(challenge.TokenHash, challenge.Nonce)
+	expected := protocol.ChallengeResponse(challenge.TokenHash, challenge.Nonce)
 	if subtle.ConstantTimeCompare(expected[:], response[:]) != 1 {
 		return protocol.NewError(protocol.ErrorCodeAuthInvalidToken, "challenge response mismatch")
 	}
@@ -215,13 +214,6 @@ func (s *Server) purgeExpiredChallengesLocked(now time.Time) {
 			delete(s.challenges, challengeID)
 		}
 	}
-}
-
-func challengeResponse(tokenHash [32]byte, nonce [16]byte) [32]byte {
-	var payload [48]byte
-	copy(payload[:32], tokenHash[:])
-	copy(payload[32:], nonce[:])
-	return sha256.Sum256(payload[:])
 }
 
 func clientIPAllowed(mode string, rules []IPRule, ip net.IP) bool {

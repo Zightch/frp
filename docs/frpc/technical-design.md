@@ -41,7 +41,7 @@
 - 启动参数解析
 - 最小运行配置结构
 
-当前实现仍保持单一 `internal/client` package，不新增装配层或跨端共享 runtime 框架；后续继续只收紧 bridge 文件名和 ownership，不改变现有协议和行为边界。
+当前实现仍保持单一 `internal/client` package，不新增装配层或跨端共享 runtime 框架；当前唯一新增的跨端共享纯规则是 `frps/pkg/protocol.ChallengeResponse`，其余边界继续保持本地直接实现。
 
 ## 3. 启动参数设计
 
@@ -89,6 +89,7 @@ connect server
 -> send auth.begin with token_id
 -> receive auth.challenge
 -> calculate token_hash = sha256(token_secret)
+-> calculate response via protocol.ChallengeResponse(token_hash, challenge_nonce)
 -> send auth.finish with sha256(token_hash + challenge_nonce)
 -> receive server.hello
 -> receive config.push
@@ -227,7 +228,7 @@ UDP 采用短会话模式，但当前生命周期约定已经固定：
 
 - token 不落盘。
 - 客户端只在内存中保存 `token_secret` 和本次登录派生出的 `token_hash`。
-- 登录响应必须绑定服务端下发的一次性 challenge nonce。
+- 登录响应必须绑定服务端下发的一次性 challenge nonce，并复用共享纯规则 `frps/pkg/protocol.ChallengeResponse`。
 - 控制连接只保存必要上下文。
 - 本地目标地址必须来自服务端下发的有效配置。
 - 不对服务端限速做本地推断、缓存或二次实现。

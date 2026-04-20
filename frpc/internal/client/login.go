@@ -42,7 +42,7 @@ func (c *Client) login(conn net.Conn, token appconfig.Token) (*sessionState, err
 	}
 
 	tokenHash := sha256.Sum256(token.Secret[:])
-	response := authResponse(tokenHash, challenge.Nonce)
+	response := protocol.ChallengeResponse(tokenHash, challenge.Nonce)
 	finishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
 		ChallengeID: challenge.ChallengeID,
 		Response:    response,
@@ -119,11 +119,4 @@ func expectLoginReply(frame protocol.Frame, expectedType protocol.Type, requestI
 		)
 	}
 	return nil
-}
-
-func authResponse(tokenHash [32]byte, nonce [16]byte) [32]byte {
-	var payload [48]byte
-	copy(payload[:32], tokenHash[:])
-	copy(payload[32:], nonce[:])
-	return sha256.Sum256(payload[:])
 }

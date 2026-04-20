@@ -86,6 +86,7 @@ Storage / Runtime State
 - `internal/control`：token challenge/response、配置下发、配置确认、TCP 单端口/范围数据面、UDP 单端口数据面，以及 `frps` 侧 UDP `30s` idle cleanup
 - `internal/storage`：数据库对象封装
 - `internal/app`：数据库打开、schema bootstrap/校验、服务启动和关闭编排
+- `frps/pkg/protocol` 当前额外承接了唯一新增的跨端共享纯规则 `ChallengeResponse`，其余纯规则仍保持局部实现
 
 其余模块目前仍处于长期设计阶段。
 
@@ -332,6 +333,7 @@ accept
 -> match group client ip rules
 -> reject or send auth.challenge with one-time nonce
 -> read auth.finish
+-> compute protocol.ChallengeResponse(token_hash, challenge_nonce)
 -> validate sha256(token_hash + challenge_nonce)
 -> register session
 -> push ServerHello + ConfigPush
@@ -656,7 +658,7 @@ UDP 以会话维度记录：
 - 服务端只在分组记录中持久化 `token_id + token_hash`。
 - 登录阶段先用 `token_id` 定位分组，再下发一次性临时盐，也就是 challenge nonce。
 - `token_hash` 建议固定使用 `sha256(token_secret)`。
-- 客户端提交 `sha256(token_hash + challenge_nonce)`，服务端使用常量时间算法比较。
+- 客户端提交 `sha256(token_hash + challenge_nonce)`，该摘要规则当前统一复用 `frps/pkg/protocol.ChallengeResponse`，服务端再使用常量时间算法比较。
 - challenge nonce 必须短时有效、只能使用一次，过期或重复使用必须拒绝。
 - 当前方案下 `token_hash` 等价于可登录校验材料，必须按敏感凭据保护。
 - 管理端不使用数据库 `admin/admins` 表，服务启动时必须先检查本地 `auth.json`。
