@@ -415,6 +415,10 @@ code {
   gap: 0 16px;
 }
 
+.management-form-grid__span-2 {
+  grid-column: 1 / -1;
+}
+
 .hero-card,
 .metric-card,
 .auth-card {
@@ -563,6 +567,38 @@ code {
 }
 
 .token-reveal-card strong {
+  color: var(--ink-soft);
+  font-size: 1rem;
+  word-break: break-word;
+}
+
+.tunnel-badge-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tunnel-table-endpoint {
+  word-break: break-word;
+}
+
+.tunnel-form-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.tunnel-form-summary__item {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.tunnel-form-summary__item strong {
   color: var(--ink-soft);
   font-size: 1rem;
   word-break: break-word;
@@ -861,6 +897,10 @@ code {
   }
 
   .token-reveal-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tunnel-form-summary {
     grid-template-columns: minmax(0, 1fr);
   }
 }

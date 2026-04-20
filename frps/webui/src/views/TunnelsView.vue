@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from "element-plus";
+import { RouterLink } from "vue-router";
 
 import {
   createTunnel,
@@ -48,6 +49,7 @@ const loading = ref(false);
 const submitting = ref(false);
 const dialogVisible = ref(false);
 const pageError = ref("");
+const refreshedAt = ref("");
 const proxyGroups = ref<ProxyGroup[]>([]);
 const tunnels = ref<Tunnel[]>([]);
 const formRef = ref<FormInstance>();
@@ -69,11 +71,86 @@ const isEditing = computed(() => editingId.value !== null);
 const hasProxyGroups = computed(() => proxyGroups.value.length > 0);
 const totalCount = computed(() => tunnels.value.length);
 const enabledCount = computed(() => tunnels.value.filter((item) => item.enabled).length);
+const disabledCount = computed(() => Math.max(0, totalCount.value - enabledCount.value));
 const rangeCount = computed(() => tunnels.value.filter((item) => item.remoteType === "range").length);
+const singleCount = computed(() => Math.max(0, totalCount.value - rangeCount.value));
+const tcpCount = computed(() => tunnels.value.filter((item) => item.protocol === "tcp").length);
+const udpCount = computed(() => tunnels.value.filter((item) => item.protocol === "udp").length);
 const isSingleRemoteType = computed(() => form.remoteType === "single");
+const remotePortCount = computed(() => getPortCount(form.remoteStart, form.remoteEnd));
+const localPortCount = computed(() => getPortCount(form.localStart, form.localEnd));
+const latestUpdatedTunnel = computed(() => {
+  let latest: Tunnel | null = null;
+  let latestTimestamp = -1;
+
+  for (const item of tunnels.value) {
+    const timestamp = resolveTimestamp(item.updatedAt) ?? resolveTimestamp(item.createdAt) ?? -1;
+    if (timestamp > latestTimestamp) {
+      latest = item;
+      latestTimestamp = timestamp;
+    }
+  }
+
+  return latest;
+});
+const latestUpdatedTunnelName = computed(() => latestUpdatedTunnel.value?.name ?? "暂无隧道");
+const latestUpdatedAtLabel = computed(() => {
+  if (!latestUpdatedTunnel.value) {
+    return "暂无更新";
+  }
+
+  return formatDate(latestUpdatedTunnel.value.updatedAt || latestUpdatedTunnel.value.createdAt);
+});
+const refreshedAtLabel = computed(() => {
+  if (loading.value && !refreshedAt.value) {
+    return "首次读取中";
+  }
+
+  if (!refreshedAt.value) {
+    return "尚未同步";
+  }
+
+  return formatDate(refreshedAt.value);
+});
+const formModeLabel = computed(() => {
+  return `${form.protocol.toUpperCase()} · ${form.remoteType === "single" ? "单端口映射" : "连续范围映射"}`;
+});
+const formModeCopy = computed(() => {
+  if (form.remoteType === "single") {
+    return "单端口模式下，起始端口变化时结束端口会自动保持一致。";
+  }
+
+  return "范围模式下，远端与本地端口范围必须保持相同跨度。";
+});
+const formSpanTitle = computed(() => {
+  if (form.remoteType === "single") {
+    return `远端 ${form.remoteStart} -> ${form.localHost}:${form.localStart}`;
+  }
+
+  return `远端 ${remotePortCount.value} 个端口 / 本地 ${localPortCount.value} 个端口`;
+});
+const formSpanCopy = computed(() => {
+  if (form.remoteType === "single") {
+    return "保存后会将一个远端端口直接映射到一个本地目标端口。";
+  }
+
+  if (remotePortCount.value === localPortCount.value) {
+    return "当前跨度一致，符合连续范围映射的保存条件。";
+  }
+
+  return "当前跨度不一致，提交前需要把远端和本地范围调整为相同长度。";
+});
 
 function isValidPort(value: number): boolean {
   return Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
+function getPortCount(start: number, end: number): number {
+  if (!isValidPort(start) || !isValidPort(end) || end < start) {
+    return 0;
+  }
+
+  return end - start + 1;
 }
 
 const formRules: FormRules = {
@@ -198,6 +275,19 @@ function resolveMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function resolveTimestamp(value: string): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.getTime();
+}
+
 function formatDate(value: string): string {
   if (!value) {
     return "-";
@@ -219,6 +309,26 @@ function formatEndpoint(item: Tunnel, side: "remote" | "local"): string {
   return item.remoteType === "single"
     ? `${item.localHost}:${item.localStart}`
     : `${item.localHost}:${item.localStart}-${item.localEnd}`;
+}
+
+function formatRemoteTypeLabel(value: TunnelRemoteType): string {
+  return value === "single" ? "单端口" : "范围映射";
+}
+
+function formatRemoteTypeCopy(item: Tunnel): string {
+  if (item.remoteType === "single") {
+    return "单个远端端口映射到单个本地目标端口。";
+  }
+
+  return `共 ${getPortCount(item.remoteStart, item.remoteEnd)} 个连续端口，远端与本地跨度一致。`;
+}
+
+function formatLocalTargetCopy(item: Tunnel): string {
+  if (item.remoteType === "single") {
+    return "直接转发到当前本地目标。";
+  }
+
+  return `本地侧同样占用 ${getPortCount(item.localStart, item.localEnd)} 个连续端口。`;
 }
 
 function resetForm(): void {
@@ -270,6 +380,7 @@ async function loadPage(): Promise<void> {
     const [groups, tunnelItems] = await Promise.all([fetchProxyGroups(), fetchTunnels()]);
     proxyGroups.value = groups;
     tunnels.value = tunnelItems;
+    refreshedAt.value = new Date().toISOString();
     pageError.value = "";
   } catch (error) {
     pageError.value = resolveMessage(error, "隧道列表读取失败");
@@ -381,189 +492,329 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="management-hero-grid">
-      <el-card class="hero-card hero-card--feature">
-        <p class="page-eyebrow">Phase 4.2</p>
-        <h2 class="page-title">隧道管理</h2>
+  <section class="page-stack tunnels-page">
+    <div class="page-header">
+      <div class="page-header__copy">
+        <p class="page-section-label">port mapping</p>
+        <h3 class="page-section-title">统一管理 TCP / UDP 单端口映射与连续范围映射</h3>
         <p class="page-copy">
-          当前页面已经直接接入 <code>/api/v1/tunnels</code>。可以在这里管理 TCP/UDP 单端口映射与端口范围映射。
+          隧道必须归属于已存在分组。当前页面只承接 TCP / UDP、单端口 / 范围映射这四类真实组合，不扩展到其他协议或额外入口模型。
         </p>
+        <p class="page-inline-note">最近同步：{{ refreshedAtLabel }}。如果当前没有分组，需要先进入分组管理创建接入容器。</p>
+      </div>
 
-        <div class="hero-actions">
-          <el-button
-            type="primary"
-            :disabled="!hasProxyGroups"
-            @click="openCreateDialog"
-          >
-            新建隧道
-          </el-button>
-          <el-button
-            plain
-            :loading="loading"
-            @click="loadPage"
-          >
-            刷新列表
-          </el-button>
-        </div>
+      <div class="page-actions">
+        <el-button
+          plain
+          :loading="loading"
+          @click="loadPage"
+        >
+          刷新列表
+        </el-button>
+        <el-button
+          type="primary"
+          :disabled="!hasProxyGroups"
+          @click="openCreateDialog"
+        >
+          新建隧道
+        </el-button>
+      </div>
+    </div>
+
+    <div
+      v-if="pageError || !hasProxyGroups"
+      class="page-feedback"
+    >
+      <el-alert
+        v-if="pageError"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="pageError"
+      />
+
+      <el-alert
+        v-if="!hasProxyGroups"
+        type="info"
+        :closable="false"
+        show-icon
+        title="当前还没有分组，请先到分组管理页创建分组后再配置隧道。"
+      />
+    </div>
+
+    <div class="page-metrics">
+      <el-card class="metric-card">
+        <span class="metric-label">隧道总数</span>
+        <strong class="metric-value">{{ totalCount }}</strong>
+        <p class="metric-note">
+          当前共读取到 {{ totalCount }} 条映射，归属于 {{ proxyGroups.length }} 个可选分组。
+        </p>
       </el-card>
 
-      <div class="metric-grid">
-        <el-card class="metric-card">
-          <span class="metric-label">隧道总数</span>
-          <strong class="metric-value">{{ totalCount }}</strong>
+      <el-card class="metric-card">
+        <span class="metric-label">启用隧道</span>
+        <strong class="metric-value">{{ enabledCount }}</strong>
+        <p class="metric-note">已启用 {{ enabledCount }} 条，停用 {{ disabledCount }} 条。</p>
+      </el-card>
+
+      <el-card class="metric-card">
+        <span class="metric-label">协议分布</span>
+        <strong class="metric-value">TCP {{ tcpCount }} / UDP {{ udpCount }}</strong>
+        <p class="metric-note">当前隧道页只支持 TCP 与 UDP 两种协议。</p>
+      </el-card>
+
+      <el-card class="metric-card">
+        <span class="metric-label">映射结构</span>
+        <strong class="metric-value">单端口 {{ singleCount }} / 范围 {{ rangeCount }}</strong>
+        <p class="metric-note">范围映射要求远端与本地使用相同跨度的连续端口段。</p>
+      </el-card>
+    </div>
+
+    <div class="page-body">
+      <div class="page-main">
+        <el-card class="glass-panel page-section-card">
+          <template #header>
+            <div class="management-card-header">
+              <div>
+                <div class="panel-header">隧道列表</div>
+                <p class="management-card-copy">
+                  列表同时展示所属分组、协议、映射模式、远端入口和本地目标，便于直接核对当前端口占用关系。
+                </p>
+              </div>
+
+              <el-button
+                type="primary"
+                plain
+                :disabled="!hasProxyGroups"
+                @click="openCreateDialog"
+              >
+                新建隧道
+              </el-button>
+            </div>
+          </template>
+
+          <el-empty
+            v-if="!loading && !hasProxyGroups"
+            description="当前还没有可用于隧道的分组。"
+          >
+            <RouterLink to="/proxy-groups">
+              <el-button type="primary">
+                进入分组管理
+              </el-button>
+            </RouterLink>
+          </el-empty>
+
+          <el-empty
+            v-else-if="!loading && tunnels.length === 0"
+            description="当前还没有隧道映射，可以先创建第一条 TCP 或 UDP 规则。"
+          >
+            <el-button
+              type="primary"
+              @click="openCreateDialog"
+            >
+              创建第一条隧道
+            </el-button>
+          </el-empty>
+
+          <div
+            v-else
+            class="management-table-wrap"
+          >
+            <el-table
+              v-loading="loading"
+              class="management-data-table"
+              :data="tunnels"
+              stripe
+            >
+              <el-table-column
+                label="隧道"
+                min-width="230"
+              >
+                <template #default="{ row }">
+                  <div class="entity-stack">
+                    <strong class="entity-stack__title">{{ row.name }}</strong>
+                    <span class="entity-stack__meta">分组：{{ row.groupName }}</span>
+                    <span class="entity-stack__meta">ID #{{ row.id }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column
+                label="协议 / 模式"
+                min-width="170"
+              >
+                <template #default="{ row }">
+                  <div class="tunnel-badge-stack">
+                    <el-tag :type="row.protocol === 'tcp' ? 'primary' : 'success'">
+                      {{ row.protocol.toUpperCase() }}
+                    </el-tag>
+                    <el-tag
+                      type="info"
+                      effect="plain"
+                    >
+                      {{ formatRemoteTypeLabel(row.remoteType) }}
+                    </el-tag>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column
+                label="远端入口"
+                min-width="210"
+              >
+                <template #default="{ row }">
+                  <div class="entity-stack entity-stack--tight">
+                    <strong class="entity-stack__title tunnel-table-endpoint">{{ formatEndpoint(row, "remote") }}</strong>
+                    <span class="entity-stack__meta">{{ formatRemoteTypeCopy(row) }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column
+                label="本地目标"
+                min-width="260"
+              >
+                <template #default="{ row }">
+                  <div class="entity-stack entity-stack--tight">
+                    <strong class="entity-stack__title tunnel-table-endpoint">{{ formatEndpoint(row, "local") }}</strong>
+                    <span class="entity-stack__meta">{{ formatLocalTargetCopy(row) }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column
+                label="状态 / 时间"
+                min-width="200"
+              >
+                <template #default="{ row }">
+                  <div class="entity-stack entity-stack--tight">
+                    <div class="tunnel-badge-stack">
+                      <el-tag :type="row.enabled ? 'success' : 'info'">
+                        {{ row.enabled ? "启用" : "停用" }}
+                      </el-tag>
+                    </div>
+                    <span class="entity-stack__meta">创建：{{ formatDate(row.createdAt) }}</span>
+                    <span class="entity-stack__meta">更新：{{ formatDate(row.updatedAt) }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+
+              <el-table-column
+                label="操作"
+                min-width="170"
+                fixed="right"
+              >
+                <template #default="{ row }">
+                  <div class="management-table-actions">
+                    <el-button
+                      link
+                      type="primary"
+                      @click="openEditDialog(row)"
+                    >
+                      编辑
+                    </el-button>
+                    <el-button
+                      link
+                      type="danger"
+                      @click="handleDelete(row)"
+                    >
+                      删除
+                    </el-button>
+                  </div>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </el-card>
+      </div>
+
+      <div class="page-side">
+        <el-card class="glass-panel page-section-card">
+          <template #header>
+            <div class="management-card-header">
+              <div>
+                <div class="panel-header">当前规则</div>
+                <p class="management-card-copy">右侧只总结当前服务端已经真实生效的隧道约束。</p>
+              </div>
+            </div>
+          </template>
+
+          <ul class="panel-list">
+            <li>创建隧道前必须先有分组，所有隧道都只能归属于已存在的分组。</li>
+            <li>当前协议只支持 TCP 与 UDP，不扩展到其他代理协议。</li>
+            <li>单端口模式会自动保持起始端口和结束端口一致。</li>
+            <li>范围模式要求远端和本地端口范围跨度完全一致，并且都必须是连续端口段。</li>
+            <li>同一分组内的隧道名称必须唯一，删除后映射会立即失效。</li>
+          </ul>
         </el-card>
 
-        <el-card class="metric-card">
-          <span class="metric-label">启用隧道</span>
-          <strong class="metric-value">{{ enabledCount }}</strong>
-        </el-card>
+        <el-card class="glass-panel page-section-card">
+          <template #header>
+            <div class="management-card-header">
+              <div>
+                <div class="panel-header">当前画像</div>
+                <p class="management-card-copy">所有摘要都直接来自当前读到的分组与隧道列表。</p>
+              </div>
+            </div>
+          </template>
 
-        <el-card class="metric-card">
-          <span class="metric-label">范围映射</span>
-          <strong class="metric-value">{{ rangeCount }}</strong>
+          <div class="overview-list">
+            <div class="overview-row">
+              <div class="overview-row__content">
+                <span class="overview-row__label">最近同步</span>
+                <p class="overview-row__copy">当前管理会话最近一次重新拉取隧道与分组列表的时间。</p>
+              </div>
+              <strong class="overview-row__value">{{ refreshedAtLabel }}</strong>
+            </div>
+
+            <div class="overview-row">
+              <div class="overview-row__content">
+                <span class="overview-row__label">分组就绪度</span>
+                <p class="overview-row__copy">
+                  {{
+                    hasProxyGroups
+                      ? `当前共有 ${proxyGroups.length} 个可选分组，可直接用于新建隧道。`
+                      : "当前没有分组，因此无法创建任何新的隧道规则。"
+                  }}
+                </p>
+              </div>
+              <strong class="overview-row__value">{{ hasProxyGroups ? `${proxyGroups.length} 个可选` : "需先建组" }}</strong>
+            </div>
+
+            <div class="overview-row">
+              <div class="overview-row__content">
+                <span class="overview-row__label">协议分布</span>
+                <p class="overview-row__copy">当前隧道总量中 TCP 与 UDP 的实际占比分布。</p>
+              </div>
+              <strong class="overview-row__value">TCP {{ tcpCount }} / UDP {{ udpCount }}</strong>
+            </div>
+
+            <div class="overview-row">
+              <div class="overview-row__content">
+                <span class="overview-row__label">映射结构</span>
+                <p class="overview-row__copy">
+                  单端口 {{ singleCount }} 条，范围映射 {{ rangeCount }} 条；范围模式只允许连续端口段。
+                </p>
+              </div>
+              <strong class="overview-row__value">{{ rangeCount }} 范围</strong>
+            </div>
+
+            <div class="overview-row">
+              <div class="overview-row__content">
+                <span class="overview-row__label">最近更新</span>
+                <p class="overview-row__copy">最近一次创建或编辑对应到当前列表中的最新更新时间。</p>
+              </div>
+              <strong class="overview-row__value">{{ latestUpdatedTunnelName }}</strong>
+            </div>
+          </div>
         </el-card>
       </div>
     </div>
 
-    <el-alert
-      v-if="pageError"
-      type="warning"
-      :closable="false"
-      show-icon
-      :title="pageError"
-    />
-
-    <el-alert
-      v-if="!hasProxyGroups"
-      type="info"
-      :closable="false"
-      show-icon
-      title="当前还没有分组，请先到分组管理页创建分组。"
-    />
-
-    <el-card class="glass-panel">
-      <template #header>
-        <div class="management-card-header">
-          <div>
-            <div class="panel-header">隧道列表</div>
-            <p class="management-card-copy">
-              隧道名称在同一分组内必须唯一；范围映射要求远端和本地端口跨度保持一致。
-            </p>
-          </div>
-
-          <el-button
-            type="primary"
-            plain
-            :disabled="!hasProxyGroups"
-            @click="openCreateDialog"
-          >
-            新建隧道
-          </el-button>
-        </div>
-      </template>
-
-      <el-empty
-        v-if="!loading && tunnels.length === 0"
-        description="当前还没有隧道映射。"
-      />
-
-      <el-table
-        v-else
-        v-loading="loading"
-        :data="tunnels"
-        stripe
-      >
-        <el-table-column
-          prop="id"
-          label="ID"
-          width="80"
-        />
-        <el-table-column
-          prop="groupName"
-          label="分组"
-          min-width="140"
-        />
-        <el-table-column
-          prop="name"
-          label="隧道名"
-          min-width="180"
-        />
-        <el-table-column
-          label="协议"
-          width="100"
-        >
-          <template #default="{ row }">
-            <el-tag :type="row.protocol === 'tcp' ? 'primary' : 'success'">
-              {{ row.protocol.toUpperCase() }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column
-          label="远端映射"
-          min-width="140"
-        >
-          <template #default="{ row }">
-            {{ formatEndpoint(row, "remote") }}
-          </template>
-        </el-table-column>
-        <el-table-column
-          label="本地目标"
-          min-width="220"
-        >
-          <template #default="{ row }">
-            {{ formatEndpoint(row, "local") }}
-          </template>
-        </el-table-column>
-        <el-table-column
-          label="状态"
-          width="100"
-        >
-          <template #default="{ row }">
-            <el-tag :type="row.enabled ? 'success' : 'info'">
-              {{ row.enabled ? "启用" : "停用" }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column
-          label="更新时间"
-          min-width="180"
-        >
-          <template #default="{ row }">
-            {{ formatDate(row.updatedAt) }}
-          </template>
-        </el-table-column>
-        <el-table-column
-          label="操作"
-          min-width="170"
-          fixed="right"
-        >
-          <template #default="{ row }">
-            <div class="management-table-actions">
-              <el-button
-                link
-                type="primary"
-                @click="openEditDialog(row)"
-              >
-                编辑
-              </el-button>
-              <el-button
-                link
-                type="danger"
-                @click="handleDelete(row)"
-              >
-                删除
-              </el-button>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
     <el-dialog
       v-model="dialogVisible"
       :title="isEditing ? '编辑隧道' : '新建隧道'"
-      width="680px"
+      width="760px"
       destroy-on-close
     >
       <el-form
@@ -573,6 +824,20 @@ onMounted(() => {
         label-position="top"
         status-icon
       >
+        <div class="tunnel-form-summary">
+          <div class="tunnel-form-summary__item">
+            <span class="page-section-label">current mode</span>
+            <strong>{{ formModeLabel }}</strong>
+            <p class="management-form-note">{{ formModeCopy }}</p>
+          </div>
+
+          <div class="tunnel-form-summary__item">
+            <span class="page-section-label">range rule</span>
+            <strong>{{ formSpanTitle }}</strong>
+            <p class="management-form-note">{{ formSpanCopy }}</p>
+          </div>
+        </div>
+
         <div class="management-form-grid">
           <el-form-item
             label="所属分组"
@@ -649,6 +914,7 @@ onMounted(() => {
           </el-form-item>
 
           <el-form-item
+            class="management-form-grid__span-2"
             label="本地地址"
             prop="localHost"
           >
@@ -683,7 +949,10 @@ onMounted(() => {
             />
           </el-form-item>
 
-          <el-form-item label="启用状态">
+          <el-form-item
+            class="management-form-grid__span-2"
+            label="启用状态"
+          >
             <el-switch
               v-model="form.enabled"
               inline-prompt
@@ -694,7 +963,7 @@ onMounted(() => {
         </div>
 
         <p class="management-form-note">
-          单端口模式会自动保持起始端口和结束端口一致；范围模式要求远端和本地端口跨度相同。
+          当前远端跨度 {{ remotePortCount }}，本地跨度 {{ localPortCount }}。范围模式下两者必须一致；单端口模式会自动收敛为 1 对 1 映射。
         </p>
       </el-form>
 
