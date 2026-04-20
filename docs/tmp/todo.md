@@ -38,11 +38,11 @@
 ## 当前子步骤细分
 
 - 当前正在推进：继续收束 `frpc` 客户端骨架，把 `internal/client` 的 bridge 文件名和 ownership 进一步对齐蓝图中的稳定形态。
-1. 先把 `udp.go` 更名为 `udp_bridge.go`，仅做文件名收束，不改 `udp.*` 和本地 UDP session copy 行为。
-2. UDP bridge 文件名稳定后，再把 `runtime.go` 更名为 `runtime_info.go`，让 `internal/client` 当前文件布局与蓝图一致。
-3. 文件名收束完成后，执行 `frpc` 全量回归，补正式文档和 `docs/progress/`，并把当前轮“客户端骨架收束”标记为完成。
-4. 客户端骨架收束完成后，下一轮 `todo` 再切到“最小共享规则与回归入口”，只保留新的未完成目标、子步骤和唯一下一步。
+1. 先把 `runtime.go` 更名为 `runtime_info.go`，让 `internal/client` 当前文件布局与蓝图一致。
+2. runtime 文件名稳定后，执行 `frpc` 全量回归，补正式文档和 `docs/progress/`，并把当前轮“客户端骨架收束”标记为完成。
+3. 客户端骨架收束完成后，下一轮 `todo` 再切到“最小共享规则与回归入口”，只保留新的未完成目标、子步骤和唯一下一步。
+4. 下一轮如需继续细化共享规则，仍保持“一次只推进一个最小可独立回归点”的约束。
 
 ## 当前唯一下一步
 
-- 先只把 `frpc/internal/client/udp.go` 更名为 `frpc/internal/client/udp_bridge.go`；本步不改任何函数实现、行为路径或测试逻辑，只完成 UDP bridge 文件名收束。
+- 先只把 `frpc/internal/client/runtime.go` 更名为 `frpc/internal/client/runtime_info.go`；本步不改任何函数实现、行为路径或测试逻辑，只完成 runtime 文件名收束。
