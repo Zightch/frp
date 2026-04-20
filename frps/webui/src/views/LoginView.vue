@@ -38,18 +38,15 @@ async function handleLogin() {
 
   loading.value = true
   try {
-    // 1. Get challenge
     const challengeResult = await authApi.challenge()
     if (challengeResult.error) {
       ElMessage.error(challengeResult.error)
       return
     }
 
-    // 2. Compute proof: proof = SHA256(key_hash + salt)
     const keyHash = await sha256Hex(secret.value)
     const proof = await sha256Hex(keyHash + challengeResult.data!.salt)
 
-    // 3. Login
     const loginResult = await authApi.login(challengeResult.data!.challenge_id, proof)
     if (loginResult.error) {
       ElMessage.error(loginResult.error)
@@ -67,54 +64,53 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="login-page">
-    <div v-if="checking" class="login-card">
-      <p>检查登录状态...</p>
-    </div>
-    <div v-else class="login-card">
-      <h2>管理登录</h2>
-      <el-form @submit.prevent="handleLogin">
-        <el-form-item>
-          <el-input
-            v-model="secret"
-            type="password"
-            placeholder="管理密钥"
-            show-password
-            :disabled="loading"
-          />
-        </el-form-item>
-        <el-form-item>
-          <el-button
-            type="primary"
-            :loading="loading"
-            style="width: 100%"
-            @click="handleLogin"
-          >
-            登录
-          </el-button>
-        </el-form-item>
-      </el-form>
-    </div>
+  <div v-if="checking" class="auth-card">
+    <p class="auth-checking">检查登录状态...</p>
+  </div>
+  <div v-else class="auth-card">
+    <h2 class="auth-title">管理登录</h2>
+    <el-form @submit.prevent="handleLogin">
+      <el-form-item>
+        <el-input
+          v-model="secret"
+          type="password"
+          placeholder="管理密钥"
+          show-password
+          :disabled="loading"
+        />
+      </el-form-item>
+      <el-form-item>
+        <el-button
+          type="primary"
+          :loading="loading"
+          style="width: 100%"
+          @click="handleLogin"
+        >
+          登录
+        </el-button>
+      </el-form-item>
+    </el-form>
   </div>
 </template>
 
 <style scoped>
-.login-page {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 100vh;
+.auth-card {
+  padding: var(--spacing-2xl);
+  background: var(--color-bg-white);
+  border-radius: var(--radius-base);
+  border: 1px solid var(--color-border-lighter);
 }
 
-.login-card {
-  width: 360px;
-  padding: 32px;
-  background: #fff;
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
+.auth-checking {
+  text-align: center;
+  color: var(--color-text-secondary);
+  padding: var(--spacing-lg) 0;
 }
 
-.login-card h2 {
-  margin-bottom: 24px;
+.auth-title {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+  margin-bottom: var(--spacing-xl);
 }
 </style>

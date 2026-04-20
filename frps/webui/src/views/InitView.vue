@@ -51,61 +51,60 @@ async function handleInit() {
 </script>
 
 <template>
-  <div class="init-page">
-    <div v-if="checking" class="init-card">
-      <p>检查初始化状态...</p>
-    </div>
-    <div v-else class="init-card">
-      <h2>初始化管理密钥</h2>
-      <p class="init-desc">首次使用需设置管理密钥，此操作仅可执行一次</p>
-      <el-form @submit.prevent="handleInit">
-        <el-form-item>
-          <el-input
-            v-model="secret"
-            type="password"
-            placeholder="管理密钥"
-            show-password
-            :disabled="loading"
-          />
-        </el-form-item>
-        <el-form-item>
-          <el-button
-            type="primary"
-            :loading="loading"
-            style="width: 100%"
-            @click="handleInit"
-          >
-            初始化
-          </el-button>
-        </el-form-item>
-      </el-form>
-    </div>
+  <div v-if="checking" class="auth-card">
+    <p class="auth-checking">检查初始化状态...</p>
+  </div>
+  <div v-else class="auth-card">
+    <h2 class="auth-title">初始化管理密钥</h2>
+    <p class="auth-desc">首次使用需设置管理密钥，此操作仅可执行一次</p>
+    <el-form @submit.prevent="handleInit">
+      <el-form-item>
+        <el-input
+          v-model="secret"
+          type="password"
+          placeholder="管理密钥"
+          show-password
+          :disabled="loading"
+        />
+      </el-form-item>
+      <el-form-item>
+        <el-button
+          type="primary"
+          :loading="loading"
+          style="width: 100%"
+          @click="handleInit"
+        >
+          初始化
+        </el-button>
+      </el-form-item>
+    </el-form>
   </div>
 </template>
 
 <style scoped>
-.init-page {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 100vh;
+.auth-card {
+  padding: var(--spacing-2xl);
+  background: var(--color-bg-white);
+  border-radius: var(--radius-base);
+  border: 1px solid var(--color-border-lighter);
 }
 
-.init-card {
-  width: 360px;
-  padding: 32px;
-  background: #fff;
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
+.auth-checking {
+  text-align: center;
+  color: var(--color-text-secondary);
+  padding: var(--spacing-lg) 0;
 }
 
-.init-card h2 {
-  margin-bottom: 8px;
+.auth-title {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+  margin-bottom: var(--spacing-sm);
 }
 
-.init-desc {
-  color: var(--text-color-secondary);
-  font-size: 14px;
-  margin-bottom: 24px;
+.auth-desc {
+  font-size: var(--font-size-body);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-xl);
 }
 </style>
