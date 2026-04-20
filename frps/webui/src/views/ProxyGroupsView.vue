@@ -32,6 +32,34 @@ const groupFormRules = {
 const newTokenVisible = ref(false)
 const newTokenValue = ref('')
 
+// Tunnel drawer
+const tunnelDrawerVisible = ref(false)
+const tunnelDrawerMode = ref<'create' | 'edit'>('create')
+const tunnelFormRef = ref()
+const tunnelSubmitting = ref(false)
+const tunnelForm = ref({
+  name: '',
+  protocol: 'tcp' as 'tcp' | 'udp',
+  remote_type: 'single' as 'single' | 'range',
+  remote_start: 0,
+  remote_end: 0,
+  local_host: '127.0.0.1',
+  local_start: 0,
+  local_end: 0,
+  enabled: true
+})
+const tunnelFormRules = {
+  name: [{ required: true, message: '请输入隧道名称', trigger: 'blur' }],
+  protocol: [{ required: true, message: '请选择协议', trigger: 'change' }],
+  remote_type: [{ required: true, message: '请选择远端类型', trigger: 'change' }],
+  remote_start: [{ required: true, message: '请输入远端端口', trigger: 'blur' }],
+  local_host: [{ required: true, message: '请输入本地地址', trigger: 'blur' }],
+  local_start: [{ required: true, message: '请输入本地端口', trigger: 'blur' }]
+}
+
+// Editing tunnel ID (for edit mode)
+const editingTunnelId = ref<number | null>(null)
+
 // Computed
 const selectedGroup = computed(() =>
   groups.value.find(g => g.id === selectedGroupId.value)
@@ -215,6 +243,118 @@ async function handleDeleteGroup(group: ProxyGroup) {
   await loadData()
 }
 
+// --- Tunnel CRUD ---
+
+function openCreateTunnelDrawer() {
+  if (!selectedGroupId.value) return
+  tunnelDrawerMode.value = 'create'
+  editingTunnelId.value = null
+  tunnelForm.value = {
+    name: '',
+    protocol: 'tcp',
+    remote_type: 'single',
+    remote_start: 0,
+    remote_end: 0,
+    local_host: '127.0.0.1',
+    local_start: 0,
+    local_end: 0,
+    enabled: true
+  }
+  tunnelDrawerVisible.value = true
+  nextTick(() => tunnelFormRef.value?.clearValidate())
+}
+
+function openEditTunnelDrawer(tunnel: Tunnel) {
+  tunnelDrawerMode.value = 'edit'
+  editingTunnelId.value = tunnel.id
+  tunnelForm.value = {
+    name: tunnel.name,
+    protocol: tunnel.protocol,
+    remote_type: tunnel.remote_type,
+    remote_start: tunnel.remote_start,
+    remote_end: tunnel.remote_end,
+    local_host: tunnel.local_host,
+    local_start: tunnel.local_start,
+    local_end: tunnel.local_end,
+    enabled: tunnel.enabled
+  }
+  tunnelDrawerVisible.value = true
+  nextTick(() => tunnelFormRef.value?.clearValidate())
+}
+
+async function submitTunnelForm() {
+  const valid = await tunnelFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+
+  tunnelSubmitting.value = true
+
+  try {
+    const data = {
+      name: tunnelForm.value.name,
+      protocol: tunnelForm.value.protocol,
+      remote_type: tunnelForm.value.remote_type,
+      remote_start: tunnelForm.value.remote_start,
+      remote_end: tunnelForm.value.remote_type === 'range' ? tunnelForm.value.remote_end : undefined,
+      local_host: tunnelForm.value.local_host,
+      local_start: tunnelForm.value.local_start,
+      local_end: tunnelForm.value.remote_type === 'range' ? tunnelForm.value.local_end : undefined,
+      enabled: tunnelForm.value.enabled
+    }
+
+    if (tunnelDrawerMode.value === 'create') {
+      if (!selectedGroupId.value) return
+      const result = await tunnelsApi.create({
+        group_id: selectedGroupId.value,
+        ...data
+      })
+      if (result.error) {
+        ElMessage.error(result.error)
+        return
+      }
+      ElMessage.success('隧道创建成功')
+    } else {
+      if (!editingTunnelId.value) return
+      const result = await tunnelsApi.update(editingTunnelId.value, data)
+      if (result.error) {
+        ElMessage.error(result.error)
+        return
+      }
+      ElMessage.success('隧道更新成功')
+    }
+
+    tunnelDrawerVisible.value = false
+    await loadData()
+  } finally {
+    tunnelSubmitting.value = false
+  }
+}
+
+async function handleDeleteTunnel(tunnel: Tunnel) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除隧道"${tunnel.name}"吗？此操作不可恢复。`,
+      '删除隧道',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
+  } catch {
+    return
+  }
+
+  const result = await tunnelsApi.delete(tunnel.id)
+  if (result.error) {
+    ElMessage.error(result.error)
+    return
+  }
+
+  ElMessage.success('隧道已删除')
+  await loadData()
+}
+
 async function handleResetToken(group: ProxyGroup) {
   try {
     await ElMessageBox.confirm(
@@ -351,7 +491,7 @@ function copyToken() {
               v-if="selectedGroupId"
               type="primary"
               size="small"
-              :disabled="!selectedGroupId"
+              @click="openCreateTunnelDrawer"
             >
               新建隧道
             </el-button>
@@ -387,9 +527,10 @@ function copyToken() {
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="100" align="center">
-                <template #default>
-                  <el-button link type="primary" size="small">编辑</el-button>
+              <el-table-column label="操作" width="120" align="center">
+                <template #default="{ row }">
+                  <el-button link type="primary" size="small" @click="openEditTunnelDrawer(row)">编辑</el-button>
+                  <el-button link type="danger" size="small" @click="handleDeleteTunnel(row)">删除</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -445,6 +586,89 @@ function copyToken() {
         <el-button type="primary" @click="newTokenVisible = false">我已保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- Tunnel create/edit drawer -->
+    <el-drawer
+      v-model="tunnelDrawerVisible"
+      :title="tunnelDrawerMode === 'create' ? '新建隧道' : '编辑隧道'"
+      size="400px"
+      :close-on-click-modal="false"
+    >
+      <el-form
+        ref="tunnelFormRef"
+        :model="tunnelForm"
+        :rules="tunnelFormRules"
+        label-width="100px"
+      >
+        <el-form-item label="名称" prop="name">
+          <el-input v-model="tunnelForm.name" placeholder="请输入隧道名称" />
+        </el-form-item>
+        <el-form-item label="协议" prop="protocol">
+          <el-select v-model="tunnelForm.protocol" style="width: 100%">
+            <el-option label="TCP" value="tcp" />
+            <el-option label="UDP" value="udp" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="远端类型" prop="remote_type">
+          <el-select v-model="tunnelForm.remote_type" style="width: 100%">
+            <el-option label="单端口" value="single" />
+            <el-option label="端口范围" value="range" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="远端端口" prop="remote_start">
+          <el-input-number
+            v-model="tunnelForm.remote_start"
+            :min="1"
+            :max="65535"
+            :controls="false"
+            style="width: 100%"
+            placeholder="端口号"
+          />
+        </el-form-item>
+        <el-form-item v-if="tunnelForm.remote_type === 'range'" label="远端结束" prop="remote_end">
+          <el-input-number
+            v-model="tunnelForm.remote_end"
+            :min="1"
+            :max="65535"
+            :controls="false"
+            style="width: 100%"
+            placeholder="结束端口"
+          />
+        </el-form-item>
+        <el-form-item label="本地地址" prop="local_host">
+          <el-input v-model="tunnelForm.local_host" placeholder="IP 或域名" />
+        </el-form-item>
+        <el-form-item label="本地端口" prop="local_start">
+          <el-input-number
+            v-model="tunnelForm.local_start"
+            :min="1"
+            :max="65535"
+            :controls="false"
+            style="width: 100%"
+            placeholder="端口号"
+          />
+        </el-form-item>
+        <el-form-item v-if="tunnelForm.remote_type === 'range'" label="本地结束" prop="local_end">
+          <el-input-number
+            v-model="tunnelForm.local_end"
+            :min="1"
+            :max="65535"
+            :controls="false"
+            style="width: 100%"
+            placeholder="结束端口"
+          />
+        </el-form-item>
+        <el-form-item label="启用">
+          <el-switch v-model="tunnelForm.enabled" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="tunnelDrawerVisible = false">取消</el-button>
+        <el-button type="primary" :loading="tunnelSubmitting" @click="submitTunnelForm">
+          {{ tunnelDrawerMode === 'create' ? '创建' : '保存' }}
+        </el-button>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
