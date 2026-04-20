@@ -42,9 +42,9 @@
   - `DELETE /api/v1/tunnels/{id}`
 - 管理 WebUI 与静态托管：
   - `frps` 继续按 `webui.dist_dir` 托管 `frps/webui/dist/`
-  - WebUI 当前回到重建基线，技术栈固定为 `Node.js + Vue 3 + Element Plus`
-  - 必要功能只保留管理密钥初始化、challenge 登录、分组管理、token 重置和隧道管理
-  - 旧版管理壳层、概览页和页面布局不再视为当前实现基线
+  - 技术栈：`Node.js + Vue 3 + Element Plus`
+  - 页面路由：`/init`（初始化）、`/login`（登录）、`/proxy-groups`（主管理页）、`/` 重定向到 `/proxy-groups`
+  - 已实现：管理密钥初始化、challenge 登录、分组 CRUD、token 重置、隧道 CRUD
 - 控制面：
   - token challenge/response 登录
   - 心跳

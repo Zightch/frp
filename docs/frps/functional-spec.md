@@ -51,16 +51,25 @@
 - 探测到删除后，已签发 session 失效
 - 不支持在线轮换管理密钥
 
-### 2.4 管理 WebUI 最小基线
+### 2.4 管理 WebUI
 
-当前 WebUI 不再以旧版页面实现为准，只固定下面这些最小要求：
+当前 WebUI 已完成重建，实际页面如下：
 
-- WebUI 作为 `frps/webui/` 下的独立前端目录，技术栈收口为 `Node.js + Vue 3 + Element Plus`
-- 只需要覆盖管理密钥初始化、challenge 登录、会话状态、分组 CRUD、token 重置和隧道 CRUD
-- `/init` 只负责一次性写入首个管理密钥
-- `/login` 只负责 challenge 登录
-- 主管理页优先收口到一张必要页面，承接分组和隧道管理；是否保留额外概览页不是当前硬要求
-- 不展示未来功能导航，不把日志、监控、连接管理等未实现能力包装成现有入口
+- 技术栈：`Node.js + Vue 3 + Element Plus`
+- `/init`：一次性写入首个管理密钥
+- `/login`：challenge 登录
+- `/proxy-groups`：主管理页，承接分组和隧道管理
+- `/` 重定向到 `/proxy-groups`
+
+已实现功能：
+- 管理密钥初始化
+- challenge 登录与会话状态检查
+- 分组列表、新建、编辑、删除、重置 token（el-dialog 弹窗）
+- 隧道列表、新建、编辑、删除（el-drawer 抽屉）
+- 创建/重置分组时 token 明文单次展示
+- 基础加载态、空态、表单校验
+
+UI 规范详见 `webui-style-guide.md`，接入管理页布局详见 `webui-proxy-groups-spec.md`。
 
 ## 3. 分组管理
 
