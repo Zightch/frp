@@ -28,7 +28,7 @@
   - `frps` 继续托管 `webui.dist_dir` 指向的静态目录
   - 前端技术栈收口为 `Node.js + Vue 3 + Element Plus`
   - 必要功能只保留管理密钥初始化、challenge 登录、分组管理、token 重置和隧道管理
-  - 是否保留概览页、兼容路由或复杂壳层，不再视为当前既成事实；以 `docs/frps/webui-redesign-plan.md` 的最小基线为准
+  - 是否保留概览页、兼容路由或复杂壳层，不再视为当前既成事实；以 `docs/webui/overview.md` 的最小基线为准
 - 存储层已支持 SQLite 和 MySQL 两种数据库。
 - 启动时会自动建当前必需表，并对现有表结构做严格校验；不做 schema 迁移兼容。
 
@@ -124,7 +124,7 @@ External clients
 - [frps/frpc 当前代码架构图](frps-frpc-current-architecture.md)
 - [frps/frpc 协议文档](protocol.md)
 - [frps 项目概览](frps/project-overview.md)
-- [frps WebUI 最小基线](frps/webui-redesign-plan.md)
+- [frps WebUI 最小基线](webui/overview.md)
 - [frps 技术设计](frps/technical-design.md)
 - [frpc 项目概览](frpc/project-overview.md)
 - [frpc 技术设计](frpc/technical-design.md)

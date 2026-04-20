@@ -2,7 +2,18 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { authApi, proxyGroupsApi, tunnelsApi, type ProxyGroup, type Tunnel, type TunnelPayload } from '@/api'
+import {
+  authApi,
+  proxyGroupsApi as groupConfigApi,
+  tunnelsApi,
+  type ProxyGroup,
+  type Tunnel,
+  type TunnelPayload
+} from '@/api'
+
+defineOptions({
+  name: 'GroupConfigView'
+})
 
 const router = useRouter()
 
@@ -106,7 +117,7 @@ async function loadData() {
 
   try {
     const [groupsResult, tunnelsResult] = await Promise.all([
-      proxyGroupsApi.list(),
+      groupConfigApi.list(),
       tunnelsApi.list()
     ])
 
@@ -183,7 +194,7 @@ async function submitGroupForm() {
 
   try {
     if (groupDialogMode.value === 'create') {
-      const result = await proxyGroupsApi.create({
+      const result = await groupConfigApi.create({
         name: groupForm.value.name,
         enabled: groupForm.value.enabled
       })
@@ -198,7 +209,7 @@ async function submitGroupForm() {
       }
     } else {
       if (!editingGroupId.value) return
-      const result = await proxyGroupsApi.update(editingGroupId.value, {
+      const result = await groupConfigApi.update(editingGroupId.value, {
         name: groupForm.value.name,
         enabled: groupForm.value.enabled
       })
@@ -233,7 +244,7 @@ async function handleDeleteGroup(group: ProxyGroup) {
     return
   }
 
-  const result = await proxyGroupsApi.delete(group.id)
+  const result = await groupConfigApi.delete(group.id)
   if (result.error) {
     ElMessage.error(result.error)
     return
@@ -380,7 +391,7 @@ async function handleResetToken(group: ProxyGroup) {
     return
   }
 
-  const result = await proxyGroupsApi.resetToken(group.id)
+  const result = await groupConfigApi.resetToken(group.id)
   if (result.error) {
     ElMessage.error(result.error)
     return
@@ -404,7 +415,7 @@ function copyToken() {
 </script>
 
 <template>
-  <div class="management-page">
+  <div class="group-config-page">
     <!-- Auth check loading -->
     <div v-if="checking" class="state-message">
       检查认证状态...
@@ -420,7 +431,7 @@ function copyToken() {
     <template v-else-if="authenticated">
       <!-- Page header -->
       <div class="page-header">
-        <h1>接入管理</h1>
+        <h1>分组配置</h1>
         <div class="header-actions">
           <el-button @click="loadData" :loading="loading">刷新</el-button>
         </div>
@@ -677,7 +688,7 @@ function copyToken() {
 </template>
 
 <style scoped>
-.management-page {
+.group-config-page {
   display: flex;
   flex: 1;
   flex-direction: column;

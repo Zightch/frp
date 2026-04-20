@@ -69,7 +69,7 @@
 - 创建/重置分组时 token 明文单次展示
 - 基础加载态、空态、表单校验
 
-UI 规范详见 `webui-style-guide.md`，接入管理页布局详见 `webui-proxy-groups-spec.md`。
+UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/webui/proxy-groups.md`。
 
 ## 3. 分组管理
 

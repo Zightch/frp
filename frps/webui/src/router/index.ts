@@ -2,10 +2,10 @@ import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 
 const routes: RouteRecordRaw[] = [
-  // 根路径重定向到接入管理
+  // 根路径重定向到分组配置
   {
     path: '/',
-    redirect: '/proxy-groups'
+    redirect: { name: 'GroupConfig' }
   },
 
   // 认证相关页面 - 使用 BlankLayout
@@ -39,8 +39,8 @@ const routes: RouteRecordRaw[] = [
     children: [
       {
         path: 'proxy-groups',
-        name: 'ProxyGroups',
-        component: () => import('@/views/ProxyGroupsView.vue')
+        name: 'GroupConfig',
+        component: () => import('@/views/GroupConfigView.vue')
       }
     ]
   }

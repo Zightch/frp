@@ -12,7 +12,16 @@ export default defineConfig({
     },
     build: {
         outDir: 'dist',
-        emptyOutDir: true
+        emptyOutDir: true,
+        chunkSizeWarningLimit: 1100,
+        rollupOptions: {
+            output: {
+                manualChunks: {
+                    'vue-vendor': ['vue', 'vue-router'],
+                    'element-plus': ['element-plus', '@element-plus/icons-vue']
+                }
+            }
+        }
     },
     server: {
         port: 5173,

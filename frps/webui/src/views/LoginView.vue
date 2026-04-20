@@ -17,7 +17,7 @@ onMounted(async () => {
     if (!result.data.initialized) {
       router.replace('/init')
     } else if (result.data.authenticated) {
-      router.replace('/proxy-groups')
+      router.replace({ name: 'GroupConfig' })
     }
   }
 })
@@ -54,7 +54,7 @@ async function handleLogin() {
     }
 
     ElMessage.success('登录成功')
-    router.push('/proxy-groups')
+    router.push({ name: 'GroupConfig' })
   } catch {
     ElMessage.error('登录失败')
   } finally {

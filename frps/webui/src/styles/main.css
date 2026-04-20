@@ -88,8 +88,8 @@
   --header-height: 56px;
   --aside-width: 200px;
   --content-padding: 24px;
-  --management-content-min-width: 920px;
-  --management-page-min-height: 560px;
+  --group-config-content-min-width: 920px;
+  --group-config-page-min-height: 560px;
 }
 
 /* ---- Element Plus 主题覆盖 ---- */

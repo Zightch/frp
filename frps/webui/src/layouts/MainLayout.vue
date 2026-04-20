@@ -31,9 +31,9 @@ async function handleLogout() {
       <!-- Aside -->
       <aside class="layout-aside">
         <nav class="aside-nav">
-          <router-link to="/proxy-groups" class="nav-item">
+          <router-link :to="{ name: 'GroupConfig' }" class="nav-item">
             <el-icon><Connection /></el-icon>
-            <span>接入管理</span>
+            <span>分组配置</span>
           </router-link>
         </nav>
       </aside>
@@ -146,7 +146,7 @@ async function handleLogout() {
   display: flex;
   flex-direction: column;
   width: 100%;
-  min-width: var(--management-content-min-width);
+  min-width: var(--group-config-content-min-width);
   min-height: 0;
   padding: var(--content-padding);
 }
