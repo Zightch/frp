@@ -480,12 +480,6 @@ function copyToken() {
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="150" align="center" fixed="right">
-                <template #default="{ row }">
-                  <el-button link type="primary" size="small" @click.stop="openEditGroupDialog(row)">编辑</el-button>
-                  <el-button link type="danger" size="small" @click.stop="handleDeleteGroup(row)">删除</el-button>
-                </template>
-              </el-table-column>
             </el-table>
           </div>
         </section>
