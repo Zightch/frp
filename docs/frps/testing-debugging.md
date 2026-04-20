@@ -18,7 +18,7 @@
 
 - `storage.SQL` 的结构化查询结果测试
 - `storage.SQL` 的 `Begin` / `BeginTx` / `WithTx` 事务测试
-- MySQL 简写 DSN 规范化测试
+- MySQL 标准 DSN 透传测试
 - SQLite 数据目录自动创建测试
 - 应用启动时自动建表和必需表校验测试
 - SQLite 现有表结构错误时启动立即失败测试

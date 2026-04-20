@@ -74,11 +74,7 @@ func resolveDatabaseTarget(cfg config.DatabaseConfig) (string, string, error) {
 	case "sqlite":
 		return resolveSQLiteDataSource(cfg)
 	case "mysql":
-		dsn, err := normalizeMySQLDSN(cfg.DSN)
-		if err != nil {
-			return "", "", err
-		}
-		return "mysql", dsn, nil
+		return resolveMySQLDataSource(cfg)
 	default:
 		return "", "", fmt.Errorf("unsupported database type %q", cfg.Type)
 	}
@@ -102,31 +98,11 @@ func resolveSQLiteDataSource(cfg config.DatabaseConfig) (string, string, error) 
 	return "sqlite", path, nil
 }
 
-func normalizeMySQLDSN(dsn string) (string, error) {
-	dsn = strings.TrimSpace(dsn)
+func resolveMySQLDataSource(cfg config.DatabaseConfig) (string, string, error) {
+	dsn := strings.TrimSpace(cfg.DSN)
 	if dsn == "" {
-		return "", fmt.Errorf("mysql dsn is required")
+		return "", "", fmt.Errorf("mysql dsn is required")
 	}
 
-	if strings.Contains(dsn, "@tcp(") || strings.Contains(dsn, "@unix(") {
-		return dsn, nil
-	}
-
-	atIndex := strings.LastIndex(dsn, "@")
-	if atIndex == -1 {
-		return dsn, nil
-	}
-
-	hostAndDatabase := dsn[atIndex+1:]
-	slashIndex := strings.Index(hostAndDatabase, "/")
-	if slashIndex <= 0 {
-		return dsn, nil
-	}
-
-	address := hostAndDatabase[:slashIndex]
-	if strings.ContainsAny(address, "()") {
-		return dsn, nil
-	}
-
-	return dsn[:atIndex+1] + "tcp(" + address + ")" + hostAndDatabase[slashIndex:], nil
+	return "mysql", dsn, nil
 }

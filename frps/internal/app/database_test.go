@@ -13,15 +13,22 @@ import (
 	_ "github.com/zightch/frp/frps/internal/storage/drivers"
 )
 
-func TestNormalizeMySQLDSNAcceptsShortcutAddress(t *testing.T) {
+func TestResolveDatabaseTargetKeepsMySQLDSNAsIs(t *testing.T) {
 	t.Parallel()
 
-	dsn, err := normalizeMySQLDSN("frps:123456@staticplant.top:3306/frps")
+	driverName, dsn, err := resolveDatabaseTarget(config.DatabaseConfig{
+		Type: "mysql",
+		DSN:  " user:pass@tcp(127.0.0.1:3306)/frps?parseTime=true ",
+	})
 	if err != nil {
-		t.Fatalf("normalize mysql dsn: %v", err)
+		t.Fatalf("resolve mysql target: %v", err)
 	}
 
-	expected := "frps:123456@tcp(staticplant.top:3306)/frps"
+	if driverName != "mysql" {
+		t.Fatalf("unexpected driver name: got %q want %q", driverName, "mysql")
+	}
+
+	expected := "user:pass@tcp(127.0.0.1:3306)/frps?parseTime=true"
 	if dsn != expected {
 		t.Fatalf("unexpected mysql dsn: got %q want %q", dsn, expected)
 	}

@@ -26,7 +26,7 @@
 - `internal/control` 可处理 UDP `udp.open` / `udp.data` / `udp.close`，并由 `frps` 统一做空闲 `30s` cleanup
 - 分组禁用、隧道禁用、本地目标不可达等最小失败路径已经有确定性行为
 - `internal/storage/sql.go` 统一数据库封装，支持 `*sql.DB` / `*sql.Tx`、结构化查询结果和事务
-- SQLite/MySQL 启动期建连、MySQL DSN 规范化、内嵌 schema bootstrap 与严格表结构校验
+- SQLite/MySQL 启动期建连、内嵌 schema bootstrap 与严格表结构校验
 - 已通过 `test/e2e_tcp_single.py` 验证 `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
 - 已通过 `test/e2e_tcp_range.py` 验证 TCP range 偏移映射与 TCP 单端口回归
 - 已通过 `test/e2e_udp_single.py` 验证 `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`

@@ -139,4 +139,4 @@ npm.cmd run build
 当前开发阶段也不做 `frps/frpc` 版本兼容协商；如果协议或数据结构有破坏性调整，按同仓代码、测试、文档和本地开发数据一起同步更新处理。
 
 当前 `/readyz` 与 `/healthz` 等价，都是最小健康检查；后续如果引入更细的运行态就再扩展 readiness 语义。
-MySQL 仍支持简写地址格式，例如 `frps:123456@staticplant.top:3306/frps` 会被规范化后再交给驱动。
+MySQL `database.dsn` 不再兼容地址简写，需直接填写驱动标准 DSN，例如 `frps:123456@tcp(staticplant.top:3306)/frps`。
