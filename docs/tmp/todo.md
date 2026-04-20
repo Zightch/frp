@@ -32,4 +32,4 @@
 
 ## 当前唯一下一步
 
-按 `docs/frps/webui-redesign-plan.md` 先落新版管理壳层骨架：重构 `AppShellView.vue` 和管理态路由元数据，完成侧边导航、顶部状态区和主内容容器，但暂不改三张业务页内部 CRUD 结构。
+基于已落地的新版管理壳层，先只重构 `DashboardView.vue`：按通用页面骨架改造首页，收口系统状态、快捷入口和当前边界表达，去掉过时的 Phase 文案与“下一步工作”叙事，但暂不改 `ProxyGroupsView.vue`、`TunnelsView.vue`、`InitSecretView.vue`、`LoginView.vue`。

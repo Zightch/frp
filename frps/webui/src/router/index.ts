@@ -6,6 +6,11 @@ import { resolveRedirectTarget } from "@/utils/navigation";
 
 declare module "vue-router" {
   interface RouteMeta {
+    description?: string;
+    eyebrow?: string;
+    managementNav?: boolean;
+    navLabel?: string;
+    navOrder?: number;
     title?: string;
     public?: boolean;
     requiresSession?: boolean;
@@ -54,6 +59,11 @@ export const router = createRouter({
           name: "dashboard",
           component: () => import("@/views/DashboardView.vue"),
           meta: {
+            description: "查看当前管理认证状态、系统边界和两类核心管理入口。",
+            eyebrow: "overview",
+            managementNav: true,
+            navLabel: "概览",
+            navOrder: 1,
             title: "管理概览",
           },
         },
@@ -62,6 +72,11 @@ export const router = createRouter({
           name: "proxy-groups",
           component: () => import("@/views/ProxyGroupsView.vue"),
           meta: {
+            description: "管理接入分组、启停状态和对应 token 生命周期。",
+            eyebrow: "proxy groups",
+            managementNav: true,
+            navLabel: "分组管理",
+            navOrder: 2,
             title: "分组管理",
           },
         },
@@ -70,6 +85,11 @@ export const router = createRouter({
           name: "tunnels",
           component: () => import("@/views/TunnelsView.vue"),
           meta: {
+            description: "管理 TCP/UDP 单端口映射与端口范围映射配置。",
+            eyebrow: "tunnels",
+            managementNav: true,
+            navLabel: "隧道管理",
+            navOrder: 3,
             title: "隧道管理",
           },
         },
