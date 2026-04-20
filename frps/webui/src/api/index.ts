@@ -1,5 +1,37 @@
 const API_BASE = '/api/v1'
 
+// --- Types ---
+
+export interface ProxyGroup {
+  id: number
+  name: string
+  token_id: string
+  enabled: boolean
+  client_access_mode: string
+  tunnel_access_mode: string
+  created_at: string
+  updated_at: string
+}
+
+export interface Tunnel {
+  id: number
+  group_id: number
+  group_name: string
+  name: string
+  protocol: 'tcp' | 'udp'
+  remote_type: 'single' | 'range'
+  remote_start: number
+  remote_end: number
+  local_host: string
+  local_start: number
+  local_end: number
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+// --- Request helper ---
+
 interface ApiResponse<T = unknown> {
   data?: T
   error?: string
@@ -30,91 +62,95 @@ async function request<T>(
   }
 }
 
-// Auth API
+// --- Auth API ---
+
 export const authApi = {
-  // Check authentication state
   state: () => request<{ initialized: boolean; authenticated: boolean; expires_at?: string }>('/auth/state'),
 
-  // Initialize management secret (one-time setup)
-  // key_hash must be 64 lowercase hex characters (SHA256 of the raw secret)
   init: (keyHash: string) => request<{ initialized: boolean }>('/auth/init', {
     method: 'POST',
     body: JSON.stringify({ key_hash: keyHash })
   }),
 
-  // Request a challenge for login
-  // Returns challenge_id and salt; proof = SHA256(key_hash + salt)
   challenge: () => request<{ challenge_id: string; salt: string; expires_at: string }>('/auth/challenge', {
     method: 'POST'
   }),
 
-  // Login with challenge proof
   login: (challengeId: string, proof: string) => request<{ initialized: boolean; authenticated: boolean; expires_at: string }>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ challenge_id: challengeId, proof })
   }),
 
-  // Logout
   logout: () => request<{ initialized: boolean; authenticated: boolean; logged_out: boolean }>('/auth/logout', {
     method: 'POST'
   }),
 
-  // Check current session (requires authentication)
   session: () => request<{ initialized: boolean; authenticated: boolean; expires_at: string }>('/auth/session')
 }
 
-// Proxy Groups API
+// --- Proxy Groups API ---
+
 export const proxyGroupsApi = {
-  list: () => request<{ groups: Array<{ id: string; name: string; token_id: string }> }>('/proxy-groups'),
-  create: (name: string) => request<{ id: string; token_id: string; token_secret: string }>('/proxy-groups', {
-    method: 'POST',
-    body: JSON.stringify({ name })
-  }),
-  update: (id: string, name: string) => request(`/proxy-groups/${id}`, {
-    method: 'PUT',
-    body: JSON.stringify({ name })
-  }),
-  delete: (id: string) => request(`/proxy-groups/${id}`, { method: 'DELETE' }),
-  resetToken: (id: string) => request<{ token_id: string; token_secret: string }>(`/proxy-groups/${id}/token`, {
-    method: 'POST'
-  })
+  list: () => request<{ items: ProxyGroup[] }>('/proxy-groups'),
+
+  create: (data: { name: string; enabled?: boolean }) =>
+    request<{ item: ProxyGroup; token: string }>('/proxy-groups', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+
+  update: (id: number, data: { name?: string; enabled?: boolean }) =>
+    request<{ item: ProxyGroup }>(`/proxy-groups/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    }),
+
+  delete: (id: number) => request(`/proxy-groups/${id}`, { method: 'DELETE' }),
+
+  resetToken: (id: number) =>
+    request<{ item: ProxyGroup; token: string }>(`/proxy-groups/${id}/token`, {
+      method: 'POST'
+    })
 }
 
-// Tunnels API
+// --- Tunnels API ---
+
 export const tunnelsApi = {
-  list: (groupId?: string) => {
+  list: (groupId?: number) => {
     const query = groupId ? `?group_id=${groupId}` : ''
-    return request<{ tunnels: Array<{
-      id: string
-      name: string
-      group_id: string
-      type: string
-      local_addr: string
-      remote_addr: string
-    }> }>(`/tunnels${query}`)
+    return request<{ items: Tunnel[] }>(`/tunnels${query}`)
   },
+
   create: (data: {
+    group_id: number
     name: string
-    group_id: string
-    type: string
-    local_addr: string
-    remote_port?: number
-    subdomain?: string
-    custom_domain?: string
-  }) => request('/tunnels', {
+    protocol: 'tcp' | 'udp'
+    remote_type: 'single' | 'range'
+    remote_start: number
+    remote_end?: number
+    local_host: string
+    local_start: number
+    local_end?: number
+    enabled?: boolean
+  }) => request<{ item: Tunnel }>('/tunnels', {
     method: 'POST',
     body: JSON.stringify(data)
   }),
-  update: (id: string, data: Partial<{
+
+  update: (id: number, data: Partial<{
     name: string
-    type: string
-    local_addr: string
-    remote_port: number
-    subdomain: string
-    custom_domain: string
-  }>) => request(`/tunnels/${id}`, {
-    method: 'PUT',
+    protocol: 'tcp' | 'udp'
+    remote_type: 'single' | 'range'
+    remote_start: number
+    remote_end: number
+    local_host: string
+    local_start: number
+    local_end: number
+    enabled: boolean
+  }>) => request<{ item: Tunnel }>(`/tunnels/${id}`, {
+    method: 'PATCH',
     body: JSON.stringify(data)
   }),
-  delete: (id: string) => request(`/tunnels/${id}`, { method: 'DELETE' })
+
+  delete: (id: number) => request(`/tunnels/${id}`, { method: 'DELETE' })
 }

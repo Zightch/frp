@@ -53,6 +53,7 @@ async function handleLogout() {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  height: 100dvh;
 }
 
 /* Header */
@@ -86,8 +87,9 @@ async function handleLogout() {
 /* Body */
 .layout-body {
   display: flex;
-  flex: 1;
   margin-top: var(--header-height);
+  min-height: calc(100vh - var(--header-height));
+  height: calc(100dvh - var(--header-height));
 }
 
 /* Aside */
@@ -130,14 +132,22 @@ async function handleLogout() {
 /* Main */
 .layout-main {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   margin-left: var(--aside-width);
   background: var(--color-bg-page);
-  min-height: calc(100vh - var(--header-height));
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
 }
 
 .main-content {
-  max-width: var(--content-max-width);
-  margin: 0 auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: var(--management-content-min-width);
+  min-height: 0;
   padding: var(--content-padding);
 }
 </style>
