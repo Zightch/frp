@@ -10,7 +10,7 @@
 
 1. **初始化项目结构**：创建 `package.json`、`vite.config.ts`、`tsconfig.json`、`index.html` 和最小入口文件，建立 `src/main.ts`、`src/App.vue`、`src/router/index.ts`、`src/api/index.ts`、`src/views/` 等最小目录。✅ 已完成
 
-2. **配置 Element Plus 与基础样式**：引入 Element Plus 组件库和基础 CSS 变量，确保构建产物可被 `frps` 正确托管。
+2. **配置 Element Plus 与基础样式**：引入 Element Plus 组件库和基础 CSS 变量，确保构建产物可被 `frps` 正确托管。✅ 已完成
 
 3. **实现认证页面骨架**：创建 `/init` 初始化页和 `/login` 登录页的最小骨架，复用现有 `/api/v1/auth/*` 接口。
 
@@ -28,4 +28,4 @@
 
 ## 当前唯一下一步
 
-配置 Element Plus 与基础样式：在 `src/main.ts` 中确认 Element Plus 已正确引入，在 `src/styles/main.css` 中创建基础 CSS 变量和通用样式，确保构建产物可被 `frps` 正确托管。
+实现认证页面骨架：在 `src/views/InitView.vue` 中实现初始化页最小骨架，调用 `/api/v1/auth/init` 接口；在 `src/views/LoginView.vue` 中实现登录页最小骨架，调用 `/api/v1/auth/login` 接口。

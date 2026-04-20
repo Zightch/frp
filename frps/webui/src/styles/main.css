@@ -1,0 +1,34 @@
+/* 基础 CSS 变量 */
+:root {
+  --primary-color: #409eff;
+  --text-color: #303133;
+  --text-color-secondary: #909399;
+  --border-color: #dcdfe6;
+  --background-color: #f5f7fa;
+}
+
+/* 重置样式 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  color: var(--text-color);
+  background-color: var(--background-color);
+}
+
+/* 通用工具类 */
+.text-center {
+  text-align: center;
+}
+
+.mt-20 {
+  margin-top: 20px;
+}
+
+.mb-20 {
+  margin-bottom: 20px;
+}
