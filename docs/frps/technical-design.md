@@ -2,682 +2,388 @@
 
 ## 1. 设计目标
 
-`frps` 的技术设计需要同时满足四个要求：
+当前 `frps` 的技术设计只围绕已经落地的能力展开：
 
-- 代理链路稳定，转发逻辑简单可控。
-- 管理逻辑和流量逻辑边界清晰。
-- 运行时状态可实时观测。
-- 配置修改后可热更新生效。
+- 用最小结构跑通管理面、控制面和正向代理数据面。
+- 把管理认证、本地配置、控制协议和公网 listener 的边界收清楚。
+- 在不引入额外框架的前提下，给后续迭代保留明确扩展点。
 
-## 2. 分层架构
+## 2. 当前进程内分层
 
 ```text
-WebUI
+cmd/frps
   |
-REST API / WebSocket
+internal/app
   |
-Management Layer
++----------------------+----------------------+
+|                      |                      |
+internal/api           internal/control       internal/auth
+  |                      |                      |
+WebUI/API              frpc protocol         auth.json
+  |                      |
+internal/storage <------+
   |
-Control Layer <----> frpc
-  |
-Data Plane
-  |
-Observability Layer
-  |
-Storage / Runtime State
+SQLite / MySQL
 ```
 
-### 2.1 Management Layer
+当前没有单独的事件总线、连接注册表或插件化数据面。
 
-负责：
+## 3. 当前模块 ownership
 
-- 管理密钥初始化、挑战登录和会话。
-- 分组、隧道、反代、证书、抓包任务管理。
-- 配置校验、端口冲突检测、热更新下发。
-- 单连接断开、隧道级连接回收等连接管理入口。
-- 审计日志写入。
+### 3.1 `cmd/frps`
 
-### 2.2 Control Layer
+- 解析当前工作目录。
+- 固定拼出 `data/config.json` 路径。
+- 初始化 logger。
+- 处理 `Ctrl+C`。
 
-负责：
+### 3.2 `internal/config`
 
-- `frpc` 登录与 token 校验。
-- 分组客户端来源 IP 黑白名单校验。
-- 心跳维护。
-- 配置版本同步。
-- 配置版本应答跟踪。
-- 客户端在线状态维护。
-- 工作连接或多路流的生命周期管理。
-- 管理端发起的 stream 强制关闭控制。
+- 提供默认值。
+- 读取 JSON 配置。
+- 校验监听地址、超时、日志格式和数据库配置。
+- 解析相对路径。
 
-### 2.3 Data Plane
+当前默认值：
 
-负责：
+- `control_listen_addr = 0.0.0.0:7000`
+- `management_listen_addr = 127.0.0.1:7500`
+- `read_header_timeout = 5s`
+- `shutdown_timeout = 10s`
+- `database.type = sqlite`
+- `database.path = ./frps.db`
+- `webui.dist_dir = ../webui/dist`
 
-- TCP/UDP 正向代理转发。
-- TCP 反向代理。
-- HTTP Host 分发。
-- HTTPS/SNI 分发。
-- 公网监听器动态启停。
+MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 
-### 2.4 Observability Layer
+### 3.3 `internal/auth`
 
-负责：
+`auth.Manager` 负责：
 
-- 连接注册表。
-- 实时速率统计。
-- 连接生效限速值计算与展示，全局/分组/规则级限速执行。
-- 抓包写出。
-- 日志事件和状态事件广播。
+- 从 `auth.json` 读取 `key_hash`
+- 在未初始化时写入 `auth.json`
+- 签发管理 challenge
+- 校验 `sha256(key_hash + salt)` 证明
+- 维护管理 session
+- 轮询检测 `auth.json` 是否被删除
 
-## 3. 进程内模块划分
+当前固定参数：
 
-建议模块职责如下，但当前实现状态必须以本节的“当前已落地模块”为准。
+- challenge TTL：`2m`
+- session TTL：`12h`
+- 删除监听间隔：`1s`
 
-### 3.0 当前已落地模块
+删除 `auth.json` 后会立即清空：
 
-截至 2026-04-20，下面这些模块已经有当前阶段实现：
+- `initialized` 状态
+- challenge 集合
+- session 集合
 
-- `cmd/frps`：启动入口、参数解析和应用生命周期接线
-- `internal/config`：JSON 配置、默认值和校验
-- `internal/logging`：`slog` 日志初始化
-- `internal/api`：WebUI 静态资源托管、健康检查、管理认证、`proxy_groups` / `tunnels` 最小 CRUD 和 token 重置
-- `internal/auth`：`auth.json` 读取、初始化、challenge 管理和删除后的自动复位
-- `internal/control`：token challenge/response、配置下发、配置确认、TCP 单端口/范围数据面、UDP 单端口数据面，以及 `frps` 侧 UDP `30s` idle cleanup
-- `internal/storage`：数据库对象封装
-- `internal/app`：数据库打开、schema bootstrap/校验、服务启动和关闭编排
-- `frps/pkg/protocol` 当前额外承接了唯一新增的跨端共享纯规则 `ChallengeResponse`，其余纯规则仍保持局部实现
+### 3.4 `internal/app`
 
-其余模块目前仍处于长期设计阶段。
+`app.App` 当前负责：
 
-### 3.1 `internal/api`
+- 初始化 `auth.Manager`
+- 打开数据库
+- 执行 schema bootstrap 和严格校验
+- 并发启动管理 API 和控制监听器
+- 统一 shutdown
 
-- 托管 WebUI 构建产物。
-- 暴露最小 REST API。
-- 维护管理认证入口和健康检查。
-- 后续如果接入 WebSocket、连接管理和抓包中心，再继续向该层扩展。
+### 3.5 `internal/storage`
 
-### 3.2 `internal/auth`
+当前只提供最小 SQL 封装：
 
-- `auth.json` 读取、初始化和删除后的自动复位。
-- 管理端一次性盐 challenge 签发与消费。
-- 管理端认证。
-- API/WS 鉴权中间件。
-- `token_id` 定位与一次性 challenge 校验。
+- `storage.SQL`
+- `storage.Tx`
+- `QueryContext`
+- `QueryOneContext`
+- `ExecContext`
+- `WithTxContext`
 
-### 3.3 `internal/control`
+数据库驱动注册放在 `internal/storage/drivers`。
 
-- `frpc` 登录协议。
-- 心跳处理。
-- 配置推送。
-- 配置应答跟踪。
-- TCP/UDP listener 与工作流打开/关闭。
-- UDP session 建会话、回包和空闲超时回收。
-- 管理端触发的 stream 关闭。
+### 3.6 `internal/api`
 
-截至 2026-04-20，`internal/control` 的第一轮初步骨架已经收束到下面这组稳定 ownership：
+当前拆成 4 个部分：
 
-- `server.go`：accept loop、shutdown、连接入口、session 读循环、心跳和底层帧读写。
-- `auth.go`：`frpc` 登录握手、challenge 生命周期、group slot 占用与释放。
-- `connections.go`：活动控制连接跟踪，以及连接结束原因和日志辅助。
-- `session.go`：`sessionState`、request/stream id、session 级写锁、错误回复和 shutdown 收口。
-- `config.go`：group runtime 加载、`config.push`、`config.ack`。
-- `listeners.go`：TCP/UDP tunnel listener 展开、启动和 serve loop。
-- `tcp_bridge.go`：TCP `stream.*` 生命周期与 `publicStream` runtime。
-- `udp.go`：UDP `udp.open` / `udp.data` / `udp.close`、session runtime 和 idle cleanup。
-- `sockaddr.go`：TCP/UDP 共用的 socket 地址转换辅助。
+- `server.go`：HTTP server、路由注册、日志中间件
+- `auth.go`：管理认证路由与 Cookie/Bearer 会话
+- `management.go`：分组和隧道 CRUD
+- `webui.go`：静态资源托管和 SPA fallback
 
-### 3.4 后续设计中的拆分方向
+### 3.7 `internal/control`
 
-如果后续补齐长期能力，再考虑按职责继续拆分：
+当前稳定文件边界如下：
 
-- 正向代理规则编排与端口范围映射
-- TCP/HTTP/HTTPS 反向代理
-- 连接注册表、速率统计和限速
-- 抓包任务与 pcap 写出
-- 事件总线与 WebSocket 推送
+- `server.go`：accept loop、shutdown、session 读循环、心跳和基础帧读写
+- `auth.go`：`frpc` 登录、challenge 生命周期、group slot
+- `config.go`：runtime 加载、`config.push`、`config.ack`
+- `connections.go`：控制连接跟踪
+- `session.go`：`sessionState`、session 写锁、listener/stream/session 收口
+- `listeners.go`：TCP/UDP listener 展开和 serve loop
+- `tcp_bridge.go`：TCP `stream.*` 生命周期
+- `udp.go`：UDP `udp.*` 生命周期和 idle cleanup
+- `sockaddr.go`：地址转换辅助
+- `repository.go`：从数据库构造 `GroupRuntime` 和 `ConfigSnapshot`
 
-### 3.10 `internal/storage`
+## 4. 当前数据模型
 
-- SQLite/MySQL 存储适配。
-- 配置实体的仓储接口。
-- 审计与抓包元数据持久化。
+### 4.1 `proxy_groups`
 
-当前已经落地的最小边界是：
+当前控制面和管理面共用字段：
 
-- `internal/storage/sql.go` 只负责包装已经打开好的 `*sql.DB` / `*sql.Tx`
-- 查询结果统一返回 `map[string]any` 形式的 `Row`
-- 同时提供 `Begin`、`BeginTx`、`WithTx`、`WithTxContext` 事务辅助
-- 数据库驱动注册放在 `internal/storage/drivers`
-- 数据库打开和 DSN 解析放在上层 `internal/app/database.go`
-- schema bootstrap 和校验放在 `internal/app/schema.go`
+- `id`
+- `name`
+- `token_id`
+- `token_hash`
+- `enabled`
+- `rate_limit`
+- `client_access_mode`
+- `tunnel_access_mode`
+- `created_at`
+- `updated_at`
 
-## 4. 数据模型
+当前运行时实际消费：
 
-## 4.1 `ProxyGroup`
+- `id`
+- `name`
+- `token_hash`
+- `enabled`
+- `client_access_mode`
+- `updated_at`
+
+### 4.2 `group_client_ip_rules`
+
+字段：
+
+- `id`
+- `group_id`
+- `action`
+- `cidr`
+- `comment`
+- `created_at`
+
+当前已参与 `frpc` 登录来源 IP 校验。
+
+### 4.3 `group_tunnel_ip_rules`
+
+字段已经存在，但当前数据面没有消费。
+
+### 4.4 `tunnels`
+
+当前字段：
+
+- `id`
+- `group_id`
+- `name`
+- `protocol`
+- `remote_type`
+- `remote_start`
+- `remote_end`
+- `local_host`
+- `local_start`
+- `local_end`
+- `enabled`
+- `rate_limit`
+- `capture_enabled`
+- `created_at`
+- `updated_at`
+
+当前运行时实际消费：
+
+- `id`
+- `protocol`
+- `remote_type`
+- `remote_start`
+- `remote_end`
+- `local_host`
+- `local_start`
+- `local_end`
+- `enabled`
+- `updated_at`
+
+## 5. 管理 API 设计
+
+### 5.1 认证接口
+
+认证接口不依赖数据库管理员表，只依赖本地 `auth.json`。
+
+当前行为：
+
+- `GET /api/v1/auth/state`
+  - 返回是否初始化
+  - 返回当前请求是否已认证
+- `POST /api/v1/auth/init`
+  - 只接受 `key_hash`
+  - 未初始化时写入 `auth.json`
+- `POST /api/v1/auth/challenge`
+  - 返回 `challenge_id`、`salt`、`expires_at`
+- `POST /api/v1/auth/login`
+  - 验证 proof
+  - 写 Cookie
+- `GET /api/v1/auth/session`
+  - 返回会话状态
+- `POST /api/v1/auth/logout`
+  - 删除服务端 session
+  - 清理 Cookie
+
+### 5.2 分组接口
+
+当前入参只支持：
+
+- `name`
+- `enabled`
+
+创建或重置 token 时：
+
+- 返回完整明文 token
+- 数据库只保存 `token_id + token_hash`
+
+### 5.3 隧道接口
+
+当前支持字段：
+
+- `group_id`
+- `name`
+- `protocol`
+- `remote_type`
+- `remote_start`
+- `remote_end`
+- `local_host`
+- `local_start`
+- `local_end`
+- `enabled`
+
+校验规则：
+
+- `protocol` 只能是 `tcp` 或 `udp`
+- `remote_type` 只能是 `single` 或 `range`
+- 端口范围必须在 `1..65535`
+- `single` 模式下起止端口必须相同
+- `range` 模式下本地和远端跨度必须一致
+- `local_host` 使用 `protocol.ParseHost` 校验
+
+当前不校验端口冲突，也不暴露 `rate_limit` / `capture_enabled` 管理入口。
+
+## 6. 控制面设计
+
+### 6.1 传输与超时
+
+- 传输层由 `pkg/transport` 提供 `4` 字节长度前缀收发。
+- 业务帧由 `pkg/protocol` 解析。
+- 默认读写超时：`5s`
+- 登录 challenge TTL：`30s`
+- 心跳间隔：`15s`
+
+会话读超时使用：
 
 ```text
-ProxyGroup
-- id
-- name
-- token_id
-- token_hash
-- enabled
-- rate_limit
-- client_access_mode
-- tunnel_access_mode
-- created_at
-- updated_at
+max(3 * heartbeat_interval, minimum_read_timeout)
 ```
 
-与分组关联的子表：
+### 6.2 登录握手
 
-- `group_client_ip_rules`
-- `group_tunnel_ip_rules`
-- `tunnels`
-
-建议不要把 IP 列表直接存成单字段 JSON，第一阶段就按规则表建模，后续检索和审计更稳定。
-
-## 4.2 `group_client_ip_rules`
+当前时序：
 
 ```text
-- id
-- group_id
-- action        # allow | deny
-- cidr
-- comment
-- created_at
+frpc -> auth.begin
+frps -> auth.challenge
+frpc -> auth.finish
+frps -> server.hello
+frps -> config.push
+frpc -> config.ack
+frps -> start listeners
 ```
 
-作用时机：
+登录过程中当前会执行：
 
-- `frpc` 连接 `7000` 后。
-- token 识别出分组后。
-- 登录成功前。
+1. 读取 `auth.begin`
+2. 按 `token_id` 读取 `GroupRuntime`
+3. 校验分组是否启用
+4. 按 `group_client_ip_rules` 校验来源 IP
+5. 签发 challenge
+6. 用 `protocol.ChallengeResponse` 计算期望值
+7. 常量时间比较响应
+8. 抢占单分组单客户端槽位
+9. 返回 `server.hello`
+10. 下发首次 `config.push`
 
-## 4.3 `group_tunnel_ip_rules`
+### 6.3 配置快照
+
+当前 `ConfigSnapshot` 由 `repository.go` 构造：
+
+- `Version`：取分组和隧道最新 `updated_at` 的 Unix microseconds
+- `GeneratedAtMs`：快照时间
+- `Tunnels`：当前分组所有隧道的协议快照
+
+当前行为边界：
+
+- 配置只在登录阶段加载一次
+- `config.ack` 成功后才启动 listener
+- 管理 API 改库后不会主动推送给已在线 `frpc`
+
+## 7. 数据面设计
+
+### 7.1 TCP
+
+当前 TCP 数据面流程：
 
 ```text
-- id
-- group_id
-- action        # allow | deny
-- cidr
-- comment
-- created_at
+public tcp accept
+-> allocate streamId/requestId
+-> send stream.open
+-> wait stream.opened
+-> copy public -> frpc with stream.data
+-> copy frpc -> public with stream.data
+-> either side sends stream.close
 ```
 
-作用时机：
+当前没有独立工作连接池；所有 `stream.*` 都复用同一条控制连接。
 
-- 外部用户连接正向代理公网入口后。
-- 建立 `ActiveConnection` 前。
+### 7.2 UDP
 
-## 4.4 `Tunnel`
+当前 UDP 数据面流程：
 
 ```text
-- id
-- group_id
-- name
-- protocol      # tcp | udp
-- remote_type   # single | range
-- remote_start
-- remote_end
-- local_host
-- local_start
-- local_end
-- enabled
-- rate_limit
-- capture_enabled
-- created_at
-- updated_at
+public datagram
+-> resolve or create publicUDPSession
+-> first packet sends udp.open + udp.data
+-> next packets send udp.data
+-> frpc local reply returns as udp.data
+-> frps writes reply back to public client
 ```
 
-端口范围要求：
-
-- `remote_end - remote_start == local_end - local_start`
-- 范围不可与现有正向代理端口重叠
-- 范围不可与固定反向代理端口冲突
-
-范围执行约定：
-
-- TCP/UDP range tunnel 在运行态按 `remote_start..remote_end` 展开为逐端口公网 listener。
-- 展开后的 listener 仍归属于同一个 tunnel 配置和同一个 wire `tunnelId`，不为每个端口单独分配新的 tunnel id。
-- 某个 listener 命中后，`frps` 必须把实际命中的公网端口写入 `stream.open.remotePort` 或 `udp.open.remotePort`。
-- UDP range session 键必须包含 `tunnelId + remotePort + public client addr`；idle cleanup 语义与单端口 UDP 保持一致，不因为 range 改为另一套生命周期模型。
-
-## 4.5 `ReverseProxy`
+`publicUDPSession` 当前键为：
 
 ```text
-- id
-- name
-- type          # tcp | http | https
-- listen_addr
-- listen_port
-- server_name
-- tls_cert_id
-- upstream_host
-- upstream_port
-- enabled
-- rate_limit
-- capture_enabled
-- created_at
-- updated_at
+tunnelId + remotePort + public client addr
 ```
 
-规则约束：
+当前 idle cleanup 语义：
 
-- TCP 反代靠监听端口唯一定位。
-- HTTP 反代靠 `listen_port + host` 唯一定位。
-- HTTPS 反代靠 `listen_port + sni` 唯一定位。
+- `frps` 是唯一生命周期裁决方
+- 任何一次成功转发都会立即 `touch`
+- 清理判断基于 `lastActive + idleTimeout`
+- 默认 idle timeout 为 `30s`
+- 默认 sweep 周期为 `1s`
+- 清理后发送 `udp.close(reason=idle_timeout)`
 
-## 4.6 `ActiveConnection`
+### 7.3 范围映射
+
+TCP/UDP 范围映射统一按下面公式执行：
 
 ```text
-- id
-- source_type       # forward | reverse
-- protocol          # tcp | udp_session
-- group_id
-- tunnel_id
-- reverse_proxy_id
-- client_ip
-- client_port
-- server_ip
-- server_port
-- upstream_ip
-- upstream_port
-- stream_id
-- opened_at
-- closed_at
-- rx_bytes
-- tx_bytes
-- rx_rate
-- tx_rate
-- rate_limit
-- capture_state
-- close_reason
-- close_requested_by
+offset = remotePort - remoteStart
+localPort = localStart + offset
 ```
 
-`ActiveConnection` 只保存在内存运行态，不直接写数据库。关闭后将摘要写入审计或统计表。运行态注册表还需要保留关闭函数、所属会话和必要的 stream 元数据，以支持管理端按连接 ID 主动断开。
+`frps` 在运行态按逐端口展开 listener，但协议里仍只保留一个 `tunnelId`。
 
-## 4.7 `CaptureTask`
+## 8. 当前扩展边界
 
-```text
-- id
-- source_type
-- tunnel_id
-- reverse_proxy_id
-- active_connection_id
-- file_path
-- state
-- max_bytes
-- max_duration_sec
-- started_at
-- finished_at
-```
+后续如果继续扩展，必须以当前边界为前提：
 
-## 5. 网络设计
-
-## 5.1 `frpc` 控制入口
-
-- 默认监听 `0.0.0.0:7000`
-- 长连接模式
-- 登录成功后进入心跳和配置同步状态
-
-推荐流程：
-
-```text
-accept
--> read auth.begin
--> parse token_id
--> load group by token_id
--> match group client ip rules
--> reject or send auth.challenge with one-time nonce
--> read auth.finish
--> compute protocol.ChallengeResponse(token_hash, challenge_nonce)
--> validate sha256(token_hash + challenge_nonce)
--> register session
--> push ServerHello + ConfigPush
-```
-
-## 5.2 正向代理公网入口
-
-每个正向代理隧道对应一个或一组公网监听器。
-
-TCP 流程：
-
-```text
-accept public tcp connection
--> resolve tunnel by listen port
--> match group tunnel ip rules
--> create ActiveConnection
--> open stream to frpc with current tunnel snapshot
--> proxy both directions
--> close and flush stats
-```
-
-UDP 流程：
-
-```text
-receive datagram
--> resolve tunnel by listen port
--> match group tunnel ip rules
--> bind or reuse udp session
--> forward datagram to frpc
--> update session ttl
-```
-
-## 5.3 反向代理入口
-
-TCP：
-
-- 固定监听端口。
-- 一条规则对应一个上游。
-
-HTTP：
-
-- 共享监听端口。
-- 按 `Host` 匹配。
-
-HTTPS：
-
-- TLS 握手阶段按 `SNI` 选择证书和路由。
-- HTTP 层可再次校验 `Host`。
-
-## 6. 控制协议设计
-
-共享协议建议下沉到 `pkg/protocol`。
-
-第一阶段即采用二进制帧：底层用 `4` 字节长度前缀明确包边界，业务层用固定头和二进制 body 定义登录、配置同步、逻辑连接、数据读写和关闭语义。
-
-### 6.1 基础消息
-
-登录阶段拆成三类业务消息，但具体字段不再使用 JSON，而是按协议文档中的二进制 body 编码：
-
-- `auth.begin`：携带 `tokenId` 原始字节、客户端构建标识、主机名、OS、架构和能力位。
-- `auth.challenge`：携带一次性 `challengeId`、`nonce` 和过期时间。
-- `auth.finish`：携带 `challengeId` 和 `sha256(token_hash + nonce)` 的原始摘要。
-
-当前开发阶段不做 `frps/frpc` 协议版本兼容协商；`clientVersion/serverVersion` 只用于日志和排查，同仓代码按同步升级处理。
-
-首版消息类型固定为：
-
-- `auth.begin`
-- `auth.challenge`
-- `auth.finish`
-- `server.hello`
-- `config.push`
-- `config.ack`
-- `heartbeat.ping`
-- `heartbeat.pong`
-- `stream.open`
-- `stream.opened`
-- `stream.data`
-- `stream.close`
-- `udp.open`
-- `udp.data`
-- `udp.close`
-- `event.report`
-- `error`
-
-### 6.2 配置版本
-
-每次分组隧道配置变更后：
-
-- `frps` 递增 `configVersion`
-- 通过控制连接推送 `config.push`
-- `frpc` 必须回 `config.ack`
-- `frps` 记录每个在线会话的最后已确认版本
-- 未应答则重试或强制重连
-
-`config.push` 建议始终携带该分组的完整运行态快照，而不是增量 patch。这样 `frpc` 可以直接原子替换本地快照，避免补丁顺序错乱导致的状态漂移。
-
-`config.push` 只携带 `frpc` 执行工作流所必需的字段，例如隧道启停、本地目标、端口映射、协议等。`frps` 独占执行的服务端策略，例如 `client/tunnel` ACL、限速、抓包策略，不应作为客户端配置下发。
-
-协议和配置构造都遵守同一条字段治理规则：目标端只解析必要字段，不代表源端可以继续携带冗余字段。某个字段一旦确认无用或语义调整，必须同步从 `frps` 的配置构造、持久化、API 输出、测试数据和文档中收束，不能长期依赖“目标端忽略未知字段”维持兼容。
-
-### 6.3 连接管理中的单条连接关闭
-
-建议管理动作链路：
-
-```text
-POST /api/v1/connections/{id}/close
--> locate ActiveConnection in registry
--> mark close_requested_by=admin
--> publish connection.close_requested
--> close public side connection
--> send stream.close to frpc if stream is active
--> wait resource cleanup
--> publish connection.closed with close_reason=admin_terminated
--> write audit log
-```
-
-如果目标连接已经关闭，接口返回幂等成功或 `404` 都可以，但实现上必须保证不会误伤其他连接。
-
-## 7. 热更新设计
-
-`frps` 的配置更新分三类：
-
-### 7.1 管理面配置
-
-例如 `auth.json` 中的管理密钥 hash、日志等级、WebUI 端口。通常需要服务级重载，必要时可以允许重启。
-
-### 7.2 正向代理配置
-
-正向代理热更新需要区分两类配置：
-
-- `frpc` 执行配置，例如分组启停、隧道启停、协议、远端端口映射、本地目标地址。
-- `frps` 本地策略，例如客户端 ACL、隧道入口 ACL、限速、抓包开关。
-
-要求热更新：
-
-- 新增端口立即监听。
-- 修改端口先校验冲突，再重建监听器。
-- 删除端口先停止新接入，再等待旧连接自然关闭或强制回收。
-- 执行配置保存成功后，立即向该分组在线 `frpc` 推送 `config.push`。
-- `frpc` 不需要重启，收到后原子替换本地运行态快照。
-- `frps` 需要追踪 `config.ack`，在 WebUI 展示最后同步版本和同步时间。
-- 本地策略保存成功后，只更新 `frps` 运行态，不要求给 `frpc` 推送配置。
-
-### 7.3 反向代理配置
-
-例如域名、证书、上游地址。要求热更新：
-
-- HTTP 路由表原子替换。
-- HTTPS 证书表原子替换。
-- TCP 固定端口监听器按规则重建。
-
-### 7.4 热更新与活跃连接关系
-
-- 修改本地目标地址等 `frpc` 执行配置时，不打断无关已有连接，新建连接立即使用新配置。
-- 修改 ACL、限速、抓包开关等 `frps` 本地策略时，不要求 `frpc` 感知，新接入连接和后续转发立即按新策略执行。
-- 修改远端监听端口、协议、启停状态时，`frps` 先完成监听器切换，新接入连接立即按新配置处理。
-- 隧道被禁用或删除后，新连接必须立刻拒绝；已有连接默认允许自然结束。
-- 管理端如果需要立即回收已有连接，应按连接 ID 或隧道维度显式触发关闭动作，而不是依赖配置删除隐式清空。
-
-## 8. 事件总线与 WebSocket
-
-事件总线建议统一事件模型：
-
-```json
-{
-  "type": "connection.updated",
-  "version": 1024,
-  "timestamp": "2026-04-17T09:00:00Z",
-  "payload": {}
-}
-```
-
-建议事件类型：
-
-- `client.online`
-- `client.offline`
-- `config.synced`
-- `group.updated`
-- `tunnel.updated`
-- `reverse.updated`
-- `connection.close_requested`
-- `connection.opened`
-- `connection.updated`
-- `connection.closed`
-- `capture.updated`
-- `audit.created`
-- `reject.created`
-
-前端只订阅 WebSocket，不直接读取内存状态；状态列表仍通过 REST 拉首屏，后续由 WS 增量更新。
-
-## 9. 流量统计与限速
-
-### 9.1 字节统计
-
-在代理链路的读写边包装统计器：
-
-- 每次读写累计 `rx_bytes` 和 `tx_bytes`
-- 以 1 秒窗口计算 `rx_rate` 和 `tx_rate`
-- 定期向事件总线广播增量
-
-### 9.2 限速执行边界与生效值
-
-限速只在 `frps` 数据面执行：
-
-- `frpc` 不接收限速参数，不参与流量额度扣减，也不上报“当前正在被限速”的状态。
-- 对正向代理来说，`frpc` 只会观察到经由 `frps` 转发的数据变慢，但无法区分这是网络抖动还是服务端节流。
-- 限速配置的热更新只修改 `frps` 本地运行态，不通过 `config.push` 下发到客户端。
-- 本文中的流量额度桶（quota bucket）只用于限速实现，表示可消费的流量预算；它不是登录鉴权使用的 token，也不会出现在认证协议中。
-- 限速实现统一放在应用层 pacer，不依赖 Linux `tc`。这样可以保证 `frps` 在 Windows 和 Linux 上都具备一致能力，也避免为老旧且平台绑定的内核流控方案维护第二套实现路径。
-
-建议支持以下层级：
-
-- 全局限速
-- 分组限速
-- 隧道或反代规则限速
-
-其中：
-
-- `0` 或空值表示不限制。
-- `ActiveConnection.rate_limit` 存储该连接当前生效值，用于连接管理页展示。
-- 生效值取所有非零限制中的最严格值。
-
-### 9.3 TCP 限速实现
-
-TCP 限速建议在 `frps` 双向拷贝链路上执行：
-
-- 为每条 `ActiveConnection` 创建两个方向的 limiter，分别对应入口方向和出口方向。
-- 在 `io.Copy` 风格循环外包一层 paced reader 或 paced writer；实现重点不是“攒够一大块额度再写一大块”，而是按单调时钟连续补充额度，并计算下一次允许发送时间。
-- 每次写出前按本次准备转发的字节数申请流量额度；如果当前额度不足，只发送允许的那一小部分，剩余部分继续等待，而不是整块数据一起憋到下一个时间窗。
-- 流量额度不足时，当前 goroutine 在 `frps` 侧等待额度恢复，而不是通知 `frpc` 降速。
-- limiter 内部维护按 `bytes` 计量的可消费额度，额度补充速率配置统一使用 `bytes/sec`；底层可用流量额度桶（quota bucket）做额度核算，但输出调度必须由 pacer 保证平滑，不能做成类似 PWM 的秒级 burst/sleep。
-- TCP 写路径必须支持 partial write 和小块发送。低速场景例如 `10 bps` 时，可退化为接近 `1 byte / 800 ms` 的发送节拍；这已经是应用层字节流可达到的最细粒度。
-- 为减少内核侧合并导致的额外突发，发送方向应限制单次 write 大小，并评估是否对对应 socket 启用 `TCP_NODELAY`。
-- 修改全局、分组或规则限速后，运行态需要原子更新受影响连接的 limiter 参数，使新旧连接都能立即看到新的生效值。
-
-### 9.4 UDP 限速实现
-
-UDP 限速建议在 `frps` 的会话转发路径执行：
-
-- 以 UDP 会话为最小运行态对象，按方向维护 limiter。
-- 每次转发数据报前，按 datagram 大小申请流量额度。
-- 流量额度不足时等待额度恢复；如果会话 context 已取消或超时，则放弃该次转发并记录统计。
-- UDP 平滑度受 datagram 边界限制，无法细于“单个数据报”本身；如果一个数据报大于当前可用额度，只能等待额度累积后整包发出。
-- 首版不需要把 UDP 限速状态同步给 `frpc`，客户端只按收到的数据报继续转发。
-
-### 9.5 UDP 统计
-
-UDP 以会话维度记录：
-
-- 源 IP
-- 源端口
-- 目标端口
-- 最后活动时间
-- 收发字节数
-
-## 10. 抓包设计
-
-第一阶段先支持 TCP。
-
-建议设计：
-
-- 每个连接挂接一个可选 capture writer
-- 写出格式优先标准 pcap
-- 支持最大时长和最大文件大小
-- 任务结束后写入元数据表并可下载
-
-抓包权限要求：
-
-- 只有具备抓包权限的管理员可创建任务
-- 抓包行为必须落审计日志
-
-## 11. 存储设计
-
-第一阶段即支持 SQLite 和 MySQL。
-
-- SQLite 用于单机、开发和快速联调。
-- MySQL 用于独立数据库部署。
-- 存储层只抽象到支撑 SQLite/MySQL 双支持所需的最小层级。
-
-存储层需要区分：
-
-- 配置型数据库数据：分组、隧道、反代、证书
-- 本地认证文件：`auth.json` 中的管理密钥 hash
-- 审计型数据：操作日志、拒绝事件、抓包任务
-- 运行态数据：在线连接、实时速率、客户端会话
-
-数据库设计约束：
-
-- 表结构优先使用 SQLite 和 MySQL 的公共能力。
-- 首版避免依赖 JSON 列、触发器、生成列、数据库枚举等方言特性。
-- 数据库差异尽量收敛在 `internal/storage`，不向业务层扩散。
-- 当前 schema 定义和建表语句以内嵌代码维护，不单独引入 `.sql` 迁移目录。
-- `frps` 启动时直接创建当前必需表并做严格表结构校验；当前开发阶段不做独立 schema 版本记录、自动迁移或向后兼容，如果现有库结构不符合预期，服务立即退出。
-- 空库允许自动初始化；非空库要求列定义、主键、自增属性和唯一索引与内置 schema 完全一致。
-
-运行态数据放内存，不能让数据库成为数据面瓶颈。
-
-## 12. 并发与生命周期
-
-关键并发对象：
-
-- 分组运行态
-- 隧道监听器集合
-- 反代路由表
-- 活跃连接注册表
-- WebSocket 会话集合
-- 在线 `frpc` 会话的配置同步状态
-
-建议使用：
-
-- 原子替换只读快照，用于高频读场景
-- 分片锁或细粒度锁，避免全局大锁
-- context 控制监听器、连接、抓包任务生命周期
-- 单分组串行化配置重载，避免同一分组的多次 Web 修改交错下发
-
-## 13. 安全要求
-
-- token 采用固定长度拼接结构：`token = token_id + token_secret`，不使用 `.` 分隔符。
-- `token_id` 和 `token_secret` 必须固定长度，否则客户端无法可靠截取。
-- 首版建议 `token_id` 为 32 位小写 hex，`token_secret` 为 64 位小写 hex。
-- 服务端只在分组记录中持久化 `token_id + token_hash`。
-- 登录阶段先用 `token_id` 定位分组，再下发一次性临时盐，也就是 challenge nonce。
-- `token_hash` 建议固定使用 `sha256(token_secret)`。
-- 客户端提交 `sha256(token_hash + challenge_nonce)`，该摘要规则当前统一复用 `frps/pkg/protocol.ChallengeResponse`，服务端再使用常量时间算法比较。
-- challenge nonce 必须短时有效、只能使用一次，过期或重复使用必须拒绝。
-- 当前方案下 `token_hash` 等价于可登录校验材料，必须按敏感凭据保护。
-- 管理端不使用数据库 `admin/admins` 表，服务启动时必须先检查本地 `auth.json`。
-- 如果 `auth.json` 不存在，管理面只能进入初始化流程，由用户设置管理密钥。
-- `auth.json` 只保存管理密钥的 hash，不保存明文；建议首版固定使用 `sha256(secret)`。
-- 浏览器登录时先获取一次性盐，再提交 `sha256(key_hash + salt)`；盐必须短时有效、只能使用一次，服务端比较时必须使用常量时间算法。
-- `auth.json` 中的 `key_hash` 同样属于可登录校验材料，必须按敏感凭据保护。
-- 私钥独立存储并限制权限。
-- 控制连接登录前先做最小解析，避免被恶意输入拖垮。
-- 对 `7000`、API、WS 都要做基础限流。
-- 所有拒绝事件要可审计。
-
-## 14. 推荐实现顺序
-
-1. 存储模型和运行态模型。
-2. `7000` 控制连接与 token 登录。
-3. 单端口 TCP 正向代理。
-4. 管理 API 和最小 WebUI。
-5. UDP 单端口闭环。
-6. 端口范围映射与 UDP 细节扩展。
-7. 反向代理。
-8. 抓包和高级限速。
+- 反向代理应新增独立运行态，而不是塞回现有正向代理结构。
+- 连接注册表、速率统计、抓包、限速应建立在当前 TCP/UDP bridge 之上。
+- 在线热更新需要补 listener diff、配置推送和 ack 状态管理，不能误写成“仅写库”。
+- `group_tunnel_ip_rules`、`rate_limit`、`capture_enabled` 只有进入真实执行链路后，文档才允许改口为“已实现”。

@@ -1,118 +1,56 @@
 # frpc 项目概览
 
-## 1. 项目定位
+## 1. 当前定位
 
-`frpc` 是本平台的正向代理客户端，只负责连接 `frps`、通过 token 领取配置、执行本地 TCP/UDP 转发。
+`frpc` 当前是一个极简正向代理客户端，只做三件事：
 
-它的设计目标是极简：
+- 连接 `frps`
+- 领取配置
+- 执行本地 TCP/UDP 转发
 
-- 业务启动参数只需要 `server` 和 `token`
-- 不提供本地 WebUI
-- 不维护复杂配置文件
-- 不承载管理逻辑
+当前不承担管理、策略、观测或反向代理职责。
 
-## 1.1 当前实现状态
+## 2. 当前已交付范围
 
-截至 2026-04-19，`frpc` 当前已落地：
+截至 2026-04-20，`frpc` 已具备：
 
-- 只接受 `server` 和 `token` 两个启动参数
-- 按固定长度拆分 `token_id` / `token_secret`
-- challenge/response 登录
-- 接收 `config.push` 并返回 `config.ack`
-- 最小 TCP 单端口 / range `stream.open` / `stream.data` / `stream.close`
-- 最小 UDP 单端口 / range `udp.open` / `udp.data` / `udp.close`
-- 真实本地 UDP 转发与会话回收
-- 收到 `udp.close` 后释放本地 UDP session，不做本地 idle timer
-- 本地拨号失败时返回确定性错误
-- 已通过 `test/e2e_tcp_single.py` 与真实 `frps` 打通：
-  - `Python 外网客户端 <-> frps <-> frpc <-> Python 内网主机`
-- 已通过 `test/e2e_tcp_range.py` 与真实 `frps` 打通：
-  - 同一个 TCP range tunnel 命中两个不同 `remotePort` 时，按偏移转发到对应 `localPort`
-  - 同轮确认 TCP 单端口最小链路不回退
-- 已通过 `test/e2e_udp_single.py` 与真实 `frps` 打通：
-  - `Python 外网 UDP 客户端 <-> frps <-> frpc <-> Python 内网 UDP 服务`
-  - `happy_path`
-  - `idle_cleanup`
-- 已通过 `test/e2e_udp_range.py` 与真实 `frps` 打通：
-  - 同一个 UDP range tunnel 命中两个不同 `remotePort` 时，按偏移转发到对应 `localPort`
-  - 同轮确认 UDP 单端口最小链路不回退
-
-当前还没有进入的范围包括：
-
-- 多客户端竞争语义
-- 本地观测面
-- 任何本地管理页面
-
-## 2. 核心职责
-
-`frpc` 只负责以下事情：
-
-- 连接服务端 `7000`
-- 发起登录
-- 保持心跳
-- 接收服务端下发的隧道配置
-- 根据服务端指令打开工作流
-- 把流量转发到本地或内网目标
-- 对 UDP 会话只执行服务端指令，不自行做空闲超时裁决
-- 上报基础状态与错误
-
-## 3. 不负责的事情
-
-`frpc` 不负责：
-
-- 保存分组配置
-- 决定哪些隧道存在
-- 管理黑白名单
-- 管理限速策略
-- 管理证书
-- 提供可视化界面
-
-这些全部属于 `frps`。
-
-## 4. 运行方式
-
-标准启动方式：
-
-```text
-frpc --server 1.2.3.4:7000 --token your-token
-```
-
-其中：
-
-- `server` 是 `frps` 的控制连接地址
-- `token` 对应某个分组
-
-## 5. 生命周期
-
-启动后典型流程如下：
-
-1. 读取 `server` 与 `token`
-2. 建立到 `frps` 的控制连接
-3. 发送登录请求
-4. 登录成功后接收配置版本和隧道列表
-5. 维持心跳
-6. 等待服务端打开工作流
-7. 将流量转发到本地目标
-8. 断线后自动重连并重新同步配置
-
-## 6. 支持能力
-
-### 6.1 支持
-
-- TCP 正向代理
-- UDP 正向代理
+- CLI 参数：
+  - `--server`
+  - `--token`
+  - `--version`
+- 固定长度 token 解析：
+  - `token_id`：`32` 位小写 hex
+  - `token_secret`：`64` 位小写 hex
+- 登录握手：
+  - `auth.begin`
+  - `auth.challenge`
+  - `auth.finish`
+  - `server.hello`
+- 首次 `config.push` / `config.ack`
+- 心跳保活
+- TCP 单端口转发
+- TCP 连续范围映射
+- UDP 单端口转发
+- UDP 连续范围映射
 - 自动重连
-- 配置热同步
-- 基础错误上报
+- 本地拨号或本地读写失败后的错误回传
 
-### 6.2 不支持
+## 3. 当前明确边界
 
+下面这些内容当前不属于 `frpc` 的职责：
+
+- 本地管理页面
+- 本地复杂配置文件
 - 反向代理
-- 域名证书管理
-- 本地配置中心
-- 本地规则系统
+- 本地 ACL
+- 服务端限速执行
+- 服务端抓包执行
+- 本地 UDP idle timer
+- 一个 token 对应多个并发客户端的竞争语义
 
-## 7. 当前目录
+`frpc` 当前只执行来自 `frps` 的指令，不自行决定隧道规则。
+
+## 4. 当前目录
 
 ```text
 frpc/
@@ -122,14 +60,54 @@ frpc/
 └── go.mod
 ```
 
-其中：
+`internal/client` 当前稳定文件边界：
 
-- `internal/client` 负责启动和重连、控制协议、配置同步、TCP 转发、UDP 转发和运行态管理
-- `internal/config` 负责启动参数和 token 解析
+- `client.go`
+- `login.go`
+- `session.go`
+- `targets.go`
+- `tcp_bridge.go`
+- `udp_bridge.go`
+- `runtime_info.go`
 
-## 8. 设计原则
+共享协议和传输层复用 `frps/pkg/protocol` 与 `frps/pkg/transport`。
 
-- 客户端尽量无状态。
-- 协议实现与服务端同仓同步演进，当前开发阶段不做版本兼容层。
-- 失败后优先重连而不是等待人工修复。
-- 所有业务规则都由服务端下发。
+## 5. 当前运行方式
+
+```text
+frpc --server 1.2.3.4:7000 --token <token>
+```
+
+日志级别通过环境变量控制：
+
+- `FRPC_LOG_LEVEL=debug|info|warn|error`
+
+## 6. 当前生命周期
+
+当前启动后流程固定为：
+
+1. 校验 `server`
+2. 解析 token
+3. 建立控制连接
+4. 登录
+5. 接收首次配置
+6. 回 `config.ack`
+7. 启动心跳和读循环
+8. 等待 `stream.*` / `udp.*`
+9. 断线后指数退避重连
+
+## 7. 当前验证
+
+`frpc` 当前已通过：
+
+- `go test ./...`（`frpc/`）
+- `python test/e2e_tcp_single.py`
+- `python test/e2e_tcp_range.py`
+- `python test/e2e_udp_single.py`
+- `python test/e2e_udp_range.py`
+
+更细说明见：
+
+- [frpc 技术设计](technical-design.md)
+- [frpc 开发文档](development-guide.md)
+- [frpc 测试与调试文档](testing-debugging.md)

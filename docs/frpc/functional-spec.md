@@ -1,141 +1,147 @@
 # frpc 功能文档
 
-## 1. 功能边界
+## 1. 当前功能边界
 
-`frpc` 是一个极简客户端，功能边界明确如下：
+`frpc` 当前支持：
 
-支持：
-
-- 接入 `frps`
-- 领取配置
-- 执行 TCP/UDP 转发
+- 连接 `frps`
+- challenge/response 登录
+- 接收配置
+- 执行 TCP 转发
+- 执行 UDP 转发
 - 自动重连
-- 上报状态和错误
 
-不支持：
+`frpc` 当前不支持：
 
-- 本地管理页面
+- 本地 WebUI
 - 本地复杂配置
 - 反向代理
-- 自定义访问控制
+- 本地 ACL
+- 服务端限速感知
+- 本地 UDP idle timer
 
 ## 2. 启动功能
 
-启动命令：
+当前命令：
 
 ```text
-frpc --server 1.2.3.4:7000 --token xxxxx
+frpc --server 1.2.3.4:7000 --token <token>
 ```
 
-要求：
+当前要求：
 
-- `server` 不能为空
-- `token` 不能为空
-- 启动后立即尝试连接
+- `server` 必填
+- `token` 必填
+- `server` 必须能被 `net.SplitHostPort` 解析
+- `token` 必须是 `96` 位小写 hex
 
 ## 3. 登录功能
 
-`frpc` 必须：
+当前登录过程：
 
-- 从 `token` 固定长度截取 `tokenId` 和 `tokenSecret`
-- 先发送只包含 `tokenId` 的登录开始请求
-- 接收服务端临时盐 challenge
-- 计算 `tokenHash = sha256(tokenSecret)` 并发送 `sha256(tokenHash + challengeNonce)`
-- 上报自身版本和基础环境信息
-- 接收登录结果
+1. 从 token 里截取 `token_id` 和 `token_secret`
+2. 发送 `auth.begin`
+3. 接收 `auth.challenge`
+4. 本地计算：
+   - `token_hash = sha256(token_secret)`
+   - `response = sha256(token_hash + nonce)`
+5. 发送 `auth.finish`
+6. 接收 `server.hello`
+7. 接收首次 `config.push`
+8. 回 `config.ack`
 
-成功后：
+当前失败后行为：
 
-- 进入在线状态
-- 接收配置版本
-- 开始心跳
-
-失败后：
-
-- 输出明确错误原因
-- 按退避策略重试
+- 输出明确错误
+- 进入退避重连
 
 ## 4. 配置接收功能
 
-`frpc` 需要接收：
+当前 `frpc` 会接收：
 
-- 分组标识
-- 配置版本
-- 隧道列表
-- 心跳间隔
+- `configVersion`
+- `generatedAtMs`
+- `tunnels`
 
-处理规则：
+当前处理规则：
 
-- 新配置版本覆盖旧版本
-- 新配置应用后返回确认
-- 已删除隧道不再接受新流
-- 新增隧道立即可用
-- 配置更新不要求重启 `frpc`
-- 已存在连接默认允许自然结束
-- 服务端 ACL、限速、抓包策略不属于 `frpc` 配置接收范围
+- 新快照直接替换旧快照
+- 替换完成后回 `config.ack`
+- 已存在的活跃 stream/session 继续由当前运行态自然收口
+- 当前不接收 ACL、限速、抓包等服务端本地策略
 
 ## 5. TCP 转发功能
 
-当服务端要求打开某个 TCP 流时，`frpc` 必须：
+当前 TCP 行为：
 
-1. 找到对应隧道
-2. 计算本地目标地址
+1. 收到 `stream.open`
+2. 根据 `tunnelId` 和 `remotePort` 解析本地目标
 3. 拨号本地 TCP 服务
-4. 建立双向收发
-5. 在异常时关闭并上报
+4. 成功后回 `stream.opened(status=ok)`
+5. 失败后回 `stream.opened(status=error)`
+6. 双向收发 `stream.data`
+7. 收到或发送 `stream.close` 后回收本地连接
 
-补充要求：
+当前要求：
 
-- 如果服务端发送 `stream.close`，`frpc` 必须只关闭对应 stream，不影响其他工作流。
+- 只关闭目标 `streamId`
+- 不影响其他 stream
 
 ## 6. UDP 转发功能
 
-`frpc` 需要支持：
+当前 UDP 行为：
 
-- 接收来自 `frps` 的 UDP 会话流量
-- 转发到本地 UDP 服务
-- 收取返回数据并送回 `frps`
-- 维护会话超时
+1. 收到 `udp.open`
+2. 根据 `tunnelId` 和 `remotePort` 解析本地目标
+3. 建立本地 `UDPConn`
+4. 收到 `udp.data` 时把 datagram 原样写给本地服务
+5. 本地回包时用同一 `sessionId` 回发给 `frps`
+6. 收到 `udp.close` 后释放本地 UDP session
 
-## 7. 重连功能
+当前固定边界：
 
-触发条件：
+- 不做本地 idle timer
+- 不主动按本地时间清理空闲 UDP session
+- 生命周期由 `frps` 裁决
+
+## 7. 范围映射功能
+
+当前 TCP/UDP 范围映射都按固定偏移规则执行：
+
+```text
+offset = remotePort - remoteStart
+localPort = localStart + offset
+```
+
+当前要求：
+
+- `remotePort` 必须落在当前 tunnel 范围内
+- 计算后的 `localPort` 必须不超出本地范围
+
+## 8. 重连功能
+
+当前触发条件：
 
 - 控制连接断开
-- 登录阶段异常
-- 心跳超时
+- 登录阶段失败
+- 读循环或心跳循环退出
 
-要求：
+当前行为：
 
-- 自动重连
-- 使用退避策略
-- 重连成功后重新同步配置
+- 清理本地 TCP stream
+- 清理本地 UDP session
+- 退避后重新连接
+- 重新登录并重新同步配置
 
-## 8. 状态与错误上报
+## 9. 当前不实现的能力
 
-至少需要上报：
+下面这些内容当前不能算作 `frpc` 已支持：
 
-- 登录成功
-- 登录失败
-- 配置接收成功
-- 配置应用确认成功或失败
-- 本地拨号失败
-- stream 关闭原因
-- 重连开始和成功
+- 本地缓存复杂配置
+- 多服务端接入
+- 本地限速
+- 本地抓包
+- 本地规则系统
+- 配置变更的主动热更新协商
 
-## 9. 运行限制
-
-`frpc` 必须遵守以下限制：
-
-- 不本地保存 token
-- 不绕过服务端配置创建新隧道
-- 不暴露本地 HTTP API
-- 不在本地维护独立 ACL
-- 不实现或感知服务端限速状态
-
-## 10. 非功能要求
-
-- 长时间运行稳定
-- 断网后可恢复
-- 在配置变更时不崩溃，也不因热更新而重启进程
-- 在本地目标不可用时能明确报错
+这些能力如果后续开始实现，必须先更新本文档。
