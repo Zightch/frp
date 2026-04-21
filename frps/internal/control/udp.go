@@ -109,10 +109,13 @@ func (s *Server) cleanupIdlePublicUDPSessions(conn net.Conn, logger Logger, sess
 	return nil
 }
 
-func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, remotePort uint16, listener *net.UDPConn, clientAddr *net.UDPAddr, payload []byte) error {
+func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, session *sessionState, configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, listener *net.UDPConn, clientAddr *net.UDPAddr, payload []byte) error {
 	now := time.Now().UTC()
 	udpSession := newPublicUDPSession(session.nextTunnelStreamID(), tunnel, remotePort, listener, clientAddr, now)
-	udpSession, created := session.bindPublicUDPSession(udpSession)
+	udpSession, created := session.bindPublicUDPSession(udpSession, configVersion)
+	if udpSession == nil {
+		return nil
+	}
 	if !created {
 		udpSession.touch(now)
 		return s.writeFrameWithSession(controlConn, session, protocol.Frame{
@@ -156,9 +159,13 @@ func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, se
 	return nil
 }
 
-func (s *sessionState) bindPublicUDPSession(udpSession *publicUDPSession) (*publicUDPSession, bool) {
+func (s *sessionState) bindPublicUDPSession(udpSession *publicUDPSession, configVersion uint64) (*publicUDPSession, bool) {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
+
+	if s.runtimeFrozen || !s.listenersStarted || s.runtimeGeneration != configVersion {
+		return nil, false
+	}
 
 	key := udpSession.key()
 	if sessionID, exists := s.udpSessionKeys[key]; exists {

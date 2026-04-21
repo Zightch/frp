@@ -71,35 +71,43 @@ func (s *Server) RefreshGroup(groupID int64) {
 	}
 
 	snapshot := runtimeSnapshotForGroup(group)
-	requestID := active.session.nextRequestID()
-	pushBody, err := protocol.MarshalConfigPush(protocol.ConfigPush{
-		ConfigVersion: snapshot.Version,
-		GeneratedAtMs: snapshot.GeneratedAtMs,
-		Tunnels:       snapshot.Tunnels,
-	})
-	if err != nil {
-		s.logger.Warn("marshal refreshed config push failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
+	if active.session.hasPendingConfig() {
+		s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
+		_ = active.conn.Close()
 		return
 	}
 
-	if err := active.session.reconfigure(group, snapshot, requestID); err != nil {
+	if err := s.freezeGroupRuntime(active.conn, active.session); err != nil {
+		s.logger.Warn("freeze active group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
+		_ = active.conn.Close()
+		return
+	}
+
+	if err := s.pushReloadConfig(active.conn, active.session, group, snapshot); err != nil {
 		if errors.Is(err, errConfigUpdateInFlight) {
 			s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
-			_ = active.conn.Close()
-			return
 		}
-		s.logger.Warn("reconfigure active session failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
-		return
-	}
-
-	active.session.resetTunnelRuntime()
-	if err := s.writeFrameWithSession(active.conn, active.session, protocol.Frame{
-		Type:      protocol.TypeConfigPush,
-		RequestID: requestID,
-		Body:      pushBody,
-	}); err != nil {
-		active.session.clearPendingConfigRequest(requestID)
 		s.logger.Warn("push refreshed config failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
 		_ = active.conn.Close()
 	}
+}
+
+func (s *Server) freezeGroupRuntime(conn net.Conn, session *sessionState) error {
+	listeners, udpListeners, streams, udpSessions := session.freezeTunnelRuntime()
+	closeStartedTunnelListeners(listeners, udpListeners)
+
+	var freezeErr error
+	for streamID, stream := range streams {
+		if err := s.sendStreamClose(conn, session, streamID, protocol.CloseReasonAdminTerminated, "reload in progress"); err != nil && freezeErr == nil {
+			freezeErr = err
+		}
+		stream.signalReady(net.ErrClosed)
+		stream.close()
+	}
+	for _, udpSession := range udpSessions {
+		if err := s.sendUDPClose(conn, session, udpSession.sessionID, protocol.CloseReasonAdminTerminated, "reload in progress"); err != nil && freezeErr == nil {
+			freezeErr = err
+		}
+	}
+	return freezeErr
 }

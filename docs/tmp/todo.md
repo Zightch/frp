@@ -8,7 +8,6 @@
 
 子步骤：
 
-- 待完成：`frps` 侧整组冻结、`config.push/config.ack` 重载状态管理与 listener 重建。
 - 待完成：`frpc` 侧在线 `config.push` 处理、本地资源清理与快照替换。
 - 待完成：补单端口 / 端口范围在线热重载回归。
 
@@ -22,4 +21,4 @@
 
 当前唯一下一步：
 
-- 先实现 `frps` 侧整组冻结、在线 `config.push/config.ack` 重载状态管理和 listener 重建。
+- 先实现 `frpc` 侧在线 `config.push` 处理、本地资源清理和快照替换。

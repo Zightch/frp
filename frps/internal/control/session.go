@@ -18,21 +18,26 @@ type sessionState struct {
 	Snapshot               ConfigSnapshot
 	LastAckedConfigVersion uint64
 	pendingConfigRequestID uint32
+	pendingGroup           GroupRuntime
+	pendingSnapshot        ConfigSnapshot
 	nextServerRequestID    atomic.Uint32
 	nextStreamID           atomic.Uint32
 	readTimeout            time.Duration
 	configMu               sync.Mutex
 	writeMu                sync.Mutex
 
-	runtimeMu        sync.Mutex
-	streams          map[uint32]*publicStream
-	udpSessions      map[uint32]*publicUDPSession
-	udpSessionKeys   map[string]uint32
-	listeners        map[uint32][]net.Listener
-	udpListeners     map[uint32][]*net.UDPConn
-	listenersStarted bool
-	shutdownOnce     sync.Once
-	done             chan struct{}
+	runtimeMu         sync.Mutex
+	streams           map[uint32]*publicStream
+	udpSessions       map[uint32]*publicUDPSession
+	udpSessionKeys    map[string]uint32
+	listeners         map[uint32][]net.Listener
+	udpListeners      map[uint32][]*net.UDPConn
+	listenersStarted  bool
+	udpCleanupStarted bool
+	runtimeFrozen     bool
+	runtimeGeneration uint64
+	shutdownOnce      sync.Once
+	done              chan struct{}
 }
 
 func (s *sessionState) nextRequestID() uint32 {
@@ -73,10 +78,20 @@ func (s *sessionState) nextTunnelStreamID() uint32 {
 	return streamID
 }
 
-func (s *sessionState) addPublicStream(streamID uint32, stream *publicStream) {
+func (s *sessionState) addPublicStream(streamID uint32, stream *publicStream, configVersion uint64) bool {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
+	if s.runtimeFrozen || !s.listenersStarted || s.runtimeGeneration != configVersion {
+		return false
+	}
 	s.streams[streamID] = stream
+	return true
+}
+
+func (s *sessionState) canServeRuntimeIO(configVersion uint64) bool {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	return !s.runtimeFrozen && s.listenersStarted && s.runtimeGeneration == configVersion
 }
 
 func (s *sessionState) publicStream(streamID uint32) *publicStream {
@@ -122,8 +137,8 @@ func (s *sessionState) reconfigure(group GroupRuntime, snapshot ConfigSnapshot, 
 		return errConfigUpdateInFlight
 	}
 
-	s.Group = group
-	s.Snapshot = snapshot
+	s.pendingGroup = group
+	s.pendingSnapshot = snapshot
 	s.pendingConfigRequestID = requestID
 	return nil
 }
@@ -131,7 +146,10 @@ func (s *sessionState) reconfigure(group GroupRuntime, snapshot ConfigSnapshot, 
 func (s *sessionState) configAckState() (uint32, uint64) {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
-	return s.pendingConfigRequestID, s.Snapshot.Version
+	if s.pendingConfigRequestID == 0 {
+		return 0, s.Snapshot.Version
+	}
+	return s.pendingConfigRequestID, s.pendingSnapshot.Version
 }
 
 func (s *sessionState) acceptConfigAck(requestID uint32, version uint64) error {
@@ -141,12 +159,16 @@ func (s *sessionState) acceptConfigAck(requestID uint32, version uint64) error {
 	if s.pendingConfigRequestID == 0 || requestID != s.pendingConfigRequestID {
 		return errUnexpectedConfigAck
 	}
-	if version != s.Snapshot.Version {
+	if version != s.pendingSnapshot.Version {
 		return errConfigVersionMismatch
 	}
 
+	s.Group = s.pendingGroup
+	s.Snapshot = s.pendingSnapshot
 	s.LastAckedConfigVersion = version
 	s.pendingConfigRequestID = 0
+	s.pendingGroup = GroupRuntime{}
+	s.pendingSnapshot = ConfigSnapshot{}
 	return nil
 }
 
@@ -155,11 +177,25 @@ func (s *sessionState) clearPendingConfigRequest(requestID uint32) {
 	defer s.configMu.Unlock()
 	if s.pendingConfigRequestID == requestID {
 		s.pendingConfigRequestID = 0
+		s.pendingGroup = GroupRuntime{}
+		s.pendingSnapshot = ConfigSnapshot{}
 	}
 }
 
-func (s *sessionState) resetTunnelRuntime() {
+func (s *sessionState) hasPendingConfig() bool {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	return s.pendingConfigRequestID != 0
+}
+
+func (s *sessionState) freezeTunnelRuntime() ([]net.Listener, []*net.UDPConn, map[uint32]*publicStream, []*publicUDPSession) {
 	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+
+	s.runtimeFrozen = true
+	s.listenersStarted = false
+	s.runtimeGeneration = 0
+
 	listeners := make([]net.Listener, 0, len(s.listeners))
 	for tunnelID, tunnelListeners := range s.listeners {
 		delete(s.listeners, tunnelID)
@@ -170,34 +206,39 @@ func (s *sessionState) resetTunnelRuntime() {
 		delete(s.udpListeners, tunnelID)
 		udpListeners = append(udpListeners, tunnelListeners...)
 	}
-	for sessionID := range s.udpSessions {
+	streams := make(map[uint32]*publicStream, len(s.streams))
+	for streamID, stream := range s.streams {
+		delete(s.streams, streamID)
+		streams[streamID] = stream
+	}
+	udpSessions := make([]*publicUDPSession, 0, len(s.udpSessions))
+	for sessionID, udpSession := range s.udpSessions {
 		delete(s.udpSessions, sessionID)
+		udpSessions = append(udpSessions, udpSession)
 	}
 	for key := range s.udpSessionKeys {
 		delete(s.udpSessionKeys, key)
 	}
-	s.listenersStarted = false
-	s.runtimeMu.Unlock()
 
-	for _, listener := range listeners {
-		_ = listener.Close()
-	}
-	for _, listener := range udpListeners {
-		_ = listener.Close()
-	}
+	return listeners, udpListeners, streams, udpSessions
+}
+
+func (s *sessionState) allowTunnelRuntimeStart() {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	s.runtimeFrozen = false
+}
+
+func (s *sessionState) resetTunnelRuntime() {
+	listeners, udpListeners, _, _ := s.freezeTunnelRuntime()
+	closeStartedTunnelListeners(listeners, udpListeners)
+	s.allowTunnelRuntimeStart()
 }
 
 func (s *Server) shutdownSession(session *sessionState) {
 	session.closeDone()
-	session.resetTunnelRuntime()
-
-	session.runtimeMu.Lock()
-	streams := make([]*publicStream, 0, len(session.streams))
-	for streamID, stream := range session.streams {
-		delete(session.streams, streamID)
-		streams = append(streams, stream)
-	}
-	session.runtimeMu.Unlock()
+	listeners, udpListeners, streams, _ := session.freezeTunnelRuntime()
+	closeStartedTunnelListeners(listeners, udpListeners)
 
 	for _, stream := range streams {
 		stream.signalReady(net.ErrClosed)

@@ -80,34 +80,13 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		}
 	}
 	logger.Info("config acknowledged", "config_version", ack.ConfigVersion, "applied_at_ms", ack.AppliedAtMs)
+	session.allowTunnelRuntimeStart()
 	return s.ensureTunnelListeners(conn, logger, session)
 }
 
 func (s *Server) pushConfig(conn net.Conn, session *sessionState) error {
-	_, snapshot := session.currentGroupAndSnapshot()
-	requestID := session.nextRequestID()
-	body, err := protocol.MarshalConfigPush(protocol.ConfigPush{
-		ConfigVersion: snapshot.Version,
-		GeneratedAtMs: snapshot.GeneratedAtMs,
-		Tunnels:       snapshot.Tunnels,
-	})
-	if err != nil {
-		return err
-	}
-
-	session.configMu.Lock()
-	session.pendingConfigRequestID = requestID
-	session.configMu.Unlock()
-
-	if err := s.writeFrameWithSession(conn, session, protocol.Frame{
-		Type:      protocol.TypeConfigPush,
-		RequestID: requestID,
-		Body:      body,
-	}); err != nil {
-		session.clearPendingConfigRequest(requestID)
-		return err
-	}
-	return nil
+	group, snapshot := session.currentGroupAndSnapshot()
+	return s.pushReloadConfig(conn, session, group, snapshot)
 }
 
 func (s *Server) loadGroupRuntime(tokenID [16]byte) (GroupRuntime, error) {
@@ -129,4 +108,28 @@ func runtimeSnapshotForGroup(group GroupRuntime) ConfigSnapshot {
 	}
 	snapshot.Tunnels = nil
 	return snapshot
+}
+
+func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group GroupRuntime, snapshot ConfigSnapshot) error {
+	requestID := session.nextRequestID()
+	body, err := protocol.MarshalConfigPush(protocol.ConfigPush{
+		ConfigVersion: snapshot.Version,
+		GeneratedAtMs: snapshot.GeneratedAtMs,
+		Tunnels:       snapshot.Tunnels,
+	})
+	if err != nil {
+		return err
+	}
+	if err := session.reconfigure(group, snapshot, requestID); err != nil {
+		return err
+	}
+	if err := s.writeFrameWithSession(conn, session, protocol.Frame{
+		Type:      protocol.TypeConfigPush,
+		RequestID: requestID,
+		Body:      body,
+	}); err != nil {
+		session.clearPendingConfigRequest(requestID)
+		return err
+	}
+	return nil
 }

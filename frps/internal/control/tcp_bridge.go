@@ -20,7 +20,7 @@ type publicStream struct {
 	closeOnce     sync.Once
 }
 
-func (s *Server) handlePublicConnection(controlConn net.Conn, logger Logger, session *sessionState, tunnel protocol.TunnelEntry, remotePort uint16, publicConn net.Conn) {
+func (s *Server) handlePublicConnection(controlConn net.Conn, logger Logger, session *sessionState, configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, publicConn net.Conn) {
 	streamID := session.nextTunnelStreamID()
 	requestID := session.nextRequestID()
 	stream := &publicStream{
@@ -30,7 +30,10 @@ func (s *Server) handlePublicConnection(controlConn net.Conn, logger Logger, ses
 		ready:         make(chan error, 1),
 	}
 
-	session.addPublicStream(streamID, stream)
+	if !session.addPublicStream(streamID, stream, configVersion) {
+		_ = publicConn.Close()
+		return
+	}
 
 	body, err := protocol.MarshalStreamOpen(protocol.StreamOpen{
 		TunnelID:   tunnel.TunnelID,
