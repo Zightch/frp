@@ -294,6 +294,29 @@ func (s *Server) handleTunnelResource(writer http.ResponseWriter, request *http.
 	}
 }
 
+func (s *Server) handleLocalIPs(writer http.ResponseWriter, request *http.Request) {
+	if !s.requireManagementSession(writer, request) {
+		return
+	}
+
+	manager := s.requireManager(writer)
+	if manager == nil {
+		return
+	}
+
+	if request.Method != http.MethodGet {
+		writeMethodNotAllowed(writer)
+		return
+	}
+
+	items, err := manager.listLocalIPs()
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) requireManager(writer http.ResponseWriter) *managementService {
 	if s.manager == nil {
 		writeError(writer, &apiError{Status: http.StatusServiceUnavailable, Message: "management store is unavailable"})
@@ -661,6 +684,42 @@ func (m *managementService) deleteTunnel(ctx context.Context, id int64) error {
 		return &apiError{Status: http.StatusNotFound, Message: "tunnel not found"}
 	}
 	return nil
+}
+
+type localIPView struct {
+	Addr     string `json:"addr"`
+	Family   string `json:"family"`
+	Standard string `json:"standard"`
+}
+
+func (m *managementService) listLocalIPs() ([]localIPView, error) {
+	if m.network == nil {
+		return nil, &apiError{Status: http.StatusServiceUnavailable, Message: "local network snapshot is unavailable"}
+	}
+
+	snapshot := m.network.Current()
+	items := make([]localIPView, 0, len(snapshot.AvailableIPs)+2)
+
+	// Add special listening addresses first
+	items = append(items,
+		localIPView{Addr: "0.0.0.0", Family: "ipv4", Standard: "0.0.0.0"},
+		localIPView{Addr: "::", Family: "ipv6", Standard: "::"},
+	)
+
+	// Add local IP addresses from snapshot
+	for _, ip := range snapshot.AvailableIPs {
+		normalized, err := system.NormalizeListenIP(ip.Addr)
+		if err != nil {
+			continue
+		}
+		items = append(items, localIPView{
+			Addr:     ip.Addr,
+			Family:   string(ip.Family),
+			Standard: normalized,
+		})
+	}
+
+	return items, nil
 }
 
 func (m *managementService) loadProxyGroupByID(ctx context.Context, conn storage.Conn, id int64) (proxyGroupView, error) {

@@ -6,11 +6,18 @@ export interface ProxyGroup {
   id: number
   name: string
   token_id: string
+  effective_ip: string
   enabled: boolean
   status: string
   status_reason: string
   created_at: string
   updated_at: string
+}
+
+export interface LocalIP {
+  addr: string
+  family: string
+  standard: string
 }
 
 export interface Tunnel {
@@ -106,13 +113,13 @@ export const authApi = {
 export const proxyGroupsApi = {
   list: () => request<{ items: ProxyGroup[] }>('/proxy-groups'),
 
-  create: (data: { name: string; enabled?: boolean }) =>
+  create: (data: { name: string; effective_ip: string; enabled?: boolean }) =>
     request<{ item: ProxyGroup; token: string }>('/proxy-groups', {
       method: 'POST',
       body: JSON.stringify(data)
     }),
 
-  update: (id: number, data: { name?: string; enabled?: boolean }) =>
+  update: (id: number, data: { name?: string; effective_ip?: string; enabled?: boolean }) =>
     request<{ item: ProxyGroup }>(`/proxy-groups/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data)
@@ -124,6 +131,10 @@ export const proxyGroupsApi = {
     request<{ item: ProxyGroup; token: string }>(`/proxy-groups/${id}/token`, {
       method: 'POST'
     })
+}
+
+export const localIPsApi = {
+  list: () => request<{ items: LocalIP[] }>('/local-ips')
 }
 
 // --- Tunnels API ---

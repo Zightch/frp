@@ -63,6 +63,7 @@ func NewServer(options Options, logger *slog.Logger, version string) (*Server, e
 	mux.HandleFunc("/api/v1/proxy-groups/", srv.handleProxyGroupResource)
 	mux.HandleFunc("/api/v1/tunnels", srv.handleTunnels)
 	mux.HandleFunc("/api/v1/tunnels/", srv.handleTunnelResource)
+	mux.HandleFunc("/api/v1/local-ips", srv.handleLocalIPs)
 
 	srv.server = &http.Server{
 		Addr:              options.Addr,

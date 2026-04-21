@@ -789,6 +789,104 @@ func TestProxyGroupStatusBecomesAbnormalWhenEffectiveIPLeavesSnapshot(t *testing
 	}
 }
 
+func TestLocalIPsEndpoint(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+						{Addr: "::1", Family: system.FamilyIPv6},
+						{Addr: "192.168.1.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			Auth: manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	result := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/local-ips",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	ipItems, ok := result.JSON["items"].([]any)
+	if !ok {
+		t.Fatalf("unexpected local-ips payload: %#v", result.JSON)
+	}
+
+	if len(ipItems) != 5 {
+		t.Fatalf("expected 5 items (2 special + 3 local), got %d: %#v", len(ipItems), ipItems)
+	}
+
+	first, ok := ipItems[0].(map[string]any)
+	if !ok || first["addr"] != "0.0.0.0" || first["family"] != "ipv4" {
+		t.Fatalf("expected first item to be 0.0.0.0 ipv4, got: %#v", first)
+	}
+	second, ok := ipItems[1].(map[string]any)
+	if !ok || second["addr"] != "::" || second["family"] != "ipv6" {
+		t.Fatalf("expected second item to be :: ipv6, got: %#v", second)
+	}
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/local-ips",
+		nil,
+		http.StatusMethodNotAllowed,
+		sessionCookie,
+	)
+}
+
+func TestLocalIPsEndpointReturnsUnavailableWithoutSnapshot(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/local-ips",
+		nil,
+		http.StatusServiceUnavailable,
+		sessionCookie,
+	)
+}
+
 func TestWebUIHandlerServesStaticFilesAndSPAFallback(t *testing.T) {
 	server, err := NewServer(
 		Options{

@@ -7,9 +7,11 @@ import {
   authApi,
   proxyGroupsApi as groupConfigApi,
   tunnelsApi,
+  localIPsApi,
   type ProxyGroup,
   type Tunnel,
-  type TunnelPayload
+  type TunnelPayload,
+  type LocalIP
 } from '@/api'
 
 defineOptions({
@@ -41,6 +43,8 @@ const authenticated = ref(false)
 // Data
 const groups = ref<ProxyGroup[]>([])
 const tunnels = ref<Tunnel[]>([])
+const localIPs = ref<LocalIP[]>([])
+const localIPsLoading = ref(false)
 const selectedGroupId = ref<number | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -53,9 +57,11 @@ const groupSubmitting = ref(false)
 const editingGroupId = ref<number | null>(null)
 const editingGroupStatus = ref<string>('')
 const editingGroupStatusReason = ref<string>('')
-const groupForm = ref({ name: '', enabled: true })
+const editingGroupEffectiveIP = ref<string>('')
+const groupForm = ref({ name: '', effective_ip: '', enabled: true })
 const groupFormRules = {
-  name: [{ required: true, message: '请输入分组名称', trigger: 'blur' }]
+  name: [{ required: true, message: '请输入分组名称', trigger: 'blur' }],
+  effective_ip: [{ required: true, message: '请选择生效 IP', trigger: 'change' }]
 }
 
 // New token display
@@ -127,9 +133,10 @@ async function loadData() {
   error.value = ''
 
   try {
-    const [groupsResult, tunnelsResult] = await Promise.all([
+    const [groupsResult, tunnelsResult, ipsResult] = await Promise.all([
       groupConfigApi.list(),
-      tunnelsApi.list()
+      tunnelsApi.list(),
+      localIPsApi.list()
     ])
 
     if (groupsResult.error) {
@@ -144,6 +151,7 @@ async function loadData() {
 
     groups.value = groupsResult.data?.items || []
     tunnels.value = tunnelsResult.data?.items || []
+    localIPs.value = ipsResult.data?.items || []
 
     if (!groups.value.some(group => group.id === selectedGroupId.value)) {
       selectedGroupId.value = groups.value[0]?.id ?? null
@@ -153,6 +161,24 @@ async function loadData() {
   } finally {
     loading.value = false
   }
+}
+
+function effectiveIPOptions(): { value: string; label: string; disabled: boolean }[] {
+  const availableSet = new Set(localIPs.value.map(ip => ip.addr))
+  const currentIP = editingGroupEffectiveIP.value
+  const options: { value: string; label: string; disabled: boolean }[] = []
+
+  // If editing and current effective_ip is not in available list, show it as invalid option
+  if (groupDialogMode.value === 'edit' && currentIP && !availableSet.has(currentIP)) {
+    options.push({ value: currentIP, label: `${currentIP}（已失效）`, disabled: false })
+  }
+
+  for (const ip of localIPs.value) {
+    const familyTag = ip.family === 'ipv6' ? 'IPv6' : 'IPv4'
+    options.push({ value: ip.addr, label: `${ip.addr} (${familyTag})`, disabled: false })
+  }
+
+  return options
 }
 
 // Format helpers
@@ -335,7 +361,11 @@ function getGroupRowClass({ row }: { row: ProxyGroup }): string {
 function openCreateGroupDialog() {
   groupDialogMode.value = 'create'
   editingGroupId.value = null
-  groupForm.value = { name: '', enabled: true }
+  editingGroupStatus.value = ''
+  editingGroupStatusReason.value = ''
+  editingGroupEffectiveIP.value = ''
+  const defaultIP = localIPs.value.find(ip => ip.addr === '0.0.0.0')?.addr || localIPs.value[0]?.addr || ''
+  groupForm.value = { name: '', effective_ip: defaultIP, enabled: true }
   groupDialogVisible.value = true
   nextTick(() => groupFormRef.value?.clearValidate())
 }
@@ -345,7 +375,8 @@ function openEditGroupDialog(group: ProxyGroup) {
   editingGroupId.value = group.id
   editingGroupStatus.value = group.status
   editingGroupStatusReason.value = group.status_reason
-  groupForm.value = { name: group.name, enabled: group.enabled }
+  editingGroupEffectiveIP.value = group.effective_ip
+  groupForm.value = { name: group.name, effective_ip: group.effective_ip, enabled: group.enabled }
   groupDialogVisible.value = true
   nextTick(() => groupFormRef.value?.clearValidate())
 }
@@ -360,6 +391,7 @@ async function submitGroupForm() {
     if (groupDialogMode.value === 'create') {
       const result = await groupConfigApi.create({
         name: groupForm.value.name,
+        effective_ip: groupForm.value.effective_ip,
         enabled: groupForm.value.enabled
       })
       if (result.error) {
@@ -375,6 +407,7 @@ async function submitGroupForm() {
       if (!editingGroupId.value) return
       const result = await groupConfigApi.update(editingGroupId.value, {
         name: groupForm.value.name,
+        effective_ip: groupForm.value.effective_ip,
         enabled: groupForm.value.enabled
       })
       if (result.error) {
@@ -623,6 +656,11 @@ function copyToken() {
             <span class="info-label">Token ID:</span>
             <span class="info-value token">{{ selectedGroup.token_id }}</span>
           </span>
+          <span class="info-divider">|</span>
+          <span class="info-item">
+            <span class="info-label">生效 IP:</span>
+            <span class="info-value">{{ selectedGroup.effective_ip }}</span>
+          </span>
         </div>
         <div class="operation-actions">
           <el-button size="small" @click="handleResetToken(selectedGroup)">重置 Token</el-button>
@@ -764,6 +802,22 @@ function copyToken() {
       >
         <el-form-item label="名称" prop="name">
           <el-input v-model="groupForm.name" placeholder="请输入分组名称" />
+        </el-form-item>
+        <el-form-item label="生效 IP" prop="effective_ip">
+          <el-select
+            v-model="groupForm.effective_ip"
+            placeholder="请选择生效 IP"
+            style="width: 100%"
+            :loading="localIPsLoading"
+          >
+            <el-option
+              v-for="opt in effectiveIPOptions()"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+              :disabled="opt.disabled"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="groupForm.enabled" />
