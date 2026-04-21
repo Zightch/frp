@@ -1176,8 +1176,8 @@ func TestWebUIHandlerServesStaticFilesAndSPAFallback(t *testing.T) {
 	}
 }
 
-func TestNewServerRejectsMissingWebUIDistDir(t *testing.T) {
-	_, err := NewServer(
+func TestNewServerFallsBackWhenWebUIDistDirMissing(t *testing.T) {
+	server, err := NewServer(
 		Options{
 			Addr:              "127.0.0.1:7500",
 			ReadHeaderTimeout: 5 * time.Second,
@@ -1187,8 +1187,71 @@ func TestNewServerRejectsMissingWebUIDistDir(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		"test",
 	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected placeholder status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("frps 管理面改造中")) {
+		t.Fatalf("unexpected placeholder body: %s", recorder.Body.String())
+	}
+}
+
+func TestNewServerFallsBackWhenWebUIIndexMissing(t *testing.T) {
+	distDir := filepath.Join(t.TempDir(), "dist")
+	if err := os.MkdirAll(filepath.Join(distDir, "assets"), 0o755); err != nil {
+		t.Fatalf("create dist dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "assets", "app.js"), []byte("console.log('webui-ok');"), 0o644); err != nil {
+		t.Fatalf("write asset: %v", err)
+	}
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Auth:              newTestAuthManager(t, false),
+			WebUIDistDir:      distDir,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected placeholder status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("frps 管理面改造中")) {
+		t.Fatalf("unexpected placeholder body: %s", recorder.Body.String())
+	}
+}
+
+func TestNewServerRejectsInvalidWebUIDistPath(t *testing.T) {
+	distPath := filepath.Join(t.TempDir(), "webui-dist.txt")
+	if err := os.WriteFile(distPath, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write dist file: %v", err)
+	}
+
+	_, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Auth:              newTestAuthManager(t, false),
+			WebUIDistDir:      distPath,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
 	if err == nil {
-		t.Fatal("expected missing webui dist dir to fail")
+		t.Fatal("expected invalid webui dist path to fail")
 	}
 }
 

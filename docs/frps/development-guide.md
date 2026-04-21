@@ -126,7 +126,7 @@ npm.cmd run dev
 npm.cmd run build
 ```
 
-构建产物仍输出到 `frps/webui/dist/`，由 `frps` 按 `webui.dist_dir` 直接托管。
+构建产物仍输出到 `frps/webui/dist/`，由 `frps` 按 `webui.dist_dir` 直接托管；如果目录或 `index.html` 缺失，服务会自动回退到内置占位页，不阻塞管理 API 启动。
 
 ## 6. 当前修改落点
 

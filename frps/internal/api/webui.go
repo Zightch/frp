@@ -92,34 +92,40 @@ const placeholderIndexHTML = `<!DOCTYPE html>
 </html>
 `
 
-func newWebUIHandler(distDir string) (http.Handler, error) {
+func newWebUIHandler(distDir string) (http.Handler, string, error) {
 	distDir = strings.TrimSpace(distDir)
 	if distDir == "" {
-		return http.HandlerFunc(handlePlaceholderIndex), nil
+		return newPlaceholderWebUIHandler(), "", nil
 	}
 
 	info, err := os.Stat(distDir)
 	if err != nil {
-		return nil, fmt.Errorf("stat webui.dist_dir %q: %w", distDir, err)
+		if os.IsNotExist(err) {
+			return newPlaceholderWebUIHandler(), fmt.Sprintf("webui.dist_dir %q does not exist", distDir), nil
+		}
+		return nil, "", fmt.Errorf("stat webui.dist_dir %q: %w", distDir, err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("webui.dist_dir %q must be a directory", distDir)
+		return nil, "", fmt.Errorf("webui.dist_dir %q must be a directory", distDir)
 	}
 
 	indexPath := filepath.Join(distDir, "index.html")
 	indexInfo, err := os.Stat(indexPath)
 	if err != nil {
-		return nil, fmt.Errorf("stat webui index %q: %w", indexPath, err)
+		if os.IsNotExist(err) {
+			return newPlaceholderWebUIHandler(), fmt.Sprintf("webui index %q does not exist", indexPath), nil
+		}
+		return nil, "", fmt.Errorf("stat webui index %q: %w", indexPath, err)
 	}
 	if indexInfo.IsDir() {
-		return nil, fmt.Errorf("webui index %q must be a file", indexPath)
+		return nil, "", fmt.Errorf("webui index %q must be a file", indexPath)
 	}
 
 	return &webUIHandler{
 		distDir:    distDir,
 		indexPath:  indexPath,
 		fileServer: http.FileServer(http.Dir(distDir)),
-	}, nil
+	}, "", nil
 }
 
 type webUIHandler struct {
@@ -170,7 +176,15 @@ func (h *webUIHandler) serveIndex(writer http.ResponseWriter, request *http.Requ
 	http.ServeFile(writer, request, h.indexPath)
 }
 
+func newPlaceholderWebUIHandler() http.Handler {
+	return http.HandlerFunc(handlePlaceholderIndex)
+}
+
 func handlePlaceholderIndex(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet && request.Method != http.MethodHead {
+		http.NotFound(writer, request)
+		return
+	}
 	if request.URL.Path != "/" {
 		http.NotFound(writer, request)
 		return
@@ -178,5 +192,8 @@ func handlePlaceholderIndex(writer http.ResponseWriter, request *http.Request) {
 
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.WriteHeader(http.StatusOK)
+	if request.Method == http.MethodHead {
+		return
+	}
 	_, _ = writer.Write([]byte(placeholderIndexHTML))
 }

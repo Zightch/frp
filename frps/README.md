@@ -18,7 +18,7 @@ go build -o ./frps.exe ./cmd/frps
 .\frps.exe
 ```
 
-`frps` 启动时不需要任何参数，始终读取当前工作目录下的 `data/config.json`。如果当前工作目录里已经存在 `data/config.json`，直接启动 `frps.exe` 即可加载管理 API；如同时存在 `webui/dist/`，则会一并托管本地 WebUI 静态资源。
+`frps` 启动时不需要任何参数，始终读取当前工作目录下的 `data/config.json`。如果当前工作目录里已经存在 `data/config.json`，直接启动 `frps.exe` 即可加载管理 API；如同时存在 `webui/dist/`，则会一并托管本地 WebUI 静态资源；如果 `webui/dist/` 或其中的 `index.html` 尚未构建，服务会回退到内置占位页，不阻塞管理 API 启动。
 
 本地默认配置建议如下：
 
@@ -105,7 +105,7 @@ npm.cmd run dev
 npm.cmd run build
 ```
 
-构建产物仍输出到 `frps/webui/dist/`。`frps` 管理端会读取配置中的 `webui.dist_dir` 并托管该目录。
+构建产物仍输出到 `frps/webui/dist/`。`frps` 管理端会读取配置中的 `webui.dist_dir` 并托管该目录；如果目录或 `index.html` 缺失，则自动回退到内置占位页。
 
 空库会在启动时自动创建当前必需表；如果现有 SQLite/MySQL 表结构与服务内置 schema 不一致，`frps` 会直接退出，避免带着错误库结构继续运行。当前开发阶段不做数据库 schema 兼容或自动迁移。
 `internal/storage/sql.go` 仍只负责统一封装数据库对象，不承载驱动打开和 schema 迁移逻辑。

@@ -39,9 +39,16 @@ type Server struct {
 }
 
 func NewServer(options Options, logger *slog.Logger, version string) (*Server, error) {
-	webuiHandler, err := newWebUIHandler(options.WebUIDistDir)
+	webuiHandler, fallbackReason, err := newWebUIHandler(options.WebUIDistDir)
 	if err != nil {
 		return nil, fmt.Errorf("init webui handler: %w", err)
+	}
+	if fallbackReason != "" && logger != nil {
+		logger.Warn(
+			"webui dist unavailable; serving placeholder page",
+			"dist_dir", options.WebUIDistDir,
+			"reason", fallbackReason,
+		)
 	}
 
 	srv := &Server{
