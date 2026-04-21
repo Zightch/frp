@@ -531,6 +531,9 @@ func TestManagementKeySmokeFlow(t *testing.T) {
 	if item["effective_ip"] != "0.0.0.0" {
 		t.Fatalf("unexpected effective_ip in create response: %#v", item)
 	}
+	if item["status"] != proxyGroupStatusEnabled {
+		t.Fatalf("unexpected create status: %#v", item)
+	}
 
 	protected := performClientRequest(
 		t,
@@ -617,6 +620,9 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 	if item["effective_ip"] != "127.0.0.1" {
 		t.Fatalf("unexpected create effective_ip: %#v", item)
 	}
+	if item["status"] != proxyGroupStatusEnabled {
+		t.Fatalf("unexpected create status: %#v", item)
+	}
 
 	performRequest(
 		t,
@@ -654,6 +660,9 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 	if updatedItem["enabled"] != false {
 		t.Fatalf("unexpected update enabled flag: %#v", updatedItem)
 	}
+	if updatedItem["status"] != proxyGroupStatusDisabled {
+		t.Fatalf("unexpected update status: %#v", updatedItem)
+	}
 
 	listed := performRequest(
 		t,
@@ -675,6 +684,9 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 	if listItem["effective_ip"] != "0.0.0.0" {
 		t.Fatalf("unexpected list effective_ip: %#v", listItem)
 	}
+	if listItem["status"] != proxyGroupStatusDisabled {
+		t.Fatalf("unexpected list status: %#v", listItem)
+	}
 
 	reset := performRequest(
 		t,
@@ -691,6 +703,89 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 	}
 	if resetItem["effective_ip"] != "0.0.0.0" {
 		t.Fatalf("unexpected token reset effective_ip: %#v", resetItem)
+	}
+	if resetItem["status"] != proxyGroupStatusDisabled {
+		t.Fatalf("unexpected token reset status: %#v", resetItem)
+	}
+}
+
+func TestProxyGroupStatusBecomesAbnormalWhenEffectiveIPLeavesSnapshot(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+	reader := &mutableSnapshotReader{
+		snapshot: system.Snapshot{
+			AvailableIPs: []system.IPAddress{
+				{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+			},
+		},
+	}
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network:           reader,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	created := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-a",
+			"effective_ip": "127.0.0.1",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	item, ok := created.JSON["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected create payload: %#v", created.JSON)
+	}
+	if item["status"] != proxyGroupStatusEnabled {
+		t.Fatalf("unexpected create status: %#v", item)
+	}
+
+	reader.snapshot = system.Snapshot{
+		AvailableIPs: []system.IPAddress{
+			{Addr: "10.0.0.2", Family: system.FamilyIPv4},
+		},
+	}
+
+	listed := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/proxy-groups",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	items, ok := listed.JSON["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("unexpected list payload: %#v", listed.JSON)
+	}
+	listItem, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected list item payload: %#v", items[0])
+	}
+	if listItem["status"] != proxyGroupStatusAbnormal {
+		t.Fatalf("unexpected abnormal status: %#v", listItem)
+	}
+	if listItem["status_reason"] != proxyGroupStatusReasonMissingLocalIP {
+		t.Fatalf("unexpected abnormal reason: %#v", listItem)
 	}
 }
 
@@ -1031,5 +1126,16 @@ type staticSnapshotReader struct {
 }
 
 func (r staticSnapshotReader) Current() system.Snapshot {
+	return r.snapshot
+}
+
+type mutableSnapshotReader struct {
+	snapshot system.Snapshot
+}
+
+func (r *mutableSnapshotReader) Current() system.Snapshot {
+	if r == nil {
+		return system.Snapshot{}
+	}
 	return r.snapshot
 }

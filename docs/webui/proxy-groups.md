@@ -255,15 +255,20 @@ interface ProxyGroup {
   token_id: string
   effective_ip: string
   enabled: boolean
+  status: '启用' | '禁用' | '异常'
+  status_reason?: string
   created_at: string
   updated_at: string
 }
 ```
 
-分组相关接口的 `item` / `items` 返回模型都要带 `effective_ip`，分组新建/编辑请求体也都要提交 `effective_ip`。
+分组相关接口的 `item` / `items` 返回模型都要带 `effective_ip`、`status` 和可选 `status_reason`，分组新建/编辑请求体也都要提交 `effective_ip`。
 
 ### 9.3 异常态展示边界
 
-- 如果数据库中已有 `effective_ip` 当前已不在本机地址列表中，后续步骤要把分组显示为异常。
+- 后端接口当前已经返回一个分组状态字段，供页面直接展示“启用 / 禁用 / 异常”三态，不再额外拆出第二个“IP 可用性状态”字段。
+- `enabled = false` 时显示“禁用”。
+- `enabled = true` 且 `effective_ip` 当前有效并可绑定时显示“启用”。
+- 其他情况显示“异常”；如果数据库中已有 `effective_ip` 当前已不在本机地址列表中，就属于这一类。
 - 表单和列表在异常态下仍需保留并回显数据库中的原值，避免用户进入编辑态后丢失上下文。
 - 这类“异常”是运行态展示，不代表前端自动改写数据库值。

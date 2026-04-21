@@ -23,19 +23,30 @@ import (
 
 const schemaTimestampLayout = "2006-01-02 15:04:05.000000"
 
+const (
+	proxyGroupStatusEnabled  = "启用"
+	proxyGroupStatusDisabled = "禁用"
+	proxyGroupStatusAbnormal = "异常"
+
+	proxyGroupStatusReasonMissingLocalIP      = "已配置 IP 当前不存在于本机"
+	proxyGroupStatusReasonSnapshotUnavailable = "本机 IP 列表暂不可用"
+)
+
 type managementService struct {
 	store   *storage.SQL
 	network system.SnapshotReader
 }
 
 type proxyGroupView struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	TokenID     string `json:"token_id"`
-	EffectiveIP string `json:"effective_ip"`
-	Enabled     bool   `json:"enabled"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	TokenID      string `json:"token_id"`
+	EffectiveIP  string `json:"effective_ip"`
+	Enabled      bool   `json:"enabled"`
+	Status       string `json:"status"`
+	StatusReason string `json:"status_reason,omitempty"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 type tunnelView struct {
@@ -317,7 +328,7 @@ ORDER BY id
 		if err != nil {
 			return nil, fmt.Errorf("decode proxy group: %w", err)
 		}
-		items = append(items, item)
+		items = append(items, m.withProxyGroupStatus(item))
 	}
 	return items, nil
 }
@@ -680,7 +691,7 @@ WHERE id = ?
 	if err != nil {
 		return proxyGroupView{}, fmt.Errorf("decode proxy group: %w", err)
 	}
-	return item, nil
+	return m.withProxyGroupStatus(item), nil
 }
 
 func (m *managementService) loadTunnelByID(ctx context.Context, conn storage.Conn, id int64) (tunnelView, error) {
@@ -832,6 +843,27 @@ func decodeProxyGroupRow(row storage.Row) (proxyGroupView, error) {
 	item.CreatedAt = rowTimeString(row, "created_at")
 	item.UpdatedAt = rowTimeString(row, "updated_at")
 	return item, nil
+}
+
+func (m *managementService) withProxyGroupStatus(item proxyGroupView) proxyGroupView {
+	item.Status, item.StatusReason = m.deriveProxyGroupStatus(item.Enabled, item.EffectiveIP)
+	return item
+}
+
+func (m *managementService) deriveProxyGroupStatus(enabled bool, effectiveIP string) (string, string) {
+	if !enabled {
+		return proxyGroupStatusDisabled, ""
+	}
+	if system.IsSpecialListenIP(effectiveIP) {
+		return proxyGroupStatusEnabled, ""
+	}
+	if m == nil || m.network == nil {
+		return proxyGroupStatusAbnormal, proxyGroupStatusReasonSnapshotUnavailable
+	}
+	if m.network.Current().HasIP(effectiveIP) {
+		return proxyGroupStatusEnabled, ""
+	}
+	return proxyGroupStatusAbnormal, proxyGroupStatusReasonMissingLocalIP
 }
 
 func decodeTunnelRow(row storage.Row) (tunnelView, error) {
