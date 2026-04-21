@@ -51,6 +51,8 @@ const groupDialogMode = ref<'create' | 'edit'>('create')
 const groupFormRef = ref()
 const groupSubmitting = ref(false)
 const editingGroupId = ref<number | null>(null)
+const editingGroupStatus = ref<string>('')
+const editingGroupStatusReason = ref<string>('')
 const groupForm = ref({ name: '', enabled: true })
 const groupFormRules = {
   name: [{ required: true, message: '请输入分组名称', trigger: 'blur' }]
@@ -341,6 +343,8 @@ function openCreateGroupDialog() {
 function openEditGroupDialog(group: ProxyGroup) {
   groupDialogMode.value = 'edit'
   editingGroupId.value = group.id
+  editingGroupStatus.value = group.status
+  editingGroupStatusReason.value = group.status_reason
   groupForm.value = { name: group.name, enabled: group.enabled }
   groupDialogVisible.value = true
   nextTick(() => groupFormRef.value?.clearValidate())
@@ -598,6 +602,24 @@ function copyToken() {
           </span>
           <span class="info-divider">|</span>
           <span class="info-item">
+            <span class="info-label">状态:</span>
+            <el-tooltip
+              v-if="selectedGroup.status === '异常' && selectedGroup.status_reason"
+              :content="selectedGroup.status_reason"
+              placement="top"
+            >
+              <el-tag type="danger" size="small">{{ selectedGroup.status }}</el-tag>
+            </el-tooltip>
+            <el-tag
+              v-else
+              :type="selectedGroup.status === '启用' ? 'success' : selectedGroup.status === '禁用' ? 'info' : 'danger'"
+              size="small"
+            >
+              {{ selectedGroup.status }}
+            </el-tag>
+          </span>
+          <span class="info-divider">|</span>
+          <span class="info-item">
             <span class="info-label">Token ID:</span>
             <span class="info-value token">{{ selectedGroup.token_id }}</span>
           </span>
@@ -636,10 +658,21 @@ function copyToken() {
             >
               <el-table-column prop="name" label="名称" />
               <el-table-column prop="token_id" label="Token ID" width="200" />
-              <el-table-column label="状态" width="80" align="center">
+              <el-table-column label="状态" width="100" align="center">
                 <template #default="{ row }">
-                  <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
-                    {{ row.enabled ? '启用' : '禁用' }}
+                  <el-tooltip
+                    v-if="row.status === '异常' && row.status_reason"
+                    :content="row.status_reason"
+                    placement="top"
+                  >
+                    <el-tag type="danger" size="small">{{ row.status }}</el-tag>
+                  </el-tooltip>
+                  <el-tag
+                    v-else
+                    :type="row.status === '启用' ? 'success' : row.status === '禁用' ? 'info' : 'danger'"
+                    size="small"
+                  >
+                    {{ row.status }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -713,6 +746,16 @@ function copyToken() {
       width="400px"
       :close-on-click-modal="false"
     >
+      <el-alert
+        v-if="groupDialogMode === 'edit' && editingGroupStatus === '异常' && editingGroupStatusReason"
+        type="error"
+        :closable="false"
+        show-icon
+        style="margin-bottom: var(--spacing-md)"
+      >
+        <template #title>当前状态：异常</template>
+        {{ editingGroupStatusReason }}
+      </el-alert>
       <el-form
         ref="groupFormRef"
         :model="groupForm"

@@ -7,6 +7,8 @@ export interface ProxyGroup {
   name: string
   token_id: string
   enabled: boolean
+  status: string
+  status_reason: string
   created_at: string
   updated_at: string
 }
