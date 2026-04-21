@@ -440,7 +440,22 @@ body：
 
 - `frpc` 收到新的 `config.push` 后，必须先构造新快照，再原子替换运行态。
 - `config.ack.status = ok` 后，表示后续新建工作流必须使用该版本。
-- 已经打开的 TCP `stream` 继续绑定其打开瞬间的隧道快照，不因配置更新被强制改写。
+- `config.push` 不只用于首次登录；同一控制连接后续也允许再次收到新的整组完整快照。
+- 在线热重载继续复用现有 `config.push / config.ack`，不新增单 tunnel `add/remove/rename/replace` 协议事件。
+- 同一控制连接在任一时刻只允许存在一个未确认的 `config.push`。
+- `frpc` 只有在本地资源清理和快照替换已经完成后，才允许返回 `config.ack(status=ok)`。
+- 如果服务端没有主动冻结该分组，已经打开的 TCP `stream` 继续绑定其打开瞬间的隧道快照，不因配置更新被原地改写；但在线整组热重载阶段，`frps` 首版允许先关闭该分组全部活动 TCP/UDP 运行态，再下发新快照。
+- 如果 `config.ack` 超时、返回 `error`，或更新期间底层连接断开，`frps` 可以直接关闭该控制连接，让 `frpc` 重新登录后重新领取完整快照。
+
+### 8.3.1 在线整组热重载约定
+
+下面这些规则已确认，作为后续在线热重载的协议侧约束：
+
+- 分组离线时，配置变更只写数据库，不产生协议流量。
+- 分组在线且发生运行态配置变更时，`frps` 首版按“整组冻结 + 整组全量重建”处理。
+- `frps` 下发新快照前，可以先停止该分组公网 listener，并关闭该分组当前活动 TCP/UDP 运行态。
+- `frps` 只有在收到对应 `config.ack(status=ok)` 后，才重新按新快照开放 listener。
+- token 重置和分组删除不属于热重载路径，继续直接关闭控制连接。
 
 ## 8.4 端口范围执行约定
 
@@ -455,6 +470,12 @@ localPort = localStart + offset
 - `frps` 在运行态可以把一个 range tunnel 展开为多个真实公网 listener，但协议里仍只使用同一个 `tunnelId`。
 - 因此，`stream.open.remotePort` 和 `udp.open.remotePort` 都必须携带“本次实际命中的公网端口”，不能把 range tunnel 固定写回 `remoteStart`。
 - `frpc` 不得依赖 listener 创建顺序、配置项顺序或额外分配的子 tunnel id 来推导目标端口；它只依据当前配置快照和消息中的实际 `remotePort` 计算本地目标端口。
+
+### 8.4.1 范围变更在热重载中的判定
+
+- 范围 tunnel 的热重载判定固定按整个 tunnel 进行，不做重叠端口复用优化。
+- 只要 `remoteStart / remoteEnd / localStart / localEnd` 之一变化，就视为该 tunnel 的执行配置已经整体替换。
+- 例如旧配置 `1000-2000 -> 3000-4000` 改为新配置 `1500-2500 -> 3000-4000` 时，虽然 `1500-2000` 数值上同时落在新旧范围内，但因为 `offset = remotePort - remoteStart` 的基准已经从 `1000` 变成 `1500`，对应的 `localPort` 映射整体变化，因此必须按完整替换处理。
 
 ## 9. TCP 工作流协议
 
