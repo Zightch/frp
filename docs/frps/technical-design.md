@@ -86,6 +86,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - 初始化 `auth.Manager`
 - 打开数据库
 - 执行 schema bootstrap 和严格校验
+- 初始化本机地址快照服务并在关闭时回收
 - 并发启动管理 API 和控制监听器
 - 统一 shutdown
 
@@ -142,6 +143,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `name`
 - `token_id`
 - `token_hash`
+- `effective_ip`
 - `enabled`
 - `rate_limit`
 - `created_at`
@@ -153,6 +155,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 
 - `id`
 - `name`
+- `effective_ip`
 - `token_hash`
 - `enabled`
 - `updated_at`
@@ -215,15 +218,22 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 
 ### 5.2 分组接口
 
-当前入参只支持：
+当前入参支持：
 
 - `name`
+- `effective_ip`
 - `enabled`
 
 创建或重置 token 时：
 
 - 返回完整明文 token
 - 数据库只保存 `token_id + token_hash`
+
+当前 `effective_ip` 校验规则：
+
+- 只允许单个 IP 字面量，不接受 hostname、CIDR、端口或空字符串。
+- 只允许服务端当前本机 IPv4、服务端当前本机 IPv6，以及特殊值 `0.0.0.0`、`::`。
+- 当前管理 API 已要求显式提交 `effective_ip`；WebUI 适配留在后续步骤单独完成。
 
 ### 5.3 隧道接口
 
@@ -375,28 +385,17 @@ localPort = localStart + offset
 - `proxy_groups.rate_limit` 只有进入真实执行链路后，文档才允许改口为“已实现”。
 - 抓包控制如果后续落地，必须先定义运行时控制面和生效边界，不能再回填为 `tunnels` 持久化字段。
 
-## 9. 已确认待落地的分组生效 IP 设计
+## 9. 分组生效 IP 的剩余待落地边界
 
-下面这些边界已经确认，但当前仍处于契约先行阶段，尚未进入真实代码链路。
+下面这些边界已经确认，其中字段持久化、管理 API CRUD、本机地址快照校验和 listener 绑定已经进入真实代码链路；本节只保留剩余未完成部分。
 
-### 9.1 持久化字段
+### 9.1 运行态异常派生
 
-- `proxy_groups` 将新增 `effective_ip` 字段，数据库/API 字段名固定为 `effective_ip`，管理面和 WebUI 标签统一使用“生效 IP”。
-- `effective_ip` 存储单个 IP 字面量，只允许服务端当前本机 IPv4、服务端当前本机 IPv6，以及特殊值 `0.0.0.0`、`::`。
-- `effective_ip` 不允许写入 hostname、CIDR、端口、逗号列表或空字符串。
-- `effective_ip` 是分组级持久化配置，表示该分组下全部 TCP/UDP listener 共用同一个绑定 IP；不新增 tunnel 级绑定 IP。
-- 继续沿用当前开发阶段约束：旧库需要手工补列或重建，不做自动 schema migration。
-
-### 9.2 管理 API 契约
-
-- `POST /api/v1/proxy-groups` 请求体将新增 `effective_ip`。
-- `PATCH /api/v1/proxy-groups/{id}` 请求体将新增 `effective_ip`。
-- `GET /api/v1/proxy-groups`、`POST /api/v1/proxy-groups`、`PATCH /api/v1/proxy-groups/{id}`、`POST /api/v1/proxy-groups/{id}/token` 的 `item` 返回模型都将新增 `effective_ip`。
-- 当前这一步只收口持久化字段和 CRUD 模型；“当前 IP 是否仍存在于本机”“异常原因”等运行态字段放到后续步骤单独补齐。
-- 服务端最终校验会依赖本机地址快照；在地址发现层落地前，当前先只固定字段面和类型语义。
-
-### 9.3 控制面消费边界
-
-- `GroupRuntime` 后续要把 `effective_ip` 纳入分组级运行态，并在展开该分组下所有 TCP/UDP listener 时统一使用。
-- 如果配置的 `effective_ip` 后续不再存在于本机，控制面不得静默回退到其他地址，也不得自动改写数据库。
+- 如果配置的 `effective_ip` 后续不再存在于本机，管理接口需要返回运行态异常标记和异常原因。
 - “分组异常”是运行态派生状态，不新增持久化异常字段。
+- 数据库值不自动改写，控制面也不得静默切换到其他地址。
+
+### 9.2 WebUI 适配
+
+- 分组弹窗仍需补“生效 IP”下拉，选项来源只允许当前本机地址与特殊值 `0.0.0.0`、`::`。
+- 如果数据库已有值当前失效，表单仍需以异常态回显原值，避免用户丢失上下文。

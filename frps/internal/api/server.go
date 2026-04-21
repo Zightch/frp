@@ -11,12 +11,14 @@ import (
 
 	authn "github.com/zightch/frp/frps/internal/auth"
 	"github.com/zightch/frp/frps/internal/storage"
+	"github.com/zightch/frp/frps/internal/system"
 )
 
 type Options struct {
 	Addr              string
 	ReadHeaderTimeout time.Duration
 	Store             *storage.SQL
+	Network           system.SnapshotReader
 	Auth              *authn.Manager
 	WebUIDistDir      string
 }
@@ -42,7 +44,7 @@ func NewServer(options Options, logger *slog.Logger, version string) (*Server, e
 		startedAt: time.Now().UTC(),
 		version:   version,
 		auth:      options.Auth,
-		manager:   newManagementService(options.Store),
+		manager:   newManagementService(options.Store, options.Network),
 		webui:     webuiHandler,
 	}
 

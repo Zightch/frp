@@ -56,6 +56,7 @@ func (a *App) Run(parent context.Context) error {
 			Addr:              a.config.ManagementListenAddr,
 			ReadHeaderTimeout: a.config.ReadHeaderTimeoutDuration(),
 			Store:             a.store,
+			Network:           a.network,
 			Auth:              a.auth,
 			WebUIDistDir:      a.config.WebUI.DistDir,
 		},
@@ -73,6 +74,7 @@ func (a *App) Run(parent context.Context) error {
 		control.Options{
 			Addr:        a.config.ControlListenAddr,
 			Store:       a.store,
+			Network:     a.network,
 			ReadTimeout: a.config.ReadHeaderTimeoutDuration(),
 		},
 		a.logger.With("subsystem", "control"),

@@ -17,22 +17,25 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/storage"
+	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
 const schemaTimestampLayout = "2006-01-02 15:04:05.000000"
 
 type managementService struct {
-	store *storage.SQL
+	store   *storage.SQL
+	network system.SnapshotReader
 }
 
 type proxyGroupView struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	TokenID   string `json:"token_id"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	TokenID     string `json:"token_id"`
+	EffectiveIP string `json:"effective_ip"`
+	Enabled     bool   `json:"enabled"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 type tunnelView struct {
@@ -53,8 +56,9 @@ type tunnelView struct {
 }
 
 type proxyGroupRequest struct {
-	Name    string `json:"name"`
-	Enabled *bool  `json:"enabled"`
+	Name        string `json:"name"`
+	EffectiveIP string `json:"effective_ip"`
+	Enabled     *bool  `json:"enabled"`
 }
 
 type tunnelRequest struct {
@@ -76,8 +80,9 @@ type apiError struct {
 }
 
 type normalizedProxyGroup struct {
-	Name    string
-	Enabled bool
+	Name        string
+	EffectiveIP string
+	Enabled     bool
 }
 
 type normalizedTunnel struct {
@@ -100,11 +105,11 @@ func (e *apiError) Error() string {
 	return e.Message
 }
 
-func newManagementService(store *storage.SQL) *managementService {
+func newManagementService(store *storage.SQL, network system.SnapshotReader) *managementService {
 	if store == nil {
 		return nil
 	}
-	return &managementService{store: store}
+	return &managementService{store: store, network: network}
 }
 
 func (s *Server) handleProxyGroups(writer http.ResponseWriter, request *http.Request) {
@@ -294,6 +299,7 @@ SELECT
 	id,
 	name,
 	token_id,
+	effective_ip,
 	enabled,
 	created_at,
 	updated_at
@@ -317,7 +323,7 @@ ORDER BY id
 }
 
 func (m *managementService) createProxyGroup(ctx context.Context, payload proxyGroupRequest) (proxyGroupView, string, error) {
-	normalized, err := normalizeProxyGroup(payload)
+	normalized, err := m.normalizeProxyGroup(payload)
 	if err != nil {
 		return proxyGroupView{}, "", err
 	}
@@ -341,15 +347,17 @@ INSERT INTO proxy_groups (
 	name,
 	token_id,
 	token_hash,
+	effective_ip,
 	enabled,
 	rate_limit,
 	created_at,
 	updated_at
-) VALUES (?, ?, ?, ?, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
 `,
 			normalized.Name,
 			tokenID,
 			tokenHash,
+			normalized.EffectiveIP,
 			boolToInt(normalized.Enabled),
 			now,
 			now,
@@ -373,7 +381,7 @@ INSERT INTO proxy_groups (
 }
 
 func (m *managementService) updateProxyGroup(ctx context.Context, id int64, payload proxyGroupRequest) (proxyGroupView, error) {
-	normalized, err := normalizeProxyGroup(payload)
+	normalized, err := m.normalizeProxyGroup(payload)
 	if err != nil {
 		return proxyGroupView{}, err
 	}
@@ -384,10 +392,11 @@ func (m *managementService) updateProxyGroup(ctx context.Context, id int64, payl
 			ctx,
 			`
 UPDATE proxy_groups
-SET name = ?, enabled = ?, updated_at = ?
+SET name = ?, effective_ip = ?, enabled = ?, updated_at = ?
 WHERE id = ?
 `,
 			normalized.Name,
+			normalized.EffectiveIP,
 			boolToInt(normalized.Enabled),
 			schemaTimestamp(),
 			id,
@@ -651,6 +660,7 @@ SELECT
 	id,
 	name,
 	token_id,
+	effective_ip,
 	enabled,
 	created_at,
 	updated_at
@@ -725,7 +735,7 @@ func ensureProxyGroupExists(ctx context.Context, conn storage.Conn, id int64) er
 	return nil
 }
 
-func normalizeProxyGroup(payload proxyGroupRequest) (normalizedProxyGroup, error) {
+func (m *managementService) normalizeProxyGroup(payload proxyGroupRequest) (normalizedProxyGroup, error) {
 	item := normalizedProxyGroup{
 		Name:    strings.TrimSpace(payload.Name),
 		Enabled: true,
@@ -736,6 +746,21 @@ func normalizeProxyGroup(payload proxyGroupRequest) (normalizedProxyGroup, error
 	if item.Name == "" {
 		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "name is required"}
 	}
+
+	normalizedIP, err := system.NormalizeListenIP(payload.EffectiveIP)
+	if err != nil {
+		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "effective_ip must be a valid IP literal"}
+	}
+	if !system.IsSpecialListenIP(normalizedIP) {
+		if m.network == nil {
+			return normalizedProxyGroup{}, &apiError{Status: http.StatusServiceUnavailable, Message: "local network snapshot is unavailable"}
+		}
+		if !m.network.Current().HasIP(normalizedIP) {
+			return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "effective_ip must be a current local IP"}
+		}
+	}
+	item.EffectiveIP = normalizedIP
+
 	return item, nil
 }
 
@@ -798,6 +823,9 @@ func decodeProxyGroupRow(row storage.Row) (proxyGroupView, error) {
 	}
 	if item.Enabled, err = rowBool(row, "enabled"); err != nil {
 		return item, fmt.Errorf("enabled: %w", err)
+	}
+	if item.EffectiveIP, err = system.NormalizeListenIP(rowString(row, "effective_ip")); err != nil {
+		return item, fmt.Errorf("effective_ip: %w", err)
 	}
 	item.Name = rowString(row, "name")
 	item.TokenID = rowString(row, "token_id")

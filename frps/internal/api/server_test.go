@@ -13,12 +13,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	authn "github.com/zightch/frp/frps/internal/auth"
 	"github.com/zightch/frp/frps/internal/storage"
 	_ "github.com/zightch/frp/frps/internal/storage/drivers"
+	"github.com/zightch/frp/frps/internal/system"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -509,8 +511,9 @@ func TestManagementKeySmokeFlow(t *testing.T) {
 		http.MethodPost,
 		httpServer.URL+"/api/v1/proxy-groups",
 		map[string]any{
-			"name":    "smoke-group",
-			"enabled": true,
+			"name":         "smoke-group",
+			"effective_ip": "0.0.0.0",
+			"enabled":      true,
 		},
 		http.StatusCreated,
 	)
@@ -524,6 +527,9 @@ func TestManagementKeySmokeFlow(t *testing.T) {
 	}
 	if _, ok := createdGroup.JSON["token"].(string); !ok {
 		t.Fatalf("expected proxy group token in response: %#v", createdGroup.JSON)
+	}
+	if item["effective_ip"] != "0.0.0.0" {
+		t.Fatalf("unexpected effective_ip in create response: %#v", item)
 	}
 
 	protected := performClientRequest(
@@ -559,6 +565,133 @@ func TestManagementKeySmokeFlow(t *testing.T) {
 		nil,
 		http.StatusUnauthorized,
 	)
+}
+
+func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			Auth: manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	created := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-a",
+			"effective_ip": "127.0.0.1",
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	item, ok := created.JSON["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected create payload: %#v", created.JSON)
+	}
+	groupID, ok := item["id"].(float64)
+	if !ok || int64(groupID) <= 0 {
+		t.Fatalf("unexpected create group id: %#v", item)
+	}
+	if item["effective_ip"] != "127.0.0.1" {
+		t.Fatalf("unexpected create effective_ip: %#v", item)
+	}
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-b",
+			"effective_ip": "10.0.0.9",
+		},
+		http.StatusBadRequest,
+		sessionCookie,
+	)
+
+	updated := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/proxy-groups/"+jsonNumberString(groupID),
+		map[string]any{
+			"name":         "group-a-renamed",
+			"effective_ip": "0.0.0.0",
+			"enabled":      false,
+		},
+		http.StatusOK,
+		sessionCookie,
+	)
+	updatedItem, ok := updated.JSON["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected update payload: %#v", updated.JSON)
+	}
+	if updatedItem["effective_ip"] != "0.0.0.0" {
+		t.Fatalf("unexpected update effective_ip: %#v", updatedItem)
+	}
+	if updatedItem["enabled"] != false {
+		t.Fatalf("unexpected update enabled flag: %#v", updatedItem)
+	}
+
+	listed := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/proxy-groups",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	items, ok := listed.JSON["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("unexpected list payload: %#v", listed.JSON)
+	}
+	listItem, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected list item payload: %#v", items[0])
+	}
+	if listItem["effective_ip"] != "0.0.0.0" {
+		t.Fatalf("unexpected list effective_ip: %#v", listItem)
+	}
+
+	reset := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups/"+jsonNumberString(groupID)+"/token",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	resetItem, ok := reset.JSON["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected token reset payload: %#v", reset.JSON)
+	}
+	if resetItem["effective_ip"] != "0.0.0.0" {
+		t.Fatalf("unexpected token reset effective_ip: %#v", resetItem)
+	}
 }
 
 func TestWebUIHandlerServesStaticFilesAndSPAFallback(t *testing.T) {
@@ -649,6 +782,7 @@ CREATE TABLE proxy_groups (
 	name TEXT NOT NULL UNIQUE,
 	token_id TEXT NOT NULL UNIQUE,
 	token_hash TEXT NOT NULL,
+	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	rate_limit INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
@@ -719,6 +853,36 @@ func newTestAuthManager(t *testing.T, initialize bool) *authn.Manager {
 		}
 	}
 	return manager
+}
+
+func authenticatedManagementCookie(t *testing.T, manager *authn.Manager) *http.Cookie {
+	t.Helper()
+
+	challenge, err := manager.IssueChallenge()
+	if err != nil {
+		t.Fatalf("issue challenge: %v", err)
+	}
+
+	_, token, err := manager.Login(
+		challenge.ID,
+		buildManagementProof(
+			"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			challenge.Salt,
+		),
+	)
+	if err != nil {
+		t.Fatalf("login manager: %v", err)
+	}
+
+	return &http.Cookie{
+		Name:  managementSessionCookieName,
+		Value: token,
+		Path:  "/",
+	}
+}
+
+func jsonNumberString(value float64) string {
+	return strconv.FormatInt(int64(value), 10)
 }
 
 type testResponse struct {
@@ -860,4 +1024,12 @@ func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+type staticSnapshotReader struct {
+	snapshot system.Snapshot
+}
+
+func (r staticSnapshotReader) Current() system.Snapshot {
+	return r.snapshot
 }

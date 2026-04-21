@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/transport"
 )
@@ -32,10 +34,11 @@ func TestServerAuthenticateAndHeartbeat(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:        1,
-					Name:      "group-a",
-					Enabled:   true,
-					TokenHash: tokenHash,
+					ID:          1,
+					Name:        "group-a",
+					Enabled:     true,
+					EffectiveIP: system.AnyIPv4,
+					TokenHash:   tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -198,10 +201,11 @@ func TestServerForwardsTCPStream(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:        1,
-					Name:      "group-a",
-					Enabled:   true,
-					TokenHash: tokenHash,
+					ID:          1,
+					Name:        "group-a",
+					Enabled:     true,
+					EffectiveIP: system.AnyIPv4,
+					TokenHash:   tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -392,10 +396,11 @@ func TestServerForwardsPublicUDPDatagramsAndReusesSession(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:        1,
-					Name:      "group-a",
-					Enabled:   true,
-					TokenHash: tokenHash,
+					ID:          1,
+					Name:        "group-a",
+					Enabled:     true,
+					EffectiveIP: system.AnyIPv4,
+					TokenHash:   tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -538,8 +543,9 @@ func TestServerCleansUpIdleUDPSessionAndNotifiesClient(t *testing.T) {
 	session := &sessionState{
 		ID: 1,
 		Group: GroupRuntime{
-			ID:   1,
-			Name: "group-a",
+			ID:          1,
+			Name:        "group-a",
+			EffectiveIP: system.AnyIPv4,
 		},
 		Snapshot: ConfigSnapshot{
 			Tunnels: []protocol.TunnelEntry{
@@ -611,6 +617,125 @@ func TestServerCleansUpIdleUDPSessionAndNotifiesClient(t *testing.T) {
 	}
 }
 
+func TestServerEnsureTunnelListenersUsesGroupEffectiveIP(t *testing.T) {
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	remotePort := freeTCPPort(t)
+	server := NewServer(
+		Options{
+			WriteTimeout: time.Second,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	session := newTestSessionState(GroupRuntime{
+		ID:          1,
+		Name:        "group-a",
+		EffectiveIP: "127.0.0.1",
+	}, ConfigSnapshot{
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    7,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: uint16(remotePort),
+				RemoteEnd:   uint16(remotePort),
+				LocalHost:   host,
+				LocalStart:  22,
+				LocalEnd:    22,
+			},
+		},
+	})
+	defer server.shutdownSession(session)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := server.ensureTunnelListeners(serverConn, logger, session); err != nil {
+		t.Fatalf("ensure tunnel listeners: %v", err)
+	}
+
+	listeners := session.listeners[7]
+	if len(listeners) != 1 {
+		t.Fatalf("unexpected listener count: %d", len(listeners))
+	}
+
+	boundHost, _, err := net.SplitHostPort(listeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("split listener addr: %v", err)
+	}
+	if boundHost != "127.0.0.1" {
+		t.Fatalf("unexpected listener bind host: got %q want %q", boundHost, "127.0.0.1")
+	}
+}
+
+func TestServerEnsureTunnelListenersRejectsMissingLocalEffectiveIP(t *testing.T) {
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	remotePort := freeTCPPort(t)
+	server := NewServer(
+		Options{
+			WriteTimeout: time.Second,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "10.0.0.9", Family: system.FamilyIPv4},
+					},
+				},
+			},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	session := newTestSessionState(GroupRuntime{
+		ID:          1,
+		Name:        "group-a",
+		EffectiveIP: "127.0.0.1",
+	}, ConfigSnapshot{
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    7,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: uint16(remotePort),
+				RemoteEnd:   uint16(remotePort),
+				LocalHost:   host,
+				LocalStart:  22,
+				LocalEnd:    22,
+			},
+		},
+	})
+
+	err = server.ensureTunnelListeners(serverConn, slog.New(slog.NewTextHandler(io.Discard, nil)), session)
+	if err == nil {
+		t.Fatal("expected missing local effective_ip to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not a current local IP") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
@@ -629,10 +754,11 @@ func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testi
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:        1,
-					Name:      "group-a",
-					Enabled:   true,
-					TokenHash: tokenHash,
+					ID:          1,
+					Name:        "group-a",
+					Enabled:     true,
+					EffectiveIP: system.AnyIPv4,
+					TokenHash:   tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -726,10 +852,11 @@ func TestServerStartsListenersForEnabledTCPRangeTunnelAndUsesMatchedRemotePort(t
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:        1,
-					Name:      "group-a",
-					Enabled:   true,
-					TokenHash: tokenHash,
+					ID:          1,
+					Name:        "group-a",
+					Enabled:     true,
+					EffectiveIP: system.AnyIPv4,
+					TokenHash:   tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -881,10 +1008,11 @@ func TestServerStartsListenersForEnabledUDPRangeTunnelAndUsesMatchedRemotePort(t
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:        1,
-					Name:      "group-a",
-					Enabled:   true,
-					TokenHash: tokenHash,
+					ID:          1,
+					Name:        "group-a",
+					Enabled:     true,
+					EffectiveIP: system.AnyIPv4,
+					TokenHash:   tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -1121,10 +1249,11 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:        1,
-					Name:      "group-a",
-					Enabled:   true,
-					TokenHash: tokenHash,
+					ID:          1,
+					Name:        "group-a",
+					Enabled:     true,
+					EffectiveIP: system.AnyIPv4,
+					TokenHash:   tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -1262,10 +1391,11 @@ func TestServerHandlesUDPControlFramesWithoutEndingSession(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:        1,
-					Name:      "group-a",
-					Enabled:   true,
-					TokenHash: tokenHash,
+					ID:          1,
+					Name:        "group-a",
+					Enabled:     true,
+					EffectiveIP: system.AnyIPv4,
+					TokenHash:   tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -1745,4 +1875,26 @@ func writeConfigAck(t *testing.T, conn net.Conn, requestID uint32, version uint6
 		RequestID: requestID,
 		Body:      configAckBody,
 	})
+}
+
+func newTestSessionState(group GroupRuntime, snapshot ConfigSnapshot) *sessionState {
+	return &sessionState{
+		ID:             1,
+		Group:          group,
+		Snapshot:       snapshot,
+		streams:        make(map[uint32]*publicStream),
+		udpSessions:    make(map[uint32]*publicUDPSession),
+		udpSessionKeys: make(map[string]uint32),
+		listeners:      make(map[uint32][]net.Listener),
+		udpListeners:   make(map[uint32][]*net.UDPConn),
+		done:           make(chan struct{}),
+	}
+}
+
+type staticSnapshotReader struct {
+	snapshot system.Snapshot
+}
+
+func (r staticSnapshotReader) Current() system.Snapshot {
+	return r.snapshot
 }

@@ -33,6 +33,7 @@ CREATE TABLE proxy_groups (
 	name TEXT NOT NULL,
 	token_id TEXT NOT NULL,
 	token_hash TEXT NOT NULL,
+	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL,
 	updated_at TEXT NOT NULL
 )`,
@@ -63,12 +64,13 @@ CREATE TABLE tunnels (
 
 	if _, err := store.Exec(
 		`
-INSERT INTO proxy_groups (name, token_id, token_hash, enabled, updated_at)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO proxy_groups (name, token_id, token_hash, effective_ip, enabled, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
 `,
 		"group-a",
 		hex.EncodeToString(tokenID[:]),
 		hex.EncodeToString(tokenHash[:]),
+		"127.0.0.1",
 		1,
 		"2026-04-18 10:00:00.000001",
 	); err != nil {
@@ -97,6 +99,9 @@ INSERT INTO tunnels (
 
 	if !group.Enabled {
 		t.Fatal("expected group to be enabled")
+	}
+	if group.EffectiveIP != "127.0.0.1" {
+		t.Fatalf("unexpected effective ip: %q", group.EffectiveIP)
 	}
 	if group.TokenHash != tokenHash {
 		t.Fatal("unexpected token hash")

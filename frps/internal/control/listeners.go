@@ -2,9 +2,11 @@ package control
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 
+	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -35,6 +37,11 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 	startedUDPByTunnel := make(map[uint32][]*net.UDPConn)
 	startedUDPRuntimes := make([]udpTunnelListener, 0)
 
+	bindIP, err := s.resolveGroupEffectiveIP(session.Group)
+	if err != nil {
+		return err
+	}
+
 	for _, tunnel := range session.Snapshot.Tunnels {
 		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
 			continue
@@ -42,7 +49,7 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 		switch tunnel.Protocol {
 		case protocol.ProtocolTCP:
 			for remotePort := int(tunnel.RemoteStart); remotePort <= int(tunnel.RemoteEnd); remotePort++ {
-				addr := net.JoinHostPort("", strconv.Itoa(remotePort))
+				addr := net.JoinHostPort(bindIP, strconv.Itoa(remotePort))
 				listener, err := net.Listen("tcp", addr)
 				if err != nil {
 					closeStartedTunnelListeners(startedTCP, startedUDP)
@@ -58,7 +65,7 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 			}
 		case protocol.ProtocolUDP:
 			for remotePort := int(tunnel.RemoteStart); remotePort <= int(tunnel.RemoteEnd); remotePort++ {
-				addr := net.JoinHostPort("", strconv.Itoa(remotePort))
+				addr := net.JoinHostPort(bindIP, strconv.Itoa(remotePort))
 				udpAddr, err := net.ResolveUDPAddr("udp", addr)
 				if err != nil {
 					closeStartedTunnelListeners(startedTCP, startedUDP)
@@ -121,6 +128,20 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 	}
 
 	return nil
+}
+
+func (s *Server) resolveGroupEffectiveIP(group GroupRuntime) (string, error) {
+	effectiveIP, err := system.NormalizeListenIP(group.EffectiveIP)
+	if err != nil {
+		return "", fmt.Errorf("group effective_ip %q is invalid: %w", group.EffectiveIP, err)
+	}
+	if system.IsSpecialListenIP(effectiveIP) {
+		return effectiveIP, nil
+	}
+	if s.network != nil && !s.network.Current().HasIP(effectiveIP) {
+		return "", fmt.Errorf("group effective_ip %q is not a current local IP", effectiveIP)
+	}
+	return effectiveIP, nil
 }
 
 func closeStartedTunnelListeners(tcpListeners []net.Listener, udpListeners []*net.UDPConn) {

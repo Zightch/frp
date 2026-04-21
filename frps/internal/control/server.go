@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/storage"
+	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/transport"
 )
@@ -27,6 +28,7 @@ type Options struct {
 	Addr              string
 	Store             *storage.SQL
 	Repository        Repository
+	Network           system.SnapshotReader
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
 	ChallengeTTL      time.Duration
@@ -38,6 +40,7 @@ type Server struct {
 	logger  *slog.Logger
 	version string
 	repo    Repository
+	network system.SnapshotReader
 
 	mu         sync.Mutex
 	listener   net.Listener
@@ -76,6 +79,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		logger:     logger,
 		version:    version,
 		repo:       options.Repository,
+		network:    options.Network,
 		activeConn: make(map[net.Conn]struct{}),
 		groupSlots: make(map[int64]uint64),
 		challenges: make(map[uint32]*authChallenge),

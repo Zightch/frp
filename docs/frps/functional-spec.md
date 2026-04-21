@@ -74,9 +74,10 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 ### 3.1 当前可管理字段
 
-当前 API 和 WebUI 允许直接管理的字段只有：
+当前管理 API 已直接管理下面这些字段：
 
 - `name`
+- `effective_ip`
 - `enabled`
 
 创建分组时：
@@ -86,12 +87,16 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - 数据库只保存 `token_id` 和 `token_hash`
 - WebUI 列表页只展示 `token_id`，不会历史回显明文 token
 
+当前 WebUI 仍只暴露 `name` / `enabled`，`effective_ip` 的表单适配放在后续步骤单独完成。
+
 ### 3.2 当前业务规则
 
 - 分组名全局唯一
 - `token = token_id + token_secret`
 - `token_id` 固定为 `32` 位小写 hex
 - `token_secret` 固定为 `64` 位小写 hex
+- `effective_ip` 必须是服务端当前本机 IPv4、服务端当前本机 IPv6，或特殊值 `0.0.0.0`、`::`
+- `effective_ip` 是分组级绑定 IP，约束该分组下全部公网 listener 的监听地址
 - 一个分组固定只允许 `1` 个在线 `frpc`
 - 禁用分组后，新登录必须被拒绝
 
@@ -248,13 +253,10 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 这些内容如果后续开始实现，必须先同步更新本文档。
 
-## 9. 已确认待实现的分组生效 IP 规则
+## 9. 分组生效 IP 的剩余待实现规则
 
-下面这些规则已经确认，但当前还没有进入真实代码路径：
+下面这些规则已经确认，但当前仍未全部进入真实产品行为：
 
-- 分组将新增 `effective_ip` 可管理字段，对应 UI 标签固定为“生效 IP”。
-- 创建和编辑分组时都需要提交 `effective_ip`；分组列表、创建返回、更新返回和重置 token 返回都需要带回 `effective_ip`。
-- `effective_ip` 只允许使用服务端当前本机 IPv4、服务端当前本机 IPv6，以及特殊值 `0.0.0.0`、`::`。
-- `effective_ip` 的作用域固定为分组级，表示该分组下所有公网 listener 统一监听到这个 IP 上；不新增 tunnel 级绑定 IP。
 - 如果数据库中配置的 `effective_ip` 后续不再存在于本机，后续运行态需要把分组标成异常；数据库值不自动改写，也不静默切换到其他地址。
-- “当前 IP 是否可用”和异常原因属于后续运行态/展示步骤，不属于这一步的最小 CRUD 契约。
+- 管理接口还需要返回“当前 IP 是否可用”和异常原因，供 WebUI 展示。
+- WebUI 分组表单还需要把“生效 IP”做成只读选项下拉，并在异常值失效时保留原值回显。

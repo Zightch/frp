@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/storage"
+	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -28,11 +29,12 @@ type SQLRepository struct {
 }
 
 type GroupRuntime struct {
-	ID        int64
-	Name      string
-	Enabled   bool
-	TokenHash [32]byte
-	Snapshot  ConfigSnapshot
+	ID          int64
+	Name        string
+	Enabled     bool
+	EffectiveIP string
+	TokenHash   [32]byte
+	Snapshot    ConfigSnapshot
 }
 
 type ConfigSnapshot struct {
@@ -57,6 +59,7 @@ SELECT
 	id,
 	name,
 	token_hash,
+	effective_ip,
 	enabled,
 	updated_at
 FROM proxy_groups
@@ -80,6 +83,9 @@ WHERE token_id = ?
 	}
 	if group.Enabled, err = rowBool(row, "enabled"); err != nil {
 		return GroupRuntime{}, fmt.Errorf("decode group enabled: %w", err)
+	}
+	if group.EffectiveIP, err = system.NormalizeListenIP(rowString(row, "effective_ip")); err != nil {
+		return GroupRuntime{}, fmt.Errorf("decode group effective_ip: %w", err)
 	}
 	if group.TokenHash, err = decodeHex32(rowString(row, "token_hash")); err != nil {
 		return GroupRuntime{}, fmt.Errorf("decode group token hash: %w", err)
