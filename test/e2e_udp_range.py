@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import http.cookiejar
 import json
 import os
 import shutil
@@ -23,6 +24,8 @@ from typing import IO
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 SCHEMA_TIMEOUT_SECONDS = 15.0
+SUPPORTED_SCENARIOS = ("happy_path", "hot_reload")
+MANAGEMENT_SECRET = "frp-udp-range-e2e-management-secret"
 UDP_RANGE_SIZE = 2
 
 
@@ -32,8 +35,10 @@ class Ports:
     management: int
     remote_single: int
     remote_range_start: int
+    reloaded_remote_range_start: int
     local_single: int
     local_range_start: int
+    reloaded_local_range_start: int
 
     @property
     def remote_range_end(self) -> int:
@@ -50,6 +55,22 @@ class Ports:
     @property
     def local_range_ports(self) -> list[int]:
         return [self.local_range_start + offset for offset in range(UDP_RANGE_SIZE)]
+
+    @property
+    def reloaded_remote_range_end(self) -> int:
+        return self.reloaded_remote_range_start + UDP_RANGE_SIZE - 1
+
+    @property
+    def reloaded_local_range_end(self) -> int:
+        return self.reloaded_local_range_start + UDP_RANGE_SIZE - 1
+
+    @property
+    def reloaded_remote_range_ports(self) -> list[int]:
+        return [self.reloaded_remote_range_start + offset for offset in range(UDP_RANGE_SIZE)]
+
+    @property
+    def reloaded_local_range_ports(self) -> list[int]:
+        return [self.reloaded_local_range_start + offset for offset in range(UDP_RANGE_SIZE)]
 
 
 @dataclass(frozen=True)
@@ -84,6 +105,13 @@ class ManagedProcess:
     log_path: Path
     log_handle: IO[str]
     popen: subprocess.Popen[str]
+
+
+@dataclass(frozen=True)
+class HTTPResult:
+    status: int
+    body: bytes
+    headers: dict[str, str]
 
 
 @dataclass
@@ -136,6 +164,12 @@ def parse_args() -> argparse.Namespace:
         help="Prefix used to derive the single and range verification payloads.",
     )
     parser.add_argument(
+        "--scenario",
+        default="happy_path",
+        choices=SUPPORTED_SCENARIOS,
+        help="UDP range e2e scenario to run. Default: happy_path.",
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=DEFAULT_TIMEOUT_SECONDS,
@@ -174,6 +208,7 @@ def main() -> int:
     ports: Ports | None = None
 
     try:
+        print(f"[info] scenario={args.scenario}")
         print(f"[stage] {stage}")
         prepare_output_dirs(paths)
 
@@ -262,9 +297,40 @@ def main() -> int:
         wait_log_contains(paths.frpc_log_path, "config applied", args.timeout, processes)
         wait_log_count_at_least(paths.frps_log_path, "udp tunnel listener ready", 3, args.timeout, processes)
 
-        stage = "run udp single regression and range mapping checks"
+        stage = "run udp range scenario"
         print(f"[stage] {stage}")
         verification = run_verification_round(paths, ports, local_servers, args.payload_prefix, args.timeout, processes)
+        if args.scenario == "hot_reload":
+            stage = "start reload local udp servers"
+            print(f"[stage] {stage}")
+            local_servers.extend(
+                [
+                    start_recorded_udp_server(
+                        "reload-range-0",
+                        "127.0.0.1",
+                        ports.reloaded_local_range_start,
+                        b"reload-range-0:",
+                    ),
+                    start_recorded_udp_server(
+                        "reload-range-1",
+                        "127.0.0.1",
+                        ports.reloaded_local_range_start + 1,
+                        b"reload-range-1:",
+                    ),
+                ],
+            )
+
+            stage = "run udp range hot reload verification"
+            print(f"[stage] {stage}")
+            hot_reload_summary = run_hot_reload_scenario(
+                paths,
+                ports,
+                local_servers,
+                args.payload_prefix,
+                args.timeout,
+                processes,
+            )
+            verification.update(hot_reload_summary)
 
         result = {
             "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -272,10 +338,13 @@ def main() -> int:
             "workspace_dir": str(paths.workspace_dir),
             "management_url": base_url,
             "control_addr": f"127.0.0.1:{ports.control}",
+            "scenario": args.scenario,
             "remote_single_addr": f"127.0.0.1:{ports.remote_single}",
             "remote_range_addrs": [f"127.0.0.1:{port}" for port in ports.remote_range_ports],
+            "reloaded_remote_range_addrs": [f"127.0.0.1:{port}" for port in ports.reloaded_remote_range_ports],
             "local_single_addr": f"127.0.0.1:{ports.local_single}",
             "local_range_addrs": [f"127.0.0.1:{port}" for port in ports.local_range_ports],
+            "reloaded_local_range_addrs": [f"127.0.0.1:{port}" for port in ports.reloaded_local_range_ports],
             "frps_log_path": str(paths.frps_log_path),
             "frpc_log_path": str(paths.frpc_log_path),
             "db_path": str(paths.db_path),
@@ -286,12 +355,13 @@ def main() -> int:
                 "python local udp servers for single and two range targets",
                 "single-port udp path still reaches the single local target",
                 "same udp range tunnel reaches two different local ports by remotePort offset",
-            ],
+            ]
+            + verification.pop("verified_steps", []),
         }
         result.update(verification)
         paths.result_json_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
-        print("[ok] udp range minimal e2e succeeded")
+        print(f"[ok] udp range {args.scenario} succeeded")
         print(f"[info] output_dir={paths.output_dir}")
         print(f"[info] result_json={paths.result_json_path}")
         print(f"[info] frps_log={paths.frps_log_path}")
@@ -453,8 +523,8 @@ def allocate_ports() -> Ports:
     tcp_ports = reserve_port_numbers(socket.SOCK_STREAM, 2)
     excluded: set[int] = set()
 
-    remote_range_start = find_free_udp_port_range(UDP_RANGE_SIZE, excluded)
-    excluded.update(remote_range_start + offset for offset in range(UDP_RANGE_SIZE))
+    remote_range_start, reloaded_remote_range_start = find_free_overlapping_udp_ranges(excluded)
+    excluded.update(remote_range_start + offset for offset in range(UDP_RANGE_SIZE + 1))
 
     remote_single = find_free_udp_port(excluded)
     excluded.add(remote_single)
@@ -463,14 +533,19 @@ def allocate_ports() -> Ports:
     excluded.update(local_range_start + offset for offset in range(UDP_RANGE_SIZE))
 
     local_single = find_free_udp_port(excluded)
+    excluded.add(local_single)
+
+    reloaded_local_range_start = find_free_udp_port_range(UDP_RANGE_SIZE, excluded)
 
     return Ports(
         control=tcp_ports[0],
         management=tcp_ports[1],
         remote_single=remote_single,
         remote_range_start=remote_range_start,
+        reloaded_remote_range_start=reloaded_remote_range_start,
         local_single=local_single,
         local_range_start=local_range_start,
+        reloaded_local_range_start=reloaded_local_range_start,
     )
 
 
@@ -540,6 +615,11 @@ def udp_range_is_bindable(start: int, size: int, excluded: set[int]) -> bool:
     finally:
         for listener in listeners:
             listener.close()
+
+
+def find_free_overlapping_udp_ranges(excluded: set[int]) -> tuple[int, int]:
+    span_start = find_free_udp_port_range(UDP_RANGE_SIZE + 1, excluded)
+    return (span_start, span_start + 1)
 
 
 def build_token_material() -> TokenMaterial:
@@ -905,6 +985,7 @@ def run_verification_round(
             raise RuntimeError(f"local udp server {server_name} failed: {error_text}")
 
     return {
+        "verified_steps": [],
         "single_payload_utf8": single_payload.decode("utf-8", errors="replace"),
         "single_response_utf8": single_response.decode("utf-8", errors="replace"),
         "range_payloads_utf8": [payload.decode("utf-8", errors="replace") for payload in range_payloads],
@@ -923,10 +1004,14 @@ def run_public_udp_client(host: str, port: int, payload: bytes, timeout_seconds:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.settimeout(timeout_seconds)
         sock.connect((host, port))
-        sent = sock.send(payload)
-        if sent != len(payload):
-            raise RuntimeError(f"short udp send: {sent}/{len(payload)}")
-        return sock.recv(65535)
+        return run_connected_udp_exchange(sock, payload)
+
+
+def run_connected_udp_exchange(sock: socket.socket, payload: bytes) -> bytes:
+    sent = sock.send(payload)
+    if sent != len(payload):
+        raise RuntimeError(f"short udp send: {sent}/{len(payload)}")
+    return sock.recv(65535)
 
 
 def wait_for_server_payload(handle: RecordedUDPServerHandle, payload: bytes, timeout_seconds: float) -> None:
@@ -950,6 +1035,226 @@ def ensure_exact_server_payloads(handle: RecordedUDPServerHandle, expected_paylo
         raise RuntimeError(
             f"local udp server {handle.name} observed payloads {received_payloads!r}, expected {expected_payloads!r}"
         )
+
+
+def run_hot_reload_scenario(
+    paths: RuntimePaths,
+    ports: Ports,
+    local_servers: list[RecordedUDPServerHandle],
+    payload_prefix: str,
+    timeout_seconds: float,
+    processes: list[ManagedProcess],
+) -> dict[str, object]:
+    handles_by_name = {handle.name: handle for handle in local_servers}
+    single_handle = handles_by_name["single"]
+    old_range0_handle = handles_by_name["range-0"]
+    old_range1_handle = handles_by_name["range-1"]
+    reload_range0_handle = handles_by_name["reload-range-0"]
+    reload_range1_handle = handles_by_name["reload-range-1"]
+
+    wait_log_count_at_least(paths.frps_log_path, "config acknowledged", 1, timeout_seconds, processes)
+    wait_log_count_at_least(paths.frpc_log_path, "config applied", 1, timeout_seconds, processes)
+    wait_log_count_at_least(paths.frps_log_path, "udp tunnel listener ready", 3, timeout_seconds, processes)
+
+    initial_ack_count = count_log_occurrences(paths.frps_log_path, "config acknowledged")
+    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "config applied")
+    initial_listener_count = count_log_occurrences(paths.frps_log_path, "udp tunnel listener ready")
+
+    removed_payload = f"{payload_prefix}-range-reload-before-removed".encode("utf-8")
+    shared_payload = f"{payload_prefix}-range-reload-before-shared".encode("utf-8")
+    removed_stale_payload = f"{payload_prefix}-range-reload-after-removed".encode("utf-8")
+    shared_after_payload = f"{payload_prefix}-range-reload-after-shared".encode("utf-8")
+    added_after_payload = f"{payload_prefix}-range-reload-after-added".encode("utf-8")
+    single_after_payload = f"{payload_prefix}-single-after-reload".encode("utf-8")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as removed_sock, socket.socket(
+        socket.AF_INET,
+        socket.SOCK_DGRAM,
+    ) as shared_sock:
+        removed_sock.settimeout(timeout_seconds)
+        shared_sock.settimeout(timeout_seconds)
+        removed_sock.connect(("127.0.0.1", ports.remote_range_start))
+        shared_sock.connect(("127.0.0.1", ports.remote_range_start + 1))
+
+        removed_response = run_connected_udp_exchange(removed_sock, removed_payload)
+        expected_removed_response = old_range0_handle.response_prefix + removed_payload
+        if removed_response != expected_removed_response:
+            raise RuntimeError(
+                "udp range hot_reload removed-port response mismatch: "
+                f"sent {removed_payload!r}, received {removed_response!r}"
+            )
+        wait_for_server_payload(old_range0_handle, removed_payload, timeout_seconds)
+
+        shared_response = run_connected_udp_exchange(shared_sock, shared_payload)
+        expected_shared_response = old_range1_handle.response_prefix + shared_payload
+        if shared_response != expected_shared_response:
+            raise RuntimeError(
+                "udp range hot_reload shared-port response mismatch: "
+                f"sent {shared_payload!r}, received {shared_response!r}"
+            )
+        wait_for_server_payload(old_range1_handle, shared_payload, timeout_seconds)
+
+        old_range0_count = len(old_range0_handle.snapshot()[0])
+        old_range1_count = len(old_range1_handle.snapshot()[0])
+
+        base_url = f"http://127.0.0.1:{ports.management}"
+        opener = login_management_session(base_url, MANAGEMENT_SECRET)
+        tunnel_id, group_id = load_tunnel_record(paths.db_path, "e2e-udp-range")
+        patch_range_tunnel_via_management(
+            opener,
+            base_url,
+            tunnel_id,
+            group_id,
+            "e2e-udp-range",
+            "udp",
+            ports.reloaded_remote_range_start,
+            ports.reloaded_remote_range_end,
+            ports.reloaded_local_range_start,
+            ports.reloaded_local_range_end,
+        )
+        assert_range_tunnel_mapping(
+            paths.db_path,
+            "e2e-udp-range",
+            ports.reloaded_remote_range_start,
+            ports.reloaded_remote_range_end,
+            ports.reloaded_local_range_start,
+            ports.reloaded_local_range_end,
+        )
+
+        wait_log_count_at_least(
+            paths.frps_log_path,
+            "config acknowledged",
+            initial_ack_count + 1,
+            timeout_seconds,
+            processes,
+        )
+        wait_log_count_at_least(
+            paths.frpc_log_path,
+            "config applied",
+            initial_apply_count + 1,
+            timeout_seconds,
+            processes,
+        )
+        wait_log_count_at_least(
+            paths.frps_log_path,
+            "udp tunnel listener ready",
+            initial_listener_count + 3,
+            timeout_seconds,
+            processes,
+        )
+        wait_log_contains(paths.frpc_log_path, "replaced_tunnels=1", timeout_seconds, processes)
+        wait_log_contains(paths.frpc_log_path, "udp session closed", timeout_seconds, processes)
+        wait_log_contains(paths.frpc_log_path, "reload in progress", timeout_seconds, processes)
+
+        expect_no_connected_udp_response(removed_sock, removed_stale_payload, min(timeout_seconds, 2.0))
+        assert_udp_received_count_stable(old_range0_handle, old_range0_count, 0.5)
+
+        shared_after_response = run_connected_udp_exchange(shared_sock, shared_after_payload)
+        expected_shared_after_response = reload_range0_handle.response_prefix + shared_after_payload
+        if shared_after_response != expected_shared_after_response:
+            raise RuntimeError(
+                "udp range hot_reload shared-port response mismatch after reload: "
+                f"sent {shared_after_payload!r}, received {shared_after_response!r}"
+            )
+        wait_for_server_payload(reload_range0_handle, shared_after_payload, timeout_seconds)
+        assert_udp_received_count_stable(old_range1_handle, old_range1_count, 0.5)
+
+    added_after_response = run_public_udp_client(
+        "127.0.0.1",
+        ports.reloaded_remote_range_start + 1,
+        added_after_payload,
+        timeout_seconds,
+    )
+    expected_added_after_response = reload_range1_handle.response_prefix + added_after_payload
+    if added_after_response != expected_added_after_response:
+        raise RuntimeError(
+            "udp range hot_reload added-port response mismatch after reload: "
+            f"sent {added_after_payload!r}, received {added_after_response!r}"
+        )
+    wait_for_server_payload(reload_range1_handle, added_after_payload, timeout_seconds)
+
+    single_after_response = run_public_udp_client("127.0.0.1", ports.remote_single, single_after_payload, timeout_seconds)
+    expected_single_after_response = single_handle.response_prefix + single_after_payload
+    if single_after_response != expected_single_after_response:
+        raise RuntimeError(
+            "udp range hot_reload single-port response mismatch after reload: "
+            f"sent {single_after_payload!r}, received {single_after_response!r}"
+        )
+    wait_for_server_payload(single_handle, single_after_payload, timeout_seconds)
+
+    old_range0_payloads, _, old_range0_error = old_range0_handle.snapshot()
+    old_range1_payloads, _, old_range1_error = old_range1_handle.snapshot()
+    reload_range0_payloads, _, reload_range0_error = reload_range0_handle.snapshot()
+    reload_range1_payloads, _, reload_range1_error = reload_range1_handle.snapshot()
+    for server_name, error_text in [
+        ("range-0", old_range0_error),
+        ("range-1", old_range1_error),
+        ("reload-range-0", reload_range0_error),
+        ("reload-range-1", reload_range1_error),
+    ]:
+        if error_text is not None:
+            raise RuntimeError(f"local udp server {server_name} failed during hot_reload: {error_text}")
+
+    if shared_after_payload in old_range1_payloads:
+        raise RuntimeError("udp range hot_reload unexpectedly delivered shared-port traffic to the old range-1 target")
+    if added_after_payload in old_range0_payloads or added_after_payload in old_range1_payloads:
+        raise RuntimeError("udp range hot_reload unexpectedly delivered added-port traffic to an old range target")
+
+    return {
+        "verified_steps": [
+            "management tunnel patch triggered a second config.push/config.ack cycle",
+            "frpc closed prior udp sessions for the range tunnel during reload",
+            "removed old range port stopped replying after reload",
+            "overlapping range port reopened with the new offset base on the same public socket",
+            "newly added range port forwarded to the reloaded local target",
+            "unchanged single-port udp tunnel was rebuilt and still forwarded after the group reload",
+        ],
+        "range_hot_reload_removed_response_utf8": removed_response.decode("utf-8", errors="replace"),
+        "range_hot_reload_shared_response_utf8": shared_response.decode("utf-8", errors="replace"),
+        "range_hot_reload_shared_after_response_utf8": shared_after_response.decode("utf-8", errors="replace"),
+        "range_hot_reload_added_after_response_utf8": added_after_response.decode("utf-8", errors="replace"),
+        "range_hot_reload_single_after_response_utf8": single_after_response.decode("utf-8", errors="replace"),
+        "old_range_server_received_counts_after_reload": [
+            len(old_range0_payloads),
+            len(old_range1_payloads),
+        ],
+        "reloaded_range_server_received_counts": [
+            len(reload_range0_payloads),
+            len(reload_range1_payloads),
+        ],
+    }
+
+
+def expect_no_connected_udp_response(sock: socket.socket, payload: bytes, timeout_seconds: float) -> None:
+    sock.settimeout(timeout_seconds)
+    sent = sock.send(payload)
+    if sent != len(payload):
+        raise RuntimeError(f"short udp send while expecting no response: {sent}/{len(payload)}")
+
+    try:
+        response = sock.recv(65535)
+    except (socket.timeout, OSError):
+        return
+
+    raise RuntimeError(f"udp range hot_reload unexpectedly received stale response: {response!r}")
+
+
+def assert_udp_received_count_stable(
+    handle: RecordedUDPServerHandle,
+    expected_count: int,
+    stable_window_seconds: float,
+) -> None:
+    deadline = time.time() + stable_window_seconds
+    while time.time() < deadline:
+        received_payloads, _, error_text = handle.snapshot()
+        if error_text is not None:
+            raise RuntimeError(f"local udp server {handle.name} failed: {error_text}")
+        if len(received_payloads) != expected_count:
+            raise RuntimeError(
+                f"old udp target {handle.name} unexpectedly received more payloads after reload: "
+                f"got {len(received_payloads)} want {expected_count}"
+            )
+        time.sleep(0.05)
 
 
 def terminate_process(process: ManagedProcess) -> None:
@@ -994,6 +1299,185 @@ def read_log_text(log_path: Path) -> str:
         return log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def count_log_occurrences(log_path: Path, needle: str) -> int:
+    return read_log_text(log_path).count(needle)
+
+
+def login_management_session(base_url: str, secret: str) -> urllib.request.OpenerDirector:
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    key_hash = sha256_hex(secret)
+
+    init_result = request_json(
+        opener,
+        "POST",
+        f"{base_url}/api/v1/auth/init",
+        payload={"key_hash": key_hash},
+        expected_status=201,
+    )
+    if init_result.get("initialized") is not True:
+        raise RuntimeError(f"management auth init returned unexpected payload: {init_result!r}")
+
+    challenge = request_json(opener, "POST", f"{base_url}/api/v1/auth/challenge", expected_status=200)
+    challenge_id = str(challenge.get("challenge_id") or "").strip()
+    salt = str(challenge.get("salt") or "").strip()
+    if not challenge_id or not salt:
+        raise RuntimeError(f"invalid management auth challenge payload: {challenge!r}")
+
+    login_result = request_json(
+        opener,
+        "POST",
+        f"{base_url}/api/v1/auth/login",
+        payload={
+            "challenge_id": challenge_id,
+            "proof": build_management_proof(key_hash, salt),
+        },
+        expected_status=200,
+    )
+    if login_result.get("authenticated") is not True:
+        raise RuntimeError(f"management auth login returned unexpected payload: {login_result!r}")
+    if not list(cookie_jar):
+        raise RuntimeError("management auth login did not produce a session cookie")
+
+    return opener
+
+
+def patch_range_tunnel_via_management(
+    opener: urllib.request.OpenerDirector,
+    base_url: str,
+    tunnel_id: int,
+    group_id: int,
+    tunnel_name: str,
+    protocol_name: str,
+    remote_start: int,
+    remote_end: int,
+    local_start: int,
+    local_end: int,
+) -> None:
+    request_json(
+        opener,
+        "PATCH",
+        f"{base_url}/api/v1/tunnels/{tunnel_id}",
+        payload={
+            "group_id": group_id,
+            "name": tunnel_name,
+            "protocol": protocol_name,
+            "remote_type": "range",
+            "remote_start": remote_start,
+            "remote_end": remote_end,
+            "local_host": "127.0.0.1",
+            "local_start": local_start,
+            "local_end": local_end,
+            "enabled": True,
+        },
+        expected_status=200,
+    )
+
+
+def load_tunnel_record(db_path: Path, tunnel_name: str) -> tuple[int, int]:
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
+        row = conn.execute(
+            "SELECT id, group_id FROM tunnels WHERE name = ? ORDER BY id DESC LIMIT 1",
+            (tunnel_name,),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError(f"tunnel row not found for {tunnel_name!r}")
+    return (int(row[0]), int(row[1]))
+
+
+def assert_range_tunnel_mapping(
+    db_path: Path,
+    tunnel_name: str,
+    expected_remote_start: int,
+    expected_remote_end: int,
+    expected_local_start: int,
+    expected_local_end: int,
+) -> None:
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
+        row = conn.execute(
+            """
+            SELECT remote_start, remote_end, local_start, local_end
+            FROM tunnels
+            WHERE name = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (tunnel_name,),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError(f"tunnel row not found for {tunnel_name!r}")
+
+    actual = tuple(int(value) for value in row)
+    expected = (
+        expected_remote_start,
+        expected_remote_end,
+        expected_local_start,
+        expected_local_end,
+    )
+    if actual != expected:
+        raise RuntimeError(f"{tunnel_name} mapping mismatch: got {actual!r} want {expected!r}")
+
+
+def request_json(
+    opener: urllib.request.OpenerDirector,
+    method: str,
+    url: str,
+    payload: dict[str, object] | None = None,
+    expected_status: int = 200,
+) -> dict[str, object]:
+    result = perform_request(opener, method, url, payload, expected_status)
+    if not result.body:
+        return {}
+
+    decoded = json.loads(result.body.decode("utf-8"))
+    if not isinstance(decoded, dict):
+        raise RuntimeError(f"expected JSON object from {method} {url}, got {type(decoded).__name__}")
+    return decoded
+
+
+def perform_request(
+    opener: urllib.request.OpenerDirector,
+    method: str,
+    url: str,
+    payload: dict[str, object] | None,
+    expected_status: int,
+) -> HTTPResult:
+    headers: dict[str, str] = {}
+    data: bytes | None = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        response = opener.open(request, timeout=5.0)
+        with response:
+            body = response.read()
+            status = response.status
+            response_headers = {key.lower(): value for key, value in response.headers.items()}
+    except urllib.error.HTTPError as exc:
+        with exc:
+            body = exc.read()
+            status = exc.code
+            response_headers = {key.lower(): value for key, value in exc.headers.items()}
+
+    if status != expected_status:
+        raise RuntimeError(
+            f"unexpected status for {method} {url}: got {status} want {expected_status} "
+            f"body={body.decode('utf-8', errors='replace')}"
+        )
+
+    return HTTPResult(status=status, body=body, headers=response_headers)
+
+
+def sha256_hex(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def build_management_proof(key_hash: str, salt: str) -> str:
+    return hashlib.sha256((key_hash + salt).encode("utf-8")).hexdigest()
 
 
 def format_ports(ports: Ports) -> str:
