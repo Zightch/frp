@@ -557,16 +557,18 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports, scenari
                 name,
                 token_id,
                 token_hash,
+                effective_ip,
                 enabled,
                 rate_limit,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "e2e-group",
                 token.token_id,
                 token.token_hash,
+                "0.0.0.0",
                 group_enabled,
                 0,
                 created_at,
