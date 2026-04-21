@@ -269,16 +269,23 @@ def main() -> int:
 
         stage = "create and update proxy group"
         print(f"[stage] {stage}")
+        group_effective_ip = "0.0.0.0"
         created_group = request_json(
             opener,
             "POST",
             f"{base_url}/api/v1/proxy-groups",
-            payload={"name": "e2e-group", "enabled": True},
+            payload={
+                "name": "e2e-group",
+                "effective_ip": group_effective_ip,
+                "enabled": True,
+            },
             expected_status=201,
         )
         created_group_item = require_mapping(created_group, "item")
         created_group_id = int(created_group_item["id"])
         initial_group_token = require_string(created_group, "token")
+        assert_equal(created_group_item.get("effective_ip"), group_effective_ip, "created proxy group effective_ip")
+        assert_equal(created_group_item.get("status"), "启用", "created proxy group status")
         assert_token_matches_db(paths.db_path, created_group_id, initial_group_token)
 
         groups_after_create = request_json(opener, "GET", f"{base_url}/api/v1/proxy-groups", expected_status=200)
@@ -294,6 +301,8 @@ def main() -> int:
         )
         updated_group_item = require_mapping(updated_group, "item")
         assert_equal(updated_group_item.get("name"), "e2e-group-renamed", "updated proxy group name")
+        assert_equal(updated_group_item.get("effective_ip"), group_effective_ip, "patched proxy group preserved effective_ip")
+        assert_equal(updated_group_item.get("status"), "启用", "patched proxy group status")
 
         stage = "reset proxy group token"
         print(f"[stage] {stage}")

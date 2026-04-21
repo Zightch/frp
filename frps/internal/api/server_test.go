@@ -709,6 +709,94 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 	}
 }
 
+func TestProxyGroupPatchAllowsPartialUpdateAndRejectsEmptyPatch(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			Auth: manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	created := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-a",
+			"effective_ip": "127.0.0.1",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	createdItem, ok := created.JSON["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected create payload: %#v", created.JSON)
+	}
+	groupID, ok := createdItem["id"].(float64)
+	if !ok || int64(groupID) <= 0 {
+		t.Fatalf("unexpected create group id: %#v", createdItem)
+	}
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/proxy-groups/"+jsonNumberString(groupID),
+		map[string]any{},
+		http.StatusBadRequest,
+		sessionCookie,
+	)
+
+	updated := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/proxy-groups/"+jsonNumberString(groupID),
+		map[string]any{
+			"name": "group-a-renamed",
+		},
+		http.StatusOK,
+		sessionCookie,
+	)
+	updatedItem, ok := updated.JSON["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected update payload: %#v", updated.JSON)
+	}
+	if updatedItem["name"] != "group-a-renamed" {
+		t.Fatalf("unexpected update name: %#v", updatedItem)
+	}
+	if updatedItem["effective_ip"] != "127.0.0.1" {
+		t.Fatalf("unexpected preserved effective_ip: %#v", updatedItem)
+	}
+	if updatedItem["enabled"] != true {
+		t.Fatalf("unexpected preserved enabled: %#v", updatedItem)
+	}
+	if updatedItem["status"] != proxyGroupStatusEnabled {
+		t.Fatalf("unexpected preserved status: %#v", updatedItem)
+	}
+}
+
 func TestManagementMutationsRefreshAffectedGroups(t *testing.T) {
 	store := newTestStore(t)
 	manager := newTestAuthManager(t, true)
@@ -1026,6 +1114,88 @@ func TestProxyGroupStatusBecomesAbnormalWhenEffectiveIPLeavesSnapshot(t *testing
 	}
 	if listItem["status_reason"] != proxyGroupStatusReasonMissingLocalIP {
 		t.Fatalf("unexpected abnormal reason: %#v", listItem)
+	}
+}
+
+func TestProxyGroupPatchAllowsDisableWhenStoredEffectiveIPIsStale(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+	reader := &mutableSnapshotReader{
+		snapshot: system.Snapshot{
+			AvailableIPs: []system.IPAddress{
+				{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+			},
+		},
+	}
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network:           reader,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	created := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-a",
+			"effective_ip": "127.0.0.1",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	createdItem, ok := created.JSON["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected create payload: %#v", created.JSON)
+	}
+	groupID, ok := createdItem["id"].(float64)
+	if !ok || int64(groupID) <= 0 {
+		t.Fatalf("unexpected create group id: %#v", createdItem)
+	}
+
+	reader.snapshot = system.Snapshot{
+		AvailableIPs: []system.IPAddress{
+			{Addr: "10.0.0.2", Family: system.FamilyIPv4},
+		},
+	}
+
+	updated := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/proxy-groups/"+jsonNumberString(groupID),
+		map[string]any{
+			"enabled": false,
+		},
+		http.StatusOK,
+		sessionCookie,
+	)
+	updatedItem, ok := updated.JSON["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected update payload: %#v", updated.JSON)
+	}
+	if updatedItem["effective_ip"] != "127.0.0.1" {
+		t.Fatalf("unexpected preserved stale effective_ip: %#v", updatedItem)
+	}
+	if updatedItem["enabled"] != false {
+		t.Fatalf("unexpected updated enabled: %#v", updatedItem)
+	}
+	if updatedItem["status"] != proxyGroupStatusDisabled {
+		t.Fatalf("unexpected disabled status: %#v", updatedItem)
 	}
 }
 

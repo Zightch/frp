@@ -89,6 +89,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 当前 WebUI 仍只暴露 `name` / `enabled`，`effective_ip` 的表单适配放在后续步骤单独完成。
 分组查询返回当前还会附带运行态派生字段 `status` 和可选 `status_reason`，供后续 WebUI 展示“启用 / 禁用 / 异常”三态。
+分组更新接口 `PATCH /api/v1/proxy-groups/{id}` 当前按局部更新处理，未提交字段保持原值；空对象会被拒绝，要求至少提交 `name`、`effective_ip`、`enabled` 之一。
 
 ### 3.2 当前业务规则
 

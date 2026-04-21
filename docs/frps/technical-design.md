@@ -234,6 +234,8 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - 只允许单个 IP 字面量，不接受 hostname、CIDR、端口或空字符串。
 - 只允许服务端当前本机 IPv4、服务端当前本机 IPv6，以及特殊值 `0.0.0.0`、`::`。
 - 当前管理 API 已要求显式提交 `effective_ip`；WebUI 适配留在后续步骤单独完成。
+- `PATCH /api/v1/proxy-groups/{id}` 当前按局部更新处理：未提交字段保持数据库现值，只有显式提交的字段才重新校验并写回。
+- 空 `PATCH` 对象会直接返回 `400`，要求至少提交 `name`、`effective_ip`、`enabled` 之一。
 - 当前分组返回模型还会附带运行态派生字段 `status` 和可选 `status_reason`，供后续 WebUI 直接展示状态标签和异常原因。
 
 ### 5.3 隧道接口

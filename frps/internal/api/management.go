@@ -67,10 +67,16 @@ type tunnelView struct {
 	UpdatedAt   string `json:"updated_at"`
 }
 
-type proxyGroupRequest struct {
+type proxyGroupCreateRequest struct {
 	Name        string `json:"name"`
 	EffectiveIP string `json:"effective_ip"`
 	Enabled     *bool  `json:"enabled"`
+}
+
+type proxyGroupPatchRequest struct {
+	Name        *string `json:"name"`
+	EffectiveIP *string `json:"effective_ip"`
+	Enabled     *bool   `json:"enabled"`
 }
 
 type tunnelRequest struct {
@@ -143,7 +149,7 @@ func (s *Server) handleProxyGroups(writer http.ResponseWriter, request *http.Req
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"items": items})
 	case http.MethodPost:
-		var payload proxyGroupRequest
+		var payload proxyGroupCreateRequest
 		if err := decodeJSONBody(request, &payload); err != nil {
 			writeError(writer, err)
 			return
@@ -181,7 +187,7 @@ func (s *Server) handleProxyGroupResource(writer http.ResponseWriter, request *h
 
 	switch {
 	case suffix == "" && request.Method == http.MethodPatch:
-		var payload proxyGroupRequest
+		var payload proxyGroupPatchRequest
 		if err := decodeJSONBody(request, &payload); err != nil {
 			writeError(writer, err)
 			return
@@ -357,8 +363,8 @@ ORDER BY id
 	return items, nil
 }
 
-func (m *managementService) createProxyGroup(ctx context.Context, payload proxyGroupRequest) (proxyGroupView, string, error) {
-	normalized, err := m.normalizeProxyGroup(payload)
+func (m *managementService) createProxyGroup(ctx context.Context, payload proxyGroupCreateRequest) (proxyGroupView, string, error) {
+	normalized, err := m.normalizeCreateProxyGroup(payload)
 	if err != nil {
 		return proxyGroupView{}, "", err
 	}
@@ -415,14 +421,19 @@ INSERT INTO proxy_groups (
 	return item, token, nil
 }
 
-func (m *managementService) updateProxyGroup(ctx context.Context, id int64, payload proxyGroupRequest) (proxyGroupView, error) {
-	normalized, err := m.normalizeProxyGroup(payload)
-	if err != nil {
-		return proxyGroupView{}, err
-	}
-
+func (m *managementService) updateProxyGroup(ctx context.Context, id int64, payload proxyGroupPatchRequest) (proxyGroupView, error) {
 	var item proxyGroupView
-	err = m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
+	err := m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
+		current, err := m.loadProxyGroupByID(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+
+		normalized, err := m.normalizeProxyGroupPatch(current, payload)
+		if err != nil {
+			return err
+		}
+
 		result, err := tx.ExecContext(
 			ctx,
 			`
@@ -870,7 +881,7 @@ func ensureProxyGroupExists(ctx context.Context, conn storage.Conn, id int64) er
 	return nil
 }
 
-func (m *managementService) normalizeProxyGroup(payload proxyGroupRequest) (normalizedProxyGroup, error) {
+func (m *managementService) normalizeCreateProxyGroup(payload proxyGroupCreateRequest) (normalizedProxyGroup, error) {
 	item := normalizedProxyGroup{
 		Name:    strings.TrimSpace(payload.Name),
 		Enabled: true,
@@ -882,21 +893,65 @@ func (m *managementService) normalizeProxyGroup(payload proxyGroupRequest) (norm
 		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "name is required"}
 	}
 
-	normalizedIP, err := system.NormalizeListenIP(payload.EffectiveIP)
+	normalizedIP, err := m.normalizeSubmittedEffectiveIP(payload.EffectiveIP)
 	if err != nil {
-		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "effective_ip must be a valid IP literal"}
-	}
-	if !system.IsSpecialListenIP(normalizedIP) {
-		if m.network == nil {
-			return normalizedProxyGroup{}, &apiError{Status: http.StatusServiceUnavailable, Message: "local network snapshot is unavailable"}
-		}
-		if !m.network.Current().HasIP(normalizedIP) {
-			return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "effective_ip must be a current local IP"}
-		}
+		return normalizedProxyGroup{}, err
 	}
 	item.EffectiveIP = normalizedIP
 
 	return item, nil
+}
+
+func (m *managementService) normalizeProxyGroupPatch(current proxyGroupView, payload proxyGroupPatchRequest) (normalizedProxyGroup, error) {
+	item := normalizedProxyGroup{
+		Name:        current.Name,
+		EffectiveIP: current.EffectiveIP,
+		Enabled:     current.Enabled,
+	}
+	hasChange := false
+
+	if payload.Name != nil {
+		item.Name = strings.TrimSpace(*payload.Name)
+		hasChange = true
+	}
+	if payload.EffectiveIP != nil {
+		normalizedIP, err := m.normalizeSubmittedEffectiveIP(*payload.EffectiveIP)
+		if err != nil {
+			return normalizedProxyGroup{}, err
+		}
+		item.EffectiveIP = normalizedIP
+		hasChange = true
+	}
+	if payload.Enabled != nil {
+		item.Enabled = *payload.Enabled
+		hasChange = true
+	}
+
+	if !hasChange {
+		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "at least one of name, effective_ip, enabled is required"}
+	}
+	if item.Name == "" {
+		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "name is required"}
+	}
+
+	return item, nil
+}
+
+func (m *managementService) normalizeSubmittedEffectiveIP(raw string) (string, error) {
+	normalizedIP, err := system.NormalizeListenIP(raw)
+	if err != nil {
+		return "", &apiError{Status: http.StatusBadRequest, Message: "effective_ip must be a valid IP literal"}
+	}
+	if system.IsSpecialListenIP(normalizedIP) {
+		return normalizedIP, nil
+	}
+	if m.network == nil {
+		return "", &apiError{Status: http.StatusServiceUnavailable, Message: "local network snapshot is unavailable"}
+	}
+	if !m.network.Current().HasIP(normalizedIP) {
+		return "", &apiError{Status: http.StatusBadRequest, Message: "effective_ip must be a current local IP"}
+	}
+	return normalizedIP, nil
 }
 
 func normalizeTunnel(payload tunnelRequest) (normalizedTunnel, error) {
