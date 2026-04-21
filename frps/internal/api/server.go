@@ -19,8 +19,13 @@ type Options struct {
 	ReadHeaderTimeout time.Duration
 	Store             *storage.SQL
 	Network           system.SnapshotReader
+	RuntimeRefresher  GroupRuntimeRefresher
 	Auth              *authn.Manager
 	WebUIDistDir      string
+}
+
+type GroupRuntimeRefresher interface {
+	RefreshGroup(groupID int64)
 }
 
 type Server struct {
@@ -44,7 +49,7 @@ func NewServer(options Options, logger *slog.Logger, version string) (*Server, e
 		startedAt: time.Now().UTC(),
 		version:   version,
 		auth:      options.Auth,
-		manager:   newManagementService(options.Store, options.Network),
+		manager:   newManagementService(options.Store, options.Network, options.RuntimeRefresher),
 		webui:     webuiHandler,
 	}
 

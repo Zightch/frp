@@ -22,6 +22,7 @@ var ErrGroupNotFound = errors.New("proxy group not found")
 
 type Repository interface {
 	LoadGroupRuntime(ctx context.Context, tokenID [16]byte) (GroupRuntime, error)
+	LoadGroupRuntimeByID(ctx context.Context, groupID int64) (GroupRuntime, error)
 }
 
 type SQLRepository struct {
@@ -48,11 +49,7 @@ func NewRepository(store *storage.SQL) *SQLRepository {
 }
 
 func (r *SQLRepository) LoadGroupRuntime(ctx context.Context, tokenID [16]byte) (GroupRuntime, error) {
-	if r == nil || r.store == nil {
-		return GroupRuntime{}, fmt.Errorf("repository store is nil")
-	}
-
-	row, err := r.store.QueryOneContext(
+	return r.loadGroupRuntime(
 		ctx,
 		`
 SELECT
@@ -66,6 +63,36 @@ FROM proxy_groups
 WHERE token_id = ?
 `,
 		hex.EncodeToString(tokenID[:]),
+	)
+}
+
+func (r *SQLRepository) LoadGroupRuntimeByID(ctx context.Context, groupID int64) (GroupRuntime, error) {
+	return r.loadGroupRuntime(
+		ctx,
+		`
+SELECT
+	id,
+	name,
+	token_hash,
+	effective_ip,
+	enabled,
+	updated_at
+FROM proxy_groups
+WHERE id = ?
+`,
+		groupID,
+	)
+}
+
+func (r *SQLRepository) loadGroupRuntime(ctx context.Context, query string, arg any) (GroupRuntime, error) {
+	if r == nil || r.store == nil {
+		return GroupRuntime{}, fmt.Errorf("repository store is nil")
+	}
+
+	row, err := r.store.QueryOneContext(
+		ctx,
+		query,
+		arg,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

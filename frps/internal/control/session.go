@@ -21,6 +21,7 @@ type sessionState struct {
 	nextServerRequestID    atomic.Uint32
 	nextStreamID           atomic.Uint32
 	readTimeout            time.Duration
+	configMu               sync.Mutex
 	writeMu                sync.Mutex
 
 	runtimeMu        sync.Mutex
@@ -101,34 +102,82 @@ func (s *sessionState) closePublicStream(streamID uint32) bool {
 	return true
 }
 
-func (s *Server) shutdownSession(session *sessionState) {
-	session.closeDone()
+func (s *sessionState) currentGroupAndSnapshot() (GroupRuntime, ConfigSnapshot) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	return s.Group, s.Snapshot
+}
 
-	session.runtimeMu.Lock()
-	listeners := make([]net.Listener, 0, len(session.listeners))
-	for tunnelID, tunnelListeners := range session.listeners {
-		delete(session.listeners, tunnelID)
+func (s *sessionState) currentGroup() GroupRuntime {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	return s.Group
+}
+
+func (s *sessionState) reconfigure(group GroupRuntime, snapshot ConfigSnapshot, requestID uint32) error {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+
+	if s.pendingConfigRequestID != 0 {
+		return errConfigUpdateInFlight
+	}
+
+	s.Group = group
+	s.Snapshot = snapshot
+	s.pendingConfigRequestID = requestID
+	return nil
+}
+
+func (s *sessionState) configAckState() (uint32, uint64) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	return s.pendingConfigRequestID, s.Snapshot.Version
+}
+
+func (s *sessionState) acceptConfigAck(requestID uint32, version uint64) error {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+
+	if s.pendingConfigRequestID == 0 || requestID != s.pendingConfigRequestID {
+		return errUnexpectedConfigAck
+	}
+	if version != s.Snapshot.Version {
+		return errConfigVersionMismatch
+	}
+
+	s.LastAckedConfigVersion = version
+	s.pendingConfigRequestID = 0
+	return nil
+}
+
+func (s *sessionState) clearPendingConfigRequest(requestID uint32) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	if s.pendingConfigRequestID == requestID {
+		s.pendingConfigRequestID = 0
+	}
+}
+
+func (s *sessionState) resetTunnelRuntime() {
+	s.runtimeMu.Lock()
+	listeners := make([]net.Listener, 0, len(s.listeners))
+	for tunnelID, tunnelListeners := range s.listeners {
+		delete(s.listeners, tunnelID)
 		listeners = append(listeners, tunnelListeners...)
 	}
-	udpListeners := make([]*net.UDPConn, 0, len(session.udpListeners))
-	for tunnelID, tunnelListeners := range session.udpListeners {
-		delete(session.udpListeners, tunnelID)
+	udpListeners := make([]*net.UDPConn, 0, len(s.udpListeners))
+	for tunnelID, tunnelListeners := range s.udpListeners {
+		delete(s.udpListeners, tunnelID)
 		udpListeners = append(udpListeners, tunnelListeners...)
 	}
-
-	streams := make([]*publicStream, 0, len(session.streams))
-	for streamID, stream := range session.streams {
-		delete(session.streams, streamID)
-		streams = append(streams, stream)
+	for sessionID := range s.udpSessions {
+		delete(s.udpSessions, sessionID)
 	}
-	for sessionID := range session.udpSessions {
-		delete(session.udpSessions, sessionID)
+	for key := range s.udpSessionKeys {
+		delete(s.udpSessionKeys, key)
 	}
-	for key := range session.udpSessionKeys {
-		delete(session.udpSessionKeys, key)
-	}
-	session.listenersStarted = false
-	session.runtimeMu.Unlock()
+	s.listenersStarted = false
+	s.runtimeMu.Unlock()
 
 	for _, listener := range listeners {
 		_ = listener.Close()
@@ -136,6 +185,20 @@ func (s *Server) shutdownSession(session *sessionState) {
 	for _, listener := range udpListeners {
 		_ = listener.Close()
 	}
+}
+
+func (s *Server) shutdownSession(session *sessionState) {
+	session.closeDone()
+	session.resetTunnelRuntime()
+
+	session.runtimeMu.Lock()
+	streams := make([]*publicStream, 0, len(session.streams))
+	for streamID, stream := range session.streams {
+		delete(session.streams, streamID)
+		streams = append(streams, stream)
+	}
+	session.runtimeMu.Unlock()
+
 	for _, stream := range streams {
 		stream.signalReady(net.ErrClosed)
 		stream.close()

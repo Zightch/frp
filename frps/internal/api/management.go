@@ -33,8 +33,9 @@ const (
 )
 
 type managementService struct {
-	store   *storage.SQL
-	network system.SnapshotReader
+	store     *storage.SQL
+	network   system.SnapshotReader
+	refresher GroupRuntimeRefresher
 }
 
 type proxyGroupView struct {
@@ -116,11 +117,11 @@ func (e *apiError) Error() string {
 	return e.Message
 }
 
-func newManagementService(store *storage.SQL, network system.SnapshotReader) *managementService {
+func newManagementService(store *storage.SQL, network system.SnapshotReader, refresher GroupRuntimeRefresher) *managementService {
 	if store == nil {
 		return nil
 	}
-	return &managementService{store: store, network: network}
+	return &managementService{store: store, network: network, refresher: refresher}
 }
 
 func (s *Server) handleProxyGroups(writer http.ResponseWriter, request *http.Request) {
@@ -449,11 +450,12 @@ WHERE id = ?
 		return proxyGroupView{}, err
 	}
 
+	m.refreshGroups(id)
 	return item, nil
 }
 
 func (m *managementService) deleteProxyGroup(ctx context.Context, id int64) error {
-	return m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
+	err := m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
 		for _, statement := range []string{
 			"DELETE FROM tunnels WHERE group_id = ?",
 		} {
@@ -471,6 +473,12 @@ func (m *managementService) deleteProxyGroup(ctx context.Context, id int64) erro
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	m.refreshGroups(id)
+	return nil
 }
 
 func (m *managementService) resetProxyGroupToken(ctx context.Context, id int64) (proxyGroupView, string, error) {
@@ -515,6 +523,7 @@ WHERE id = ?
 		return proxyGroupView{}, "", err
 	}
 
+	m.refreshGroups(id)
 	return item, token, nil
 }
 
@@ -612,6 +621,7 @@ INSERT INTO tunnels (
 		return tunnelView{}, err
 	}
 
+	m.refreshGroups(item.GroupID)
 	return item, nil
 }
 
@@ -621,8 +631,23 @@ func (m *managementService) updateTunnel(ctx context.Context, id int64, payload 
 		return tunnelView{}, err
 	}
 
-	var item tunnelView
+	var (
+		item        tunnelView
+		previousGID int64
+	)
 	err = m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
+		row, err := tx.QueryOneContext(ctx, "SELECT group_id FROM tunnels WHERE id = ?", id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return &apiError{Status: http.StatusNotFound, Message: "tunnel not found"}
+			}
+			return fmt.Errorf("load tunnel before update: %w", err)
+		}
+		previousGID, err = rowInt64(row, "group_id")
+		if err != nil {
+			return fmt.Errorf("decode tunnel group_id: %w", err)
+		}
+
 		if err := ensureProxyGroupExists(ctx, tx, normalized.GroupID); err != nil {
 			return err
 		}
@@ -672,17 +697,39 @@ WHERE id = ?
 		return tunnelView{}, err
 	}
 
+	m.refreshGroups(previousGID, item.GroupID)
 	return item, nil
 }
 
 func (m *managementService) deleteTunnel(ctx context.Context, id int64) error {
-	result, err := m.store.ExecContext(ctx, "DELETE FROM tunnels WHERE id = ?", id)
+	var groupID int64
+	err := m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
+		row, err := tx.QueryOneContext(ctx, "SELECT group_id FROM tunnels WHERE id = ?", id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return &apiError{Status: http.StatusNotFound, Message: "tunnel not found"}
+			}
+			return fmt.Errorf("load tunnel before delete: %w", err)
+		}
+		groupID, err = rowInt64(row, "group_id")
+		if err != nil {
+			return fmt.Errorf("decode tunnel group_id: %w", err)
+		}
+
+		result, err := tx.ExecContext(ctx, "DELETE FROM tunnels WHERE id = ?", id)
+		if err != nil {
+			return fmt.Errorf("delete tunnel: %w", err)
+		}
+		if result.RowsAffected == 0 {
+			return &apiError{Status: http.StatusNotFound, Message: "tunnel not found"}
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("delete tunnel: %w", err)
+		return err
 	}
-	if result.RowsAffected == 0 {
-		return &apiError{Status: http.StatusNotFound, Message: "tunnel not found"}
-	}
+
+	m.refreshGroups(groupID)
 	return nil
 }
 
@@ -720,6 +767,24 @@ func (m *managementService) listLocalIPs() ([]localIPView, error) {
 	}
 
 	return items, nil
+}
+
+func (m *managementService) refreshGroups(groupIDs ...int64) {
+	if m == nil || m.refresher == nil {
+		return
+	}
+
+	seen := make(map[int64]struct{}, len(groupIDs))
+	for _, groupID := range groupIDs {
+		if groupID <= 0 {
+			continue
+		}
+		if _, ok := seen[groupID]; ok {
+			continue
+		}
+		seen[groupID] = struct{}{}
+		m.refresher.RefreshGroup(groupID)
+	}
 }
 
 func (m *managementService) loadProxyGroupByID(ctx context.Context, conn storage.Conn, id int64) (proxyGroupView, error) {

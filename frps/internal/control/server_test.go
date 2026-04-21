@@ -1510,6 +1510,167 @@ func TestServerHandlesUDPControlFramesWithoutEndingSession(t *testing.T) {
 	}
 }
 
+func TestServerRefreshGroupPushesUpdatedConfigToActiveSession(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	repo := &mutableRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: system.AnyIPv4,
+			TokenHash:   tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository: repo,
+			Network:    staticSnapshotReader{},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+	active, ok := server.activeSession(repo.group.ID)
+	if !ok || active == nil {
+		waitForActiveGroupSession(t, server, repo.group.ID)
+		active, ok = server.activeSession(repo.group.ID)
+	}
+	if !ok || active == nil {
+		t.Fatalf("active session for group %d not found", repo.group.ID)
+	}
+	waitForIdleConfig(t, active.session)
+
+	repo.group.Snapshot = ConfigSnapshot{
+		Version:       2,
+		GeneratedAtMs: 200,
+	}
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		server.RefreshGroup(repo.group.ID)
+	}()
+
+	refreshedFrame := readMessage(t, clientConn)
+	if refreshedFrame.Type != protocol.TypeConfigPush {
+		t.Fatalf("expected refreshed config.push, got %s", refreshedFrame.Type.String())
+	}
+	refreshedPush, err := protocol.UnmarshalConfigPush(refreshedFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal refreshed config.push: %v", err)
+	}
+	if refreshedPush.ConfigVersion != 2 {
+		t.Fatalf("unexpected refreshed config version: %d", refreshedPush.ConfigVersion)
+	}
+	writeConfigAck(t, clientConn, refreshedFrame.RequestID, refreshedPush.ConfigVersion)
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete")
+	}
+
+	pingBody, err := protocol.MarshalHeartbeatPing(protocol.HeartbeatPing{ClientUnixMs: 12345})
+	if err != nil {
+		t.Fatalf("marshal heartbeat.ping: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeHeartbeatPing,
+		RequestID: 3,
+		Body:      pingBody,
+	})
+	pongFrame := readMessage(t, clientConn)
+	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 3 {
+		t.Fatalf("unexpected heartbeat.pong after refresh: %#v", pongFrame)
+	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
+func TestServerRefreshGroupClosesSessionAfterTokenReset(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	repo := &mutableRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: system.AnyIPv4,
+			TokenHash:   tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository: repo,
+			Network:    staticSnapshotReader{},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+	active, ok := server.activeSession(repo.group.ID)
+	if !ok || active == nil {
+		waitForActiveGroupSession(t, server, repo.group.ID)
+		active, ok = server.activeSession(repo.group.ID)
+	}
+	if !ok || active == nil {
+		t.Fatalf("active session for group %d not found", repo.group.ID)
+	}
+	waitForIdleConfig(t, active.session)
+
+	var rotatedSecret [32]byte
+	copy(rotatedSecret[:], []byte("fedcba9876543210fedcba9876543210"))
+	repo.group.TokenHash = sha256.Sum256(rotatedSecret[:])
+
+	server.RefreshGroup(repo.group.ID)
+
+	if _, err := readMessageWithin(clientConn, time.Second); err == nil {
+		t.Fatal("expected refreshed session to close after token reset")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
 type stubRepository struct {
 	group GroupRuntime
 	err   error
@@ -1518,6 +1679,32 @@ type stubRepository struct {
 func (r stubRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
 	if r.err != nil {
 		return GroupRuntime{}, r.err
+	}
+	return r.group, nil
+}
+
+func (r stubRepository) LoadGroupRuntimeByID(_ context.Context, _ int64) (GroupRuntime, error) {
+	if r.err != nil {
+		return GroupRuntime{}, r.err
+	}
+	return r.group, nil
+}
+
+type mutableRepository struct {
+	group   GroupRuntime
+	loadErr error
+}
+
+func (r *mutableRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
+	if r.loadErr != nil {
+		return GroupRuntime{}, r.loadErr
+	}
+	return r.group, nil
+}
+
+func (r *mutableRepository) LoadGroupRuntimeByID(_ context.Context, _ int64) (GroupRuntime, error) {
+	if r.loadErr != nil {
+		return GroupRuntime{}, r.loadErr
 	}
 	return r.group, nil
 }
@@ -1803,6 +1990,37 @@ func isTimeoutError(err error) bool {
 	}
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func waitForActiveGroupSession(t *testing.T, server *Server, groupID int64) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, ok := server.activeSession(groupID); ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for active group session %d", groupID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForIdleConfig(t *testing.T, session *sessionState) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		pendingRequestID, _ := session.configAckState()
+		if pendingRequestID == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for config ack to settle")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.Frame) {

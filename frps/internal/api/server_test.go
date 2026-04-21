@@ -709,6 +709,177 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 	}
 }
 
+func TestManagementMutationsRefreshAffectedGroups(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+	refresher := &recordingGroupRefresher{}
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			RuntimeRefresher: refresher,
+			Auth:             manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	groupA := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-a",
+			"effective_ip": "127.0.0.1",
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupAID := int64(groupA.JSON["item"].(map[string]any)["id"].(float64))
+
+	groupB := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-b",
+			"effective_ip": "127.0.0.1",
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupBID := int64(groupB.JSON["item"].(map[string]any)["id"].(float64))
+
+	updated := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/proxy-groups/"+jsonNumberString(float64(groupAID)),
+		map[string]any{
+			"name":         "group-a-updated",
+			"effective_ip": "127.0.0.1",
+			"enabled":      true,
+		},
+		http.StatusOK,
+		sessionCookie,
+	)
+	if updated.JSON["item"].(map[string]any)["name"] != "group-a-updated" {
+		t.Fatalf("unexpected proxy group update payload: %#v", updated.JSON)
+	}
+	if got := refresher.calls(); len(got) != 1 || got[0] != groupAID {
+		t.Fatalf("unexpected refresh calls after proxy group update: %#v", got)
+	}
+	refresher.reset()
+
+	createdTunnel := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupAID,
+			"name":         "tunnel-a",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 20000,
+			"remote_end":   20000,
+			"local_host":   "127.0.0.1",
+			"local_start":  8080,
+			"local_end":    8080,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	tunnelID := createdTunnel.JSON["item"].(map[string]any)["id"].(float64)
+	if got := refresher.calls(); len(got) != 1 || got[0] != groupAID {
+		t.Fatalf("unexpected refresh calls after tunnel create: %#v", got)
+	}
+	refresher.reset()
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/tunnels/"+jsonNumberString(tunnelID),
+		map[string]any{
+			"group_id":     groupBID,
+			"name":         "tunnel-a",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 20000,
+			"remote_end":   20000,
+			"local_host":   "127.0.0.1",
+			"local_start":  8080,
+			"local_end":    8080,
+			"enabled":      true,
+		},
+		http.StatusOK,
+		sessionCookie,
+	)
+	if got := refresher.calls(); len(got) != 2 || got[0] != groupAID || got[1] != groupBID {
+		t.Fatalf("unexpected refresh calls after tunnel move: %#v", got)
+	}
+	refresher.reset()
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups/"+jsonNumberString(float64(groupBID))+"/token",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if got := refresher.calls(); len(got) != 1 || got[0] != groupBID {
+		t.Fatalf("unexpected refresh calls after token reset: %#v", got)
+	}
+	refresher.reset()
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/tunnels/"+jsonNumberString(tunnelID),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if got := refresher.calls(); len(got) != 1 || got[0] != groupBID {
+		t.Fatalf("unexpected refresh calls after tunnel delete: %#v", got)
+	}
+	refresher.reset()
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/proxy-groups/"+jsonNumberString(float64(groupBID)),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if got := refresher.calls(); len(got) != 1 || got[0] != groupBID {
+		t.Fatalf("unexpected refresh calls after proxy group delete: %#v", got)
+	}
+}
+
 func TestProxyGroupCreateAllowsSpecialIPv6WithoutSnapshot(t *testing.T) {
 	store := newTestStore(t)
 	manager := newTestAuthManager(t, true)
@@ -1305,4 +1476,20 @@ func (r *mutableSnapshotReader) Current() system.Snapshot {
 		return system.Snapshot{}
 	}
 	return r.snapshot
+}
+
+type recordingGroupRefresher struct {
+	groupIDs []int64
+}
+
+func (r *recordingGroupRefresher) RefreshGroup(groupID int64) {
+	r.groupIDs = append(r.groupIDs, groupID)
+}
+
+func (r *recordingGroupRefresher) calls() []int64 {
+	return append([]int64(nil), r.groupIDs...)
+}
+
+func (r *recordingGroupRefresher) reset() {
+	r.groupIDs = nil
 }

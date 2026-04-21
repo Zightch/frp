@@ -45,6 +45,7 @@ type Server struct {
 	mu         sync.Mutex
 	listener   net.Listener
 	activeConn map[net.Conn]struct{}
+	sessions   map[int64]*activeSession
 	// groupSlots tracks the occupied single client slot for each proxy group.
 	groupSlots map[int64]uint64
 	closeOnce  sync.Once
@@ -55,6 +56,11 @@ type Server struct {
 
 	nextChallengeID atomic.Uint32
 	nextSessionID   atomic.Uint64
+}
+
+type activeSession struct {
+	conn    net.Conn
+	session *sessionState
 }
 
 func NewServer(options Options, logger *slog.Logger, version string) *Server {
@@ -81,6 +87,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		repo:       options.Repository,
 		network:    options.Network,
 		activeConn: make(map[net.Conn]struct{}),
+		sessions:   make(map[int64]*activeSession),
 		groupSlots: make(map[int64]uint64),
 		challenges: make(map[uint32]*authChallenge),
 	}
@@ -173,6 +180,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 		"group_id", session.Group.ID,
 		"group_name", session.Group.Name,
 	)
+	s.registerActiveSession(conn, session)
+	defer s.unregisterActiveSession(session)
 	defer s.shutdownSession(session)
 	logger.Info(
 		"frpc control login succeeded",

@@ -30,6 +30,7 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 	}
 	session.runtimeMu.Unlock()
 
+	group, snapshot := session.currentGroupAndSnapshot()
 	startedTCP := make([]net.Listener, 0)
 	startedTCPByTunnel := make(map[uint32][]net.Listener)
 	startedTCPRuntimes := make([]tcpTunnelListener, 0)
@@ -37,12 +38,23 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 	startedUDPByTunnel := make(map[uint32][]*net.UDPConn)
 	startedUDPRuntimes := make([]udpTunnelListener, 0)
 
-	bindIP, err := s.resolveGroupEffectiveIP(session.Group)
+	if len(snapshot.Tunnels) == 0 {
+		session.runtimeMu.Lock()
+		if session.listenersStarted {
+			session.runtimeMu.Unlock()
+			return nil
+		}
+		session.listenersStarted = true
+		session.runtimeMu.Unlock()
+		return nil
+	}
+
+	bindIP, err := s.resolveGroupEffectiveIP(group)
 	if err != nil {
 		return err
 	}
 
-	for _, tunnel := range session.Snapshot.Tunnels {
+	for _, tunnel := range snapshot.Tunnels {
 		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
 			continue
 		}

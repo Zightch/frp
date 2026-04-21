@@ -51,12 +51,24 @@ func (a *App) Run(parent context.Context) error {
 		return err
 	}
 
+	a.control = control.NewServer(
+		control.Options{
+			Addr:        a.config.ControlListenAddr,
+			Store:       a.store,
+			Network:     a.network,
+			ReadTimeout: a.config.ReadHeaderTimeoutDuration(),
+		},
+		a.logger.With("subsystem", "control"),
+		a.version,
+	)
+
 	apiServer, err := api.NewServer(
 		api.Options{
 			Addr:              a.config.ManagementListenAddr,
 			ReadHeaderTimeout: a.config.ReadHeaderTimeoutDuration(),
 			Store:             a.store,
 			Network:           a.network,
+			RuntimeRefresher:  a.control,
 			Auth:              a.auth,
 			WebUIDistDir:      a.config.WebUI.DistDir,
 		},
@@ -70,16 +82,6 @@ func (a *App) Run(parent context.Context) error {
 		return fmt.Errorf("init management api: %w", err)
 	}
 	a.api = apiServer
-	a.control = control.NewServer(
-		control.Options{
-			Addr:        a.config.ControlListenAddr,
-			Store:       a.store,
-			Network:     a.network,
-			ReadTimeout: a.config.ReadHeaderTimeoutDuration(),
-		},
-		a.logger.With("subsystem", "control"),
-		a.version,
-	)
 
 	errCh := make(chan error, 2)
 
