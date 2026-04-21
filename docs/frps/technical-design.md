@@ -374,3 +374,29 @@ localPort = localStart + offset
 - 在线热更新需要补 listener diff、配置推送和 ack 状态管理，不能误写成“仅写库”。
 - `proxy_groups.rate_limit` 只有进入真实执行链路后，文档才允许改口为“已实现”。
 - 抓包控制如果后续落地，必须先定义运行时控制面和生效边界，不能再回填为 `tunnels` 持久化字段。
+
+## 9. 已确认待落地的分组生效 IP 设计
+
+下面这些边界已经确认，但当前仍处于契约先行阶段，尚未进入真实代码链路。
+
+### 9.1 持久化字段
+
+- `proxy_groups` 将新增 `effective_ip` 字段，数据库/API 字段名固定为 `effective_ip`，管理面和 WebUI 标签统一使用“生效 IP”。
+- `effective_ip` 存储单个 IP 字面量，只允许服务端当前本机 IPv4、服务端当前本机 IPv6，以及特殊值 `0.0.0.0`、`::`。
+- `effective_ip` 不允许写入 hostname、CIDR、端口、逗号列表或空字符串。
+- `effective_ip` 是分组级持久化配置，表示该分组下全部 TCP/UDP listener 共用同一个绑定 IP；不新增 tunnel 级绑定 IP。
+- 继续沿用当前开发阶段约束：旧库需要手工补列或重建，不做自动 schema migration。
+
+### 9.2 管理 API 契约
+
+- `POST /api/v1/proxy-groups` 请求体将新增 `effective_ip`。
+- `PATCH /api/v1/proxy-groups/{id}` 请求体将新增 `effective_ip`。
+- `GET /api/v1/proxy-groups`、`POST /api/v1/proxy-groups`、`PATCH /api/v1/proxy-groups/{id}`、`POST /api/v1/proxy-groups/{id}/token` 的 `item` 返回模型都将新增 `effective_ip`。
+- 当前这一步只收口持久化字段和 CRUD 模型；“当前 IP 是否仍存在于本机”“异常原因”等运行态字段放到后续步骤单独补齐。
+- 服务端最终校验会依赖本机地址快照；在地址发现层落地前，当前先只固定字段面和类型语义。
+
+### 9.3 控制面消费边界
+
+- `GroupRuntime` 后续要把 `effective_ip` 纳入分组级运行态，并在展开该分组下所有 TCP/UDP listener 时统一使用。
+- 如果配置的 `effective_ip` 后续不再存在于本机，控制面不得静默回退到其他地址，也不得自动改写数据库。
+- “分组异常”是运行态派生状态，不新增持久化异常字段。
