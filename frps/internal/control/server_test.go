@@ -1660,6 +1660,191 @@ func TestServerRefreshGroupClosesSessionWhenConfigPushPending(t *testing.T) {
 	}
 }
 
+func TestServerRefreshGroupBlocksReplacementSessionUntilRefreshCompletes(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	repo := &blockingRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: system.AnyIPv4,
+			TokenHash:   tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+			},
+		},
+		loadByIDStarted: make(chan struct{}, 1),
+		allowLoadByID:   make(chan struct{}),
+	}
+
+	server := NewServer(
+		Options{
+			Repository: repo,
+			Network:    staticSnapshotReader{},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+	active, ok := server.activeSession(repo.group.ID)
+	if !ok || active == nil {
+		waitForActiveGroupSession(t, server, repo.group.ID)
+		active, ok = server.activeSession(repo.group.ID)
+	}
+	if !ok || active == nil {
+		t.Fatalf("active session for group %d not found", repo.group.ID)
+	}
+	waitForIdleConfig(t, active.session)
+
+	repo.group.Snapshot = ConfigSnapshot{
+		Version:       2,
+		GeneratedAtMs: 200,
+	}
+
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		server.RefreshGroup(repo.group.ID)
+	}()
+
+	select {
+	case <-repo.loadByIDStarted:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not reach repository load")
+	}
+
+	_ = clientConn.Close()
+
+	replacementClientRaw, replacementServerRaw := net.Pipe()
+	replacementClientConn := &connWithRemoteAddr{
+		Conn:   replacementClientRaw,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 10002},
+	}
+	replacementServerConn := &connWithRemoteAddr{
+		Conn:   replacementServerRaw,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20002},
+	}
+	defer replacementClientConn.Close()
+
+	replacementDone := make(chan struct{})
+	server.registerConn(replacementServerConn)
+	server.connWG.Add(1)
+	go func() {
+		defer close(replacementDone)
+		server.handleConnection(replacementServerConn)
+	}()
+
+	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
+		TokenID:       tokenID,
+		ClientVersion: "test-client",
+		Hostname:      "node-2",
+		OS:            protocol.OSLinux,
+		Arch:          protocol.ArchAMD64,
+	})
+	if err != nil {
+		t.Fatalf("marshal replacement auth.begin: %v", err)
+	}
+	writeMessage(t, replacementClientConn, protocol.Frame{
+		Type:      protocol.TypeAuthBegin,
+		RequestID: 1,
+		Body:      authBeginBody,
+	})
+
+	challengeFrame := readMessage(t, replacementClientConn)
+	if challengeFrame.Type != protocol.TypeAuthChallenge {
+		t.Fatalf("expected replacement auth.challenge, got %s", challengeFrame.Type.String())
+	}
+	challenge, err := protocol.UnmarshalAuthChallenge(challengeFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal replacement auth.challenge: %v", err)
+	}
+
+	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
+		ChallengeID: challenge.ChallengeID,
+		Response:    protocol.ChallengeResponse(tokenHash, challenge.Nonce),
+	})
+	if err != nil {
+		t.Fatalf("marshal replacement auth.finish: %v", err)
+	}
+	writeMessage(t, replacementClientConn, protocol.Frame{
+		Type:      protocol.TypeAuthFinish,
+		RequestID: 2,
+		Body:      authFinishBody,
+	})
+
+	if frame, err := readMessageWithin(replacementClientConn, 200*time.Millisecond); err == nil {
+		t.Fatalf("expected replacement auth to wait for refresh completion, got %s", frame.Type.String())
+	} else if !isTimeoutError(err) {
+		t.Fatalf("expected replacement auth wait to time out, got %v", err)
+	}
+
+	close(repo.allowLoadByID)
+
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale session did not exit")
+	}
+
+	helloFrame := readMessage(t, replacementClientConn)
+	if helloFrame.Type != protocol.TypeServerHello {
+		t.Fatalf("expected replacement server.hello, got %s", helloFrame.Type.String())
+	}
+
+	replacementConfigFrame := readMessage(t, replacementClientConn)
+	if replacementConfigFrame.Type != protocol.TypeConfigPush {
+		t.Fatalf("expected replacement config.push, got %s", replacementConfigFrame.Type.String())
+	}
+	replacementPush, err := protocol.UnmarshalConfigPush(replacementConfigFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal replacement config.push: %v", err)
+	}
+	if replacementPush.ConfigVersion != 2 {
+		t.Fatalf("unexpected replacement config version: %d", replacementPush.ConfigVersion)
+	}
+	writeConfigAck(t, replacementClientConn, replacementConfigFrame.RequestID, replacementPush.ConfigVersion)
+
+	pingBody, err := protocol.MarshalHeartbeatPing(protocol.HeartbeatPing{ClientUnixMs: 12345})
+	if err != nil {
+		t.Fatalf("marshal replacement heartbeat.ping: %v", err)
+	}
+	writeMessage(t, replacementClientConn, protocol.Frame{
+		Type:      protocol.TypeHeartbeatPing,
+		RequestID: 3,
+		Body:      pingBody,
+	})
+	pongFrame := readMessage(t, replacementClientConn)
+	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 3 {
+		t.Fatalf("unexpected replacement heartbeat.pong: %#v", pongFrame)
+	}
+
+	_ = replacementClientConn.Close()
+	select {
+	case <-replacementDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement session did not exit")
+	}
+}
+
 func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
@@ -2023,6 +2208,40 @@ func (r *mutableRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (Gro
 func (r *mutableRepository) LoadGroupRuntimeByID(_ context.Context, _ int64) (GroupRuntime, error) {
 	if r.loadErr != nil {
 		return GroupRuntime{}, r.loadErr
+	}
+	return r.group, nil
+}
+
+type blockingRepository struct {
+	group           GroupRuntime
+	loadErr         error
+	loadByIDStarted chan struct{}
+	allowLoadByID   chan struct{}
+}
+
+func (r *blockingRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
+	if r.loadErr != nil {
+		return GroupRuntime{}, r.loadErr
+	}
+	return r.group, nil
+}
+
+func (r *blockingRepository) LoadGroupRuntimeByID(ctx context.Context, _ int64) (GroupRuntime, error) {
+	if r.loadErr != nil {
+		return GroupRuntime{}, r.loadErr
+	}
+	if r.loadByIDStarted != nil {
+		select {
+		case r.loadByIDStarted <- struct{}{}:
+		default:
+		}
+	}
+	if r.allowLoadByID != nil {
+		select {
+		case <-r.allowLoadByID:
+		case <-ctx.Done():
+			return GroupRuntime{}, ctx.Err()
+		}
 	}
 	return r.group, nil
 }

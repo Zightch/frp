@@ -25,13 +25,31 @@ func (s *Server) unregisterActiveSession(session *sessionState) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.sessions[session.Group.ID]
-	if !ok || current.session != session {
+	groupID := session.Group.ID
+	for {
+		s.mu.Lock()
+		current, ok := s.sessions[groupID]
+		if !ok || current == nil || current.session != session {
+			if s.groupSlots[groupID] == session.ID {
+				delete(s.groupSlots, groupID)
+			}
+			s.mu.Unlock()
+			return
+		}
+		current.mu.Lock()
+		if s.sessions[groupID] != current {
+			current.mu.Unlock()
+			s.mu.Unlock()
+			continue
+		}
+		delete(s.sessions, groupID)
+		if s.groupSlots[groupID] == session.ID {
+			delete(s.groupSlots, groupID)
+		}
+		s.mu.Unlock()
+		current.mu.Unlock()
 		return
 	}
-	delete(s.sessions, session.Group.ID)
 }
 
 func (s *Server) activeSession(groupID int64) (*activeSession, bool) {
@@ -41,15 +59,41 @@ func (s *Server) activeSession(groupID int64) (*activeSession, bool) {
 	return current, ok
 }
 
+func (s *Server) lockCurrentActiveSession(groupID int64) (*activeSession, bool) {
+	if s == nil || groupID <= 0 {
+		return nil, false
+	}
+
+	for {
+		s.mu.Lock()
+		current, ok := s.sessions[groupID]
+		if !ok || current == nil {
+			s.mu.Unlock()
+			return nil, false
+		}
+		current.mu.Lock()
+		if s.sessions[groupID] == current {
+			s.mu.Unlock()
+			return current, true
+		}
+		current.mu.Unlock()
+		s.mu.Unlock()
+	}
+}
+
 func (s *Server) RefreshGroup(groupID int64) {
 	if s == nil || groupID <= 0 {
 		return
 	}
 
-	active, ok := s.activeSession(groupID)
+	active, ok := s.lockCurrentActiveSession(groupID)
 	if !ok || active == nil || active.conn == nil || active.session == nil {
+		if active != nil {
+			active.mu.Unlock()
+		}
 		return
 	}
+	defer active.mu.Unlock()
 
 	group, err := s.loadGroupRuntimeByID(groupID)
 	if err != nil {

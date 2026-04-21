@@ -244,7 +244,6 @@ func (s *Server) shutdownSession(session *sessionState) {
 		stream.signalReady(net.ErrClosed)
 		stream.close()
 	}
-	s.releaseGroupSlot(session.Group.ID, session.ID)
 }
 
 func (s *Server) writeFrameWithSession(conn net.Conn, session *sessionState, frame protocol.Frame) error {

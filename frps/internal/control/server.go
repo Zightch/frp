@@ -59,6 +59,7 @@ type Server struct {
 }
 
 type activeSession struct {
+	mu      sync.Mutex
 	conn    net.Conn
 	session *sessionState
 }
