@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import http.cookiejar
 import json
 import os
 import shutil
@@ -25,12 +26,13 @@ from typing import IO
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 SCHEMA_TIMEOUT_SECONDS = 15.0
-SUPPORTED_SCENARIOS = ("happy_path", "bad_token", "disabled_group", "disabled_tunnel", "local_unavailable")
+SUPPORTED_SCENARIOS = ("happy_path", "bad_token", "disabled_group", "disabled_tunnel", "local_unavailable", "hot_reload")
 BAD_TOKEN_ERROR_CODE = 1101
 BAD_TOKEN_ERROR_TEXT = "challenge response mismatch"
 DISABLED_GROUP_ERROR_CODE = 1103
 DISABLED_GROUP_ERROR_TEXT = "proxy group is disabled"
 NEGATIVE_STABILITY_WINDOW_SECONDS = 2.0
+MANAGEMENT_SECRET = "frp-tcp-e2e-management-secret"
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,8 @@ class Ports:
     management: int
     remote: int
     echo: int
+    reloaded_remote: int
+    reloaded_echo: int
 
 
 @dataclass(frozen=True)
@@ -87,6 +91,13 @@ class ExternalClientAttempt:
     timed_out: bool
 
 
+@dataclass(frozen=True)
+class HTTPResult:
+    status: int
+    body: bytes
+    headers: dict[str, str]
+
+
 @dataclass
 class RunObservations:
     external_attempt: ExternalClientAttempt | None = None
@@ -95,6 +106,19 @@ class RunObservations:
 class ThreadedEchoServer(ThreadingMixIn, TCPServer):
     allow_reuse_address = True
     daemon_threads = True
+
+    def __init__(self, server_address: tuple[str, int], handler_class: type[BaseRequestHandler]) -> None:
+        super().__init__(server_address, handler_class)
+        self._payload_lock = threading.Lock()
+        self._received_payloads: list[bytes] = []
+
+    def record_payload(self, payload: bytes) -> None:
+        with self._payload_lock:
+            self._received_payloads.append(payload)
+
+    def snapshot(self) -> list[bytes]:
+        with self._payload_lock:
+            return list(self._received_payloads)
 
 
 class EchoRequestHandler(BaseRequestHandler):
@@ -106,6 +130,9 @@ class EchoRequestHandler(BaseRequestHandler):
                 return
             if not payload:
                 return
+            server = self.server
+            if isinstance(server, ThreadedEchoServer):
+                server.record_payload(payload)
             try:
                 self.request.sendall(payload)
             except OSError:
@@ -176,7 +203,8 @@ def main() -> int:
     timeout = max(args.timeout, 1.0)
     stage = "prepare workspace"
     processes: list[ManagedProcess] = []
-    echo_handle: EchoServerHandle | None = None
+    echo_handles: list[EchoServerHandle] = []
+    initial_echo_handle: EchoServerHandle | None = None
     ports: Ports | None = None
     observations = RunObservations()
 
@@ -247,10 +275,11 @@ def main() -> int:
         print(f"[stage] {stage}")
         seed_runtime_data(paths.db_path, token, ports, args.scenario)
 
-        if args.scenario == "happy_path":
+        if args.scenario in ("happy_path", "hot_reload"):
             stage = "start echo server"
             print(f"[stage] {stage}")
-            echo_handle = run_echo_server("127.0.0.1", ports.echo)
+            initial_echo_handle = run_echo_server("127.0.0.1", ports.echo)
+            echo_handles.append(initial_echo_handle)
 
         stage = "start frpc"
         print(f"[stage] {stage}")
@@ -269,11 +298,12 @@ def main() -> int:
         )
         processes.append(frpc_process)
 
-        if args.scenario == "happy_path":
+        if args.scenario in ("happy_path", "hot_reload"):
             stage = "wait for remote tcp listener"
             print(f"[stage] {stage}")
             wait_log_contains(paths.frps_log_path, "tcp tunnel listener ready", timeout, processes)
 
+        if args.scenario == "happy_path":
             stage = "run external client echo round-trip"
             print(f"[stage] {stage}")
             payload = args.payload.encode("utf-8")
@@ -311,6 +341,27 @@ def main() -> int:
                 observations,
             )
             print("[ok] tcp single-port local_unavailable rejected missing local target as expected")
+        elif args.scenario == "hot_reload":
+            if initial_echo_handle is None:
+                raise RuntimeError("hot_reload requires the initial tcp echo server")
+
+            stage = "start reload echo server"
+            print(f"[stage] {stage}")
+            reload_echo_handle = run_echo_server("127.0.0.1", ports.reloaded_echo)
+            echo_handles.append(reload_echo_handle)
+
+            stage = "validate online hot reload"
+            print(f"[stage] {stage}")
+            validate_hot_reload_scenario(
+                paths,
+                ports,
+                initial_echo_handle,
+                reload_echo_handle,
+                args.payload.encode("utf-8"),
+                timeout,
+                processes,
+            )
+            print("[ok] tcp single-port hot_reload replaced old runtime and applied new target")
         else:
             raise RuntimeError(f"unsupported scenario: {args.scenario}")
 
@@ -333,7 +384,7 @@ def main() -> int:
         dump_process_logs(processes)
         return 1
     finally:
-        cleanup(processes, echo_handle, paths.temp_root, args.keep_temp)
+        cleanup(processes, echo_handles, paths.temp_root, args.keep_temp)
 
 
 def ensure_go_available(args: argparse.Namespace) -> None:
@@ -447,7 +498,7 @@ def allocate_ports() -> Ports:
     reserved: list[socket.socket] = []
     numbers: list[int] = []
     try:
-        for _ in range(4):
+        for _ in range(6):
             probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             probe.bind(("127.0.0.1", 0))
             probe.listen(1)
@@ -462,6 +513,8 @@ def allocate_ports() -> Ports:
         management=numbers[1],
         remote=numbers[2],
         echo=numbers[3],
+        reloaded_remote=numbers[4],
+        reloaded_echo=numbers[5],
     )
 
 
@@ -792,6 +845,74 @@ def validate_local_unavailable_scenario(
         )
 
 
+def validate_hot_reload_scenario(
+    paths: RuntimePaths,
+    ports: Ports,
+    initial_echo_handle: EchoServerHandle,
+    reload_echo_handle: EchoServerHandle,
+    payload: bytes,
+    timeout_seconds: float,
+    processes: list[ManagedProcess],
+) -> None:
+    wait_log_count_at_least(paths.frps_log_path, "config acknowledged", 1, timeout_seconds, processes)
+    wait_log_count_at_least(paths.frpc_log_path, "config applied", 1, timeout_seconds, processes)
+    wait_log_count_at_least(paths.frps_log_path, "tcp tunnel listener ready", 1, timeout_seconds, processes)
+
+    initial_ack_count = count_log_occurrences(paths.frps_log_path, "config acknowledged")
+    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "config applied")
+    initial_listener_count = count_log_occurrences(paths.frps_log_path, "tcp tunnel listener ready")
+
+    first_payload = payload + b"-before"
+    second_payload = payload + b"-after"
+    public_conn = socket.create_connection(("127.0.0.1", ports.remote), timeout=timeout_seconds)
+    try:
+        public_conn.settimeout(timeout_seconds)
+        first_response = run_external_client_exchange(public_conn, first_payload)
+        if first_response != first_payload:
+            raise RuntimeError(f"hot_reload first echo mismatch: sent {first_payload!r}, received {first_response!r}")
+
+        wait_for_echo_payload(initial_echo_handle, first_payload, min(timeout_seconds, 10.0))
+
+        base_url = f"http://127.0.0.1:{ports.management}"
+        opener = login_management_session(base_url, MANAGEMENT_SECRET)
+        tunnel_id, group_id = load_single_tunnel_record(paths.db_path, "e2e-tcp")
+        patch_single_tunnel_via_management(
+            opener,
+            base_url,
+            tunnel_id,
+            group_id,
+            "e2e-tcp",
+            "tcp",
+            ports.reloaded_remote,
+            ports.reloaded_echo,
+        )
+        assert_single_tunnel_mapping(paths.db_path, "e2e-tcp", ports.reloaded_remote, ports.reloaded_echo)
+
+        wait_log_count_at_least(paths.frps_log_path, "config acknowledged", initial_ack_count + 1, timeout_seconds, processes)
+        wait_log_count_at_least(paths.frpc_log_path, "config applied", initial_apply_count + 1, timeout_seconds, processes)
+        wait_log_count_at_least(
+            paths.frps_log_path,
+            "tcp tunnel listener ready",
+            initial_listener_count + 1,
+            timeout_seconds,
+            processes,
+        )
+        wait_log_contains(paths.frpc_log_path, "replaced_tunnels=1", timeout_seconds, processes)
+
+        wait_for_tcp_connection_close(public_conn, timeout_seconds)
+        wait_for_tcp_port_close("127.0.0.1", ports.remote, timeout_seconds, processes)
+
+        second_response = run_external_client("127.0.0.1", ports.reloaded_remote, second_payload, timeout_seconds)
+        if second_response != second_payload:
+            raise RuntimeError(f"hot_reload second echo mismatch: sent {second_payload!r}, received {second_response!r}")
+
+        wait_for_echo_payload(reload_echo_handle, second_payload, min(timeout_seconds, 10.0))
+        if second_payload in initial_echo_handle.server.snapshot():
+            raise RuntimeError("hot_reload unexpectedly delivered the second payload to the old tcp target")
+    finally:
+        public_conn.close()
+
+
 def validate_auth_rejection_scenario(
     scenario: str,
     paths: RuntimePaths,
@@ -851,15 +972,19 @@ def run_echo_server(host: str, port: int) -> EchoServerHandle:
 
 
 def run_external_client(host: str, port: int, payload: bytes, timeout_seconds: float) -> bytes:
-    response = bytearray()
     with socket.create_connection((host, port), timeout=timeout_seconds) as conn:
         conn.settimeout(timeout_seconds)
-        conn.sendall(payload)
-        while len(response) < len(payload):
-            chunk = conn.recv(65535)
-            if not chunk:
-                break
-            response.extend(chunk)
+        return run_external_client_exchange(conn, payload)
+
+
+def run_external_client_exchange(conn: socket.socket, payload: bytes) -> bytes:
+    response = bytearray()
+    conn.sendall(payload)
+    while len(response) < len(payload):
+        chunk = conn.recv(65535)
+        if not chunk:
+            break
+        response.extend(chunk)
     return bytes(response)
 
 
@@ -926,6 +1051,232 @@ def tcp_connectable(host: str, port: int, timeout_seconds: float) -> bool:
         return False
 
 
+def wait_for_echo_payload(handle: EchoServerHandle, payload: bytes, timeout_seconds: float) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if payload in handle.server.snapshot():
+            return
+        time.sleep(0.05)
+
+    raise TimeoutError(f"tcp echo server did not observe payload in time: {payload!r}")
+
+
+def wait_for_tcp_connection_close(conn: socket.socket, timeout_seconds: float) -> None:
+    deadline = time.time() + timeout_seconds
+    conn.settimeout(0.25)
+    while time.time() < deadline:
+        try:
+            payload = conn.recv(1)
+        except socket.timeout:
+            continue
+        except OSError:
+            return
+
+        if not payload:
+            return
+        raise RuntimeError(f"tcp hot_reload received unexpected payload while waiting for close: {payload!r}")
+
+    raise TimeoutError("tcp public connection stayed open after hot reload")
+
+
+def wait_for_tcp_port_close(
+    host: str,
+    port: int,
+    timeout_seconds: float,
+    processes: list[ManagedProcess],
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        ensure_processes_alive(processes)
+        if not tcp_connectable(host, port, timeout_seconds=0.25):
+            return
+        time.sleep(0.25)
+
+    raise TimeoutError(f"tcp public port stayed open after hot reload: {host}:{port}")
+
+
+def wait_log_count_at_least(
+    log_path: Path,
+    needle: str,
+    minimum_count: int,
+    timeout_seconds: float,
+    processes: list[ManagedProcess],
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        ensure_processes_alive(processes)
+        if count_log_occurrences(log_path, needle) >= minimum_count:
+            return
+        time.sleep(0.25)
+
+    raise TimeoutError(
+        f"log count check timed out: {needle!r} expected at least {minimum_count} in {log_path}",
+    )
+
+
+def count_log_occurrences(log_path: Path, needle: str) -> int:
+    return read_log_text(log_path).count(needle)
+
+
+def login_management_session(base_url: str, secret: str) -> urllib.request.OpenerDirector:
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    key_hash = sha256_hex(secret)
+
+    init_result = request_json(
+        opener,
+        "POST",
+        f"{base_url}/api/v1/auth/init",
+        payload={"key_hash": key_hash},
+        expected_status=201,
+    )
+    if init_result.get("initialized") is not True:
+        raise RuntimeError(f"management auth init returned unexpected payload: {init_result!r}")
+
+    challenge = request_json(opener, "POST", f"{base_url}/api/v1/auth/challenge", expected_status=200)
+    challenge_id = str(challenge.get("challenge_id") or "").strip()
+    salt = str(challenge.get("salt") or "").strip()
+    if not challenge_id or not salt:
+        raise RuntimeError(f"invalid management auth challenge payload: {challenge!r}")
+
+    login_result = request_json(
+        opener,
+        "POST",
+        f"{base_url}/api/v1/auth/login",
+        payload={
+            "challenge_id": challenge_id,
+            "proof": build_management_proof(key_hash, salt),
+        },
+        expected_status=200,
+    )
+    if login_result.get("authenticated") is not True:
+        raise RuntimeError(f"management auth login returned unexpected payload: {login_result!r}")
+    if not list(cookie_jar):
+        raise RuntimeError("management auth login did not produce a session cookie")
+
+    return opener
+
+
+def patch_single_tunnel_via_management(
+    opener: urllib.request.OpenerDirector,
+    base_url: str,
+    tunnel_id: int,
+    group_id: int,
+    tunnel_name: str,
+    protocol_name: str,
+    remote_port: int,
+    local_port: int,
+) -> None:
+    request_json(
+        opener,
+        "PATCH",
+        f"{base_url}/api/v1/tunnels/{tunnel_id}",
+        payload={
+            "group_id": group_id,
+            "name": tunnel_name,
+            "protocol": protocol_name,
+            "remote_type": "single",
+            "remote_start": remote_port,
+            "remote_end": remote_port,
+            "local_host": "127.0.0.1",
+            "local_start": local_port,
+            "local_end": local_port,
+            "enabled": True,
+        },
+        expected_status=200,
+    )
+
+
+def load_single_tunnel_record(db_path: Path, tunnel_name: str) -> tuple[int, int]:
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
+        row = conn.execute(
+            "SELECT id, group_id FROM tunnels WHERE name = ? ORDER BY id DESC LIMIT 1",
+            (tunnel_name,),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError(f"tunnel row not found for {tunnel_name!r}")
+    return (int(row[0]), int(row[1]))
+
+
+def assert_single_tunnel_mapping(db_path: Path, tunnel_name: str, expected_remote: int, expected_local: int) -> None:
+    with sqlite3.connect(db_path, timeout=5.0) as conn:
+        row = conn.execute(
+            """
+            SELECT remote_start, remote_end, local_start, local_end
+            FROM tunnels
+            WHERE name = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (tunnel_name,),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError(f"tunnel row not found for {tunnel_name!r}")
+
+    actual = tuple(int(value) for value in row)
+    expected = (expected_remote, expected_remote, expected_local, expected_local)
+    if actual != expected:
+        raise RuntimeError(f"{tunnel_name} mapping mismatch: got {actual!r} want {expected!r}")
+
+
+def request_json(
+    opener: urllib.request.OpenerDirector,
+    method: str,
+    url: str,
+    payload: dict[str, object] | None = None,
+    expected_status: int = 200,
+) -> dict[str, object]:
+    result = perform_request(opener, method, url, payload, expected_status)
+    if not result.body:
+        return {}
+    decoded = json.loads(result.body.decode("utf-8"))
+    if not isinstance(decoded, dict):
+        raise RuntimeError(f"expected JSON object from {method} {url}, got {type(decoded).__name__}")
+    return decoded
+
+
+def perform_request(
+    opener: urllib.request.OpenerDirector,
+    method: str,
+    url: str,
+    payload: dict[str, object] | None,
+    expected_status: int,
+) -> HTTPResult:
+    headers: dict[str, str] = {}
+    data: bytes | None = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        response = opener.open(request, timeout=5.0)
+        with response:
+            body = response.read()
+            status = response.status
+            response_headers = {key.lower(): value for key, value in response.headers.items()}
+    except urllib.error.HTTPError as exc:
+        with exc:
+            body = exc.read()
+            status = exc.code
+            response_headers = {key.lower(): value for key, value in exc.headers.items()}
+
+    if status != expected_status:
+        raise RuntimeError(
+            f"unexpected status for {method} {url}: got {status} want {expected_status} body={body.decode('utf-8', errors='replace')}"
+        )
+
+    return HTTPResult(status=status, body=body, headers=response_headers)
+
+
+def sha256_hex(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def build_management_proof(key_hash: str, salt: str) -> str:
+    return hashlib.sha256((key_hash + salt).encode("utf-8")).hexdigest()
+
+
 def describe_external_attempt(attempt: ExternalClientAttempt) -> str:
     return (
         f"send_error={attempt.send_error!r} "
@@ -944,6 +1295,7 @@ def scenario_expectation_summary(scenario: str) -> str:
         "disabled_group": "the proxy group is disabled, frpc login is rejected, and frps never exposes the remote listener",
         "disabled_tunnel": "frpc login and config apply succeed, but the disabled tunnel never exposes the remote listener",
         "local_unavailable": "frpc login and remote listener succeed, then a real stream.open is rejected because the local target is unavailable and no echo payload is returned",
+        "hot_reload": "frpc completes a second config.push/config.ack cycle, the old tcp runtime is closed, and external traffic reaches the reloaded target",
     }
     try:
         return expectations[scenario]
@@ -1042,11 +1394,11 @@ def preview_bytes(data: bytes, limit: int = 48) -> str:
 
 def cleanup(
     processes: list[ManagedProcess],
-    echo_handle: EchoServerHandle | None,
+    echo_handles: list[EchoServerHandle],
     temp_root: Path,
     keep_temp: bool,
 ) -> None:
-    if echo_handle is not None:
+    for echo_handle in reversed(echo_handles):
         echo_handle.server.shutdown()
         echo_handle.server.server_close()
         echo_handle.thread.join(timeout=5.0)
@@ -1107,7 +1459,9 @@ def format_ports(ports: Ports) -> str:
         f"control_port={ports.control} "
         f"management_port={ports.management} "
         f"remote_port={ports.remote} "
-        f"echo_port={ports.echo}"
+        f"echo_port={ports.echo} "
+        f"reloaded_remote_port={ports.reloaded_remote} "
+        f"reloaded_echo_port={ports.reloaded_echo}"
     )
 
 
