@@ -2110,6 +2110,201 @@ func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing
 	}
 }
 
+func TestServerFreezeGroupRuntimeDropsBufferedTCPData(t *testing.T) {
+	server := NewServer(
+		Options{
+			WriteTimeout: time.Second,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	controlClient, controlServer := net.Pipe()
+	defer controlClient.Close()
+	defer controlServer.Close()
+
+	publicClient, publicServer := net.Pipe()
+	defer publicClient.Close()
+	defer publicServer.Close()
+
+	session := newTestSessionState(
+		GroupRuntime{ID: 1, Name: "group-a", EffectiveIP: system.AnyIPv4},
+		ConfigSnapshot{Version: 1},
+	)
+
+	streamID := uint32(7)
+	stream := &publicStream{
+		configVersion: 1,
+		conn:          publicServer,
+		ready:         make(chan error, 1),
+	}
+
+	session.runtimeMu.Lock()
+	session.listenersStarted = true
+	session.runtimeGeneration = 1
+	session.streams[streamID] = stream
+	session.runtimeMu.Unlock()
+
+	session.writeMu.Lock()
+
+	copyDone := make(chan struct{})
+	go func() {
+		defer close(copyDone)
+		server.copyPublicToClient(controlServer, session, streamID, stream)
+	}()
+
+	if _, err := publicClient.Write([]byte("late")); err != nil {
+		t.Fatalf("write public payload: %v", err)
+	}
+
+	listeners, udpListeners, streams, _ := session.freezeTunnelRuntime()
+	closeStartedTunnelListeners(listeners, udpListeners)
+
+	session.writeMu.Unlock()
+
+	closeDone := make(chan error, 1)
+	go func() {
+		for capturedStreamID, capturedStream := range streams {
+			if err := server.sendStreamClose(controlServer, session, capturedStreamID, protocol.CloseReasonAdminTerminated, "reload in progress"); err != nil {
+				closeDone <- err
+				return
+			}
+			capturedStream.signalReady(net.ErrClosed)
+			capturedStream.close()
+		}
+		closeDone <- nil
+	}()
+
+	closeFrame := readMessage(t, controlClient)
+	if closeFrame.Type != protocol.TypeStreamClose {
+		t.Fatalf("expected stream.close after freeze, got %s", closeFrame.Type.String())
+	}
+
+	if frame, err := readMessageWithin(controlClient, 200*time.Millisecond); err == nil {
+		t.Fatalf("expected buffered tcp payload to be dropped after freeze, got %s", frame.Type.String())
+	} else if !isTimeoutError(err) {
+		t.Fatalf("expected buffered tcp read to time out, got %v", err)
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("send stream.close after freeze: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stream.close send did not complete")
+	}
+
+	select {
+	case <-copyDone:
+	case <-time.After(time.Second):
+		t.Fatal("tcp copy goroutine did not exit")
+	}
+}
+
+func TestServerFreezeGroupRuntimeDropsBufferedUDPData(t *testing.T) {
+	server := NewServer(
+		Options{
+			WriteTimeout: time.Second,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	controlClient, controlServer := net.Pipe()
+	defer controlClient.Close()
+	defer controlServer.Close()
+
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	defer listener.Close()
+
+	session := newTestSessionState(
+		GroupRuntime{ID: 1, Name: "group-a", EffectiveIP: system.AnyIPv4},
+		ConfigSnapshot{Version: 1},
+	)
+
+	tunnel := protocol.TunnelEntry{
+		TunnelID:    8,
+		Protocol:    protocol.ProtocolUDP,
+		TunnelFlags: protocol.TunnelFlagEnabled,
+	}
+	remotePort := uint16(listener.LocalAddr().(*net.UDPAddr).Port)
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53000}
+	udpSession := newPublicUDPSession(9, tunnel, remotePort, listener, clientAddr, time.Now().UTC())
+
+	session.runtimeMu.Lock()
+	session.listenersStarted = true
+	session.runtimeGeneration = 1
+	session.udpSessions[udpSession.sessionID] = udpSession
+	session.udpSessionKeys[udpSession.key()] = udpSession.sessionID
+	session.runtimeMu.Unlock()
+
+	session.writeMu.Lock()
+
+	forwardDone := make(chan error, 1)
+	go func() {
+		forwardDone <- server.handlePublicUDPDatagram(
+			controlServer,
+			slog.New(slog.NewTextHandler(io.Discard, nil)),
+			session,
+			1,
+			tunnel,
+			remotePort,
+			listener,
+			clientAddr,
+			[]byte("late"),
+		)
+	}()
+
+	listeners, udpListeners, _, udpSessions := session.freezeTunnelRuntime()
+	closeStartedTunnelListeners(listeners, udpListeners)
+
+	session.writeMu.Unlock()
+
+	closeDone := make(chan error, 1)
+	go func() {
+		for _, capturedUDPSession := range udpSessions {
+			if err := server.sendUDPClose(controlServer, session, capturedUDPSession.sessionID, protocol.CloseReasonAdminTerminated, "reload in progress"); err != nil {
+				closeDone <- err
+				return
+			}
+		}
+		closeDone <- nil
+	}()
+
+	closeFrame := readMessage(t, controlClient)
+	if closeFrame.Type != protocol.TypeUDPClose {
+		t.Fatalf("expected udp.close after freeze, got %s", closeFrame.Type.String())
+	}
+
+	if frame, err := readMessageWithin(controlClient, 200*time.Millisecond); err == nil {
+		t.Fatalf("expected buffered udp payload to be dropped after freeze, got %s", frame.Type.String())
+	} else if !isTimeoutError(err) {
+		t.Fatalf("expected buffered udp read to time out, got %v", err)
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("send udp.close after freeze: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("udp.close send did not complete")
+	}
+
+	select {
+	case err := <-forwardDone:
+		if err != nil {
+			t.Fatalf("forward buffered udp payload: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("udp forward goroutine did not exit")
+	}
+}
+
 func TestServerRefreshGroupClosesSessionAfterTokenReset(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))

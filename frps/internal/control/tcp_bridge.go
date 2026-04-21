@@ -12,6 +12,7 @@ import (
 )
 
 type publicStream struct {
+	configVersion uint64
 	conn          net.Conn
 	tunnel        protocol.TunnelEntry
 	openRequestID uint32
@@ -24,6 +25,7 @@ func (s *Server) handlePublicConnection(controlConn net.Conn, logger Logger, ses
 	streamID := session.nextTunnelStreamID()
 	requestID := session.nextRequestID()
 	stream := &publicStream{
+		configVersion: configVersion,
 		conn:          publicConn,
 		tunnel:        tunnel,
 		openRequestID: requestID,
@@ -46,7 +48,7 @@ func (s *Server) handlePublicConnection(controlConn net.Conn, logger Logger, ses
 		return
 	}
 
-	if err := s.writeFrameWithSession(controlConn, session, protocol.Frame{
+	if err := s.writeRuntimeFrameWithSession(controlConn, session, stream.configVersion, protocol.Frame{
 		Type:      protocol.TypeStreamOpen,
 		RequestID: requestID,
 		StreamID:  streamID,
@@ -162,13 +164,15 @@ func (s *Server) copyPublicToClient(conn net.Conn, session *sessionState, stream
 		n, err := stream.conn.Read(buffer)
 		if n > 0 {
 			payload := append([]byte(nil), buffer[:n]...)
-			writeErr := s.writeFrameWithSession(conn, session, protocol.Frame{
+			writeErr := s.writeRuntimeFrameWithSession(conn, session, stream.configVersion, protocol.Frame{
 				Type:     protocol.TypeStreamData,
 				StreamID: streamID,
 				Body:     payload,
 			})
 			if writeErr != nil {
-				session.closePublicStream(streamID)
+				if !errors.Is(writeErr, errRuntimeIOStopped) {
+					session.closePublicStream(streamID)
+				}
 				return
 			}
 		}

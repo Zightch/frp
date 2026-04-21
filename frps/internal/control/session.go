@@ -12,6 +12,8 @@ import (
 
 const initialServerRequestID = uint32(1 << 31)
 
+var errRuntimeIOStopped = errors.New("runtime io no longer allowed")
+
 type sessionState struct {
 	ID                     uint64
 	Group                  GroupRuntime
@@ -27,6 +29,7 @@ type sessionState struct {
 	writeMu                sync.Mutex
 
 	runtimeMu         sync.Mutex
+	runtimeIOMu       sync.RWMutex
 	streams           map[uint32]*publicStream
 	udpSessions       map[uint32]*publicUDPSession
 	udpSessionKeys    map[string]uint32
@@ -92,6 +95,22 @@ func (s *sessionState) canServeRuntimeIO(configVersion uint64) bool {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
 	return !s.runtimeFrozen && s.listenersStarted && s.runtimeGeneration == configVersion
+}
+
+func (s *sessionState) lockRuntimeIOWrite(configVersion uint64) bool {
+	s.writeMu.Lock()
+	s.runtimeIOMu.RLock()
+	if !s.canServeRuntimeIO(configVersion) {
+		s.runtimeIOMu.RUnlock()
+		s.writeMu.Unlock()
+		return false
+	}
+	return true
+}
+
+func (s *sessionState) unlockRuntimeIOWrite() {
+	s.runtimeIOMu.RUnlock()
+	s.writeMu.Unlock()
 }
 
 func (s *sessionState) publicStream(streamID uint32) *publicStream {
@@ -189,6 +208,8 @@ func (s *sessionState) hasPendingConfig() bool {
 }
 
 func (s *sessionState) freezeTunnelRuntime() ([]net.Listener, []*net.UDPConn, map[uint32]*publicStream, []*publicUDPSession) {
+	s.runtimeIOMu.Lock()
+	defer s.runtimeIOMu.Unlock()
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
 
@@ -255,6 +276,27 @@ func (s *Server) writeFrameWithSession(conn net.Conn, session *sessionState, fra
 func (s *Server) writeFramesWithSession(conn net.Conn, session *sessionState, frames ...protocol.Frame) error {
 	session.writeMu.Lock()
 	defer session.writeMu.Unlock()
+	for _, frame := range frames {
+		if err := s.writeFrame(conn, frame); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) writeRuntimeFrameWithSession(conn net.Conn, session *sessionState, configVersion uint64, frame protocol.Frame) error {
+	if !session.lockRuntimeIOWrite(configVersion) {
+		return errRuntimeIOStopped
+	}
+	defer session.unlockRuntimeIOWrite()
+	return s.writeFrame(conn, frame)
+}
+
+func (s *Server) writeRuntimeFramesWithSession(conn net.Conn, session *sessionState, configVersion uint64, frames ...protocol.Frame) error {
+	if !session.lockRuntimeIOWrite(configVersion) {
+		return errRuntimeIOStopped
+	}
+	defer session.unlockRuntimeIOWrite()
 	for _, frame := range frames {
 		if err := s.writeFrame(conn, frame); err != nil {
 			return err

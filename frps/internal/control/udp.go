@@ -1,6 +1,7 @@
 package control
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -118,11 +119,15 @@ func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, se
 	}
 	if !created {
 		udpSession.touch(now)
-		return s.writeFrameWithSession(controlConn, session, protocol.Frame{
+		err := s.writeRuntimeFrameWithSession(controlConn, session, configVersion, protocol.Frame{
 			Type:     protocol.TypeUDPData,
 			StreamID: udpSession.sessionID,
 			Body:     payload,
 		})
+		if errors.Is(err, errRuntimeIOStopped) {
+			return nil
+		}
+		return err
 	}
 
 	requestID := session.nextRequestID()
@@ -137,7 +142,7 @@ func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, se
 		return err
 	}
 
-	err = s.writeFramesWithSession(controlConn, session,
+	err = s.writeRuntimeFramesWithSession(controlConn, session, configVersion,
 		protocol.Frame{
 			Type:      protocol.TypeUDPOpen,
 			RequestID: requestID,
@@ -152,6 +157,9 @@ func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, se
 	)
 	if err != nil {
 		session.closePublicUDPSession(udpSession.sessionID)
+		if errors.Is(err, errRuntimeIOStopped) {
+			return nil
+		}
 		return err
 	}
 
