@@ -170,7 +170,7 @@ func (s *sessionState) closeUDPSession(sessionID uint32) bool {
 	return ok
 }
 
-func (s *sessionState) closeAllUDPSessions() {
+func (s *sessionState) closeAllUDPSessions() int {
 	s.udpMu.Lock()
 	sessions := make([]*localUDPSession, 0, len(s.udpSessions))
 	for sessionID := range s.udpSessions {
@@ -183,6 +183,7 @@ func (s *sessionState) closeAllUDPSessions() {
 	for _, udpSession := range sessions {
 		udpSession.close()
 	}
+	return len(sessions)
 }
 
 func (c *Client) copyLocalUDPToServer(conn net.Conn, state *sessionState, sessionID uint32, udpSession *localUDPSession) {

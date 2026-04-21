@@ -70,7 +70,7 @@ $env:FRPC_LOG_LEVEL="debug"
 需要同步关注：
 
 - 登录握手顺序
-- 首次 `config.push` / `config.ack`
+- 首次及后续在线 `config.push` / `config.ack`
 - 心跳语义
 
 ### 5.3 TCP/UDP bridge

@@ -166,7 +166,7 @@ npm.cmd run build
 
 当前稳定边界：
 
-- `config.push` 只在登录阶段发送
+- 首次登录和后续在线热重载都复用整组 `config.push / config.ack` 路径
 - listener 在 `config.ack` 后才启动
 - UDP 生命周期由 `frps` 裁决
 

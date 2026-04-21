@@ -65,9 +65,10 @@ frpc --server 1.2.3.4:7000 --token <token>
 
 当前处理规则：
 
-- 新快照直接替换旧快照
-- 替换完成后回 `config.ack`
-- 已存在的活跃 stream/session 继续由当前运行态自然收口
+- 新快照会先与旧快照对比，形成新增 / 删除 / 替换分类
+- 返回 `config.ack` 前，先关闭当前全部活跃 TCP stream 和 UDP session
+- 本地资源清理完成后再替换运行态快照，并更新 `lastAckedConfigVersion`
+- 同一控制连接后续仍可能再次收到新的整组 `config.push`
 - 当前不接收 ACL、限速、抓包等服务端本地策略
 
 ## 5. TCP 转发功能

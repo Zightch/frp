@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,15 @@ type sessionState struct {
 
 	udpMu       sync.Mutex
 	udpSessions map[uint32]*localUDPSession
+}
+
+type configReloadSummary struct {
+	addedTunnels      int
+	removedTunnels    int
+	replacedTunnels   int
+	unchangedTunnels  int
+	closedStreams     int
+	closedUDPSessions int
 }
 
 func newSessionState(heartbeatIntervalMs uint32) *sessionState {
@@ -75,6 +85,78 @@ func (s *sessionState) snapshotValue() protocol.ConfigPush {
 	s.snapshotMu.RLock()
 	defer s.snapshotMu.RUnlock()
 	return s.snapshot
+}
+
+func (s *sessionState) applyReloadedSnapshot(snapshot protocol.ConfigPush) configReloadSummary {
+	previous := s.snapshotValue()
+	summary := summarizeConfigReload(previous, snapshot)
+	summary.closedStreams = s.closeAllStreams()
+	summary.closedUDPSessions = s.closeAllUDPSessions()
+	s.setSnapshot(snapshot)
+	return summary
+}
+
+func summarizeConfigReload(previous, next protocol.ConfigPush) configReloadSummary {
+	summary := configReloadSummary{}
+	previousByID := make(map[uint32]protocol.TunnelEntry, len(previous.Tunnels))
+	for _, tunnel := range previous.Tunnels {
+		previousByID[tunnel.TunnelID] = tunnel
+	}
+
+	for _, tunnel := range next.Tunnels {
+		previousTunnel, ok := previousByID[tunnel.TunnelID]
+		if !ok {
+			summary.addedTunnels++
+			continue
+		}
+		if sameTunnelExecution(previousTunnel, tunnel) {
+			summary.unchangedTunnels++
+		} else {
+			summary.replacedTunnels++
+		}
+		delete(previousByID, tunnel.TunnelID)
+	}
+
+	summary.removedTunnels = len(previousByID)
+	return summary
+}
+
+func sameTunnelExecution(left, right protocol.TunnelEntry) bool {
+	return left.Protocol == right.Protocol &&
+		left.TunnelFlags == right.TunnelFlags &&
+		left.RemoteStart == right.RemoteStart &&
+		left.RemoteEnd == right.RemoteEnd &&
+		left.LocalStart == right.LocalStart &&
+		left.LocalEnd == right.LocalEnd &&
+		sameHost(left.LocalHost, right.LocalHost)
+}
+
+func sameHost(left, right protocol.Host) bool {
+	if left.Type != right.Type || left.Name != right.Name {
+		return false
+	}
+
+	leftAddr, leftOK := hostAddr(left)
+	rightAddr, rightOK := hostAddr(right)
+	if leftOK != rightOK {
+		return false
+	}
+	if !leftOK {
+		return true
+	}
+	return leftAddr == rightAddr
+}
+
+func hostAddr(host protocol.Host) (netip.Addr, bool) {
+	if len(host.IP) == 0 {
+		return netip.Addr{}, false
+	}
+
+	addr, ok := netip.AddrFromSlice(net.IP(host.IP))
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
 }
 
 func (c *Client) readLoop(ctx context.Context, conn net.Conn, state *sessionState) error {

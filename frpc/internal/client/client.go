@@ -139,6 +139,7 @@ func (c *Client) applyConfigPush(conn net.Conn, state *sessionState, frame proto
 		return err
 	}
 
+	reloadSummary := state.applyReloadedSnapshot(push)
 	ackBody, err := protocol.MarshalConfigAck(protocol.ConfigAck{
 		ConfigVersion: push.ConfigVersion,
 		AppliedAtMs:   uint64(time.Now().UTC().UnixMilli()),
@@ -148,7 +149,6 @@ func (c *Client) applyConfigPush(conn net.Conn, state *sessionState, frame proto
 		return err
 	}
 
-	state.setSnapshot(push)
 	if err := c.writeMessage(conn, &state.writeMu, protocol.Frame{
 		Type:      protocol.TypeConfigAck,
 		RequestID: frame.RequestID,
@@ -157,7 +157,17 @@ func (c *Client) applyConfigPush(conn net.Conn, state *sessionState, frame proto
 		return err
 	}
 	state.lastAckedConfigVersion.Store(push.ConfigVersion)
-	c.logger.Info("config applied", "config_version", push.ConfigVersion, "tunnel_count", len(push.Tunnels))
+	c.logger.Info(
+		"config applied",
+		"config_version", push.ConfigVersion,
+		"tunnel_count", len(push.Tunnels),
+		"added_tunnels", reloadSummary.addedTunnels,
+		"removed_tunnels", reloadSummary.removedTunnels,
+		"replaced_tunnels", reloadSummary.replacedTunnels,
+		"unchanged_tunnels", reloadSummary.unchangedTunnels,
+		"closed_streams", reloadSummary.closedStreams,
+		"closed_udp_sessions", reloadSummary.closedUDPSessions,
+	)
 	return nil
 }
 

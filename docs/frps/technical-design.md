@@ -316,14 +316,14 @@ frps -> start listeners
 
 当前行为边界：
 
-- 配置只在登录阶段加载一次
-- `config.ack` 成功后才启动 listener
-- 管理 API 改库后不会主动推送给已在线 `frpc`
+- 配置在首次登录和后续在线热重载阶段都复用同一 `ConfigSnapshot` 路径构造并下发
+- `config.ack` 成功后才启动或重启 listener
+- 管理 API 改库后，如果对应分组在线且命中运行态字段，会主动向该在线 `frpc` 下发新的整组完整快照
 - 当前快照只承载真实执行链路需要的隧道字段，不承载 `rate_limit` 或抓包控制
 
 ### 6.4 在线整组配置热重载当前边界
 
-下面这些规则已经确认，其中 `frps` 侧整组冻结、`config.push / config.ack` 重载状态管理和 `ack` 后 listener 重建已进入当前代码；`frpc` 侧本地资源清理与快照替换仍待完成：
+下面这些规则已经确认并已进入当前代码，包括 `frps` 侧整组冻结、`config.push / config.ack` 重载状态管理、`frpc` 侧本地资源清理与快照替换，以及 `ack` 后 listener 重建：
 
 - 分组离线时，管理面配置变更只写数据库，不触发任何运行态动作。
 - 分组在线时，运行态相关变更统一复用现有 `config.push / config.ack`，继续下发整组完整快照，不新增 `add/remove/rename/replace` 增量协议事件。
@@ -375,9 +375,10 @@ frps -> start listeners
 
 - `frps/internal/control/refresh.go` 会在在线运行态变更时先冻结整组公网 listener、活动 TCP `stream` 和活动 UDP session，再下发新的整组完整 `config.push`。
 - `sessionState` 现在区分“已生效快照”和“等待 `config.ack` 的 pending 快照”；收到匹配的 `config.ack(status=ok)` 之前，不会把新快照直接视为已生效配置。
+- `frpc/internal/client` 现在会在收到新的整组 `config.push` 后对比旧/新快照，先关闭当前全部活动本地 TCP stream 和 UDP session，再原子替换本地快照，并且只在清理完成后返回 `config.ack(status=ok)`。
 - `frps` 只有在对应 `config.ack(status=ok)` 成功后，才按新快照重新启动 listener；冻结期间旧 listener 即使仍有并发 accept / read，也会按快照代际被拒绝继续打开新的 `stream.open` / `udp.open`。
 - 如果刷新时已有未确认 `config.push`，服务端继续按当前边界直接断开控制连接，而不是排队叠加第二版热重载。
-- 当前仍未完成的是 `frpc` 侧本地资源清理和运行态替换；因此当前 `config.ack(status=ok)` 只能表示客户端会话快照已确认，不应视为客户端运行态已经完整切换完成。
+- 因此，当前 `config.ack(status=ok)` 已经可以明确表示：客户端本地资源清理和运行态快照替换已经完成；`frps` 收到后才会重新开放 listener。
 
 端口范围在热重载中的判定固定为“按 tunnel 整体替换”，不做重叠区间复用优化：
 

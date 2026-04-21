@@ -200,7 +200,7 @@ func (s *sessionState) closeStream(streamID uint32) bool {
 	return true
 }
 
-func (s *sessionState) closeAllStreams() {
+func (s *sessionState) closeAllStreams() int {
 	s.streamMu.Lock()
 	streams := make([]*localStream, 0, len(s.streams))
 	for streamID, stream := range s.streams {
@@ -213,6 +213,7 @@ func (s *sessionState) closeAllStreams() {
 	for _, stream := range streams {
 		stream.close()
 	}
+	return len(streams)
 }
 
 func (s *localStream) close() {
