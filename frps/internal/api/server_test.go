@@ -709,6 +709,75 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 	}
 }
 
+func TestProxyGroupCreateAllowsSpecialIPv6WithoutSnapshot(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	created := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-ipv6-any",
+			"effective_ip": "::",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	item, ok := created.JSON["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected create payload: %#v", created.JSON)
+	}
+	if item["effective_ip"] != "::" {
+		t.Fatalf("unexpected create effective_ip: %#v", item)
+	}
+	if item["status"] != proxyGroupStatusEnabled {
+		t.Fatalf("unexpected create status: %#v", item)
+	}
+
+	listed := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/proxy-groups",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	items, ok := listed.JSON["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("unexpected list payload: %#v", listed.JSON)
+	}
+	listItem, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected list item payload: %#v", items[0])
+	}
+	if listItem["effective_ip"] != "::" {
+		t.Fatalf("unexpected list effective_ip: %#v", listItem)
+	}
+	if listItem["status"] != proxyGroupStatusEnabled {
+		t.Fatalf("unexpected list status: %#v", listItem)
+	}
+}
+
 func TestProxyGroupStatusBecomesAbnormalWhenEffectiveIPLeavesSnapshot(t *testing.T) {
 	store := newTestStore(t)
 	manager := newTestAuthManager(t, true)

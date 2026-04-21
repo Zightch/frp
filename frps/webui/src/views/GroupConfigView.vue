@@ -130,6 +130,7 @@ onMounted(async () => {
 // Data loading
 async function loadData() {
   loading.value = true
+  localIPsLoading.value = true
   error.value = ''
 
   try {
@@ -149,6 +150,11 @@ async function loadData() {
       return
     }
 
+    if (ipsResult.error) {
+      error.value = ipsResult.error
+      return
+    }
+
     groups.value = groupsResult.data?.items || []
     tunnels.value = tunnelsResult.data?.items || []
     localIPs.value = ipsResult.data?.items || []
@@ -160,6 +166,7 @@ async function loadData() {
     error.value = '加载数据失败'
   } finally {
     loading.value = false
+    localIPsLoading.value = false
   }
 }
 
@@ -374,7 +381,7 @@ function openEditGroupDialog(group: ProxyGroup) {
   groupDialogMode.value = 'edit'
   editingGroupId.value = group.id
   editingGroupStatus.value = group.status
-  editingGroupStatusReason.value = group.status_reason
+  editingGroupStatusReason.value = group.status_reason || ''
   editingGroupEffectiveIP.value = group.effective_ip
   groupForm.value = { name: group.name, effective_ip: group.effective_ip, enabled: group.enabled }
   groupDialogVisible.value = true

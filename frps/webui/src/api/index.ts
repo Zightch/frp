@@ -9,7 +9,7 @@ export interface ProxyGroup {
   effective_ip: string
   enabled: boolean
   status: string
-  status_reason: string
+  status_reason?: string
   created_at: string
   updated_at: string
 }

@@ -736,6 +736,24 @@ func TestServerEnsureTunnelListenersRejectsMissingLocalEffectiveIP(t *testing.T)
 	}
 }
 
+func TestServerResolveGroupEffectiveIPAllowsSpecialIPv6WithoutSnapshot(t *testing.T) {
+	server := NewServer(
+		Options{
+			WriteTimeout: time.Second,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	bindIP, err := server.resolveGroupEffectiveIP(GroupRuntime{EffectiveIP: system.AnyIPv6})
+	if err != nil {
+		t.Fatalf("resolve group effective_ip: %v", err)
+	}
+	if bindIP != system.AnyIPv6 {
+		t.Fatalf("unexpected bind ip: got %q want %q", bindIP, system.AnyIPv6)
+	}
+}
+
 func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
