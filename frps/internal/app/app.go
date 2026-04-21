@@ -11,6 +11,7 @@ import (
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/control"
 	"github.com/zightch/frp/frps/internal/storage"
+	"github.com/zightch/frp/frps/internal/system"
 )
 
 type App struct {
@@ -20,6 +21,7 @@ type App struct {
 	api     *api.Server
 	auth    *auth.Manager
 	control *control.Server
+	network *system.NetworkSnapshotService
 	store   *storage.SQL
 }
 
@@ -43,6 +45,11 @@ func (a *App) Run(parent context.Context) error {
 		a.closeAuth()
 		return err
 	}
+	if err := a.initLocalNetwork(ctx); err != nil {
+		a.closeDatabase()
+		a.closeAuth()
+		return err
+	}
 
 	apiServer, err := api.NewServer(
 		api.Options{
@@ -56,6 +63,8 @@ func (a *App) Run(parent context.Context) error {
 		a.version,
 	)
 	if err != nil {
+		_ = a.closeLocalNetwork(context.Background())
+		a.closeDatabase()
 		a.closeAuth()
 		return fmt.Errorf("init management api: %w", err)
 	}
@@ -122,6 +131,10 @@ func (a *App) shutdown() error {
 		if err := a.control.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
 			errs = append(errs, fmt.Errorf("shutdown control listener: %w", err))
 		}
+	}
+
+	if err := a.closeLocalNetwork(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
+		errs = append(errs, fmt.Errorf("shutdown local network snapshot: %w", err))
 	}
 
 	a.closeDatabase()
