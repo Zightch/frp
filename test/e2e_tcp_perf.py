@@ -53,6 +53,7 @@ class TokenMaterial:
 @dataclass(frozen=True)
 class RuntimePaths:
     output_dir: Path
+    data_dir: Path
     db_path: Path
     frps_config_path: Path
     frps_log_path: Path
@@ -298,8 +299,9 @@ def main() -> int:
 
     paths = RuntimePaths(
         output_dir=output_dir,
-        db_path=output_dir / "frps.sqlite",
-        frps_config_path=output_dir / "frps.json",
+        data_dir=output_dir / "data",
+        db_path=(output_dir / "data" / "frps.sqlite"),
+        frps_config_path=(output_dir / "data" / "config.json"),
         frps_log_path=output_dir / "frps.log",
         frpc_log_path=output_dir / "frpc.log",
         report_json_path=output_dir / "report.json",
@@ -335,8 +337,8 @@ def main() -> int:
         print(f"[stage] {stage}")
         frps_process = start_process(
             name="frps",
-            command=[str(binaries["frps"]), "--config", str(paths.frps_config_path)],
-            cwd=repo_root / "frps",
+            command=[str(binaries["frps"])],
+            cwd=paths.output_dir,
             log_path=paths.frps_log_path,
         )
         processes.append(frps_process)
@@ -608,6 +610,7 @@ def wait_sqlite_schema(db_path: Path, timeout_seconds: float) -> None:
 
 
 def write_frps_config(config_path: Path, db_path: Path, ports: Ports, log_level: str) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     config = {
         "control_listen_addr": f"127.0.0.1:{ports.control}",
         "management_listen_addr": f"127.0.0.1:{ports.management}",
@@ -615,7 +618,7 @@ def write_frps_config(config_path: Path, db_path: Path, ports: Ports, log_level:
         "shutdown_timeout": "10s",
         "database": {
             "type": "sqlite",
-            "path": str(db_path),
+            "path": "./frps.sqlite",
         },
         "log": {
             "level": log_level,
@@ -635,16 +638,18 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 name,
                 token_id,
                 token_hash,
+                effective_ip,
                 enabled,
                 rate_limit,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "perf-group",
                 token.token_id,
                 token.token_hash,
+                "0.0.0.0",
                 1,
                 0,
                 created_at,
