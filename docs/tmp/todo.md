@@ -4,72 +4,10 @@
 
 当前总目标：
 
-- 为端口冲突检查与热更新交互整理一份全量测试方案，覆盖 `frps` / `frpc` 的功能正确性、非法输入、竞态与稳定性验证。
+- 为端口冲突检查与热更新交互整理一份全量测试方案，继续收口剩余可测性基建，为后续具体场景测试落地做准备。
 
 子步骤：
 
-- 覆盖矩阵里的故障测试必须至少直列以下内容：
-- `frps` 冷启动时数据库里已有静态冲突 tunnel，验证首轮扫描先完成状态标记，再放行 `frpc` 登录。
-- `frps` 冷启动时数据库里已有外部进程占用端口，验证首轮扫描写 runtime issue，且不误标为静态 `冲突`。
-- `frps` 冷启动时同组部分 tunnel 可监听、部分 tunnel 被外部占用，验证首轮扫描后状态分裂正确，首次登录只启动健康 tunnel。
-- `frps` 冷启动时 `effective_ip` 非法、为空、格式异常、地址族不匹配或当前不在本机，验证首轮扫描标记与首次登录直接拒绝都正确。
-- 管理 API 首次可见前存在大量待扫描 tunnel，验证不会提前暴露首轮扫描未完成的半成品状态。
-- 首次登录时仓库配置在握手期间变化，验证客户端不会启动过期快照。
-- 首次登录时 `config.ack` 之后部分 tunnel 启动失败，验证只失败问题 tunnel，不拖垮同组健康 tunnel。
-- 首次登录时 `config.ack` 之后立即遭遇外部抢占或 `effective_ip` 失效，验证 runtime issue、session 保活和 listener 清理都稳定。
-- 热更新把 `effective_ip` 改成非法值或非本机地址，验证下发空配置、关闭旧 listener、session 保活、心跳继续正常。
-- 热更新把 `effective_ip` 从非法或非本机恢复为可绑定地址，验证先补发完整快照，待 `config.ack` 后再恢复 listener。
-- 热更新恢复时端口仍被外部进程占用，验证只恢复健康 tunnel，问题 tunnel 保留 runtime issue。
-- 热更新修改 tunnel 的启用态、协议、端口区间、删除状态或 group 启用态，验证 listener 收缩和恢复都不越权、不残留旧监听。
-- 热更新期间 `config.push` 丢失、`config.ack` 超时、重复 ack、旧 ack 晚到、乱序 ack，验证不会恢复过期快照或错误 listener 集合。
-- 在线 session 已被空配置保活后客户端断线重连，验证新旧 session 交接时不会残留旧 listener、旧 runtime issue 或旧 pending 状态。
-- 在线 session 部分 listener 存活、部分 tunnel 未监听时，轮询只扫描缺失 tunnel，并在问题消失后自动补启动。
-- 轮询恢复时静态冲突仍存在，验证状态优先级始终保持 `冲突` 高于 runtime `异常`。
-- 轮询恢复时外部占用消失后又快速复现，验证不会在一次扫描里把 tunnel 错误标为已恢复。
-- 轮询恢复时 `pending config` 仍存在，验证扫描不会抢跑旧快照，也不会并发推送重复配置。
-- 轮询恢复时 session 当前为空配置但仓库已恢复正常，验证会补推完整快照，而不是只清 runtime issue。
-- 本机网络快照抖动时 `effective_ip` 在“可绑定/不可绑定”之间来回切换，验证不会反复创建脏 listener、泄漏 runtime issue 或卡死在错误快照。
-- 两个 group 同时竞争同一监听空间，验证静态冲突拒绝、运行态冲突标记和后续恢复补启动三条链路口径一致。
-- TCP/UDP 同端口、单端口/端口段、IPv4/IPv6、wildcard/specific 交叉组合，验证静态冲突矩阵与运行态补偿口径一致。
-- 极端非法配置必须纳入：空端口范围、倒置端口范围、越界端口、缺协议、重复 tunnel、group 启用但 tunnel 全禁用、tunnel 启用但 group 禁用。
-- 连接层故障必须纳入：`frpc` 在 `config.push` 前断线、`config.push` 后未 ack 断线、ack 后 listener 启动前断线、运行中断线重连。
-- 资源层故障必须纳入：端口被占用、地址不可用、权限不足、文件句柄紧张、短时间大量 listener 启停、心跳与配置下发同时发生。
-- 覆盖矩阵里的竞争态测试必须至少直列以下内容：
-- `frps` 首轮扫描完成与控制端口开放之间的边界竞态，验证不存在“扫描未完成但客户端已登录”的窗口。
-- `frps` 首轮扫描完成与管理 API 首次可见之间的边界竞态，验证不存在“API 先看到旧状态、控制面后修正”的窗口。
-- 首个 `frpc` 登录与首轮扫描尾声并发，验证登录路径只能观察到首轮扫描完成后的最终状态。
-- 两个 `frpc` 或两个 group 同时争抢同一端口，验证不会双成功、不会双失败后状态全丢。
-- 热更新 `RefreshGroup()` 与轮询 `scanNonListeningTunnelRuntimeIssues()` 并发，验证不会双重下发 `config.push`、不会把新快照回退成旧快照。
-- 热更新下发空配置与轮询发现可恢复并发，验证必须先等空配置完成生效，再决定是否补推完整快照。
-- 热更新补推完整快照与客户端断线重连并发，验证旧 session 的晚到 ack 不会污染新 session。
-- `config.push` A 尚未 ack 时又触发 `config.push` B，验证 A/B ack 乱序到达不会导致 listener 状态错乱。
-- `pending config` 挂起期间配置再次变化，验证服务端只保留最新生效目标，不恢复中间过期版本。
-- listener freeze/close 与外部进程抢占端口并发，验证不会误以为服务端自己恢复成功。
-- listener 启动中与 session shutdown 并发，验证不会遗留半开 listener、脏 map、悬挂 goroutine 或 panic。
-- listener 启动中与 tunnel disable/delete 并发，验证不会把已删除 tunnel 重新拉起。
-- 轮询扫描与管理端配置修改并发，验证扫描结果不会覆盖刚写入的新配置状态。
-- 轮询扫描与本机网络快照刷新并发，验证 `effective_ip` 可绑定性判断不会在同一轮里前后矛盾。
-- 轮询扫描自身重叠并发，验证慢扫描未结束时新一轮扫描不会产生重复修复、重复标记或重复推送。
-- session 心跳、数据转发、`config.push/config.ack`、listener 补启动四类事件并发，验证 session 活性和 tunnel 状态都稳定。
-- 在线部分监听组恰好在轮询补启动窗口内再次热更新，验证不会恢复旧 tunnel 集合，也不会漏关被删除 tunnel。
-- 外部占用进程高频抖动占用/释放同一端口，验证 runtime issue 清理与重建不会抖成错误状态。
-- `effective_ip` 高频抖动在本机地址列表内外切换，验证不会出现空配置和完整配置交叉覆盖。
-- 客户端重连接管旧 group 时，旧 session 的晚到心跳、晚到 ack、晚到错误回包都不能污染新 session 运行态。
-- 服务端关闭过程与首轮扫描、轮询、热更新、listener 启停并发，验证不会 panic、不会卡死、不会残留不可回收资源。
-- 在进入故障测试、竞争态测试、压力测试之前，必须先设计并准备以下测试前置方案，避免测试结果依赖 CPU/调度器偶然性：
-- 关键路径测试钩子：在首轮扫描完成、控制端口开放、管理 API 首次可见、`config.push` 发送、`pending config` 变更、`config.ack` 应用、listener freeze/close/bind、runtime scan 读写状态、session shutdown、本机网络快照刷新等位置提供仅测试可用的 barrier/hook。
-- 确定性并发编排：所有竞争态测试默认通过“双边握手 + 明确放行”编排交错顺序，不允许依赖 `sleep`、超短时间窗或“多跑几次碰碰运气”。
-- 可控时钟与轮询驱动：为扫描周期、超时、重试、心跳和恢复等待提供 fake clock / manual ticker，保证测试可手动推进，不依赖机器性能和真实时间。
-- 可控网络快照注入：提供 fake network snapshot provider，可按脚本返回本机 IP 集合变化、非法 `effective_ip`、地址族切换和高频抖动序列。
-- 可控传输与会话注入：提供 fake transport/session harness，可脚本化制造断线、重连、重复 ack、旧 ack 晚到、ack 乱序、心跳晚到、错误回包晚到。
-- 状态机不变量断言：每类测试都必须优先断言状态机结果，而不是只看日志；至少覆盖“首轮扫描未完成前不可登录/不可见 API”“任一时刻最多一个有效 pending config”“旧 session 晚到消息不能污染新 session”“静态 `冲突` 优先于 runtime `异常`”“空配置恢复必须先补推完整快照再恢复 listener”。
-- 故障注入基线：端口占用、地址不可用、权限不足、资源不足、消息丢失、消息重复、消息乱序、会话半关闭、配置连续变化等故障，都要通过可注入机制稳定复现，而不是依赖真实环境偶发。
-- 竞态放大基线：在确定性编排之外，再准备 `-race`、多 `GOMAXPROCS`、高频扰动、长稳 soak 作为补充捞漏层，但不把这类随机测试当作主验证手段。
-- 测试验收口径：任何故障/竞争态场景若不能在单机重复、跨快慢机器复现同一时序与同一状态结论，就不算“已可测”，需先补前置注入能力再写场景。
-- 上述前置方案在进入任何故障测试、竞争态测试、压力测试之前，先拆成以下具体工作内容并逐项完成：
-- 网络快照故障注入骨架：为本机地址采集和 `effective_ip` 解析准备 fake provider，能够按测试脚本返回固定快照、快照跳变、地址族切换、非法地址、非本机地址和高频抖动序列。
-- 控制连接故障注入骨架：为 `config.push` / `config.ack` / heartbeat / shutdown 等控制面交互准备 fake transport 或脚本化 session harness，能稳定制造断线、重连、重复 ack、乱序 ack、晚到 ack、晚到错误回包、半关闭和旧 session 残留消息。
-- 状态观测骨架：补齐统一的测试态观测入口，能直接断言 listener 集合、runtime issue、静态 `冲突` / runtime `异常` 优先级、pending config、active session、已生效快照和空配置保活状态，而不是从日志反推。
 - 不变量断言库：沉淀一组通用断言 helper，至少覆盖“首轮扫描未完成前不可登录”“管理 API 首次可见前不可暴露半成品状态”“任一时刻最多一个有效 pending config”“旧 session 晚到消息不能污染新 session”“空配置恢复必须先补推完整快照再恢复 listener”等规则。
 - 场景编排基座：为双进程、双 session、外部占用进程、本机 IP 变化和配置连续变更准备统一脚本化编排器，支持显式步骤、显式放行、显式观测点，避免每个测试各自手搓并发控制。
 - 故障注入覆盖表：先列出所有计划支持的注入能力与对应可覆盖的场景类型，明确哪些故障已可稳定制造、哪些仍缺注入点，避免后续写测试时才发现关键场景不可测。
@@ -85,4 +23,4 @@
 
 当前唯一下一步：
 
-- 状态观测骨架：补齐统一的测试态观测入口，能直接断言 listener 集合、runtime issue、静态 `冲突` / runtime `异常` 优先级、pending config、active session、已生效快照和空配置保活状态，而不是从日志反推。
+- 不变量断言库：沉淀一组通用断言 helper，至少覆盖“首轮扫描未完成前不可登录”“管理 API 首次可见前不可暴露半成品状态”“任一时刻最多一个有效 pending config”“旧 session 晚到消息不能污染新 session”“空配置恢复必须先补推完整快照再恢复 listener”等规则。

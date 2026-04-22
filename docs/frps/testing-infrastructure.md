@@ -477,3 +477,120 @@ type FrameEvent struct {
 - 能稳定制造“`config.push` 前断线、`config.push` 后未 ack 断线、重复 ack、乱序 ack、旧 ack 晚到、错误回包晚到、heartbeat 晚到、半关闭、重连接管、旧 session 残留帧”这些场景。
 - 同一套 fake transport/harness 下，首登、热更新、空配置保活、恢复补推完整快照、session replacement 这几条链路都能复用；不允许每类场景各造一套专用 pipe helper。
 - 任一控制连接竞争态场景若仍必须依赖真实网络抖动、真实 TCP 半关闭时机或 `sleep` 才能稳定复现，说明 transport/session seam 还不够，先补基建，不进入具体场景实现。
+
+## 8. 状态观测骨架
+
+状态观测相关测试后续统一按“业务状态快照 + 注入层状态快照 + 启停门闩状态”三层收口，避免测试继续通过日志、私有字段临时 helper、或 fake 侧反推业务结论：
+
+- 业务状态快照负责回答“`frps` / `frpc` 当前认为系统处于什么状态”，例如当前 listener 集合、active session、pending config、已生效 snapshot、空配置保活状态。
+- 注入层状态快照负责回答“fake listener / fake snapshot / fake transport 当前制造了什么外部世界和消息世界”，例如端口占用脚本、快照轮次、延迟 frame 队列。
+- 启停门闩状态负责回答“哪些外部可见入口已经被放行”，例如首轮扫描是否完成、控制端口是否已开放、管理 API 是否已首次可见。
+- 三层观测都必须返回不可变副本；测试只能读结构化快照，不能拿 live map、slice、`net.Conn`、session 指针回去自行推断。
+
+第一版统一观测入口建议固定为“按进程导出的测试态 snapshot”，而不是散落多个临时 helper：
+
+```go
+type ObservedState struct {
+    App       AppObservedState
+    Server    ServerObservedState
+    Client    ClientObservedState
+    Snapshot  *SnapshotObservedState
+    Listeners *ListenerObservedState
+    Transport *TransportObservedState
+}
+```
+
+- 单端单测可以只实现 `ServerObservedState` 或 `ClientObservedState` 子集。
+- 双端或双进程 harness 再把服务端、客户端、listener fake、snapshot fake、transport fake 的观测结果聚合成一份总快照。
+- `Observe()` / `Snapshot()` 这类入口只做“锁内复制 + 结构化导出”，不承担等待收敛、推进时间或释放 barrier；等待仍由 hook / manual scheduler / harness 控制。
+
+当前已有零散可观测口子，但还不够统一，后续要收口为同一套测试态快照：
+
+- 服务端已有 `TunnelRuntimeIssues()`、`activeSession()`、`initialRuntimeScanDone`、`groupSlots`、`session.currentGroupAndSnapshot()`、`session.configAckState()` 等局部状态。
+- 客户端已有 `snapshotValue()`、`lastAckedConfigVersion`、`activeStreams`、`activeUDPSessions` 等局部状态。
+- 网络快照已有 `NetworkSnapshotService.Current()`。
+- 这些入口目前仍偏“零散 helper”或“测试直接摸内部字段”；状态观测骨架的目标是把它们收口成统一、稳定、可组合的测试态视图。
+
+服务端第一批必须直接可观测的状态固定如下：
+
+- 启动门闩与外部可见性：
+  - `InitialRuntimeScanDone`：对应 `frps/internal/control/server.go` 的首轮扫描完成标志。
+  - `ControlListenerOpen`：控制端口是否已经真正进入监听。
+  - `LoginGateOpen`：首个 `frpc` 登录是否已被允许进入认证流程；后续即使实现继续靠“监听未开放”达成，也要有结构化布尔位可断言。
+  - `ManagementAPIVisible`：管理 API 是否已首次可见；这层状态要在 `frps/internal/app/app.go` 收口，不能只靠“端口能不能拨通”间接判断。
+- session / group slot：
+  - 每个 group 当前占用的 `groupSlot -> sessionID`。
+  - 每个 active session 的 `groupID / sessionID / connID`、当前 `Group.EffectiveIP`、当前 `Snapshot.Version`、`LastAckedConfigVersion`。
+  - 每个 active session 当前是否存在 `pendingConfigRequestID`、对应 `pendingSnapshot.Version`、`pendingSnapshot.TunnelCount`、`pendingGroup.EffectiveIP`。
+  - 每个 active session 当前是否 `runtimeFrozen`、是否 `listenersStarted`、当前 `runtimeGeneration`。
+- listener 运行态：
+  - 当前已 attach 的 listener 集合，至少包含 `groupID / sessionID / tunnelID / protocol / bindIP / port / configVersion / listenerKind(tcp|udp)`。
+  - 每个 tunnel 当前缺失了哪些监听端口；不能只暴露“是否有 listener”这种粗粒度结论，否则无法精确覆盖“部分端口恢复”。
+  - 空配置保活态必须显式可见，不能靠“当前 `Snapshot.Tunnels == 0` 且 session 还活着”由测试自行猜；因为“天然没有 tunnel”与“因 `effective_ip` 失效被 shrink 成空配置”不是同一业务语义。
+- runtime issue 与状态优先级：
+  - 原始 runtime issue 必须结构化暴露，至少包括 `tunnelID`、`reason`，以及可选的 `kind`，例如 `effective_ip_invalid`、`effective_ip_not_local`、`runtime_bind_conflict`、`runtime_bind_error`。
+  - 静态 `冲突` 结果必须与 runtime issue 分开暴露，至少能直接知道某个 tunnel 当前是否命中静态冲突，以及冲突对端是谁。
+  - 最终派生状态也必须直接暴露，至少包含 `finalStatus / finalReason`，便于直接断言“静态 `冲突` 优先于 runtime `异常`”，而不是测试重新抄一遍管理 API 派生逻辑。
+- snapshot 与恢复语义：
+  - 每个 active session 当前已生效 snapshot、pending snapshot、最后 ack 版本。
+  - 当前是否处于“完整配置可下发”“空配置保活”“等待恢复补推完整快照”“仅补未监听健康 tunnel listener”中的哪一种恢复模式。
+  - 当前已发布的本机网络 snapshot 版本/序号、`CapturedAt`、`AvailableIPs`，以及最近一次 `resolveGroupEffectiveIP()` 读取看到的是哪一版。
+
+客户端第一批必须直接可观测的状态固定如下：
+
+- 当前逻辑会话身份：`ConnID / SessionID / GroupID`，以及该连接是否已被新 session 替换。
+- 当前已应用 snapshot：至少包含 `ConfigVersion`、`GeneratedAtMs`、`TunnelCount` 和必要时的 tunnel 摘要。
+- `lastAckedConfigVersion`：当前最后成功写出并生效的 ack 版本。
+- 当前活跃 `stream` / `udp session` 数量，以及 reload 后关闭了多少旧对象。
+- 重连尝试序号必须显式可见，不能只从日志里的 `retry_in` 反推；后续竞争态场景需要直接断言“这是第几次重连、旧连接是否已经失效、新连接是否已接管”。
+- 客户端当前恢复模式也要结构化可见，至少能区分“正常运行”“收到空配置保活”“等待下一次完整快照”“正在用新连接接管旧 session”。
+
+为了避免观测层本身又制造新的竞态，第一版观测接口必须遵守以下规则：
+
+- 所有观测结果都必须在锁内复制，返回只读快照，不返回 live 指针。
+- 不允许把字符串日志当主状态源；字符串只能作为补充 reason，人类可读，但测试断言优先消费结构化字段。
+- 对“同一结论的不同来源”必须拆开暴露，例如：
+  - 静态 `冲突`
+  - runtime `异常`
+  - 空配置保活
+  - 待恢复完整快照
+  - 仅缺 listener 的局部恢复
+- 对“同一对象的不同生命周期”必须直接暴露稳定 ID，而不是靠地址比较，例如 `groupID / tunnelID / sessionID / connID / configVersion / requestID`。
+- 观测层不得要求测试重复执行业务计算，例如再次跑一遍 `detectTunnelConflicts()`、再次扫描 listener map 推断“谁是 active session”；这些应在观测快照里直接给出。
+
+状态观测与 hook / fake / harness / manual scheduler 的边界固定如下：
+
+- hook / barrier 负责把执行流卡在“观测前后”的边界，例如首轮扫描完成未发布、`config.push` 已写出未标记 pending、`config.ack` 已解析未 accept、管理 API 已创建未放行。
+- fake snapshot / listener / transport 负责暴露“外部世界当前被脚本制造成什么样”，例如端口被谁占用、下一轮快照是什么、哪些 frame 仍在 delay 队列。
+- manual scheduler 负责推进“什么时候发生下一轮扫描 / heartbeat / backoff / poll”，但不直接替代业务状态观测。
+- 场景编排器负责在“放行某个 barrier 之后”拉取一份统一快照做断言，避免测试一边读服务端状态、一边读 fake 状态时跨过了两个不同时间点。
+
+第一批代码落点固定如下：
+
+- `frps/internal/app/app.go`
+  - 收口 `InitialRuntimeScanDone -> 控制端口开放 -> 管理 API 首次可见` 这条启动门闩状态。
+- `frps/internal/control/server.go`
+  - 收口 `initialRuntimeScanDone`、control listener 是否已开放、`sessions`、`groupSlots`、`tunnelRuntimeIssues`。
+- `frps/internal/control/session.go`
+  - 收口 `Snapshot`、`LastAckedConfigVersion`、`pendingConfigRequestID`、`pendingSnapshot`、listener/runtime 冻结态。
+- `frps/internal/control/listeners.go`
+  - 收口当前 attach 的 listener 集合、按 tunnel 缺失的端口集合、局部恢复结果。
+- `frps/internal/control/runtime_scan.go`
+  - 收口当前扫描目标、扫描结论、恢复模式切换结果。
+- `frps/internal/control/refresh.go`
+  - 收口空配置保活、恢复补推完整快照、仅补 listener 三种模式切换。
+- `frps/internal/system/network_snapshot.go`
+  - 收口当前已发布 snapshot 的版本/轮次、最近一次成功/失败采集。
+- `frpc/internal/client/client.go`
+  - 收口重连尝试序号、当前连接身份、最近一次 `config.push` 应用结果。
+- `frpc/internal/client/session.go`
+  - 收口当前 snapshot、最后 ack 版本、stream / udp session 数量和 reload 摘要。
+
+第一版验收口径固定如下：
+
+- 任一测试在一次统一观测调用里，都能直接断言“首轮扫描是否完成”“控制端口是否已开放”“管理 API 是否已首次可见”，不再靠拨端口或看日志旁证。
+- 任一测试都能直接断言“每个 active session 当前最多一个有效 pending config”，且能看到它对应的 request/version/group/snapshot。
+- 任一测试都能直接断言“某个 tunnel 当前是静态 `冲突`、runtime `异常`、还是已恢复”，并能同时拿到原始 runtime issue 与最终派生状态。
+- 任一测试都能直接断言“当前是空配置保活，还是天然无 tunnel，还是等待恢复补推完整快照”，不再靠 `len(snapshot.Tunnels)` 猜业务模式。
+- 任一测试都能直接断言“旧 session 的晚到 ack / heartbeat / error 最终落到哪个连接和 session 身份上”，不再只得到一条模糊日志。
+- 如果某个场景仍然必须靠日志关键字、端口探活、或临时读取私有字段来判断是否成功，说明状态观测骨架还不够，先补观测口子，不进入不变量断言库和具体场景实现。
