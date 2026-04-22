@@ -155,6 +155,195 @@ func TestServerScenarioRecoversNonListeningTunnelAfterPollingSeesOccupancyGone(t
 	}
 }
 
+func TestServerScenarioKeepsRuntimeIssueUntilSamePortFlappingReallyRecovers(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	listenKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: 21003}
+	listenerFactory := NewScriptedListenerFactory()
+	listenerFactory.SetExternallyOccupied(listenKey, true)
+
+	repo := &mutableRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: "127.0.0.1",
+			TokenHash:   tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: listenKey.Port,
+						RemoteEnd:   listenKey.Port,
+						LocalHost:   host,
+						LocalStart:  2200,
+						LocalEnd:    2200,
+					},
+				},
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository:      repo,
+			Network:         staticSnapshotReader{snapshot: localIPv4Snapshot("127.0.0.1")},
+			ListenerFactory: listenerFactory,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	blockedState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "端口冲突") &&
+			tunnel.FinalStatus == "异常" &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, listenKey) == 0
+	})
+
+	blockedTunnel := requireObservedTunnel(t, blockedState.Server, repo.group.ID, 7)
+	if blockedTunnel.FinalStatus != "异常" || !strings.Contains(blockedTunnel.RuntimeIssue, "端口冲突") {
+		t.Fatalf("unexpected startup blocked tunnel state: %#v", blockedTunnel)
+	}
+
+	controller := testhooks.NewController()
+	controller.AddBarrier("control.listener.before_bind", 1)
+	controller.AddBarrier("control.listener.before_bind", 2)
+	restoreHooks := testhooks.Install(controller)
+	defer restoreHooks()
+
+	listenerFactory.SetExternallyOccupied(listenKey, false)
+	firstScanDone := make(chan error, 1)
+	go func() {
+		firstScanDone <- server.scanNonListeningTunnelRuntimeIssues(context.Background())
+	}()
+
+	probeHit := waitForTestHookHit(t, controller, "control.listener.before_bind", 1)
+	if got := probeHit.Fields["kind"]; got != "runtime_probe" {
+		t.Fatalf("expected first recovery bind to be runtime_probe, got %#v", probeHit.Fields)
+	}
+	if !controller.Release("control.listener.before_bind", 1) {
+		t.Fatal("release runtime_probe barrier failed")
+	}
+
+	startHit := waitForTestHookHit(t, controller, "control.listener.before_bind", 2)
+	if got := startHit.Fields["kind"]; got != "runtime_start" {
+		t.Fatalf("expected second recovery bind to be runtime_start, got %#v", startHit.Fields)
+	}
+
+	heldIssues := server.TunnelRuntimeIssues()
+	if !strings.Contains(heldIssues[7], "端口冲突") {
+		t.Fatalf("expected runtime issue to stay visible until listener recovery succeeds, got %#v", heldIssues)
+	}
+	heldListenerState := listenerFactory.ObserveState()
+	if len(heldListenerState.Handles) != 0 {
+		t.Fatalf("expected listener handles to stay down while recovery bind is blocked, got %#v", heldListenerState.Handles)
+	}
+
+	listenerFactory.SetExternallyOccupied(listenKey, true)
+	if !controller.Release("control.listener.before_bind", 2) {
+		t.Fatal("release runtime_start barrier failed")
+	}
+
+	select {
+	case err := <-firstScanDone:
+		if err != nil {
+			t.Fatalf("first flapping scan failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first flapping scan did not complete")
+	}
+
+	firstFlapState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "端口冲突") &&
+			tunnel.FinalStatus == "异常" &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, listenKey) == 0
+	})
+	if !strings.Contains(requireObservedTunnel(t, firstFlapState.Server, repo.group.ID, 7).RuntimeIssue, "端口冲突") {
+		t.Fatalf("expected runtime issue after start lost race to external occupancy, got %#v", firstFlapState.Server.Tunnels)
+	}
+
+	if err := server.scanNonListeningTunnelRuntimeIssues(context.Background()); err != nil {
+		t.Fatalf("second flapping scan failed: %v", err)
+	}
+
+	secondFlapState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "端口冲突") &&
+			tunnel.FinalStatus == "异常" &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, listenKey) == 0
+	})
+	if !strings.Contains(requireObservedTunnel(t, secondFlapState.Server, repo.group.ID, 7).RuntimeIssue, "端口冲突") {
+		t.Fatalf("expected runtime issue to survive repeated occupied scans, got %#v", secondFlapState.Server.Tunnels)
+	}
+
+	listenerFactory.SetExternallyOccupied(listenKey, false)
+	if err := server.scanNonListeningTunnelRuntimeIssues(context.Background()); err != nil {
+		t.Fatalf("final recovery scan failed: %v", err)
+	}
+
+	recoveredState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			strings.TrimSpace(tunnel.RuntimeIssue) == "" &&
+			tunnel.FinalStatus == "启用" &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 1 &&
+			handleCountForPort(observed, listenKey) == 1
+	})
+
+	recoveredSession := requireObservedSession(t, recoveredState.Server, repo.group.ID)
+	recoveredTunnel := requireObservedTunnel(t, recoveredState.Server, repo.group.ID, 7)
+	if recoveredSession.RecoveryMode != sharedtestsupport.RecoveryModeRunning {
+		t.Fatalf("expected session to return to running after occupancy flap stops, got %#v", recoveredSession)
+	}
+	if recoveredTunnel.FinalStatus != "启用" || recoveredTunnel.RuntimeIssue != "" {
+		t.Fatalf("unexpected recovered tunnel state after occupancy flap: %#v", recoveredTunnel)
+	}
+	if issues := server.TunnelRuntimeIssues(); len(issues) != 0 {
+		t.Fatalf("expected runtime issues to clear only after real listener recovery, got %#v", issues)
+	}
+
+	assertHeartbeatStillWorks(t, clientConn)
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
 func TestServerScenarioDeduplicatesMatchingRefreshAndScanRecoveryPush(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))

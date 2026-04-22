@@ -59,7 +59,8 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 	for _, group := range groups {
 		targetTunnels := s.selectScannedNonListeningTunnels(group)
 		issues := s.scanGroupRuntimeIssues(group, staticConflictIDs, targetTunnels)
-		s.applyScannedTunnelRuntimeIssues(group.Snapshot, staticConflictIDs, issues)
+		preserveHealthyIssues := s.preserveScannedHealthyRuntimeIssuesUntilRecovery(group, targetTunnels, staticConflictIDs, issues)
+		s.applyScannedTunnelRuntimeIssues(group.Snapshot, staticConflictIDs, issues, preserveHealthyIssues)
 		if err := s.recoverScannedActiveSessionTunnels(group, targetTunnels, staticConflictIDs, issues); err != nil {
 			s.logger.Warn("recover scanned non-listening tunnels failed", "group_id", group.ID, "error", err)
 		}
@@ -198,7 +199,41 @@ func hasRecoverableScannedTunnels(targetTunnels []protocol.TunnelEntry, staticCo
 	return false
 }
 
-func (s *Server) applyScannedTunnelRuntimeIssues(snapshot ConfigSnapshot, staticConflictIDs map[int64]struct{}, issues map[uint32]string) {
+func (s *Server) preserveScannedHealthyRuntimeIssuesUntilRecovery(group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) map[uint32]struct{} {
+	if s == nil || group.ID <= 0 || len(targetTunnels) == 0 {
+		return nil
+	}
+
+	active, ok := s.activeSession(group.ID)
+	if !ok || active == nil || active.session == nil {
+		return nil
+	}
+	if active.session.hasPendingConfig() {
+		return nil
+	}
+
+	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	if currentGroup.EffectiveIP != group.EffectiveIP || !sameRuntimeSnapshot(currentSnapshot, group.Snapshot) {
+		return nil
+	}
+
+	preserved := make(map[uint32]struct{})
+	for _, tunnel := range targetTunnels {
+		if _, conflicted := staticConflictIDs[int64(tunnel.TunnelID)]; conflicted {
+			continue
+		}
+		if strings.TrimSpace(issues[tunnel.TunnelID]) != "" {
+			continue
+		}
+		preserved[tunnel.TunnelID] = struct{}{}
+	}
+	if len(preserved) == 0 {
+		return nil
+	}
+	return preserved
+}
+
+func (s *Server) applyScannedTunnelRuntimeIssues(snapshot ConfigSnapshot, staticConflictIDs map[int64]struct{}, issues map[uint32]string, preserved map[uint32]struct{}) {
 	if s == nil {
 		return
 	}
@@ -210,6 +245,9 @@ func (s *Server) applyScannedTunnelRuntimeIssues(snapshot ConfigSnapshot, static
 		}
 		if _, conflicted := staticConflictIDs[int64(tunnel.TunnelID)]; conflicted {
 			s.recordTunnelRuntimeIssue(tunnel.TunnelID, "")
+			continue
+		}
+		if _, keep := preserved[tunnel.TunnelID]; keep {
 			continue
 		}
 		s.recordTunnelRuntimeIssue(tunnel.TunnelID, strings.TrimSpace(issues[tunnel.TunnelID]))
