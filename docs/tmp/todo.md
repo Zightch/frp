@@ -81,7 +81,8 @@
 - 当前轮先做实现审查和测试方案设计，不修改业务实现代码。
 - 测试方案不局限于现有 `*_test.go`，允许包含脚本化双进程场景、异常注入、双平台验证与长稳回归。
 - 讨论范围只聚焦端口冲突检查与热更新交互，不扩展到其他独立功能优化。
+- 后续所有可测性基建子步骤统一写入 `docs/frps/testing-infrastructure.md`，不再回填 `docs/frps/testing-debugging.md`。
 
 当前唯一下一步：
 
-- 控制连接故障注入骨架：为 `config.push` / `config.ack` / heartbeat / shutdown 等控制面交互准备 fake transport 或脚本化 session harness，能稳定制造断线、重连、重复 ack、乱序 ack、晚到 ack、晚到错误回包、半关闭和旧 session 残留消息。
+- 状态观测骨架：补齐统一的测试态观测入口，能直接断言 listener 集合、runtime issue、静态 `冲突` / runtime `异常` 优先级、pending config、active session、已生效快照和空配置保活状态，而不是从日志反推。

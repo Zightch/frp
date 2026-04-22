@@ -337,3 +337,143 @@ type Snapshot struct {
 - 能稳定制造“固定快照、跳变、地址族切换、非法 `effective_ip`、非本机地址、高频抖动、采集错误、发布延迟、前后轮不一致”这些场景。
 - 首次登录拒绝、运行中下发空配置、轮询恢复补启动、热更新恢复补推完整快照这几条链路，都必须能在同一套 fake snapshot 脚本下复现，不依赖真实网卡改动。
 - 若测试仍需临时改本机网卡、启停 VPN、等待系统网络服务刷新或靠 `sleep` 撞快照窗口，说明 snapshot seam 还不够，先补基建，不进入场景实现。
+
+## 7. 控制连接故障注入骨架
+
+控制连接相关测试统一按“登录握手、`config.push/config.ack`、heartbeat、runtime close、session shutdown 共用同一套脚本化 transport/session harness”设计，避免一部分场景还在用真实 `net.Conn` + `net.Pipe` 撞时序，另一部分场景才 fake 消息顺序：
+
+- `frps/internal/control/server.go` 的 `readFrameWithTimeout()` / `writeFrame()`、`frps/internal/control/auth.go` 的登录握手、`frps/internal/control/config.go` 的 `pushReloadConfig()` / `handleConfigAck()`，以及 `frpc/internal/client/client.go` 的 `readMessage()` / `writeMessage()`、`frpc/internal/client/login.go` 的 `login()`、`frpc/internal/client/session.go` 的 `readLoop()` / `heartbeatLoop()`，后续都必须继续通过同一条“frame 级”传输 seam 交互。
+- 第一版目标不是把整个 TCP/IP 栈 fake 掉，而是稳定控制“哪一帧什么时候写出、什么时候被对端读到、是否被丢弃/延迟/重复/重排、连接何时半关闭或全关闭、旧连接残帧是否仍尝试到达”。
+- 只有把故障注入放在 frame transport / session harness 这一层，才能同时覆盖首登 `config.push`、热更新 `config.push`、`config.ack`、heartbeat、`stream.close` / `udp.close`、session replacement 和晚到错误回包；若只在 `handleConfigAck()` 或 `applyConfigPush()` 上层做 stub，会绕过真实 requestId、streamId、session 交接和写锁语义。
+
+第一版边界建议固定为“两层 transport + 一层脚本化连接编排”：
+
+- real transport：继续薄封装当前 `transport.ReadFrame()` / `transport.WriteFrame()` 与真实 `net.Conn`，生产行为不变。
+- fake frame transport：按测试脚本控制每次 `ReadFrame` / `WriteFrame` 的可见顺序、返回错误、阻塞点、连接状态和连接切换。
+- session harness：在 fake transport 之上再提供“连接 1 / 连接 2 / 替换 session / 旧 session 晚到消息 / 半关闭 / 重连”的场景编排能力，避免每个测试各自拼多个 `net.Pipe` 和 goroutine。
+
+第一版故障原语至少固定支持以下能力：
+
+- `config.push` 写出前断线。
+- `config.push` 已写出但客户端尚未读到时断线。
+- 客户端已读到 `config.push`，但 `config.ack` 写出前断线。
+- `config.ack` 已写出但服务端尚未读到时断线。
+- `config.ack` 超时不来、重复到达、乱序到达、晚到到达。
+- 旧 `config.ack` 在新 `config.push` 或新 session 建立后晚到。
+- 服务端错误回包晚到，且晚到时旧 session 已关闭或新 session 已接管。
+- heartbeat 丢失、晚到、重复、与 `config.push` / `config.ack` 交错。
+- 服务端 `stream.close` / `udp.close` / shutdown 帧与 reload、断线、半关闭并发。
+- 单向半关闭：
+  - client write closed / server read EOF，但 server->client 方向仍可写。
+  - server write closed / client read EOF，但 client->server 方向仍可写。
+- 全关闭后仍尝试投递旧连接残留帧，验证它们不会污染新 session。
+- 重连时复用同一 group，但旧连接上尚有未消费帧或未应用错误，验证新旧 session 严格隔离。
+
+第一版 fake transport 不应只按“连接是否可用”返回粗粒度错误，而要显式建模 frame 级事件：
+
+```go
+type FrameDirection string
+
+const (
+    DirClientToServer FrameDirection = "c2s"
+    DirServerToClient FrameDirection = "s2c"
+)
+
+type ConnID string
+
+type FrameEvent struct {
+    ConnID      ConnID
+    Direction   FrameDirection
+    FrameType   protocol.Type
+    RequestID   uint32
+    StreamID    uint32
+    SessionID   uint64
+    ConfigVer   uint64
+    Action      string // deliver / drop / delay / duplicate / close / half_close / error
+}
+```
+
+- 测试脚本必须能按 `ConnID + Direction + FrameType + RequestID + SessionID` 匹配规则；仅按“下一帧”匹配不够，因为重连、多 session 和晚到消息会让同一类型帧同时存在。
+- `SessionID` 不能只靠协议头推断；在 harness 层要显式绑定“这条连接当前代表哪个逻辑 session”，否则无法稳定表达“旧 session 的晚到 ack”。
+- `Action=delay` 不能依赖真实时间；延迟帧必须停在 harness 队列里，由测试显式 `ReleaseDelayed(...)` 或脚本下一步放行。
+- `Action=duplicate` 必须复制同一帧字节和同一元数据，而不是重新编码一份“看起来一样”的帧；否则无法保证重复包和原包完全等价。
+
+与现有 hook / barrier / manual scheduler 的配合方式固定如下：
+
+- hook / barrier 负责把执行流卡在“`config.push` 编码后未写出”“写出后未标记 pending”“`config.ack` 解析后未 accept”“旧 session 注销前”“新 session 注册后”“shutdown 已发起但连接未关闭”这些代码边界。
+- fake transport / harness 负责决定“这一帧现在到底能不能过、会不会丢、会不会重复、会不会晚到、连接当前是全关还是半关”。
+- manual scheduler 负责推进 heartbeat 周期、重连 backoff、ack 等待、轮询恢复等时间路径；控制连接里的延迟消息本身不靠真实时间到达，而是由 fake transport 显式放行。
+- 若某个场景要同时覆盖“热更新触发 `config.push` + 旧 ack 晚到 + 客户端重连”，推荐顺序固定为：
+  1. 先用 hook 卡住 `pushReloadConfig()` 写出前或 `handleConfigAck()` 接收前。
+  2. 用 fake transport 为旧连接、新连接分别装入脚本事件。
+  3. 用 manual `Advance(...)` 推进 heartbeat/backoff/轮询等时间事件。
+  4. 按顺序 `Release()` 目标 barrier 或 delayed frame。
+  5. 用状态观测断言 `pending config`、active session、listener 集合和最后生效快照已收敛，再进入下一步。
+
+第一批需要打开 transport/session seam 的代码位置如下：
+
+- `frps/internal/control/server.go`
+  - `readFrameWithTimeout()`
+  - `writeFrame()`
+  - `runSession()`
+  - `handleHeartbeatPing()`
+- `frps/internal/control/auth.go`
+  - `authenticate()`
+  - `reserveGroupSlot()`
+  - `releaseGroupSlot()`
+- `frps/internal/control/config.go`
+  - `pushConfig()`
+  - `pushReloadConfig()`
+  - `handleConfigAck()`
+- `frps/internal/control/session.go`
+  - `writeFrameWithSession()`
+  - `writeRuntimeFrameWithSession()`
+  - `shutdownSession()`
+- `frps/internal/control/refresh.go`
+  - `registerActiveSession()`
+  - `unregisterActiveSession()`
+  - `RefreshGroup()`
+- `frpc/internal/client/client.go`
+  - `Run()`
+  - `runOnce()`
+  - `readMessage()`
+  - `writeMessage()`
+  - `applyConfigPush()`
+- `frpc/internal/client/login.go`
+  - `login()`
+  - `readLoginFrame()`
+- `frpc/internal/client/session.go`
+  - `readLoop()`
+  - `heartbeatLoop()`
+
+其中职责边界固定如下：
+
+- `server.go` / `client.go` 这一层只声明“我要读/写一帧、当前连接属于哪个 logical session、读取超时/写入错误如何上抛”，不私下直接调用另一套真实 `transport.ReadFrame/WriteFrame`。
+- 登录握手、热更新推配置、heartbeat、session shutdown 必须继续共用同一 transport seam，不能登录路径一套 fake、运行态路径另一套 fake。
+- reconnect 不通过“修改同一 `net.Conn` 内部状态”模拟，而是由 harness 显式创建新 `ConnID` 并走一次真实的 `runOnce()/login()/registerActiveSession()` 入口；否则测不到旧 session 注销、新 session 接管和 group slot 交接边界。
+
+为了稳定覆盖“旧 session 晚到消息不能污染新 session”，第一版 harness 必须额外具备以下能力：
+
+- 明确区分连接实例 ID、逻辑 session ID、group ID，三者都能直接观测。
+- 能在旧连接已被 `Close()` 或 `shutdownSession()` 后，继续尝试投递一帧旧 `config.ack`、旧 heartbeat、旧 error，验证服务端/客户端会丢弃或因连接关闭而失败，而不是被新 session 吞掉。
+- 能脚本化表达“旧 session 的 `config.push` 请求 ID 与新 session 当前 pending request ID 恰好相同/不同”的组合，验证校验逻辑依赖的是当前 session 上下文，不是全局 requestId。
+- 能在 `unregisterActiveSession(old)` 与 `registerActiveSession(new)` 交接窗口内精确卡住，验证 group slot、active session map 和 pending config 不会出现双活或空洞。
+
+必须直接可观测的测试态信息固定如下，后续测试不得只从日志反推：
+
+- 每个 `ConnID` 当前的方向状态：
+  - open
+  - read closed
+  - write closed
+  - fully closed
+- 每个 `ConnID` 已写出、已投递、已丢弃、仍延迟队列中的 frame 明细，以及它们关联的 `FrameType / RequestID / StreamID / SessionID / ConfigVersion`。
+- 服务端当前 active session、已占用 group slot、待注销旧 session、当前 `pendingConfigRequestID` / `pendingSnapshot.Version`。
+- 客户端当前最后已应用快照版本、最后已 ack 版本、当前 snapshot 内容、重连中的连接尝试序号。
+- 旧 session 的晚到帧最终命中的是“被连接层拒绝”“被协议校验拒绝”“被 session 上下文忽略”中的哪一种结果，不能只得到一条模糊日志。
+- heartbeat 最近一次发送/接收/响应对应的连接和 session 身份，避免把旧连接上的 pong 误记到新连接。
+
+第一版验收口径固定如下：
+
+- 能稳定制造“`config.push` 前断线、`config.push` 后未 ack 断线、重复 ack、乱序 ack、旧 ack 晚到、错误回包晚到、heartbeat 晚到、半关闭、重连接管、旧 session 残留帧”这些场景。
+- 同一套 fake transport/harness 下，首登、热更新、空配置保活、恢复补推完整快照、session replacement 这几条链路都能复用；不允许每类场景各造一套专用 pipe helper。
+- 任一控制连接竞争态场景若仍必须依赖真实网络抖动、真实 TCP 半关闭时机或 `sleep` 才能稳定复现，说明 transport/session seam 还不够，先补基建，不进入具体场景实现。
