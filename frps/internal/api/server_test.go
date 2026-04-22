@@ -1056,6 +1056,65 @@ func TestTunnelStatusesIncludeEnabledDisabledConflictAndAbnormal(t *testing.T) {
 	}
 }
 
+func TestTunnelStatusesIncludeWildcardConflict(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	insertProxyGroup(t, store, 1, "group-any4", "token-a", "hash-a", "0.0.0.0", true)
+	insertProxyGroup(t, store, 2, "group-any6", "token-b", "hash-b", "::", true)
+	insertTunnel(t, store, 1, 1, "any4-tunnel", "tcp", 23000, 23000, true)
+	insertTunnel(t, store, 2, 2, "any6-tunnel", "tcp", 23000, 23000, true)
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+	result := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/tunnels",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+
+	items, ok := result.JSON["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("unexpected tunnel list payload: %#v", result.JSON)
+	}
+
+	statuses := make(map[string]map[string]any, len(items))
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected tunnel item: %#v", raw)
+		}
+		statuses[item["name"].(string)] = item
+	}
+
+	if statuses["any4-tunnel"]["status"] != tunnelStatusConflict {
+		t.Fatalf("unexpected any4-tunnel status: %#v", statuses["any4-tunnel"])
+	}
+	if statuses["any6-tunnel"]["status"] != tunnelStatusConflict {
+		t.Fatalf("unexpected any6-tunnel status: %#v", statuses["any6-tunnel"])
+	}
+	if !strings.Contains(statuses["any4-tunnel"]["status_reason"].(string), `隧道"any6-tunnel"`) {
+		t.Fatalf("unexpected any4-tunnel reason: %#v", statuses["any4-tunnel"])
+	}
+}
+
 func TestCreateTunnelRejectsSpecificConflict(t *testing.T) {
 	store := newTestStore(t)
 	manager := newTestAuthManager(t, true)
@@ -1159,6 +1218,205 @@ func TestCreateTunnelRejectsSpecificConflict(t *testing.T) {
 	)
 	if !strings.Contains(conflict.JSON["error"].(string), `隧道"tunnel-a"`) {
 		t.Fatalf("unexpected conflict error: %#v", conflict.JSON)
+	}
+}
+
+func TestCreateTunnelRejectsWildcardConflictAny4Any6(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	groupAny4 := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-any4",
+			"effective_ip": "0.0.0.0",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupAny4ID := int64(groupAny4.JSON["item"].(map[string]any)["id"].(float64))
+
+	groupAny6 := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-any6",
+			"effective_ip": "::",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupAny6ID := int64(groupAny6.JSON["item"].(map[string]any)["id"].(float64))
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupAny4ID,
+			"name":         "any4-tunnel",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 23010,
+			"remote_end":   23010,
+			"local_host":   "127.0.0.1",
+			"local_start":  8080,
+			"local_end":    8080,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+
+	conflict := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupAny6ID,
+			"name":         "any6-tunnel",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 23010,
+			"remote_end":   23010,
+			"local_host":   "127.0.0.1",
+			"local_start":  8081,
+			"local_end":    8081,
+			"enabled":      true,
+		},
+		http.StatusConflict,
+		sessionCookie,
+	)
+	if !strings.Contains(conflict.JSON["error"].(string), `隧道"any4-tunnel"`) {
+		t.Fatalf("unexpected wildcard conflict error: %#v", conflict.JSON)
+	}
+}
+
+func TestCreateTunnelAllowsSpecific4WithAny6(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			Auth: manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	groupAny6 := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-any6",
+			"effective_ip": "::",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupAny6ID := int64(groupAny6.JSON["item"].(map[string]any)["id"].(float64))
+
+	groupSpecific4 := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-v4",
+			"effective_ip": "127.0.0.1",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupSpecific4ID := int64(groupSpecific4.JSON["item"].(map[string]any)["id"].(float64))
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupAny6ID,
+			"name":         "any6-tunnel",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 23020,
+			"remote_end":   23020,
+			"local_host":   "127.0.0.1",
+			"local_start":  8080,
+			"local_end":    8080,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+
+	created := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupSpecific4ID,
+			"name":         "v4-tunnel",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 23020,
+			"remote_end":   23020,
+			"local_host":   "127.0.0.1",
+			"local_start":  8081,
+			"local_end":    8081,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	if created.JSON["item"].(map[string]any)["status"] != tunnelStatusEnabled {
+		t.Fatalf("unexpected tunnel status: %#v", created.JSON)
 	}
 }
 

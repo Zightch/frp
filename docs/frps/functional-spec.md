@@ -134,17 +134,19 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `single` 隧道要求远端和本地都为单端口
 - `range` 隧道要求远端和本地跨度一致
 - `local_host` 必须是合法 IP 或 hostname
-- 当前管理面已接入第 1 阶段端口冲突校验：
-  - 只处理 `specific-specific`
+- 当前管理面已接入跨平台统一端口冲突校验：
   - 只在分组和隧道都启用时参与比较
   - 只比较同协议监听空间；`tcp` 和 `udp` 完全隔离
-  - 只比较相同的具体 `effective_ip`
-  - `0.0.0.0`、`::` 及其相关 wildcard 冲突规则当前仍未接入这一阶段
+  - 仅当远端端口区间相交时才判定冲突
+  - `effective_ip` 比较固定按统一矩阵执行：
+    - `0.0.0.0` 与 `0.0.0.0` / `::` / 任意具体 IPv4 冲突
+    - `::` 与 `::` / `0.0.0.0` / 任意具体 IPv6 冲突
+    - 具体 IPv4 仅与 `0.0.0.0` 或“同 IP 具体 IPv4”冲突
+    - 具体 IPv6 仅与 `::` 或“同 IP 具体 IPv6”冲突
   - `create tunnel`、`update tunnel`、`update proxy group(effective_ip/enabled)` 命中冲突时返回 `409`
 
 当前不做：
 
-- wildcard 相关端口冲突检测
 - 隧道入口 ACL 配置
 - 分组总限速执行
 - 抓包配置
@@ -178,7 +180,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 其中隧道 `status` 当前固定为四态：
 
 - `禁用`：分组禁用或隧道禁用
-- `冲突`：命中当前已实现的 `specific-specific` 静态端口冲突
+- `冲突`：命中当前已实现的跨平台统一静态端口冲突
 - `异常`：隧道本身启用且不冲突，但 `frpc` 登录后对应 listener 启动失败
 - `启用`：其余情况
 
