@@ -77,8 +77,8 @@ python test/e2e_tcp_perf.py
 ### 3.1 服务是否启动
 
 ```powershell
-curl http://127.0.0.1:7500/healthz
-curl http://127.0.0.1:7500/api/v1/auth/state
+curl http://127.0.0.1:7080/healthz
+curl http://127.0.0.1:7080/api/v1/auth/state
 Test-NetConnection 127.0.0.1 -Port 7000
 ```
 

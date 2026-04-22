@@ -59,7 +59,7 @@ frps/data/config.json
 ```json
 {
   "control_listen_addr": "0.0.0.0:7000",
-  "management_listen_addr": "127.0.0.1:7500",
+  "management_listen_addr": "127.0.0.1:7080",
   "read_header_timeout": "5s",
   "shutdown_timeout": "10s",
   "database": {
@@ -179,8 +179,8 @@ go build -o NUL ./cmd/frps
 ```
 
 ```powershell
-curl http://127.0.0.1:7500/healthz
-curl http://127.0.0.1:7500/api/v1/auth/state
+curl http://127.0.0.1:7080/healthz
+curl http://127.0.0.1:7080/api/v1/auth/state
 ```
 
 ## 8. 提交前检查

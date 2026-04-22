@@ -27,7 +27,7 @@ import (
 func TestHealthEndpoint(t *testing.T) {
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Auth:              newTestAuthManager(t, false),
 		},
@@ -75,7 +75,7 @@ func TestAuthInitializationLoginAndSessionEndpoints(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Auth:              manager,
@@ -295,7 +295,7 @@ func TestAuthStateResetsAfterAuthFileDeletion(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Auth:              manager,
@@ -405,7 +405,7 @@ func TestManagementKeySmokeFlow(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Auth:              manager,
@@ -577,7 +577,7 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Network: staticSnapshotReader{
@@ -716,7 +716,7 @@ func TestProxyGroupPatchAllowsPartialUpdateAndRejectsEmptyPatch(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Network: staticSnapshotReader{
@@ -805,7 +805,7 @@ func TestManagementMutationsRefreshAffectedGroups(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Network: staticSnapshotReader{
@@ -980,7 +980,7 @@ func TestTunnelStatusesIncludeEnabledDisabledConflictAndAbnormal(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Network: staticSnapshotReader{
@@ -1062,7 +1062,7 @@ func TestCreateTunnelRejectsSpecificConflict(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Network: staticSnapshotReader{
@@ -1168,7 +1168,7 @@ func TestUpdateProxyGroupRejectsSpecificConflict(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Network: staticSnapshotReader{
@@ -1284,7 +1284,7 @@ func TestProxyGroupCreateAllowsSpecialIPv6WithoutSnapshot(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Auth:              manager,
@@ -1360,7 +1360,7 @@ func TestProxyGroupStatusBecomesAbnormalWhenEffectiveIPLeavesSnapshot(t *testing
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Network:           reader,
@@ -1440,7 +1440,7 @@ func TestProxyGroupPatchAllowsDisableWhenStoredEffectiveIPIsStale(t *testing.T) 
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Network:           reader,
@@ -1515,7 +1515,7 @@ func TestLocalIPsEndpoint(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Network: staticSnapshotReader{
@@ -1582,7 +1582,7 @@ func TestLocalIPsEndpointReturnsUnavailableWithoutSnapshot(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Store:             store,
 			Auth:              manager,
@@ -1610,7 +1610,7 @@ func TestLocalIPsEndpointReturnsUnavailableWithoutSnapshot(t *testing.T) {
 func TestWebUIHandlerServesStaticFilesAndSPAFallback(t *testing.T) {
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Auth:              newTestAuthManager(t, false),
 			WebUIDistDir:      newTestWebUIDist(t),
@@ -1659,7 +1659,7 @@ func TestWebUIHandlerServesStaticFilesAndSPAFallback(t *testing.T) {
 func TestNewServerFallsBackWhenWebUIDistDirMissing(t *testing.T) {
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Auth:              newTestAuthManager(t, false),
 			WebUIDistDir:      filepath.Join(t.TempDir(), "missing-dist"),
@@ -1692,7 +1692,7 @@ func TestNewServerFallsBackWhenWebUIIndexMissing(t *testing.T) {
 
 	server, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Auth:              newTestAuthManager(t, false),
 			WebUIDistDir:      distDir,
@@ -1722,7 +1722,7 @@ func TestNewServerRejectsInvalidWebUIDistPath(t *testing.T) {
 
 	_, err := NewServer(
 		Options{
-			Addr:              "127.0.0.1:7500",
+			Addr:              "127.0.0.1:7080",
 			ReadHeaderTimeout: 5 * time.Second,
 			Auth:              newTestAuthManager(t, false),
 			WebUIDistDir:      distPath,

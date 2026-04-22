@@ -12,7 +12,7 @@ import (
 
 const (
 	defaultControlListenAddr    = "0.0.0.0:7000"
-	defaultManagementListenAddr = "127.0.0.1:7500"
+	defaultManagementListenAddr = "127.0.0.1:7080"
 	defaultReadHeaderTimeout    = "5s"
 	defaultShutdownTimeout      = "10s"
 	defaultLogLevel             = "info"

@@ -30,7 +30,7 @@ func TestLoadAppliesCustomConfig(t *testing.T) {
 	path := filepath.Join(tempDir, "config.json")
 	content := []byte(`{
 		"control_listen_addr":"127.0.0.1:7000",
-		"management_listen_addr":"127.0.0.1:7500",
+		"management_listen_addr":"127.0.0.1:7080",
 		"read_header_timeout":"3s",
 		"shutdown_timeout":"8s",
 		"database":{"type":"mysql","dsn":"user:pass@tcp(127.0.0.1:3306)/frps?parseTime=true"},

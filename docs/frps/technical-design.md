@@ -47,7 +47,7 @@ SQLite / MySQL
 当前默认值：
 
 - `control_listen_addr = 0.0.0.0:7000`
-- `management_listen_addr = 127.0.0.1:7500`
+- `management_listen_addr = 127.0.0.1:7080`
 - `read_header_timeout = 5s`
 - `shutdown_timeout = 10s`
 - `database.type = sqlite`

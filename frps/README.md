@@ -25,7 +25,7 @@ go build -o ./frps.exe ./cmd/frps
 ```json
 {
   "control_listen_addr": "0.0.0.0:7000",
-  "management_listen_addr": "127.0.0.1:7500",
+  "management_listen_addr": "127.0.0.1:7080",
   "read_header_timeout": "5s",
   "shutdown_timeout": "10s",
   "database": {
@@ -45,9 +45,9 @@ go build -o ./frps.exe ./cmd/frps
 管理端健康检查：
 
 ```powershell
-curl http://127.0.0.1:7500/healthz
-curl http://127.0.0.1:7500/readyz
-curl http://127.0.0.1:7500/api/v1/healthz
+curl http://127.0.0.1:7080/healthz
+curl http://127.0.0.1:7080/readyz
+curl http://127.0.0.1:7080/api/v1/healthz
 ```
 
 如上配置使用 SQLite 时，数据库文件会落在 `data/frps.db`。如果切到 MySQL，则改为在 `data/config.json` 中配置 `database.type = "mysql"` 与 `database.dsn`。

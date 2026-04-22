@@ -97,7 +97,7 @@ frps/
 ### 5.1 监听端口
 
 - `control_listen_addr`：默认 `0.0.0.0:7000`
-- `management_listen_addr`：默认 `127.0.0.1:7500`
+- `management_listen_addr`：默认 `127.0.0.1:7080`
 - 动态 TCP/UDP 公网端口：由 `tunnels` 配置展开
 
 ### 5.2 管理认证
