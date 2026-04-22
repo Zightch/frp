@@ -72,6 +72,22 @@ python test/e2e_tcp_perf.py
 - 管理认证、分组 CRUD、token 重置、隧道 CRUD
 - 最小 TCP 健康压测
 
+### 2.3 Python 平台探针（免编译）
+
+用于快速验证 wildcard 绑定差异和 Linux 本机地址采集行为：
+
+```powershell
+python test/wildcard_bind_matrix.py --output test/tmp/wildcard-bind/windows.json
+wsl -d ubuntu -u root bash -lc "python3 /mnt/c/Users/Zightch/Desktop/Aicksaim/frp/test/wildcard_bind_matrix.py --output /mnt/c/Users/Zightch/Desktop/Aicksaim/frp/test/tmp/wildcard-bind/linux.json"
+wsl -d ubuntu -u root bash -lc "python3 /mnt/c/Users/Zightch/Desktop/Aicksaim/frp/test/linux_network_snapshot_probe.py --output /mnt/c/Users/Zightch/Desktop/Aicksaim/frp/test/tmp/wildcard-bind/linux-network-scan.json --expect-ip 192.168.8.2 --expect-ip 192.168.8.130"
+```
+
+说明：
+
+- `wildcard_bind_matrix.py` 会输出 TCP/UDP 的 `wildcard-wildcard`、`wildcard-specific`、IPv4/IPv6 组合第二次绑定是否成功。
+- `linux_network_snapshot_probe.py` 按 `frps/internal/system/network_collect.go` 的排序与去重规则产出 Linux 地址快照，并校验关键 IP 是否存在。
+- 两个脚本均为 Python，无需临时编译。
+
 ## 3. 当前手工调试入口
 
 ### 3.1 服务是否启动
