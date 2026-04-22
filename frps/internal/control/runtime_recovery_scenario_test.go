@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -142,6 +143,387 @@ func TestServerScenarioRecoversNonListeningTunnelAfterPollingSeesOccupancyGone(t
 	}
 	if !listenerWorldHasCall(recoveredState, listenKey, BindKindRuntimeProbe) || !listenerWorldHasCall(recoveredState, listenKey, BindKindRuntimeStart) {
 		t.Fatalf("expected polling recovery to probe then start listener, got %#v", recoveredState.Listeners)
+	}
+
+	assertHeartbeatStillWorks(t, clientConn)
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
+func TestServerScenarioDeduplicatesMatchingRefreshAndScanRecoveryPush(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	listenKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: uint16(freeTCPPort(t))}
+	repo := &scriptedRuntimeRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: "127.0.0.1",
+			TokenHash:   tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+			},
+		},
+	}
+	listenerFactory := NewScriptedListenerFactory()
+	server := NewServer(
+		Options{
+			Repository:      repo,
+			Network:         staticSnapshotReader{snapshot: localIPv4Snapshot("127.0.0.1")},
+			ListenerFactory: listenerFactory,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	if configPush.ConfigVersion != 1 || len(configPush.Tunnels) != 0 {
+		t.Fatalf("unexpected initial empty config.push: %#v", configPush)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	active, ok := server.activeSession(repo.group.ID)
+	if !ok || active == nil {
+		waitForActiveGroupSession(t, server, repo.group.ID)
+		active, ok = server.activeSession(repo.group.ID)
+	}
+	if !ok || active == nil {
+		t.Fatalf("active session for group %d not found", repo.group.ID)
+	}
+	waitForIdleConfig(t, active.session)
+
+	controller := testhooks.NewController()
+	controller.AddBarrier("control.config_push.before_write", 1)
+	restoreHooks := testhooks.Install(controller)
+	defer restoreHooks()
+
+	repo.SetGroup(GroupRuntime{
+		ID:          1,
+		Name:        "group-a",
+		Enabled:     true,
+		EffectiveIP: "127.0.0.1",
+		TokenHash:   tokenHash,
+		Snapshot: ConfigSnapshot{
+			Version:       2,
+			GeneratedAtMs: 200,
+			Tunnels: []protocol.TunnelEntry{
+				{
+					TunnelID:    7,
+					Protocol:    protocol.ProtocolTCP,
+					TunnelFlags: protocol.TunnelFlagEnabled,
+					RemoteStart: listenKey.Port,
+					RemoteEnd:   listenKey.Port,
+					LocalHost:   host,
+					LocalStart:  2200,
+					LocalEnd:    2200,
+				},
+			},
+		},
+	})
+
+	scanDone := make(chan error, 1)
+	go func() {
+		scanDone <- server.scanNonListeningTunnelRuntimeIssues(context.Background())
+	}()
+
+	pushHit := waitForTestHookHit(t, controller, "control.config_push.before_write", 1)
+	if got := pushHit.Fields["config_version"]; got != uint64(2) {
+		t.Fatalf("expected scan recovery to push version 2, got %#v", pushHit.Fields)
+	}
+	if got := pushHit.Fields["tunnel_count"]; got != 1 {
+		t.Fatalf("expected scan recovery to push one tunnel, got %#v", pushHit.Fields)
+	}
+
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		server.RefreshGroup(repo.group.ID)
+	}()
+
+	if !controller.Release("control.config_push.before_write", 1) {
+		t.Fatal("release config_push.before_write barrier failed")
+	}
+
+	recoveredFrame := readMessage(t, clientConn)
+	if recoveredFrame.Type != protocol.TypeConfigPush {
+		t.Fatalf("expected recovered config.push, got %s", recoveredFrame.Type.String())
+	}
+	recoveredPush, err := protocol.UnmarshalConfigPush(recoveredFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal recovered config.push: %v", err)
+	}
+	if recoveredPush.ConfigVersion != 2 || len(recoveredPush.Tunnels) != 1 {
+		t.Fatalf("unexpected recovered config.push: %#v", recoveredPush)
+	}
+
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not deduplicate against matching pending config")
+	}
+
+	writeConfigAck(t, clientConn, recoveredFrame.RequestID, recoveredPush.ConfigVersion)
+
+	select {
+	case err := <-scanDone:
+		if err != nil {
+			t.Fatalf("scan recovery failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("scan recovery did not complete")
+	}
+	waitForIdleConfig(t, active.session)
+
+	finalState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		return session != nil &&
+			session.Pending == nil &&
+			session.SnapshotVersion == 2 &&
+			session.LastAckedConfigVersion == 2 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModeRunning &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 1 &&
+			handleCountForPort(observed, listenKey) == 1
+	})
+
+	finalSession := requireObservedSession(t, finalState.Server, repo.group.ID)
+	if finalSession.Pending != nil || finalSession.SnapshotVersion != 2 || finalSession.LastAckedConfigVersion != 2 {
+		t.Fatalf("unexpected final session after deduplicated recovery: %#v", finalSession)
+	}
+	if hits := controller.Hits("control.config_push.before_write"); len(hits) != 1 {
+		t.Fatalf("expected exactly one recovery config.push, got %#v", hits)
+	}
+
+	if frame, err := readMessageWithin(clientConn, 200*time.Millisecond); err == nil {
+		t.Fatalf("expected no duplicate frame after deduplicated recovery, got %s", frame.Type.String())
+	} else if !isTimeoutError(err) {
+		t.Fatalf("expected idle connection after deduplicated recovery, got %v", err)
+	}
+
+	assertHeartbeatStillWorks(t, clientConn)
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
+func TestServerScenarioIgnoresStaleScanSnapshotAfterRefreshAdvancesVersion(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	oldHost, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+	newHost, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	oldListenKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: uint16(freeTCPPort(t))}
+	newListenKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: uint16(freeTCPPortExcept(t, int(oldListenKey.Port)))}
+	repo := &scriptedRuntimeRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: "127.0.0.1",
+			TokenHash:   tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+			},
+		},
+		listStarted: make(chan struct{}, 1),
+		allowList:   make(chan struct{}),
+	}
+	listenerFactory := NewScriptedListenerFactory()
+	server := NewServer(
+		Options{
+			Repository:      repo,
+			Network:         staticSnapshotReader{snapshot: localIPv4Snapshot("127.0.0.1")},
+			ListenerFactory: listenerFactory,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	if configPush.ConfigVersion != 1 || len(configPush.Tunnels) != 0 {
+		t.Fatalf("unexpected initial empty config.push: %#v", configPush)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	active, ok := server.activeSession(repo.group.ID)
+	if !ok || active == nil {
+		waitForActiveGroupSession(t, server, repo.group.ID)
+		active, ok = server.activeSession(repo.group.ID)
+	}
+	if !ok || active == nil {
+		t.Fatalf("active session for group %d not found", repo.group.ID)
+	}
+	waitForIdleConfig(t, active.session)
+
+	controller := testhooks.NewController()
+	restoreHooks := testhooks.Install(controller)
+	defer restoreHooks()
+
+	repo.SetGroup(GroupRuntime{
+		ID:          1,
+		Name:        "group-a",
+		Enabled:     true,
+		EffectiveIP: "127.0.0.1",
+		TokenHash:   tokenHash,
+		Snapshot: ConfigSnapshot{
+			Version:       2,
+			GeneratedAtMs: 200,
+			Tunnels: []protocol.TunnelEntry{
+				{
+					TunnelID:    7,
+					Protocol:    protocol.ProtocolTCP,
+					TunnelFlags: protocol.TunnelFlagEnabled,
+					RemoteStart: oldListenKey.Port,
+					RemoteEnd:   oldListenKey.Port,
+					LocalHost:   oldHost,
+					LocalStart:  2200,
+					LocalEnd:    2200,
+				},
+			},
+		},
+	})
+
+	scanDone := make(chan error, 1)
+	go func() {
+		scanDone <- server.scanNonListeningTunnelRuntimeIssues(context.Background())
+	}()
+
+	select {
+	case <-repo.listStarted:
+	case <-time.After(time.Second):
+		t.Fatal("scan did not reach repository list")
+	}
+
+	repo.SetGroup(GroupRuntime{
+		ID:          1,
+		Name:        "group-a",
+		Enabled:     true,
+		EffectiveIP: "127.0.0.1",
+		TokenHash:   tokenHash,
+		Snapshot: ConfigSnapshot{
+			Version:       3,
+			GeneratedAtMs: 300,
+			Tunnels: []protocol.TunnelEntry{
+				{
+					TunnelID:    8,
+					Protocol:    protocol.ProtocolTCP,
+					TunnelFlags: protocol.TunnelFlagEnabled,
+					RemoteStart: newListenKey.Port,
+					RemoteEnd:   newListenKey.Port,
+					LocalHost:   newHost,
+					LocalStart:  2300,
+					LocalEnd:    2300,
+				},
+			},
+		},
+	})
+
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		server.RefreshGroup(repo.group.ID)
+	}()
+
+	refreshedFrame := readMessage(t, clientConn)
+	if refreshedFrame.Type != protocol.TypeConfigPush {
+		t.Fatalf("expected refreshed config.push, got %s", refreshedFrame.Type.String())
+	}
+	refreshedPush, err := protocol.UnmarshalConfigPush(refreshedFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal refreshed config.push: %v", err)
+	}
+	if refreshedPush.ConfigVersion != 3 || len(refreshedPush.Tunnels) != 1 || refreshedPush.Tunnels[0].TunnelID != 8 {
+		t.Fatalf("expected refresh to advance directly to version 3, got %#v", refreshedPush)
+	}
+	writeConfigAck(t, clientConn, refreshedFrame.RequestID, refreshedPush.ConfigVersion)
+
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete")
+	}
+	waitForIdleConfig(t, active.session)
+
+	repo.ReleaseList()
+
+	select {
+	case err := <-scanDone:
+		if err != nil {
+			t.Fatalf("stale scan failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stale scan did not complete")
+	}
+
+	finalState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		return session != nil &&
+			session.Pending == nil &&
+			session.SnapshotVersion == 3 &&
+			session.LastAckedConfigVersion == 3 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModeRunning &&
+			countObservedListeners(observed.Server, repo.group.ID, 8) == 1 &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, newListenKey) == 1 &&
+			handleCountForPort(observed, oldListenKey) == 0
+	})
+
+	finalSession := requireObservedSession(t, finalState.Server, repo.group.ID)
+	if finalSession.SnapshotVersion != 3 || finalSession.LastAckedConfigVersion != 3 {
+		t.Fatalf("unexpected final session after stale scan: %#v", finalSession)
+	}
+	if hits := controller.Hits("control.config_push.before_write"); len(hits) != 1 {
+		t.Fatalf("expected only refresh to push config, got %#v", hits)
+	}
+
+	if frame, err := readMessageWithin(clientConn, 200*time.Millisecond); err == nil {
+		t.Fatalf("expected no stale config.push after refresh advanced snapshot, got %s", frame.Type.String())
+	} else if !isTimeoutError(err) {
+		t.Fatalf("expected idle connection after stale scan, got %v", err)
 	}
 
 	assertHeartbeatStillWorks(t, clientConn)
@@ -746,4 +1128,107 @@ func assertHeartbeatStillWorks(t *testing.T, clientConn net.Conn) {
 	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 3 {
 		t.Fatalf("unexpected heartbeat.pong: %#v", pongFrame)
 	}
+}
+
+type scriptedRuntimeRepository struct {
+	mu          sync.RWMutex
+	group       GroupRuntime
+	loadErr     error
+	listStarted chan struct{}
+	allowList   chan struct{}
+}
+
+func (r *scriptedRuntimeRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
+	if r.loadErr != nil {
+		return GroupRuntime{}, r.loadErr
+	}
+	return r.currentGroup(), nil
+}
+
+func (r *scriptedRuntimeRepository) LoadGroupRuntimeByID(_ context.Context, _ int64) (GroupRuntime, error) {
+	if r.loadErr != nil {
+		return GroupRuntime{}, r.loadErr
+	}
+	return r.currentGroup(), nil
+}
+
+func (r *scriptedRuntimeRepository) ListGroupRuntimes(ctx context.Context) ([]GroupRuntime, error) {
+	if r.loadErr != nil {
+		return nil, r.loadErr
+	}
+
+	group := r.currentGroup()
+	if r.listStarted != nil {
+		select {
+		case r.listStarted <- struct{}{}:
+		default:
+		}
+	}
+	if r.allowList != nil {
+		select {
+		case <-r.allowList:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return []GroupRuntime{group}, nil
+}
+
+func (r *scriptedRuntimeRepository) SetGroup(group GroupRuntime) {
+	if r == nil {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.group = cloneGroupRuntimeForTest(group)
+}
+
+func (r *scriptedRuntimeRepository) ReleaseList() {
+	if r == nil || r.allowList == nil {
+		return
+	}
+
+	select {
+	case <-r.allowList:
+	default:
+		close(r.allowList)
+	}
+}
+
+func (r *scriptedRuntimeRepository) currentGroup() GroupRuntime {
+	if r == nil {
+		return GroupRuntime{}
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return cloneGroupRuntimeForTest(r.group)
+}
+
+func cloneGroupRuntimeForTest(group GroupRuntime) GroupRuntime {
+	group.Snapshot = cloneConfigSnapshotForTest(group.Snapshot)
+	return group
+}
+
+func cloneConfigSnapshotForTest(snapshot ConfigSnapshot) ConfigSnapshot {
+	if len(snapshot.Tunnels) == 0 {
+		snapshot.Tunnels = nil
+		return snapshot
+	}
+
+	cloned := make([]protocol.TunnelEntry, len(snapshot.Tunnels))
+	for index, tunnel := range snapshot.Tunnels {
+		cloned[index] = tunnel
+		cloned[index].LocalHost = cloneHostForTest(tunnel.LocalHost)
+	}
+	snapshot.Tunnels = cloned
+	return snapshot
+}
+
+func cloneHostForTest(host protocol.Host) protocol.Host {
+	if host.IP != nil {
+		host.IP = append(net.IP(nil), host.IP...)
+	}
+	return host
 }

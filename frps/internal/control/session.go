@@ -321,6 +321,22 @@ func (s *sessionState) hasPendingConfig() bool {
 	return s.pendingConfigRequestID != 0
 }
 
+func (s *sessionState) refreshPendingConfig(group GroupRuntime, snapshot ConfigSnapshot) bool {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+
+	if s.pendingConfigRequestID == 0 {
+		return false
+	}
+	if !samePushedConfigSnapshot(s.pendingSnapshot, snapshot) {
+		return false
+	}
+
+	s.pendingGroup = group
+	s.pendingSnapshot = snapshot
+	return true
+}
+
 func (s *sessionState) freezeTunnelRuntime() ([]net.Listener, []UDPListener, map[uint32]*publicStream, []*publicUDPSession) {
 	s.runtimeIOMu.Lock()
 	defer s.runtimeIOMu.Unlock()

@@ -116,12 +116,18 @@ func (s *Server) RefreshGroup(groupID int64) {
 	}
 
 	snapshot := runtimeSnapshotForGroup(group)
-	if active.session.hasPendingConfig() {
-		s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
-		_ = active.conn.Close()
-		return
-	}
+	desiredSnapshot := snapshot
 	if emptySnapshot, effectiveIPErr, shrinkToEmpty := s.runtimeRefreshSnapshot(group, snapshot); shrinkToEmpty {
+		desiredSnapshot = emptySnapshot
+		if active.session.refreshPendingConfig(group, desiredSnapshot) {
+			s.logger.Info("deduplicating refresh against matching pending empty config", "group_id", groupID, "session_id", active.session.ID, "config_version", desiredSnapshot.Version)
+			return
+		}
+		if active.session.hasPendingConfig() {
+			s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
+			_ = active.conn.Close()
+			return
+		}
 		s.logger.Info(
 			"shrinking active group runtime to empty config after effective_ip became unavailable",
 			"group_id", groupID,
@@ -142,6 +148,15 @@ func (s *Server) RefreshGroup(groupID int64) {
 			s.logger.Warn("push empty config after effective_ip refresh failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
 			_ = active.conn.Close()
 		}
+		return
+	}
+	if active.session.refreshPendingConfig(group, desiredSnapshot) {
+		s.logger.Info("deduplicating refresh against matching pending config", "group_id", groupID, "session_id", active.session.ID, "config_version", desiredSnapshot.Version)
+		return
+	}
+	if active.session.hasPendingConfig() {
+		s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
+		_ = active.conn.Close()
 		return
 	}
 
@@ -237,6 +252,12 @@ func (s *Server) runtimeRefreshSnapshot(group GroupRuntime, snapshot ConfigSnaps
 func emptyConfigSnapshot(snapshot ConfigSnapshot) ConfigSnapshot {
 	snapshot.Tunnels = nil
 	return snapshot
+}
+
+func samePushedConfigSnapshot(current, next ConfigSnapshot) bool {
+	return current.Version == next.Version &&
+		current.GeneratedAtMs == next.GeneratedAtMs &&
+		sameRuntimeSnapshot(current, next)
 }
 
 func sameRuntimeSnapshot(current, next ConfigSnapshot) bool {

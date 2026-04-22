@@ -9,7 +9,6 @@
 子步骤：
 
 - 竞争窗口补齐：
-  - `RefreshGroup()` 与 `scanNonListeningTunnelRuntimeIssues()` 并发，验证不会双推 `config.push`、不会把新快照回退为旧快照。
   - 空配置下发与轮询恢复并发，验证必须先等空配置生效，再判断是否补推完整快照。
   - `config.push` A 未 ack 时又生成 `config.push` B，验证重复 ack、旧 ack 晚到、ack 乱序不会污染 listener 集合或 pending 状态。
   - `session#1` 被 `session#2` 接管后，旧 `config.ack` / `heartbeat` / `error` / `shutdown` 帧不得污染新 session。
@@ -36,4 +35,4 @@
 
 当前唯一下一步：
 
-- `RefreshGroup()` 与 `scanNonListeningTunnelRuntimeIssues()` 并发，验证不会双推 `config.push`、不会把新快照回退为旧快照。
+- 空配置下发与轮询恢复并发，验证必须先等空配置生效，再判断是否补推完整快照。
