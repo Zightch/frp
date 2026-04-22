@@ -5,6 +5,7 @@ import (
 	"net"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 func (s *Server) registerActiveSession(conn net.Conn, session *sessionState) {
@@ -133,6 +134,7 @@ func (s *Server) RefreshGroup(groupID int64) {
 			_ = active.conn.Close()
 			return
 		}
+		active.session.setRecoveryMode(testsupport.RecoveryModePendingEmptyConfig)
 		if err := s.pushReloadConfig(active.conn, active.session, group, emptySnapshot); err != nil {
 			if errors.Is(err, errConfigUpdateInFlight) {
 				s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
@@ -156,6 +158,7 @@ func (s *Server) RefreshGroup(groupID int64) {
 			"old_effective_ip", currentGroup.EffectiveIP,
 			"new_effective_ip", group.EffectiveIP,
 		)
+		active.session.setRecoveryMode(testsupport.RecoveryModeListenerRecovery)
 		if err := s.rebindGroupRuntime(active.conn, active.session, group); err != nil {
 			s.logger.Warn("rebind active group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
 			_ = active.conn.Close()
@@ -168,6 +171,7 @@ func (s *Server) RefreshGroup(groupID int64) {
 		_ = active.conn.Close()
 		return
 	}
+	active.session.setRecoveryMode(testsupport.RecoveryModePendingFullConfig)
 
 	if err := s.pushReloadConfig(active.conn, active.session, group, snapshot); err != nil {
 		if errors.Is(err, errConfigUpdateInFlight) {

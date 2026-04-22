@@ -342,6 +342,8 @@ type Snapshot struct {
 
 控制连接相关测试统一按“登录握手、`config.push/config.ack`、heartbeat、runtime close、session shutdown 共用同一套脚本化 transport/session harness”设计，避免一部分场景还在用真实 `net.Conn` + `net.Pipe` 撞时序，另一部分场景才 fake 消息顺序：
 
+- 当前状态：已可用（最小实现）；已落地共享 `FrameIO` seam、scripted frame transport / conn pair、基础 delay/drop/duplicate/error 规则，以及服务端/客户端读写路径接线。更复杂的跨进程控制接口、半关闭细节和旧连接残帧剧本仍待增强。
+
 - `frps/internal/control/server.go` 的 `readFrameWithTimeout()` / `writeFrame()`、`frps/internal/control/auth.go` 的登录握手、`frps/internal/control/config.go` 的 `pushReloadConfig()` / `handleConfigAck()`，以及 `frpc/internal/client/client.go` 的 `readMessage()` / `writeMessage()`、`frpc/internal/client/login.go` 的 `login()`、`frpc/internal/client/session.go` 的 `readLoop()` / `heartbeatLoop()`，后续都必须继续通过同一条“frame 级”传输 seam 交互。
 - 第一版目标不是把整个 TCP/IP 栈 fake 掉，而是稳定控制“哪一帧什么时候写出、什么时候被对端读到、是否被丢弃/延迟/重复/重排、连接何时半关闭或全关闭、旧连接残帧是否仍尝试到达”。
 - 只有把故障注入放在 frame transport / session harness 这一层，才能同时覆盖首登 `config.push`、热更新 `config.push`、`config.ack`、heartbeat、`stream.close` / `udp.close`、session replacement 和晚到错误回包；若只在 `handleConfigAck()` 或 `applyConfigPush()` 上层做 stub，会绕过真实 requestId、streamId、session 交接和写锁语义。
@@ -482,6 +484,8 @@ type FrameEvent struct {
 
 状态观测相关测试后续统一按“业务状态快照 + 注入层状态快照 + 启停门闩状态”三层收口，避免测试继续通过日志、私有字段临时 helper、或 fake 侧反推业务结论：
 
+- 当前状态：已可用（最小实现）；`frps` server / app / network snapshot、`frpc` client、fake listener、fake transport 都已提供结构化 `ObserveState()` 出口，场景层可聚合成统一快照。跨端总快照自动聚合和更细粒度消费者视角仍待增强。
+
 - 业务状态快照负责回答“`frps` / `frpc` 当前认为系统处于什么状态”，例如当前 listener 集合、active session、pending config、已生效 snapshot、空配置保活状态。
 - 注入层状态快照负责回答“fake listener / fake snapshot / fake transport 当前制造了什么外部世界和消息世界”，例如端口占用脚本、快照轮次、延迟 frame 队列。
 - 启停门闩状态负责回答“哪些外部可见入口已经被放行”，例如首轮扫描是否完成、控制端口是否已开放、管理 API 是否已首次可见。
@@ -599,6 +603,8 @@ type ObservedState struct {
 
 不变量断言相关测试后续统一按“直接消费结构化状态快照，不从日志和端口旁证反推业务结论”收口，避免测试断言本身又退回非确定性：
 
+- 当前状态：已可用（最小实现）；已提供启动门闩、single pending config、静态 `冲突` 优先级、空配置恢复顺序、旧 session 隔离等 helper，并已有最小单测覆盖。更丰富的 diff 输出与规则矩阵仍待扩展。
+
 - 断言 helper 必须直接读取上一节状态观测骨架导出的 `ObservedState` 或等价不可变快照，不能自己重新扫描 listener、重跑冲突判定、重算 session 归属。
 - 日志只能作为失败时的补充线索，不能作为主断言输入；日志存在丢行、异步刷新、语义漂移问题，无法稳定支撑竞争态测试。
 - 端口探活、HTTP 首次可见性探测、真实连接拨测也只能作为补充旁证，不能代替状态断言；这些方法会把测试结果重新绑回 OS 调度、网络栈和机器速度。
@@ -681,6 +687,8 @@ type InvariantViolation struct {
 ## 10. 场景编排基座
 
 场景编排相关测试后续统一按“统一脚本模型 + 显式 barrier 放行 + 显式快照采样 + 显式失败输出”收口，避免每个测试各自手搓 goroutine、channel、`sleep` 和临时 helper：
+
+- 当前状态：已可用（最小实现）；`frps/internal/testsupport` 已提供 step runner、trace、显式 barrier/clock/observe/assert 编排骨架和最小单测。跨进程 actor、联合 listener/snapshot/transport 注入动作仍待继续补齐。
 
 - 场景编排器的职责不是替代 hook、manual scheduler、fake listener、fake snapshot、fake transport，而是把这些底层能力组织成一套稳定的剧本执行框架。
 - 每个场景都必须能明确表达：
@@ -841,10 +849,10 @@ type ScenarioStep struct {
 | 手动时间推进 | 轮询、heartbeat、backoff、超时、网络快照刷新 | 未监听 tunnel 轮询恢复、热更新恢复、断线重连 | manual clock、manual scheduler、场景编排器 | 已可用（最小实现） | `runtime scan` 与 `network snapshot` 已接入；`frpc` backoff/heartbeat 与更多 `time.*` 路径仍待切 seam |
 | listener 绑定世界 | bind 失败、probe 失败、close 晚到、外部占用、部分端口失败、释放后复占 | 首轮冲突、后续恢复、局部补 listener、close/rebind 竞态 | fake listener、hook、状态观测 | 已可用（最小实现） | `start/probe/close` 已统一走 seam；close 延迟释放、部分 range 脚本与真实 accept/read 数据面仍未覆盖 |
 | 网络快照世界 | 非法 IP、非本机 IP、地址族变化、快照抖动、采集错误、发布延迟 | 首登非法 `effective_ip`、运行时空配置保活、恢复补推完整快照 | fake snapshot、hook、manual scheduler、状态观测 | 已可用（最小实现） | fake collector / reader 与手动轮询已落地；发布版本号、消费侧统一观测和更复杂抖动剧本仍待补齐 |
-| 控制连接世界 | `config.push` 前后断线、`config.ack` 晚到/重复/乱序、heartbeat 丢失/晚到、半关闭、旧连接残帧 | 热更新、session replacement、旧 session 晚到消息隔离 | fake transport、session harness、hook、manual scheduler | 已定稿待实现 | 仍缺跨进程版 transport 控制接口 |
-| 统一状态观测 | active session、pending config、listener 集合、runtime issue、恢复模式、管理 API 门闩 | 所有主线场景 | 观测骨架、场景编排器 | 已定稿待实现 | 仍需统一导出跨端快照 |
-| 不变量断言 | 启动门闩、单 pending、静态 `冲突` 优先级、空配置恢复顺序、旧 session 隔离 | 所有进入矩阵的正式场景 | 断言库、观测骨架 | 已定稿待实现 | 仍需补步骤化快照输入 |
-| 场景编排 | 多 actor 交错、显式 barrier、显式采样、显式失败定位 | 双 session、双进程、外部占用、连续配置变更 | 场景编排器、上述全部 seam | 已定稿待实现 | 仍缺统一脚本执行器 |
+| 控制连接世界 | `config.push` 前后断线、`config.ack` 晚到/重复/乱序、heartbeat 丢失/晚到、半关闭、旧连接残帧 | 热更新、session replacement、旧 session 晚到消息隔离 | fake transport、session harness、hook、manual scheduler | 已可用（最小实现） | 已有共享 `FrameIO` seam、scripted conn pair 与基础规则注入；跨进程控制接口、半关闭/残帧更复杂剧本仍待增强 |
+| 统一状态观测 | active session、pending config、listener 集合、runtime issue、恢复模式、管理 API 门闩 | 所有主线场景 | 观测骨架、场景编排器 | 已可用（最小实现） | `frps` / `frpc` / listener fake / transport fake 已提供结构化观测；跨端总快照自动聚合仍待补齐 |
+| 不变量断言 | 启动门闩、单 pending、静态 `冲突` 优先级、空配置恢复顺序、旧 session 隔离 | 所有进入矩阵的正式场景 | 断言库、观测骨架 | 已可用（最小实现） | 已有核心 helper 和最小单测；更丰富的 diff 输出、更多恢复/竞争态规则仍待补齐 |
+| 场景编排 | 多 actor 交错、显式 barrier、显式采样、显式失败定位 | 双 session、双进程、外部占用、连续配置变更 | 场景编排器、上述全部 seam | 已可用（最小实现） | 已有 step runner 与 trace 骨架；跨进程 actor、联合注入动作和脚本原语仍待扩展 |
 
 在上述能力之外，当前还必须额外标出“已知不可测或暂不可稳定制造”的空白区，避免误判已经覆盖：
 

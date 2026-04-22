@@ -13,6 +13,7 @@ import (
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 type tcpTunnelListener struct {
@@ -104,6 +105,7 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 			session.runtimeGeneration = 0
 		}
 		session.runtimeMu.Unlock()
+		session.setRecoveryMode(testsupport.RecoveryModeEmptyConfig)
 		return nil
 	}
 
@@ -119,6 +121,9 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 		}
 	}
 	if len(targetTunnels) == 0 {
+		if session.hasActiveRuntimeListeners() {
+			session.setRecoveryMode(testsupport.RecoveryModeRunning)
+		}
 		return nil
 	}
 
@@ -183,6 +188,9 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 			go s.serveUDPTunnelListener(conn, logger, session, runtime.configVersion, runtime.tunnel, runtime.remotePort, runtime.listener)
 		}
 		s.recordTunnelRuntimeIssue(tunnel.TunnelID, "")
+	}
+	if session.hasActiveRuntimeListeners() {
+		session.setRecoveryMode(testsupport.RecoveryModeRunning)
 	}
 	return nil
 }

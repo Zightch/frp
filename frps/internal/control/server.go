@@ -41,6 +41,7 @@ type Options struct {
 	Clock             clock.Clock
 	Scheduler         clock.Scheduler
 	ListenerFactory   ListenerFactory
+	FrameIO           transport.FrameIO
 }
 
 type Server struct {
@@ -52,11 +53,13 @@ type Server struct {
 	clock     clock.Clock
 	scheduler clock.Scheduler
 	listeners ListenerFactory
+	frames    transport.FrameIO
 
-	mu         sync.Mutex
-	listener   net.Listener
-	activeConn map[net.Conn]struct{}
-	sessions   map[int64]*activeSession
+	mu                  sync.Mutex
+	listener            net.Listener
+	controlListenerOpen bool
+	activeConn          map[net.Conn]struct{}
+	sessions            map[int64]*activeSession
 	// tunnelRuntimeIssues stores the latest listener-start failure observed for a tunnel.
 	tunnelRuntimeIssues map[int64]string
 	// groupSlots tracks the occupied single client slot for each proxy group.
@@ -111,6 +114,9 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 	if options.ListenerFactory == nil {
 		options.ListenerFactory = NewNetListenerFactory()
 	}
+	if options.FrameIO == nil {
+		options.FrameIO = transport.RealFrameIO{}
+	}
 
 	return &Server{
 		options:             options,
@@ -121,6 +127,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		clock:               options.Clock,
 		scheduler:           options.Scheduler,
 		listeners:           options.ListenerFactory,
+		frames:              options.FrameIO,
 		activeConn:          make(map[net.Conn]struct{}),
 		sessions:            make(map[int64]*activeSession),
 		tunnelRuntimeIssues: make(map[int64]string),
@@ -188,6 +195,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.listener = listener
+	s.controlListenerOpen = true
 	s.mu.Unlock()
 
 	testhooks.Point("startup.control_listener.after_open", testhooks.F("addr", s.options.Addr))
@@ -213,6 +221,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		listener := s.listener
+		s.controlListenerOpen = false
 		activeConn := make([]net.Conn, 0, len(s.activeConn))
 		for conn := range s.activeConn {
 			activeConn = append(activeConn, conn)
@@ -315,7 +324,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 func (s *Server) runSession(conn net.Conn, logger *slog.Logger, session *sessionState) error {
 	for {
-		frame, err := s.readFrameWithTimeout(conn, session.readTimeout)
+		frame, err := s.readFrameWithSessionTimeout(conn, session, session.readTimeout)
 		if err != nil {
 			return s.replyProtocolErrorWithSession(conn, session, frame, err)
 		}
@@ -395,7 +404,15 @@ func (s *Server) readFrame(conn net.Conn) (protocol.Frame, error) {
 }
 
 func (s *Server) readFrameWithTimeout(conn net.Conn, timeout time.Duration) (protocol.Frame, error) {
-	frameBytes, err := transport.ReadFrame(conn, timeout)
+	frameBytes, err := s.frames.ReadFrame(conn, timeout, s.frameContext(conn, nil))
+	if err != nil {
+		return protocol.Frame{}, err
+	}
+	return protocol.ParseFrame(frameBytes)
+}
+
+func (s *Server) readFrameWithSessionTimeout(conn net.Conn, session *sessionState, timeout time.Duration) (protocol.Frame, error) {
+	frameBytes, err := s.frames.ReadFrame(conn, timeout, s.frameContext(conn, session))
 	if err != nil {
 		return protocol.Frame{}, err
 	}
@@ -403,11 +420,27 @@ func (s *Server) readFrameWithTimeout(conn net.Conn, timeout time.Duration) (pro
 }
 
 func (s *Server) writeFrame(conn net.Conn, frame protocol.Frame) error {
+	return s.writeFrameWithContext(conn, frame, s.frameContext(conn, nil))
+}
+
+func (s *Server) writeFrameWithContext(conn net.Conn, frame protocol.Frame, frameContext transport.FrameContext) error {
 	frameBytes, err := frame.MarshalBinary()
 	if err != nil {
 		return err
 	}
-	return transport.WriteFrame(conn, frameBytes, s.options.WriteTimeout)
+	return s.frames.WriteFrame(conn, frameBytes, s.options.WriteTimeout, frameContext)
+}
+
+func (s *Server) frameContext(conn net.Conn, session *sessionState) transport.FrameContext {
+	frameContext := transport.FrameContext{
+		Side:   transport.FrameSideServer,
+		ConnID: transport.ConnectionID(conn),
+	}
+	if session != nil {
+		frameContext.GroupID = session.Group.ID
+		frameContext.SessionID = session.ID
+	}
+	return frameContext
 }
 
 func (s *Server) replyProtocolError(conn net.Conn, frame protocol.Frame, err error) error {

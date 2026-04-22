@@ -11,6 +11,7 @@ import (
 	"github.com/zightch/frp/frps/internal/ports"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 func (s *Server) startRuntimeIssuePolling(parent context.Context) {
@@ -156,6 +157,7 @@ func (s *Server) recoverScannedActiveSessionTunnels(group GroupRuntime, targetTu
 		if !hasRecoverableScannedTunnels(targetTunnels, staticConflictIDs, issues) {
 			return nil
 		}
+		active.session.setRecoveryMode(testsupport.RecoveryModeListenerRecovery)
 		return s.ensureTunnelListeners(active.conn, logger, active.session)
 	}
 	if !shouldRecoverScannedActiveSessionConfig(currentSnapshot, group.Snapshot) {
@@ -169,6 +171,7 @@ func (s *Server) recoverScannedActiveSessionTunnels(group GroupRuntime, targetTu
 		"config_version", group.Snapshot.Version,
 		"tunnel_count", len(group.Snapshot.Tunnels),
 	)
+	active.session.setRecoveryMode(testsupport.RecoveryModePendingFullConfig)
 	return s.pushReloadConfig(active.conn, active.session, group, group.Snapshot)
 }
 

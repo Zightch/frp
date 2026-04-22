@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 type sessionState struct {
@@ -22,9 +23,13 @@ type sessionState struct {
 	lastAckedConfigVersion atomic.Uint64
 	activeStreams          atomic.Uint32
 	activeUDPSessions      atomic.Uint32
+	sessionID              uint64
+	connID                 string
+	recoveryMode           testsupport.RecoveryMode
 
 	snapshotMu sync.RWMutex
 	snapshot   protocol.ConfigPush
+	lastReload configReloadSummary
 
 	streamMu sync.Mutex
 	streams  map[uint32]*localStream
@@ -92,7 +97,10 @@ func (s *sessionState) applyReloadedSnapshot(snapshot protocol.ConfigPush) confi
 	summary := summarizeConfigReload(previous, snapshot)
 	summary.closedStreams = s.closeAllStreams()
 	summary.closedUDPSessions = s.closeAllUDPSessions()
-	s.setSnapshot(snapshot)
+	s.snapshotMu.Lock()
+	s.lastReload = summary
+	s.snapshot = snapshot
+	s.snapshotMu.Unlock()
 	return summary
 }
 
@@ -161,7 +169,7 @@ func hostAddr(host protocol.Host) (netip.Addr, bool) {
 
 func (c *Client) readLoop(ctx context.Context, conn net.Conn, state *sessionState) error {
 	for {
-		frame, err := c.readMessage(conn, state.readTimeout)
+		frame, err := c.readMessageWithState(conn, state, state.readTimeout)
 		if err != nil {
 			return err
 		}
@@ -231,7 +239,7 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn net.Conn, state *sessio
 			if err != nil {
 				return err
 			}
-			if err := c.writeMessage(conn, &state.writeMu, protocol.Frame{
+			if err := c.writeMessageWithState(conn, state, &state.writeMu, protocol.Frame{
 				Type:      protocol.TypeHeartbeatPing,
 				RequestID: state.nextClientRequestID(),
 				Body:      body,
@@ -239,5 +247,43 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn net.Conn, state *sessio
 				return err
 			}
 		}
+	}
+}
+
+func (s *sessionState) setIdentity(sessionID uint64, connID string) {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+	s.sessionID = sessionID
+	s.connID = connID
+}
+
+func (s *sessionState) setRecoveryMode(mode testsupport.RecoveryMode) {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+	s.recoveryMode = mode
+}
+
+func (s *sessionState) observeState(attempt uint64) testsupport.ClientObservedState {
+	s.snapshotMu.RLock()
+	defer s.snapshotMu.RUnlock()
+	return testsupport.ClientObservedState{
+		Attempt:                attempt,
+		ConnID:                 s.connID,
+		SessionID:              s.sessionID,
+		SnapshotVersion:        s.snapshot.ConfigVersion,
+		SnapshotGeneratedAtMs:  s.snapshot.GeneratedAtMs,
+		SnapshotTunnelCount:    len(s.snapshot.Tunnels),
+		LastAckedConfigVersion: s.lastAckedConfigVersion.Load(),
+		ActiveStreams:          s.activeStreams.Load(),
+		ActiveUDPSessions:      s.activeUDPSessions.Load(),
+		RecoveryMode:           s.recoveryMode,
+		LastReload: testsupport.ReloadSummaryObservedState{
+			AddedTunnels:      s.lastReload.addedTunnels,
+			RemovedTunnels:    s.lastReload.removedTunnels,
+			ReplacedTunnels:   s.lastReload.replacedTunnels,
+			UnchangedTunnels:  s.lastReload.unchangedTunnels,
+			ClosedStreams:     s.lastReload.closedStreams,
+			ClosedUDPSessions: s.lastReload.closedUDPSessions,
+		},
 	}
 }

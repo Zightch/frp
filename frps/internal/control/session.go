@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 const initialServerRequestID = uint32(1 << 31)
@@ -39,6 +40,7 @@ type sessionState struct {
 	udpCleanupStarted bool
 	runtimeFrozen     bool
 	runtimeGeneration uint64
+	recoveryMode      testsupport.RecoveryMode
 	shutdownOnce      sync.Once
 	done              chan struct{}
 }
@@ -229,6 +231,18 @@ func (s *sessionState) currentGroupAndSnapshot() (GroupRuntime, ConfigSnapshot) 
 	return s.Group, s.Snapshot
 }
 
+func (s *sessionState) setRecoveryMode(mode testsupport.RecoveryMode) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	s.recoveryMode = mode
+}
+
+func (s *sessionState) recoveryModeValue() testsupport.RecoveryMode {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	return s.recoveryMode
+}
+
 func (s *sessionState) currentGroup() GroupRuntime {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
@@ -370,14 +384,14 @@ func (s *Server) shutdownSession(session *sessionState) {
 func (s *Server) writeFrameWithSession(conn net.Conn, session *sessionState, frame protocol.Frame) error {
 	session.writeMu.Lock()
 	defer session.writeMu.Unlock()
-	return s.writeFrame(conn, frame)
+	return s.writeFrameWithContext(conn, frame, s.frameContext(conn, session))
 }
 
 func (s *Server) writeFramesWithSession(conn net.Conn, session *sessionState, frames ...protocol.Frame) error {
 	session.writeMu.Lock()
 	defer session.writeMu.Unlock()
 	for _, frame := range frames {
-		if err := s.writeFrame(conn, frame); err != nil {
+		if err := s.writeFrameWithContext(conn, frame, s.frameContext(conn, session)); err != nil {
 			return err
 		}
 	}
@@ -389,7 +403,7 @@ func (s *Server) writeRuntimeFrameWithSession(conn net.Conn, session *sessionSta
 		return errRuntimeIOStopped
 	}
 	defer session.unlockRuntimeIOWrite()
-	return s.writeFrame(conn, frame)
+	return s.writeFrameWithContext(conn, frame, s.frameContext(conn, session))
 }
 
 func (s *Server) writeRuntimeFramesWithSession(conn net.Conn, session *sessionState, configVersion uint64, frames ...protocol.Frame) error {
@@ -398,7 +412,7 @@ func (s *Server) writeRuntimeFramesWithSession(conn net.Conn, session *sessionSt
 	}
 	defer session.unlockRuntimeIOWrite()
 	for _, frame := range frames {
-		if err := s.writeFrame(conn, frame); err != nil {
+		if err := s.writeFrameWithContext(conn, frame, s.frameContext(conn, session)); err != nil {
 			return err
 		}
 	}

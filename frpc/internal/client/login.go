@@ -7,6 +7,7 @@ import (
 
 	appconfig "github.com/zightch/frp/frpc/internal/config"
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/transport"
 )
 
 func (c *Client) login(conn net.Conn, token appconfig.Token) (*sessionState, error) {
@@ -71,6 +72,7 @@ func (c *Client) login(conn net.Conn, token appconfig.Token) (*sessionState, err
 		return nil, err
 	}
 	state := newSessionState(hello.HeartbeatIntervalMs)
+	state.setIdentity(hello.SessionID, transport.ConnectionID(conn))
 
 	frame, err = c.readLoginFrame(conn)
 	if err != nil {

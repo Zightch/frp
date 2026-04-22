@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/zightch/frp/frps/internal/testhooks"
+	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 type UDPListener interface {
@@ -155,6 +156,56 @@ func (f *ScriptedListenerFactory) Calls() []ListenerCall {
 	cloned := make([]ListenerCall, len(f.calls))
 	copy(cloned, f.calls)
 	return cloned
+}
+
+func (f *ScriptedListenerFactory) ObserveState() testsupport.ListenerWorldObservedState {
+	if f == nil {
+		return testsupport.ListenerWorldObservedState{}
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	state := testsupport.ListenerWorldObservedState{}
+	if len(f.externalOwners) > 0 {
+		state.Occupied = make([]testsupport.ListenerOccupancyObservedState, 0, len(f.externalOwners))
+		for key := range f.externalOwners {
+			state.Occupied = append(state.Occupied, testsupport.ListenerOccupancyObservedState{
+				Protocol: key.Protocol,
+				IP:       key.IP,
+				Port:     key.Port,
+				Owner:    "external",
+			})
+		}
+	}
+	if len(f.handles) > 0 {
+		state.Handles = make([]testsupport.ListenerHandleObservedState, 0, len(f.handles))
+		for key, count := range f.handles {
+			state.Handles = append(state.Handles, testsupport.ListenerHandleObservedState{
+				Protocol: key.Protocol,
+				IP:       key.IP,
+				Port:     key.Port,
+				Count:    count,
+			})
+		}
+	}
+	if len(f.calls) > 0 {
+		state.Calls = make([]testsupport.ListenerCallObservedState, len(f.calls))
+		for index, call := range f.calls {
+			state.Calls[index] = testsupport.ListenerCallObservedState{
+				Sequence:      call.Sequence,
+				Op:            call.Op,
+				GroupID:       call.Bind.GroupID,
+				TunnelID:      call.Bind.TunnelID,
+				ConfigVersion: call.Bind.ConfigVersion,
+				Kind:          string(call.Bind.Kind),
+				Protocol:      call.Bind.Key.Protocol,
+				IP:            call.Bind.Key.IP,
+				Port:          call.Bind.Key.Port,
+			}
+		}
+	}
+	return state
 }
 
 func (f *ScriptedListenerFactory) beforeResolve(op string, bind ListenerBind) error {

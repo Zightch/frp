@@ -9,6 +9,7 @@ import (
 
 	"github.com/zightch/frp/frps/internal/clock"
 	"github.com/zightch/frp/frps/internal/testhooks"
+	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 const defaultPollInterval = 5 * time.Second
@@ -77,6 +78,10 @@ type NetworkSnapshotService struct {
 	snapshot Snapshot
 	started  bool
 	cancel   context.CancelFunc
+	version  uint64
+
+	lastCollectSucceeded bool
+	lastCollectError     string
 
 	wg sync.WaitGroup
 }
@@ -136,6 +141,9 @@ func (s *NetworkSnapshotService) Start(parent context.Context) error {
 	s.snapshot = cloneSnapshot(initialSnapshot)
 	s.started = true
 	s.cancel = cancel
+	s.version++
+	s.lastCollectSucceeded = true
+	s.lastCollectError = ""
 	s.mu.Unlock()
 
 	s.logger.Info(
@@ -200,6 +208,10 @@ func (s *NetworkSnapshotService) pollOnce(ctx context.Context) {
 	testhooks.Point("network.snapshot.poll.before_collect")
 	snapshot, err := s.collector.Collect()
 	if err != nil {
+		s.mu.Lock()
+		s.lastCollectSucceeded = false
+		s.lastCollectError = err.Error()
+		s.mu.Unlock()
 		s.logger.Warn(
 			"refresh local network snapshot failed",
 			"platform", s.collector.Platform(),
@@ -225,12 +237,38 @@ func (s *NetworkSnapshotService) storeSnapshot(next Snapshot) bool {
 
 	changed := !sameSnapshotContent(s.snapshot, next)
 	s.snapshot = cloneSnapshot(next)
+	s.version++
+	s.lastCollectSucceeded = true
+	s.lastCollectError = ""
 	testhooks.Point(
 		"network.snapshot.poll.after_store",
 		testhooks.F("changed", changed),
 		testhooks.F("address_count", len(next.AvailableIPs)),
 	)
 	return changed
+}
+
+func (s *NetworkSnapshotService) ObserveState() testsupport.SnapshotObservedState {
+	if s == nil {
+		return testsupport.SnapshotObservedState{}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state := testsupport.SnapshotObservedState{
+		Started:              s.started,
+		Version:              s.version,
+		LastCollectSucceeded: s.lastCollectSucceeded,
+		LastCollectError:     s.lastCollectError,
+		CapturedAt:           s.snapshot.CapturedAt,
+	}
+	if len(s.snapshot.AvailableIPs) > 0 {
+		state.AvailableIPs = make([]string, len(s.snapshot.AvailableIPs))
+		for index, ip := range s.snapshot.AvailableIPs {
+			state.AvailableIPs[index] = ip.Addr
+		}
+	}
+	return state
 }
 
 func cloneSnapshot(src Snapshot) Snapshot {

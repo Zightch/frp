@@ -7,7 +7,9 @@ import (
 	"net"
 	"strings"
 
+	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 var (
@@ -61,6 +63,13 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeProtocolBadBody, "unsupported config.ack status %d", ack.Status)
 	}
 
+	testhooks.Point(
+		"control.config_ack.before_accept",
+		testhooks.F("group_id", session.Group.ID),
+		testhooks.F("session_id", session.ID),
+		testhooks.F("request_id", frame.RequestID),
+		testhooks.F("config_version", ack.ConfigVersion),
+	)
 	if err := session.acceptConfigAck(frame.RequestID, ack.ConfigVersion); err != nil {
 		switch {
 		case errors.Is(err, errUnexpectedConfigAck):
@@ -80,7 +89,19 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 			return err
 		}
 	}
+	testhooks.Point(
+		"control.config_ack.after_accept",
+		testhooks.F("group_id", session.Group.ID),
+		testhooks.F("session_id", session.ID),
+		testhooks.F("request_id", frame.RequestID),
+		testhooks.F("config_version", ack.ConfigVersion),
+	)
 	logger.Info("config acknowledged", "config_version", ack.ConfigVersion, "applied_at_ms", ack.AppliedAtMs)
+	if len(session.Snapshot.Tunnels) == 0 {
+		session.setRecoveryMode(testsupport.RecoveryModeEmptyConfig)
+	} else {
+		session.setRecoveryMode(testsupport.RecoveryModeRunning)
+	}
 	session.allowTunnelRuntimeStart()
 	if err := s.ensureTunnelListeners(conn, logger, session); err != nil {
 		if isInitialStartup {
@@ -132,6 +153,19 @@ func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group Gr
 	if err := session.reconfigure(group, snapshot, requestID); err != nil {
 		return err
 	}
+	if len(snapshot.Tunnels) == 0 {
+		session.setRecoveryMode(testsupport.RecoveryModePendingEmptyConfig)
+	} else {
+		session.setRecoveryMode(testsupport.RecoveryModePendingFullConfig)
+	}
+	testhooks.Point(
+		"control.config_push.before_write",
+		testhooks.F("group_id", group.ID),
+		testhooks.F("session_id", session.ID),
+		testhooks.F("request_id", requestID),
+		testhooks.F("config_version", snapshot.Version),
+		testhooks.F("tunnel_count", len(snapshot.Tunnels)),
+	)
 	if err := s.writeFrameWithSession(conn, session, protocol.Frame{
 		Type:      protocol.TypeConfigPush,
 		RequestID: requestID,
@@ -140,5 +174,13 @@ func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group Gr
 		session.clearPendingConfigRequest(requestID)
 		return err
 	}
+	testhooks.Point(
+		"control.config_push.after_write",
+		testhooks.F("group_id", group.ID),
+		testhooks.F("session_id", session.ID),
+		testhooks.F("request_id", requestID),
+		testhooks.F("config_version", snapshot.Version),
+		testhooks.F("tunnel_count", len(snapshot.Tunnels)),
+	)
 	return nil
 }

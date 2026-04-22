@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	authn "github.com/zightch/frp/frps/internal/auth"
@@ -43,6 +44,9 @@ type Server struct {
 	auth      *authn.Manager
 	manager   *managementService
 	webui     http.Handler
+
+	mu      sync.RWMutex
+	visible bool
 }
 
 func NewServer(options Options, logger *slog.Logger, version string) (*Server, error) {
@@ -104,6 +108,9 @@ func (s *Server) ListenAndServe() error {
 		return err
 	}
 	s.logger.Info("management api listening", "addr", s.server.Addr)
+	s.mu.Lock()
+	s.visible = true
+	s.mu.Unlock()
 	testhooks.Point("startup.management_api.after_open", testhooks.F("addr", s.server.Addr))
 	err = s.server.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
@@ -113,7 +120,19 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	s.visible = false
+	s.mu.Unlock()
 	return s.server.Shutdown(ctx)
+}
+
+func (s *Server) Visible() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.visible
 }
 
 func (s *Server) handleHealth(writer http.ResponseWriter, request *http.Request) {
