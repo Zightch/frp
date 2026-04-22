@@ -103,6 +103,49 @@ wsl -d ubuntu -u root bash -lc "python3 /mnt/c/Users/Zightch/Desktop/Aicksaim/fr
 - 可控注入：listener/bind、网络快照、传输层、session 行为要能脚本化制造占用、释放、断线、重连、重复 ack、晚到 ack、乱序 ack、地址抖动等场景。
 - 不变量断言：优先断言状态机结果；对当前端口冲突与热更新链路，至少包括“首轮扫描完成前不可登录”“任一时刻最多一个有效 pending config”“旧 session 晚到消息不能污染新 session”“静态 `冲突` 优先于 runtime `异常`”“空配置恢复必须先补推完整快照再恢复 listener”。
 
+### 2.4.1 测试钩子骨架
+
+测试钩子统一按“业务代码只打点，测试代码才装控制器”的方式设计：
+
+- `frps` / `frpc` 各自提供同形态的 `internal/testhooks` 包，业务路径只允许调用稳定的打点函数，例如 `testhooks.Point(...)`，不允许在业务代码里直接操作 channel、`testing.T` 或测试专用状态。
+- 默认构建使用 `//go:build !testhooks` 的空实现；该实现只保留可内联的 no-op 打点函数，不提供注册、等待、放行、枚举命中点等测试控制 API，保证生产构建默认零开销且不可误用。
+- 需要确定性编排的测试统一使用 `go test -tags testhooks`；只有在 `//go:build testhooks` 下才编译真实控制器、barrier、命中记录和测试 helper。
+- hook 点命名必须稳定，按“模块.路径.阶段”组织，例如 `startup.initial_scan.after_full_scan`、`control.config_push.before_write`、`control.config_ack.after_accept`、`session.listener.before_bind`；测试依赖 hook 名，不直接依赖具体函数名和行号。
+- hook payload 只允许传不可变快照字段，例如 `groupID`、`tunnelID`、`sessionID`、`requestID`、`configVersion`、`listenerKey`、`scanRound`；禁止把内部 map、slice 指针或需额外加锁的运行态对象直接暴露给 hook，避免新引入数据竞争。
+
+barrier 语义统一为“双边握手 + 明确放行”：
+
+- 代码命中 hook 时先向控制器登记一次 `hit`，记录 point、序号和 payload。
+- 若当前 point 没有注册 barrier，则立即返回，不能改变业务时序。
+- 若当前 point 注册了 barrier，则在登记命中后阻塞，直到测试显式 `Release()`；测试侧必须先收到“已到达”信号，再决定是否触发另一条并发路径和何时放行。
+- 同一 hook 点必须支持按第 `N` 次命中区分，避免轮询、多 session 或重试场景只能“卡住第一次”。
+- 若测试结束时仍有未放行 barrier、未消费命中或出现未声明的关键命中，控制器应直接让测试失败，不能静默吞掉。
+
+第一版作用域按“进程级单活控制器”收口：
+
+- hook 控制器不沿业务函数签名层层传递，避免把测试依赖扩散到生产接口；第一版直接用进程级单活 controller，由测试在 `Setup` 时安装，在 `Cleanup` 时卸载。
+- 使用该基建的单测默认不跑 `t.Parallel()`；需要多套并发剧本同时执行时，改走子进程级 e2e/harness，而不是在同一进程里并行安装两套 hook 控制器。
+- `frps` 与 `frpc` 的 hook 控制器 API 保持同形态，后续双端协同场景由上层场景编排器统一装配，不要求两端先共享一个包。
+
+当前这层 hook 只解决“可卡住、可观测、可放行”，不承担故障模拟：
+
+- 时间推进、listener/bind 失败、网络快照跳变、传输层断线/乱序等故障，后续分别通过 fake clock、fake listener factory、fake snapshot provider、fake transport/session harness 注入。
+- 这些 fake 组件与 hook 共享同一套场景编排顺序，但不把“返回错误”“替换依赖”直接塞进通用 hook API，避免一个入口同时承担阻塞、观测和故障注入三种职责。
+
+当前必须优先落 hook 的边界点如下：
+
+- 首轮扫描开始、首轮扫描完成但尚未发布 `initialRuntimeScanDone`、管理 API 首次可见前、控制端口开放前后。
+- 首次登录保留 group slot 后、`config.push` 写出前、客户端应用快照后但 `config.ack` 写出前、服务端接受 `config.ack` 后但 listener 启动前。
+- `RefreshGroup()` 拿到活动 session 后、冻结旧 runtime 后、决定下发空配置或完整配置前。
+- 未监听轮询决定“直接补 listener”还是“补推完整快照”前。
+- listener `bind / attach / freeze / close` 前后、新 session 注册后旧 session 关闭前后、本机网络快照发布前后。
+
+验收口径固定如下：
+
+- 未带 `testhooks` tag 的 `go test` 和生产二进制不应暴露任何可驱动 barrier 的入口。
+- 带 `testhooks` tag 的单测必须能在上述关键边界精确阻塞、读取命中 payload、驱动另一侧动作并显式放行。
+- 所有后续竞争态测试默认优先复用这套 hook/barrier；若某场景仍需要 `sleep` 才能稳定复现，先补 hook/fake，再写场景。
+
 测试时禁止把以下方式当作主验证：
 
 - 依赖 CPU 快慢或调度偶然性触发竞态。
