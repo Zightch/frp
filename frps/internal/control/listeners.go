@@ -35,6 +35,19 @@ type tunnelListenerStartError struct {
 	Cause       error
 }
 
+type groupEffectiveIPStartErrorKind uint8
+
+const (
+	groupEffectiveIPStartErrorInvalid groupEffectiveIPStartErrorKind = iota + 1
+	groupEffectiveIPStartErrorNotLocal
+)
+
+type groupEffectiveIPStartError struct {
+	EffectiveIP string
+	Kind        groupEffectiveIPStartErrorKind
+	Cause       error
+}
+
 func (e *tunnelListenerStartError) Error() string {
 	if e == nil {
 		return ""
@@ -43,6 +56,30 @@ func (e *tunnelListenerStartError) Error() string {
 }
 
 func (e *tunnelListenerStartError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *groupEffectiveIPStartError) Error() string {
+	if e == nil {
+		return ""
+	}
+	switch e.Kind {
+	case groupEffectiveIPStartErrorInvalid:
+		return fmt.Sprintf("group effective_ip %q is invalid: %v", e.EffectiveIP, e.Cause)
+	case groupEffectiveIPStartErrorNotLocal:
+		return fmt.Sprintf("group effective_ip %q is not a current local IP", e.EffectiveIP)
+	default:
+		if e.Cause == nil {
+			return fmt.Sprintf("group effective_ip %q failed", e.EffectiveIP)
+		}
+		return fmt.Sprintf("group effective_ip %q failed: %v", e.EffectiveIP, e.Cause)
+	}
+}
+
+func (e *groupEffectiveIPStartError) Unwrap() error {
 	if e == nil {
 		return nil
 	}
@@ -84,7 +121,7 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 		for _, tunnel := range enabledTunnels(snapshot) {
 			s.recordTunnelRuntimeIssue(tunnel.TunnelID, reason)
 		}
-		return errors.New(reason)
+		return fmt.Errorf("%s: %w", reason, err)
 	}
 	if issues, conflictErr := s.detectRuntimePortConflictIssues(session, group, snapshot, bindIP); conflictErr != nil {
 		for tunnelID, reason := range issues {
@@ -339,13 +376,20 @@ func (s *Server) activeRuntimeGroups(exclude *sessionState) []runtimeGroupSnapsh
 func (s *Server) resolveGroupEffectiveIP(group GroupRuntime) (string, error) {
 	effectiveIP, err := system.NormalizeListenIP(group.EffectiveIP)
 	if err != nil {
-		return "", fmt.Errorf("group effective_ip %q is invalid: %w", group.EffectiveIP, err)
+		return "", &groupEffectiveIPStartError{
+			EffectiveIP: group.EffectiveIP,
+			Kind:        groupEffectiveIPStartErrorInvalid,
+			Cause:       err,
+		}
 	}
 	if system.IsSpecialListenIP(effectiveIP) {
 		return effectiveIP, nil
 	}
 	if s.network != nil && !s.network.Current().HasIP(effectiveIP) {
-		return "", fmt.Errorf("group effective_ip %q is not a current local IP", effectiveIP)
+		return "", &groupEffectiveIPStartError{
+			EffectiveIP: effectiveIP,
+			Kind:        groupEffectiveIPStartErrorNotLocal,
+		}
 	}
 	return effectiveIP, nil
 }

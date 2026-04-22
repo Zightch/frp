@@ -228,6 +228,16 @@ func enabledTunnels(snapshot ConfigSnapshot) []protocol.TunnelEntry {
 }
 
 func buildGroupEffectiveIPRuntimeReason(group GroupRuntime, err error) string {
+	var effectiveIPErr *groupEffectiveIPStartError
+	if errors.As(err, &effectiveIPErr) {
+		switch effectiveIPErr.Kind {
+		case groupEffectiveIPStartErrorNotLocal:
+			return fmt.Sprintf("生效 IP %q 当前不存在于本机，无法启动监听", group.EffectiveIP)
+		case groupEffectiveIPStartErrorInvalid:
+			return fmt.Sprintf("生效 IP %q 无效，无法启动监听", group.EffectiveIP)
+		}
+	}
+
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
 	case strings.Contains(message, "not a current local ip"):
@@ -236,6 +246,22 @@ func buildGroupEffectiveIPRuntimeReason(group GroupRuntime, err error) string {
 		return fmt.Sprintf("生效 IP %q 无效，无法启动监听", group.EffectiveIP)
 	default:
 		return fmt.Sprintf("生效 IP %q 无法启动监听: %v", group.EffectiveIP, err)
+	}
+}
+
+func buildInitialStartupRejectedReason(group GroupRuntime, err error) (string, bool) {
+	var effectiveIPErr *groupEffectiveIPStartError
+	if !errors.As(err, &effectiveIPErr) {
+		return "", false
+	}
+
+	switch effectiveIPErr.Kind {
+	case groupEffectiveIPStartErrorNotLocal:
+		return fmt.Sprintf("生效 IP %q 当前不存在于本机，请联系管理员解决", group.EffectiveIP), true
+	case groupEffectiveIPStartErrorInvalid:
+		return fmt.Sprintf("生效 IP %q 无效，请联系管理员解决", group.EffectiveIP), true
+	default:
+		return "", false
 	}
 }
 

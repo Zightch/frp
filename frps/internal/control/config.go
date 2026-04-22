@@ -29,6 +29,7 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		return s.replyProtocolErrorWithSession(conn, session, frame, err)
 	}
 	pendingRequestID, expectedVersion := session.configAckState()
+	isInitialStartup := session.lastAckedConfigVersion() == 0
 	if pendingRequestID == 0 || frame.RequestID != pendingRequestID {
 		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unexpected config.ack requestId %d", frame.RequestID)
 	}
@@ -81,7 +82,15 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 	}
 	logger.Info("config acknowledged", "config_version", ack.ConfigVersion, "applied_at_ms", ack.AppliedAtMs)
 	session.allowTunnelRuntimeStart()
-	return s.ensureTunnelListeners(conn, logger, session)
+	if err := s.ensureTunnelListeners(conn, logger, session); err != nil {
+		if isInitialStartup {
+			if reason, ok := buildInitialStartupRejectedReason(session.currentGroup(), err); ok {
+				return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeConfigApplyFailed, "%s", reason)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Server) pushConfig(conn net.Conn, session *sessionState) error {

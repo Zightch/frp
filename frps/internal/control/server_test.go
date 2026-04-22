@@ -954,6 +954,103 @@ func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testi
 	assertTCPDialFails(t, remotePort)
 }
 
+func TestServerRejectsInitialConfigAckWhenEffectiveIPIsNotCurrentLocalIP(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	server := NewServer(
+		Options{
+			Repository: stubRepository{
+				group: GroupRuntime{
+					ID:          1,
+					Name:        "group-a",
+					Enabled:     true,
+					EffectiveIP: "127.0.0.2",
+					TokenHash:   tokenHash,
+					Snapshot: ConfigSnapshot{
+						Version:       99,
+						GeneratedAtMs: 1234,
+						Tunnels: []protocol.TunnelEntry{
+							{
+								TunnelID:    7,
+								Protocol:    protocol.ProtocolTCP,
+								TunnelFlags: protocol.TunnelFlagEnabled,
+								RemoteStart: 21001,
+								RemoteEnd:   21001,
+								LocalHost:   host,
+								LocalStart:  22,
+								LocalEnd:    22,
+							},
+						},
+					},
+				},
+			},
+			ReadTimeout:       time.Second,
+			WriteTimeout:      time.Second,
+			ChallengeTTL:      5 * time.Second,
+			HeartbeatInterval: 2 * time.Second,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	errorFrame := readMessage(t, clientConn)
+	if errorFrame.Type != protocol.TypeError {
+		t.Fatalf("expected error frame, got %s", errorFrame.Type.String())
+	}
+	errorBody, err := protocol.UnmarshalErrorBody(errorFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal error frame: %v", err)
+	}
+	if errorBody.ErrorCode != protocol.ErrorCodeConfigApplyFailed {
+		t.Fatalf("unexpected error code: %d", errorBody.ErrorCode)
+	}
+	if !strings.Contains(errorBody.Message, "当前不存在于本机") || !strings.Contains(errorBody.Message, "请联系管理员解决") {
+		t.Fatalf("unexpected error message: %q", errorBody.Message)
+	}
+
+	if reason := server.TunnelRuntimeIssues()[7]; !strings.Contains(reason, "当前不存在于本机") {
+		t.Fatalf("expected runtime issue for missing local effective_ip, got %#v", server.TunnelRuntimeIssues())
+	}
+
+	if _, err := readMessageWithin(clientConn, time.Second); err == nil {
+		t.Fatal("expected server to close the initial session after rejecting startup")
+	} else if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("unexpected read error after startup rejection: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
 func TestServerStartsListenersForEnabledTCPRangeTunnelAndUsesMatchedRemotePort(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))

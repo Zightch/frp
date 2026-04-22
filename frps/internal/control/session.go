@@ -178,6 +178,12 @@ func (s *sessionState) configAckState() (uint32, uint64) {
 	return s.pendingConfigRequestID, s.pendingSnapshot.Version
 }
 
+func (s *sessionState) lastAckedConfigVersion() uint64 {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	return s.LastAckedConfigVersion
+}
+
 func (s *sessionState) acceptConfigAck(requestID uint32, version uint64) error {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
