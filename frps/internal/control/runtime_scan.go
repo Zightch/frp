@@ -107,7 +107,7 @@ func (s *Server) scanDetachedGroupRuntimeIssues(group GroupRuntime, staticConfli
 		return issues
 	}
 
-	issues, _ := s.detectRuntimePortConflictIssues(nil, group, group.Snapshot, bindIP)
+	issues := s.detectRuntimePortConflictIssues(group, bindIP, enabled)
 	if len(issues) == 0 {
 		issues = make(map[uint32]string)
 	}
@@ -211,9 +211,7 @@ func (s *Server) groupHasActiveListeners(groupID int64) bool {
 		return false
 	}
 
-	active.session.runtimeMu.Lock()
-	defer active.session.runtimeMu.Unlock()
-	return active.session.listenersStarted && !active.session.runtimeFrozen
+	return active.session.hasActiveRuntimeListeners()
 }
 
 func enabledTunnels(snapshot ConfigSnapshot) []protocol.TunnelEntry {

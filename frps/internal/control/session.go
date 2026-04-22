@@ -81,6 +81,93 @@ func (s *sessionState) nextTunnelStreamID() uint32 {
 	return streamID
 }
 
+func (s *sessionState) hasRuntimeListenersLocked() bool {
+	for _, listeners := range s.listeners {
+		if len(listeners) > 0 {
+			return true
+		}
+	}
+	for _, listeners := range s.udpListeners {
+		if len(listeners) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *sessionState) activeRuntimeTunnelIDs() map[uint32]struct{} {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if s.runtimeFrozen {
+		return nil
+	}
+	return s.activeRuntimeTunnelIDsLocked()
+}
+
+func (s *sessionState) activeRuntimeTunnelIDsLocked() map[uint32]struct{} {
+	active := make(map[uint32]struct{})
+	for tunnelID, listeners := range s.listeners {
+		if len(listeners) == 0 {
+			continue
+		}
+		active[tunnelID] = struct{}{}
+	}
+	for tunnelID, listeners := range s.udpListeners {
+		if len(listeners) == 0 {
+			continue
+		}
+		active[tunnelID] = struct{}{}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+	return active
+}
+
+func (s *sessionState) hasActiveRuntimeListeners() bool {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if s.runtimeFrozen {
+		return false
+	}
+	return s.hasRuntimeListenersLocked()
+}
+
+func (s *sessionState) attachTunnelListeners(configVersion uint64, tunnelID uint32, tcpListeners []net.Listener, udpListeners []*net.UDPConn) (bool, bool) {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if s.runtimeFrozen {
+		return false, false
+	}
+	if s.runtimeGeneration != 0 && s.runtimeGeneration != configVersion {
+		return false, false
+	}
+	if len(s.listeners[tunnelID]) > 0 || len(s.udpListeners[tunnelID]) > 0 {
+		return false, false
+	}
+
+	if len(tcpListeners) > 0 {
+		s.listeners[tunnelID] = append(s.listeners[tunnelID], tcpListeners...)
+	}
+	if len(udpListeners) > 0 {
+		s.udpListeners[tunnelID] = append(s.udpListeners[tunnelID], udpListeners...)
+	}
+
+	if s.hasRuntimeListenersLocked() {
+		s.listenersStarted = true
+		s.runtimeGeneration = configVersion
+	} else {
+		s.listenersStarted = false
+		s.runtimeGeneration = 0
+	}
+
+	startUDPCleanup := len(udpListeners) > 0 && !s.udpCleanupStarted
+	if startUDPCleanup {
+		s.udpCleanupStarted = true
+	}
+	return startUDPCleanup, true
+}
+
 func (s *sessionState) addPublicStream(streamID uint32, stream *publicStream, configVersion uint64) bool {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()

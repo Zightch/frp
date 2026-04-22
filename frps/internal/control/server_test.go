@@ -2894,7 +2894,7 @@ func TestServerRefreshGroupPushesEmptyConfigWhenEffectiveIPBecomesNotCurrentLoca
 	}
 }
 
-func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActiveGroup(t *testing.T) {
+func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConflictsWithActiveGroup(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
 
@@ -2907,7 +2907,8 @@ func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActive
 		t.Fatalf("parse host: %v", err)
 	}
 
-	tcpPort := freeTCPPort(t)
+	conflictPort := freeTCPPort(t)
+	healthyPort := freeTCPPortExcept(t, conflictPort)
 	repo := &mutableRepository{
 		group: GroupRuntime{
 			ID:          1,
@@ -2923,11 +2924,21 @@ func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActive
 						TunnelID:    7,
 						Protocol:    protocol.ProtocolTCP,
 						TunnelFlags: protocol.TunnelFlagEnabled,
-						RemoteStart: uint16(tcpPort),
-						RemoteEnd:   uint16(tcpPort),
+						RemoteStart: uint16(conflictPort),
+						RemoteEnd:   uint16(conflictPort),
 						LocalHost:   host,
 						LocalStart:  2200,
 						LocalEnd:    2200,
+					},
+					{
+						TunnelID:    9,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: uint16(healthyPort),
+						RemoteEnd:   uint16(healthyPort),
+						LocalHost:   host,
+						LocalStart:  2300,
+						LocalEnd:    2300,
 					},
 				},
 			},
@@ -2941,6 +2952,7 @@ func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActive
 				snapshot: system.Snapshot{
 					AvailableIPs: []system.IPAddress{
 						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+						{Addr: "127.0.0.2", Family: system.FamilyIPv4},
 					},
 				},
 			},
@@ -2961,18 +2973,21 @@ func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActive
 				TunnelID:    8,
 				Protocol:    protocol.ProtocolTCP,
 				TunnelFlags: protocol.TunnelFlagEnabled,
-				RemoteStart: uint16(tcpPort),
-				RemoteEnd:   uint16(tcpPort),
+				RemoteStart: uint16(conflictPort),
+				RemoteEnd:   uint16(conflictPort),
 				LocalHost:   host,
 				LocalStart:  3200,
 				LocalEnd:    3200,
 			},
 		},
 	})
-	otherSession.listenersStarted = true
 	otherClientConn, otherServerConn := net.Pipe()
 	defer otherClientConn.Close()
 	defer otherServerConn.Close()
+	defer server.shutdownSession(otherSession)
+	if err := server.ensureTunnelListeners(otherServerConn, slog.New(slog.NewTextHandler(io.Discard, nil)), otherSession); err != nil {
+		t.Fatalf("start active group listeners: %v", err)
+	}
 	server.registerActiveSession(otherServerConn, otherSession)
 	defer server.unregisterActiveSession(otherSession)
 
@@ -2997,11 +3012,15 @@ func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActive
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if listeners := active.session.listeners[7]; len(listeners) == 1 {
+		if len(active.session.listeners[7]) == 1 && len(active.session.listeners[9]) == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("unexpected initial listener count: %d", len(active.session.listeners[7]))
+			t.Fatalf(
+				"unexpected initial listener counts: tunnel7=%d tunnel9=%d",
+				len(active.session.listeners[7]),
+				len(active.session.listeners[9]),
+			)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -3014,31 +3033,33 @@ func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActive
 		server.RefreshGroup(repo.group.ID)
 	}()
 
-	deadline = time.Now().Add(2 * time.Second)
-	for {
-		frame, err := readMessageWithin(clientConn, 100*time.Millisecond)
-		if err == nil {
-			t.Fatalf("did not expect frame during conflicting effective_ip rebind: %s", frame.Type.String())
-		}
-		if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-			break
-		}
-		if isTimeoutError(err) && time.Now().Before(deadline) {
-			continue
-		}
-		t.Fatalf("expected session close during conflicting effective_ip rebind, got: %v", err)
-	}
-
 	select {
 	case <-refreshDone:
 	case <-time.After(time.Second):
 		t.Fatal("conflicting effective_ip refresh did not complete")
 	}
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("server connection did not exit after conflicting rebind")
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		if len(active.session.listeners[7]) == 0 && len(active.session.listeners[9]) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf(
+				"unexpected listener counts after conflicting rebind: tunnel7=%d tunnel9=%d",
+				len(active.session.listeners[7]),
+				len(active.session.listeners[9]),
+			)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	if currentGroup.EffectiveIP != system.AnyIPv4 {
+		t.Fatalf("unexpected effective_ip after conflicting rebind: %q", currentGroup.EffectiveIP)
+	}
+	if currentSnapshot.Version != 1 {
+		t.Fatalf("unexpected snapshot version after conflicting rebind: %d", currentSnapshot.Version)
 	}
 
 	issues := server.TunnelRuntimeIssues()
@@ -3046,8 +3067,34 @@ func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActive
 	if !strings.Contains(reason, `分组"group-b"`) || !strings.Contains(reason, "无法启动监听") {
 		t.Fatalf("unexpected runtime issue after conflicting rebind: %#v", issues)
 	}
-	if _, ok := server.activeSession(repo.group.ID); ok {
-		t.Fatalf("expected active session to be removed after conflicting rebind")
+	if reason := issues[9]; reason != "" {
+		t.Fatalf("unexpected runtime issue for healthy tunnel after conflicting rebind: %#v", issues)
+	}
+	if _, ok := server.activeSession(repo.group.ID); !ok {
+		t.Fatalf("expected active session to remain after conflicting rebind")
+	}
+
+	pingBody, err := protocol.MarshalHeartbeatPing(protocol.HeartbeatPing{
+		ClientUnixMs: uint64(time.Now().UTC().UnixMilli()),
+	})
+	if err != nil {
+		t.Fatalf("marshal heartbeat.ping: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeHeartbeatPing,
+		RequestID: 3,
+		Body:      pingBody,
+	})
+	pongFrame := readMessage(t, clientConn)
+	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 3 {
+		t.Fatalf("unexpected heartbeat.pong after conflicting rebind: %#v", pongFrame)
+	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
 	}
 }
 
