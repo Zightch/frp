@@ -152,9 +152,7 @@ func (r *SQLRepository) decodeGroupRuntimeRow(ctx context.Context, row storage.R
 	if group.Enabled, err = rowBool(row, "enabled"); err != nil {
 		return GroupRuntime{}, fmt.Errorf("decode group enabled: %w", err)
 	}
-	if group.EffectiveIP, err = system.NormalizeListenIP(rowString(row, "effective_ip")); err != nil {
-		return GroupRuntime{}, fmt.Errorf("decode group effective_ip: %w", err)
-	}
+	group.EffectiveIP = decodeStoredEffectiveIP(rowString(row, "effective_ip"))
 	if group.TokenHash, err = decodeHex32(rowString(row, "token_hash")); err != nil {
 		return GroupRuntime{}, fmt.Errorf("decode group token hash: %w", err)
 	}
@@ -326,6 +324,19 @@ func decodeTunnelFlags(remoteType string, enabled bool, remoteStart, remoteEnd, 
 
 func validPort(value int64) bool {
 	return value >= 1 && value <= math.MaxUint16
+}
+
+func decodeStoredEffectiveIP(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	normalized, err := system.NormalizeListenIP(value)
+	if err != nil {
+		return value
+	}
+	return normalized
 }
 
 func decodeHex32(value string) ([32]byte, error) {

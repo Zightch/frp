@@ -158,6 +158,9 @@ func (c *Client) applyConfigPush(conn net.Conn, state *sessionState, frame proto
 	if err != nil {
 		return err
 	}
+	if err := validateConfigPush(push); err != nil {
+		return err
+	}
 
 	reloadSummary := state.applyReloadedSnapshot(push)
 	if len(push.Tunnels) == 0 {
