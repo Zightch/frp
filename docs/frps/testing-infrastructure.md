@@ -677,3 +677,346 @@ type InvariantViolation struct {
 - 任一后续测试都能复用同一组 helper 直接断言“首轮扫描门闩”“管理 API 首次可见”“pending config 唯一性”“旧 session 晚到消息隔离”“空配置恢复顺序”“静态 `冲突` 优先级”这些规则。
 - 任一后续测试失败时，都能输出稳定的规则名、身份字段和状态差异，不再出现“只知道某条日志没打出来”这类不可定位失败。
 - 任一后续测试若仍必须自己重新扫 listener、重算冲突、拼接 session 上下文后才能断言，说明断言库或状态观测骨架还不够，先补基建，不进入场景实现。
+
+## 10. 场景编排基座
+
+场景编排相关测试后续统一按“统一脚本模型 + 显式 barrier 放行 + 显式快照采样 + 显式失败输出”收口，避免每个测试各自手搓 goroutine、channel、`sleep` 和临时 helper：
+
+- 场景编排器的职责不是替代 hook、manual scheduler、fake listener、fake snapshot、fake transport，而是把这些底层能力组织成一套稳定的剧本执行框架。
+- 每个场景都必须能明确表达：
+  - 谁在动作
+  - 卡在哪个边界
+  - 何时放行
+  - 何时采样状态
+  - 何时做不变量断言
+  - 失败时输出哪一步、哪个 actor、哪个状态 diff
+- 编排器必须优先服务当前主线场景：
+  - `frps` 启动后首轮全面扫描、控制端口开放、管理 API 首次可见的启动门闩。
+  - 首次登录时 `effective_ip` 非法直接拒绝。
+  - 运行中 `effective_ip` 失效后下发空配置保活，恢复后补推完整快照并等待 `config.ack`。
+  - 后续轮询只扫描当前未监听 tunnel，之前因冲突/异常未启动的 tunnel 在条件恢复后重新评估并补启动。
+  - 热更新与 session replacement 并发发生时，旧 session 晚到消息不能污染新 session。
+
+第一版编排模型建议固定为“场景 -> 阶段 -> 步骤 -> 采样点”四层，而不是让测试直接调一堆散落 helper：
+
+```go
+type Scenario struct {
+    Name   string
+    Actors ActorSet
+    Steps  []ScenarioStep
+}
+
+type ScenarioStep struct {
+    Name   string
+    Actor  string
+    Action StepAction
+
+    WaitFor   []BarrierRef
+    Release   []BarrierRef
+    Advance   *AdvanceRef
+    Observe   []ObserveRef
+    Assert    []AssertRef
+}
+```
+
+- `Actors` 至少包含：
+  - `frps` 进程或单进程 server harness
+  - `frpc#1`、`frpc#2` 或逻辑 session `session#1`、`session#2`
+  - `listener-world`，负责外部占用与 close 晚到
+  - `snapshot-world`，负责本机 IP 快照变化
+  - `transport-world`，负责帧延迟、乱序、断线、半关闭
+  - `clock` / `scheduler`，负责时间推进
+- `ScenarioStep` 必须是显式有限动作，例如：
+  - 启动 `frps`
+  - 启动 `frpc`
+  - 等待某个 hook/barrier 命中
+  - 放行 barrier
+  - 推进一个轮询周期
+  - 下发一轮假快照
+  - 修改一条 listener 占用脚本
+  - 投递或丢弃一帧 `config.ack`
+  - 采样统一 `ObservedState`
+  - 执行一组不变量断言
+- 单个步骤只允许承担一个主动作；例如“推进时间并采样并放行两处 barrier”这种组合动作必须拆成多个步骤，否则失败时无法定位。
+
+场景编排器必须直接支持以下剧本原语，后续测试不得再各自重造一套：
+
+- `StartActor(name)`：启动 `frps`、`frpc`、外部占用 actor 或子进程 harness。
+- `WaitBarrier(point, hitIndex, filters...)`：等待指定 hook 命中，并可按 `groupID / tunnelID / sessionID / configVersion` 过滤。
+- `ReleaseBarrier(point, hitIndex)`：显式放行被卡住的执行流。
+- `AdvanceClock(d)` / `RunScheduled(name)`：推进 manual clock / scheduler。
+- `InjectListener(rule)`：修改 fake listener 世界，例如“端口先占用后释放”“close 晚到”“第 N 次 bind 失败”。
+- `InjectSnapshot(round)`：修改 fake snapshot 世界，例如“下一轮快照去掉该 IP”“下一轮恢复该 IP”。
+- `InjectFrame(action)`：修改 fake transport 世界，例如“延迟旧 ack”“重复 heartbeat”“在写出前断线”。
+- `Observe(label)`：抓取统一 `ObservedState` 快照，并给后续断言或失败 diff 使用。
+- `Assert(ruleSet)`：执行断言库中的稳定规则。
+- `ExpectEvent(...)`：断言某类 hook/frame/bind/probe 在当前阶段必须出现或不得出现。
+
+单进程单测、子进程 harness、双进程脚本的职责边界必须先固定，再进入具体场景：
+
+- 单进程单测：
+  - 优先覆盖纯状态机和确定性边界。
+  - 适合首轮扫描门闩、轮询恢复、单 session 热更新、空配置恢复顺序、旧 ack 晚到但仍在同一进程内可控的场景。
+- 子进程或双进程 harness：
+  - 用于验证跨进程真实生命周期、真实网络监听、真实管理 API 首次可见、双客户端/双连接接管。
+  - 仍然必须复用同一套脚本步骤模型和同一套观测/断言接口，不能进入 e2e 就退回“shell 脚本 + 日志 grep”。
+- 即使是双进程场景，也应优先通过 IPC 或测试控制接口暴露 barrier、采样和放行，而不是靠真实时间窗口对撞。
+
+第一版场景脚本至少要能稳定表达以下组合：
+
+- `frps` 首轮扫描完成前卡住，验证控制端口未开放、登录门闩未放行、管理 API 未首次可见。
+- 首轮扫描完成后先采样，再放行控制端口开放，再放行管理 API 首次可见，验证三者严格有序。
+- `frpc#1` 首次登录使用非法 `effective_ip`，验证服务端拒绝登录且不会占住 group slot。
+- 运行中热更新把 `effective_ip` 改成非法值，验证空配置保活；随后网络快照恢复有效，再验证“完整快照 -> `config.ack` -> listener 恢复”。
+- 外部占用导致 tunnel 首轮冲突未监听；后续轮询前释放占用，再推进一拍，验证 tunnel 被重新评估并补启动。
+- `session#1` 待 ack 时触发 `session#2` 接管，随后投递旧 `config.ack`、旧 heartbeat、旧错误帧，验证都不会污染新 session。
+- 连续两次配置变更在 `pending config` 尚未完成前到达，验证旧 pending 被正确替换或拒绝，不出现双 pending。
+
+为了让失败可定位，编排器必须自带步骤化执行记录，而不是只在失败时 dump 一份最终状态：
+
+- 每一步都要有稳定 `stepID`、`actor`、开始时间、结束时间、前置 barrier、放行动作、采样标签。
+- 每个 `Observe(label)` 都要可回溯到对应步骤和同一时刻的 hook/fake 世界状态。
+- 如果断言失败，输出必须至少包含：
+  - 场景名
+  - 步骤名
+  - 当前 actor
+  - 最近一次 barrier 命中
+  - 最近一次时间推进
+  - 相关 `ObservedState` 子树 diff
+- 如果编排器自身超时，也必须说明是卡在哪个 barrier、哪个 actor 没收敛，而不是只报“test timeout”。
+
+场景编排器与现有基建的边界固定如下：
+
+- hook / barrier 提供“卡住/放行”能力，但不决定场景顺序。
+- manual clock / scheduler 提供时间推进，但不决定何时采样和何时断言。
+- fake listener / snapshot / transport 提供外部世界脚本，但不负责编排多 actor 交错。
+- 状态观测骨架提供结构化快照，不负责管理步骤生命周期。
+- 不变量断言库负责校验规则，不负责决定“在哪一步校验哪一条规则”。
+
+第一版代码落点固定如下：
+
+- `frps/internal/testsupport/` 或等价测试基础设施目录：
+  - `scenario_runner.go`
+  - `scenario_script.go`
+  - `scenario_trace.go`
+  - `scenario_assert.go`
+- 与现有基建衔接：
+  - `frps/internal/testhooks`
+  - `frps/internal/system` 的 fake snapshot seam
+  - `frps/internal/control` 的 fake listener / fake transport seam
+  - `frpc/internal/client` 的 session harness 接口
+
+第一版验收口径固定如下：
+
+- 任一后续场景都必须能用显式步骤脚本表达，不再手写 `go func + sleep + select`。
+- 任一失败都必须定位到“哪一步、哪个 actor、哪个 barrier、哪个状态 diff”，而不是只知道最终断言没过。
+- 任一双进程或竞争态场景如果仍必须依赖偶然调度窗口，说明编排器或底层 seam 仍不够，先补基建，不进入测试矩阵。
+
+## 11. 故障注入覆盖表
+
+故障注入覆盖后续统一按“先列能力，再列可覆盖场景，再列缺口”收口，避免写测试时才发现关键路径根本不可制造：
+
+- 覆盖表是场景实现前的准入清单，不是事后总结。
+- 每一种故障注入能力都必须同时回答：
+  - 现在能稳定制造什么
+  - 依赖哪些 seam
+  - 哪些主线场景会用到
+  - 当前是“已定稿待落地”还是“仍缺注入点”
+- 后续新增具体场景前，必须先确认它依赖的故障原语已经出现在本表里；如果没有，先补表和补基建。
+
+第一版覆盖表建议至少固定以下字段：
+
+- `Capability`：注入能力名。
+- `Faults`：可稳定制造的故障原语。
+- `Main Scenarios`：直接覆盖的场景类型。
+- `Required Seams`：依赖的 hook / fake / harness / scheduler。
+- `Current Status`：`已定稿待实现`、`部分缺口`、`未开始`。
+- `Gap`：当前还不能稳定表达的边界。
+
+第一版覆盖表按当前主线收口如下：
+
+| Capability | Faults | Main Scenarios | Required Seams | Current Status | Gap |
+| --- | --- | --- | --- | --- | --- |
+| 启动门闩编排 | 首轮扫描未完成前阻止控制端口开放、阻止管理 API 首次可见、阻止登录进入 | 启动序列、管理 API 首次可见、首登前门闩 | hook、场景编排器、状态观测 | 已定稿待实现 | 需要统一跨进程 barrier 控制面 |
+| 手动时间推进 | 轮询、heartbeat、backoff、超时、网络快照刷新 | 未监听 tunnel 轮询恢复、热更新恢复、断线重连 | manual clock、manual scheduler、场景编排器 | 已定稿待实现 | 仍需把更多真实 `time.*` 路径切到 seam |
+| listener 绑定世界 | bind 失败、probe 失败、close 晚到、外部占用、部分端口失败、释放后复占 | 首轮冲突、后续恢复、局部补 listener、close/rebind 竞态 | fake listener、hook、状态观测 | 已定稿待实现 | 尚未覆盖真实 accept/read 数据面 |
+| 网络快照世界 | 非法 IP、非本机 IP、地址族变化、快照抖动、采集错误、发布延迟 | 首登非法 `effective_ip`、运行时空配置保活、恢复补推完整快照 | fake snapshot、hook、manual scheduler、状态观测 | 已定稿待实现 | 仍需统一发布版本号和消费版本观测 |
+| 控制连接世界 | `config.push` 前后断线、`config.ack` 晚到/重复/乱序、heartbeat 丢失/晚到、半关闭、旧连接残帧 | 热更新、session replacement、旧 session 晚到消息隔离 | fake transport、session harness、hook、manual scheduler | 已定稿待实现 | 仍缺跨进程版 transport 控制接口 |
+| 统一状态观测 | active session、pending config、listener 集合、runtime issue、恢复模式、管理 API 门闩 | 所有主线场景 | 观测骨架、场景编排器 | 已定稿待实现 | 仍需统一导出跨端快照 |
+| 不变量断言 | 启动门闩、单 pending、静态 `冲突` 优先级、空配置恢复顺序、旧 session 隔离 | 所有进入矩阵的正式场景 | 断言库、观测骨架 | 已定稿待实现 | 仍需补步骤化快照输入 |
+| 场景编排 | 多 actor 交错、显式 barrier、显式采样、显式失败定位 | 双 session、双进程、外部占用、连续配置变更 | 场景编排器、上述全部 seam | 已定稿待实现 | 仍缺统一脚本执行器 |
+
+在上述能力之外，当前还必须额外标出“已知不可测或暂不可稳定制造”的空白区，避免误判已经覆盖：
+
+- 仅靠真实 OS 行为才会出现的“瞬时端口释放窗口”不能算已覆盖；这类情况只有在 fake listener 能显式控制 `closeCalled` 与 `closeCompleted` 后才算可测。
+- 仅靠真实网络时序才会出现的 TCP 半关闭、帧乱序、旧连接残帧晚到，不能算已覆盖；必须由 fake transport / harness 显式控制。
+- 仅靠真实网卡/VPN 刷新时序才能出现的 `effective_ip` 短暂消失或地址族跳变，不能算已覆盖；必须由 fake snapshot seam 控制。
+- 仅靠多次重跑或提高并发度“偶尔撞到”的双 pending、旧 ack 污染、双 session 交接窗口，不能算已覆盖；必须存在 barrier/hook 和统一编排脚本。
+
+覆盖表后续使用规则固定如下：
+
+- 任一计划进入测试矩阵的场景，先在覆盖表里找到它依赖的所有故障原语；找不齐，就不进入实现。
+- 如果某个场景依赖的故障原语横跨 listener、snapshot、transport 三个世界，必须先确认场景编排器能把三者串起来，而不是默认“分别可测就等于联合可测”。
+- 覆盖表中的 `Current Status` 只有在 seam 真正进入代码且能被最小验证场景驱动后，才能从“已定稿待实现”改成“已可用”；文档定稿本身不等于能力已落地。
+
+第一版验收口径固定如下：
+
+- 覆盖表必须覆盖当前端口冲突与热更新交互主线涉及的所有外部世界：启动门闩、listener、snapshot、transport、时间推进、状态观测、断言、编排。
+- 任一后续场景在开工前都能明确知道自己依赖哪些能力、哪些能力已可用、哪些仍缺口。
+- 如果后续某个关键场景在实现时才第一次暴露“缺注入点”，说明覆盖表不完整，需要先补表和补基建，再继续场景实现。
+
+## 12. 稳定性补充层基线
+
+稳定性补充后续统一按“确定性场景先通过，再上补充层回归”收口，`-race`、多 `GOMAXPROCS`、高频扰动、长稳 soak、双平台和资源压力都只能是第二层，而不是替代前置可测性基建：
+
+- 确定性单场景失败时，禁止直接上 `-race` 或 soak 碰运气找原因；先修可测性。
+- 补充层的职责是回答“在更真实、更高压、更长时间的运行条件下，前面已经收口的规则有没有被破坏”，不是回答“系统大概能不能跑”。
+- 补充层中的每一类入口都必须继续复用统一状态观测和不变量断言，不能退回日志 grep。
+
+第一版稳定性补充层固定为六条入口：
+
+- `-race` 回归：
+  - 目标：捕捉数据竞争、锁保护缺失、测试观测口本身的新竞态。
+  - 做法：优先跑已确定性的核心场景子集，而不是直接全量随缘。
+  - 通过口径：无 race report，且最终状态断言不变。
+- 多 `GOMAXPROCS` 回归：
+  - 目标：验证快慢 CPU、不同调度粒度下同一脚本得到同一状态结论。
+  - 做法：固定同一场景脚本，至少覆盖 `1`、`2`、`4` 或等价分档。
+  - 通过口径：步骤执行顺序可以不同，但 barrier/采样点的状态结论和不变量断言必须相同。
+- 高频配置抖动回归：
+  - 目标：验证连续 `RefreshGroup()`、连续快照切换、连续空配置/完整配置切换不会积累脏状态。
+  - 做法：在 manual scheduler 下脚本化连续推多轮配置和快照变化，不靠真实高频 sleep。
+  - 通过口径：无双 pending、无双活 listener、无旧 session 污染、最终可收敛。
+- 长稳 soak 回归：
+  - 目标：验证长时间轮询、heartbeat、反复恢复/失效后不会泄漏 goroutine、listener、session、frame 队列。
+  - 做法：优先使用 fake time 驱动长时间逻辑周期；确需真实时间的部分必须有资源计数和失败阈值。
+  - 通过口径：资源指标稳定在阈值内，最终断言仍成立，且失败时能指出哪类资源泄漏。
+- 双平台回归：
+  - 目标：验证同一剧本在 Windows 和 Linux/WSL 下保持相同业务结论。
+  - 做法：统一复用同一脚本和断言，只允许底层实现差异，不允许业务结论差异。
+  - 通过口径：最终 `ObservedState` 关键字段与不变量断言一致；若平台差异导致例外，必须先文档化并在脚本中显式分支。
+- 资源压力回归：
+  - 目标：验证大量 tunnel、频繁 bind/close、队列积压、频繁重连下不会提前失稳。
+  - 做法：用 fake listener / fake transport / fake snapshot 放大资源量级，同时继续保留显式观测点。
+  - 通过口径：资源上升受控、状态可收敛、不变量不断裂、失败时能定位具体瓶颈。
+
+每一类补充层入口都必须有固定观测项和失败判定，不允许只写“跑一段时间看看日志”：
+
+- `-race`：
+  - 失败条件：任何 race report。
+- 多 `GOMAXPROCS`：
+  - 失败条件：同一场景脚本在不同调度配置下得到不同 `finalStatus`、不同恢复模式、不同 pending config 结论。
+- 高频配置抖动：
+  - 失败条件：出现双 pending、旧 ack 污染、listener 未回收、恢复顺序错乱、场景无法在限定步数内收敛。
+- 长稳 soak：
+  - 失败条件：goroutine、listener handle、延迟 frame、session 数量持续单调增长且不回落；或最终断言失败。
+- 双平台：
+  - 失败条件：平台间出现未文档化的业务差异。
+- 资源压力：
+  - 失败条件：资源达到阈值后无保护退化、场景死锁、关键状态不可观测或最终不收敛。
+
+为了避免补充层重新退回非确定性，第一版规则还必须固定如下：
+
+- 长稳 soak 优先用 fake time 跑逻辑长周期，只有资源释放和真实网络/进程生命周期必须依赖墙钟时，才允许少量真实等待。
+- 多 `GOMAXPROCS` 与 `-race` 跑的是同一套已确定性场景脚本，不允许单独维护另一套“stress 专用脚本”。
+- 高频配置抖动必须通过显式脚本声明每一次配置变化、每一次快照变化、每一次 frame 延迟，不允许依赖“高频随机 goroutine”。
+- 资源压力回归必须继续采样结构化 `ObservedState` 和资源计数快照，不能只看进程是否还活着。
+
+第一批建议纳入补充层的资源与健康指标固定如下：
+
+- 服务端：
+  - active session 数量
+  - group slot 占用数
+  - attach listener 数量
+  - fake listener handle 未释放数
+  - pending config 数量
+  - runtime issue 数量
+- 客户端：
+  - active stream / udp session 数量
+  - 当前连接尝试序号
+  - 已应用快照版本与最后 ack 版本偏差
+- 注入层：
+  - 延迟 frame 队列长度
+  - fake snapshot 剧本剩余步数
+  - manual scheduler 待执行任务数
+  - 未释放 barrier 数量
+- 进程级：
+  - goroutine 数
+  - 文件句柄或 socket 句柄数量
+  - 内存占用趋势
+
+第一版验收口径固定如下：
+
+- 任一补充层入口都必须复用同一套场景脚本、状态观测和不变量断言，不得退回日志驱动。
+- 任一补充层失败都必须能指出是 race、平台差异、资源泄漏还是状态机不收敛，而不是一条笼统超时。
+- 若某个补充层入口还需要大量 `sleep`、随机扰动或“多跑几次”，说明前置可测性仍不够，先补基建，不进入回归清单。
+
+## 13. 可测性验收门槛
+
+可测性验收后续统一按“先证明场景可重复、可观测、可定位，再允许进入正式测试矩阵”收口，任何做不到这一点的场景都必须回退到前置基建补能力：
+
+- 可测性门槛是场景准入规则，不是建议项。
+- 满足业务上“理论应该会发生”不算通过，必须满足“测试可以稳定控制、稳定观测、稳定断言、稳定失败”。
+- 进入正式测试矩阵前，每个场景都必须回答三件事：
+  - 这个场景如何稳定制造
+  - 这个场景如何稳定判断通过/失败
+  - 这个场景失败后如何快速定位
+
+第一版准入门槛固定如下：
+
+- 必须有显式场景脚本：
+  - 不允许靠测试主体手写多处 goroutine 和临时 channel 即兴编排。
+- 必须有显式 barrier 或显式 fake 控制：
+  - 关键竞态点必须可卡住、可放行、可重复。
+- 必须有统一结构化观测：
+  - 至少能直接读到启动门闩、session/pending、listener、runtime issue、恢复模式、连接身份等关键状态。
+- 必须有统一不变量断言：
+  - 不能只看日志、错误字符串、端口是否能拨通。
+- 必须有明确失败输出：
+  - 至少能给出场景名、步骤名、actor、关键身份字段和状态 diff。
+- 必须能单机连续复现：
+  - 同一台机器连续跑若干次，得到相同状态结论。
+- 必须能跨快慢机器保持同一结论：
+  - 不要求执行时长完全相同，但要求 barrier/采样点上的状态结论一致。
+- 必须能在有限时间内收敛：
+  - 不能依赖“跑久一点也许会自己好”。
+
+第一版明确不允许进入正式测试矩阵的场景类型如下：
+
+- 依赖 `sleep` 窗口碰运气的场景。
+- 依赖真实外部进程抢端口、真实网络抖动、真实网卡刷新，但没有对应 fake seam 的场景。
+- 只能通过日志关键字、HTTP 拨测、端口探活侧面判断结果的场景。
+- 失败时只能得到测试总超时，无法定位到 barrier、步骤或状态差异的场景。
+- 同一脚本在 `GOMAXPROCS=1` 和默认配置下结论不同，但未文档化差异来源的场景。
+
+场景进入正式矩阵前，建议固定执行以下验收清单：
+
+1. 在单机上连续执行同一脚本多次，确认关键结论一致。
+2. 在至少一组快机器和一组慢机器或等价调度配置下执行，确认关键结论一致。
+3. 人为制造一次失败，确认失败输出能定位到具体步骤和状态差异。
+4. 检查是否存在未释放 barrier、未清理 fake 资源、未消费 frame、未关闭 session。
+5. 确认该场景依赖的故障原语都已在覆盖表中登记，且状态不是“未开始”。
+
+为了让“通过/不通过”标准可执行，第一版验收结论建议固定为三档：
+
+- `Ready`：
+  - 场景可单机连续复现，可跨快慢机器保持结论一致，失败可定位，可纳入正式矩阵。
+- `Blocked by Infra`：
+  - 场景业务上重要，但缺 barrier、fake、观测或断言口；必须先回补基建。
+- `Flaky / Rework Required`：
+  - 现有脚本偶发、依赖时序碰撞、失败不可定位；不得进入正式矩阵。
+
+可测性门槛与前面几层基建的边界固定如下：
+
+- 故障注入覆盖表回答“能不能制造”。
+- 场景编排基座回答“怎么稳定交错和采样”。
+- 状态观测回答“能不能直接看到关键状态”。
+- 不变量断言回答“怎么判断通过/失败”。
+- 稳定性补充层回答“在更高压环境下是否仍然成立”。
+- 可测性验收门槛负责把上述几层串成最终准入判断。
+
+第一版验收口径固定如下：
+
+- 任一进入正式测试矩阵的场景，都必须满足“可稳定制造、可稳定观测、可稳定断言、可稳定失败定位”四项条件。
+- 任一不满足门槛的场景，都必须明确回流到哪一层基建补能力，而不是继续堆更多随机重试。
+- 若后续出现“场景已经写完，但在 CI 上仍经常只能靠重跑过”的情况，默认视为门槛未通过，先回到基建层整改。
