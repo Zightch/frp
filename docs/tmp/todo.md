@@ -84,4 +84,4 @@
 
 当前唯一下一步：
 
-- 网络快照故障注入骨架：为本机地址采集和 `effective_ip` 解析准备 fake provider，能够按测试脚本返回固定快照、快照跳变、地址族切换、非法地址、非本机地址和高频抖动序列。
+- 控制连接故障注入骨架：为 `config.push` / `config.ack` / heartbeat / shutdown 等控制面交互准备 fake transport 或脚本化 session harness，能稳定制造断线、重连、重复 ack、乱序 ack、晚到 ack、晚到错误回包、半关闭和旧 session 残留消息。

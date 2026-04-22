@@ -338,6 +338,91 @@ const (
 - freeze / shutdown / reload 触发的 close 必须可被观测到“调用已发生”和“资源已真正释放”两个阶段，便于后续覆盖 close 晚到竞态。
 - 若某个 listener 竞争态测试仍然必须启动真实外部占用进程或靠 `sleep` 等待端口释放，说明 fake listener 能力还不够，先补基建，不进入场景实现。
 
+### 2.4.4 网络快照故障注入骨架
+
+网络快照相关测试统一按“采集、发布、消费走同一套 fake snapshot seam”设计，避免 `Start()/poll()` 一套数据源、`resolveGroupEffectiveIP()` 又从另一套状态猜当前本机地址：
+
+- `frps/internal/system/network_snapshot.go` 后续需要把 `collector.Collect()`、轮询驱动、`storeSnapshot()` 发布边界统一收口到可注入 seam；测试既能决定“这一轮采集返回什么”，也能决定“采集结果何时对外可见”。
+- `frps/internal/control/listeners.go` 的 `resolveGroupEffectiveIP()`、`frps/internal/control/runtime_scan.go` 的 `scanGroupRuntimeIssues()` / `recoverScannedActiveSessionTunnels()`、`frps/internal/control/refresh.go` 的 `runtimeRefreshSnapshot()` / `RefreshGroup()` 都必须继续只消费同一个 `SnapshotReader.Current()` 视图，不能为了测试再额外偷读别的 fake 状态。
+- 第一版目标不是模拟整个 OS 网卡栈，而是稳定控制“当前 `frps` 认为哪些 IP 属于本机、这一认知何时切换、切换前后有没有错误或抖动”。
+
+第一版边界建议固定为“两层 provider + 一层发布控制”：
+
+- real provider：继续复用当前 platform collector，只是把 `Collect()` 这一层显式抽出来，生产行为不变。
+- fake provider：按测试脚本返回固定快照、跳变快照、错误快照或非法输入结果，不依赖真实网卡、VPN、虚拟网卡或系统命令。
+- publish barrier：采集完成后、`storeSnapshot()` 前后允许测试显式卡住，稳定制造“采集结果已算出但尚未发布”“发布刚完成、消费方准备读取”的交错窗口。
+
+第一版 fake snapshot 脚本能力至少固定支持以下原语：
+
+- 固定快照：始终返回同一组本机地址，覆盖稳定基线。
+- 快照跳变：第 `N` 轮从地址集 A 切到地址集 B，覆盖地址新增、地址移除、地址替换。
+- 地址族切换：IPv4-only、IPv6-only、双栈、有 wildcard 但无具体地址等组合可脚本切换。
+- 非法 `effective_ip`：保留配置值非法、为空、格式异常、带 zone/scope、带空白等输入，验证消费侧按“无效配置”而不是“非本机地址”处理。
+- 非本机地址：`effective_ip` 本身合法，但 fake 快照不包含该地址，验证首次登录拒绝、运行中下发空配置和后续恢复路径。
+- 高频抖动：按脚本在“包含该地址 / 不包含该地址”之间连续翻转，验证不会靠 CPU 快慢偶现。
+- 采集错误：指定轮次 `Collect()` 返回 error，验证旧快照保持、错误不会直接把当前可用地址清空。
+- 发布延迟：本轮 `Collect()` 已返回新快照，但在测试显式放行前 `Current()` 仍只能看到旧快照。
+- 前后轮不一致：连续两轮返回互相矛盾的地址集，验证轮询恢复、热更新和登录路径不会在同一业务动作里混用两份视图。
+
+快照模型后续至少要显式表达这些信息，避免 fake 只能回答一个 `HasIP`：
+
+```go
+type Snapshot struct {
+    Platform     string
+    CapturedAt   time.Time
+    Interfaces   []NetworkInterface
+    AvailableIPs []string
+}
+```
+
+- 测试脚本必须能直接构造完整 `Snapshot`，而不是只传一个 `[]string`，这样地址顺序、采集时间戳、接口来源都能纳入断言。
+- `CapturedAt` 后续也要接入同一套 manual clock，避免快照内容是 fake 的、时间戳却还在读真实墙钟。
+- 对非法 `effective_ip` 场景，fake provider 不负责替用户“纠正配置”；非法值仍由 `NormalizeListenIP()` / `resolveGroupEffectiveIP()` 自己返回错误，fake provider 只负责提供“当前本机地址集”。
+
+与现有 hook / barrier / manual scheduler 的配合方式固定如下：
+
+- hook / barrier 负责把执行流卡在“初始快照采集完成后、发布前”“轮询采集完成后、发布前后”“`resolveGroupEffectiveIP()` 读取 `Current()` 前后”这些并发边界。
+- manual scheduler 负责推进 `NetworkSnapshotService.poll()`、未监听 tunnel 轮询、heartbeat、重连 backoff 等时间相关任务；网络快照变化本身不靠真实时间自然发生，而是由 fake provider 在第 `N` 次采集返回指定脚本结果。
+- fake snapshot provider 负责决定“这一轮看到什么地址集、返回错误还是成功”；它不负责替代 barrier，也不负责直接改 listener/runtime issue。
+- 若某个场景要同时覆盖“快照切换 + 热更新 + 轮询恢复”，推荐顺序固定为：
+  1. 先用 hook 卡住目标边界，例如 `storeSnapshot()` 前或 `resolveGroupEffectiveIP()` 前。
+  2. 配置 fake provider 的下一轮脚本结果。
+  3. 用 manual `Advance(...)` 推进一次快照轮询或目标业务时钟。
+  4. 用 `Release()` 控制发布或读取时机。
+  5. 用状态断言确认 runtime issue、pending config、listener 集合和 session 状态收敛，再进入下一步。
+
+第一批需要打开 snapshot seam 的代码位置如下：
+
+- `frps/internal/system/network_snapshot.go`
+  - `Start()`
+  - `poll()`
+  - `storeSnapshot()`
+- `frps/internal/system/network_collect.go`
+  - platform collector 的 `Collect()`
+  - `NormalizeListenIP()` / `IsSpecialListenIP()` 所在解析路径
+- `frps/internal/control/listeners.go`
+  - `resolveGroupEffectiveIP()`
+- `frps/internal/control/runtime_scan.go`
+  - `scanGroupRuntimeIssues()`
+  - `recoverScannedActiveSessionTunnels()`
+- `frps/internal/control/refresh.go`
+  - `RefreshGroup()`
+  - `runtimeRefreshSnapshot()`
+
+必须直接可观测的测试态信息固定如下，后续测试不得只从日志反推：
+
+- 当前已发布的 `Snapshot` 全量内容，以及它的版本/序号、`CapturedAt` 和来源轮次。
+- fake provider 下一轮计划返回什么、已经消费到第几轮、最近一次 `Collect()` 返回的是成功还是错误。
+- `resolveGroupEffectiveIP()` 最近一次读取时看到的快照版本，以及它把错误判成了“非法地址”还是“非本机地址”。
+- 指定 group/session 当前是否处于“完整配置可下发”“空配置保活”“等待恢复补推”“只允许健康 tunnel 直接补 listener”中的哪一种状态。
+- `runtime issue` 当前是否由 `effective_ip` 不可用导致，还是由 listener bind/runtime probe 导致；两类原因不能在观测层混成一条字符串。
+
+第一版验收口径固定如下：
+
+- 能稳定制造“固定快照、跳变、地址族切换、非法 `effective_ip`、非本机地址、高频抖动、采集错误、发布延迟、前后轮不一致”这些场景。
+- 首次登录拒绝、运行中下发空配置、轮询恢复补启动、热更新恢复补推完整快照这几条链路，都必须能在同一套 fake snapshot 脚本下复现，不依赖真实网卡改动。
+- 若测试仍需临时改本机网卡、启停 VPN、等待系统网络服务刷新或靠 `sleep` 撞快照窗口，说明 snapshot seam 还不够，先补基建，不进入场景实现。
+
 ## 3. 当前手工调试入口
 
 ### 3.1 服务是否启动
