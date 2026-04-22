@@ -273,7 +273,30 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
   - 只比较同协议监听空间
   - 只比较相同的具体 `effective_ip`
   - `0.0.0.0`、`::` 及其相关 wildcard 冲突规则暂未进入这一阶段
+- 下一阶段 wildcard 静态冲突规则已收口（当前仅规则定稿，尚未接入第一阶段实现）：
+  - 仍然只比较同协议监听空间（`tcp` 与 `udp` 隔离）
+  - 仍然要求远端端口区间相交才算冲突
+  - `0.0.0.0` 与任意具体 IPv4 冲突
+  - `::` 与任意具体 IPv6 冲突
+  - `0.0.0.0` 与 `::` 按冲突处理（统一保守策略）
+  - 具体 IPv4 与具体 IPv6 不冲突
+  - 具体 IPv4 与 `::` 当前不按静态冲突处理
+  - 具体 IPv6 与 `0.0.0.0` 当前不按静态冲突处理
+- Linux / Windows 差异与统一策略（规范依据 + 本机实验）：
+  - Linux `ipv6(7)`：`IPV6_V6ONLY` 默认值来自 `/proc/sys/net/ipv6/bindv6only`，通常默认为 `0`；`0` 时 IPv6 wildcard socket 可以接收 IPv4-mapped IPv6，`1` 时才允许 IPv4 与 IPv6 在同端口并存。
+  - Windows Winsock：IPv6 socket 默认 `IPV6_V6ONLY=1`，只有显式改成 `0` 才是 dual-stack；因此部分 IPv4/IPv6 wildcard 组合在 Windows 上可并存、在 Linux 上会冲突。
+  - Windows Winsock 还明确提示 `SO_REUSEADDR` 可能导致多 socket 抢占同端口并出现不确定性；Go `net` 在 Windows listener 默认不设置 `SO_REUSEADDR`，而 Linux listener 默认会设置 `SO_REUSEADDR`，两端行为基线不同。
+  - 本机实验（2026-04-22）已归档：`test/wildcard_bind_matrix.py` + `test/linux_network_snapshot_probe.py`。实测显示 Linux/Windows 在 `wildcard-specific`、`wildcard-wildcard`、TCP/UDP 的可并存组合确实存在平台差异。
+  - 因此管理面静态判定继续采用“跨平台可预期优先”的保守策略：不以单机一次 `bind` 偶然成功作为配置合法性依据，统一按监听空间重叠规则拒绝风险配置。
 - `createTunnel()`、`updateTunnel()`、`updateProxyGroup()` 在写库前重算受影响隧道集合；命中冲突时直接返回 `409`
+
+参考资料：
+
+- Linux `ipv6(7)`：https://www.man7.org/linux/man-pages/man7/ipv6.7.html
+- Linux `socket(7)`：https://man7.org/linux/man-pages/man7/socket.7.html
+- RFC 3493 `IPV6_V6ONLY`：https://www.ietf.org/rfc/rfc3493.txt
+- Windows dual-stack sockets：https://learn.microsoft.com/en-us/windows/win32/winsock/dual-stack-sockets
+- Windows `SO_REUSEADDR` / `SO_EXCLUSIVEADDRUSE`：https://learn.microsoft.com/en-us/windows/win32/winsock/using-so-reuseaddr-and-so-exclusiveaddruse
 
 当前仍不暴露分组 `rate_limit` 管理入口；抓包控制也不作为 `tunnels` 持久化字段或管理入口出现。
 
