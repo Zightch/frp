@@ -374,3 +374,86 @@ GET /api/v1/system/port-usage?ip=<可选过滤>
          │ 分组: prod-group                    │
          └─────────────────────────────────────┘
 ```
+
+---
+
+## 11. 单元格可用度颜色规范（以本节为准）
+
+本节覆盖前文“空闲/占用二色”语义，单元格改为四档可用度热力色，判定严格基于当前已定稿的跨平台唯一冲突规则（V1）。
+
+### 11.1 颜色分档
+
+| 可用度等级 | 颜色 | 条件（availability_ratio） | 用户语义 |
+|------|------|------|------|
+| 绿色（可用） | `#22C55E` | `>= 0.75` | 大多数监听声明可直接创建 |
+| 黄色（大部分可用） | `#EAB308` | `>= 0.50 && < 0.75` | 存在部分冲突，但仍有较大可选空间 |
+| 橙色（小部分可用） | `#F97316` | `> 0 && < 0.50` | 可选空间很小，容易触发冲突 |
+| 红色（完全不可用） | `#EF4444` | `== 0` | 当前端口在该单元语义下不可创建新监听 |
+
+### 11.2 可用度计算（基于唯一冲突规则）
+
+对每个单元格 `(ip, port)`，固定评估 8 个候选监听声明：
+
+- `tcp + Any4(0.0.0.0)`
+- `tcp + Any6(::)`
+- `tcp + Specific(ip)`（若 `ip` 为具体地址）
+- `udp + Any4(0.0.0.0)`
+- `udp + Any6(::)`
+- `udp + Specific(ip)`（若 `ip` 为具体地址）
+- 对 `Specific(ip)` 不适用的项记为 `N/A`，不计入分母
+
+冲突判定使用与后端一致的唯一矩阵：
+
+- `Any4` 与 `Any4 / Any6 / Specific4` 冲突
+- `Any6` 与 `Any6 / Any4 / Specific6` 冲突
+- `Specific4` 仅与 `Any4` 或同 IP 的 `Specific4` 冲突
+- `Specific6` 仅与 `Any6` 或同 IP 的 `Specific6` 冲突
+- 且仅当协议相同、端口相同（或范围覆盖该端口）才计为冲突
+
+计算公式：
+
+```text
+availability_ratio = available_candidates / total_candidates
+```
+
+其中：
+
+- `available_candidates`：未命中冲突矩阵的候选声明数
+- `total_candidates`：当前单元格适用的候选声明总数（剔除 N/A）
+
+### 11.3 悬停详情（Tooltip）
+
+鼠标悬停单元格时，必须展示：
+
+- 基本信息：
+  - `IP`
+  - `端口`
+  - `颜色等级`（绿色/黄色/橙色/红色）
+  - `availability_ratio`（百分比）
+- 统计信息：
+  - `total_candidates`
+  - `available_candidates`
+  - `blocked_candidates`
+- 冲突明细（最多显示前 5 条，支持“展开全部”）：
+  - `protocol`（tcp/udp）
+  - `candidate_effective_ip`（Any4/Any6/具体 IP）
+  - `conflict_target`（隧道名或系统进程）
+  - `conflict_reason`（例如：`与 Any4 冲突`、`与同 IP Specific4 冲突`）
+
+示例（红色）：
+
+```text
+IP: 127.0.0.1
+端口: 7000
+等级: 红色（完全不可用）
+可用度: 0/6 (0%)
+冲突:
+- tcp+Specific4 -> 隧道 "api-gw"（同 IP 冲突）
+- tcp+Any4 -> 进程 nginx:1234（Any4 占位）
+- udp+Any6 -> 隧道 "udp-edge"（Any4/Any6 冲突）
+```
+
+### 11.4 与后端一致性要求
+
+- 前端颜色判定必须直接消费后端返回的 `available_candidates / total_candidates` 与冲突明细，避免前后端各算一套。
+- 若后端不可用或数据缺失，单元格降级为灰色 `#9CA3AF`，并在悬停中标记“数据不可用”。
