@@ -207,6 +207,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - 启动完成后，控制面会固定轮询同一批“当前没有 listener”的启用隧道；已真实监听中的 tunnel 不参与这条轮询路径。
 - 这条轮询用于补记新的运行态失败，也用于在外部端口占用恢复、`effective_ip` 恢复可绑定后清理旧的 `异常` 状态。
 - 如果某个在线分组当前只有部分 tunnel 已成功监听，轮询会继续扫描该分组剩余“启用但未监听”的 tunnel；当对应冲突或占用消失后，会直接在现有活动 session 上补启动这些已恢复 tunnel。
+- 如果某个在线分组之前因为 `effective_ip` 暂时不可用而被收缩成空配置，只要后续轮询发现该 `effective_ip` 已重新可绑定，服务端会先向当前 session 重新下发仓库里的完整快照；待客户端重新 `config.ack` 后，再按常规 listener 恢复路径启动该组 tunnel。
 
 ### 5.2 当前配置下发规则
 
@@ -283,6 +284,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - 因此当前 `config.ack(status=ok)` 已可对外承诺：客户端运行态已完成本地资源清理和快照切换；`frps` 收到后才重新开放 listener。
 - 如果 `frps` 在 `config.ack(status=ok)` 后按新快照启动 listener，或在仅修改 `effective_ip` 的本地重绑时，命中在线运行态端口冲突、外部端口占用或其他 bind 失败，当前不会改写数据库配置；对应隧道会在管理 API 中显示为 `异常`，并携带明确的冲突/启动失败原因。
 - 对于当前没有 listener 的启用 tunnel，启动期全量扫描和后续轮询也会复用同一套异常标记语义；如果后续外部占用消失或 `effective_ip` 恢复可绑定，轮询会清掉对应旧异常；若该 tunnel 所属分组当前在线且 control session 仍有效，还会直接补启动已恢复 tunnel。
+- 如果该在线 session 之前因 `effective_ip` 失效已经 ack 了空配置，轮询在确认 `effective_ip` 重新可绑定后，会先补发当前仓库完整快照，而不是只在服务端本地补开 listener；这样客户端运行态和服务端 listener 会重新回到同一份快照上。
 
 端口范围在在线热重载中的规则与单端口一致，只是作用对象换成整个范围 tunnel：
 

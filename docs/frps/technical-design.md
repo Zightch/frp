@@ -289,6 +289,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
   - 控制面现在也接入同一套运行态冲突语义：`ensureTunnelListeners()` 与 `effective_ip` 本地重绑前会先按当前在线运行态比较监听声明；若命中运行态冲突或外部进程抢占导致 `listen` 失败，都会统一回传明确的端口冲突原因，但不反向放宽静态规则。
   - 控制面还会在启动阶段先对“当前没有 listener 的启用隧道”做一次全量运行态扫描，完成隧道异常标记后才开放 `frpc` 控制端口；启动后继续固定轮询同一批“当前没有 listener”的隧道，用于清理已恢复的旧异常或补记新的运行态失败。
   - 如果某个在线分组当前只拉起了部分 tunnel，轮询会继续扫描该分组剩余“启用但未监听”的 tunnel；一旦冲突/占用消失，就直接在现有 session 上补启动这些已恢复 tunnel。
+  - 如果某个在线分组之前因 `effective_ip` 暂时不可用而被热更新收缩到空配置，轮询在确认该 `effective_ip` 重新可绑定后，会先向当前 session 补发仓库里的完整快照；只有等新的 `config.ack` 生效后，才继续按常规路径恢复 listener。
 - Linux / Windows 差异与采用该唯一方案的原因（规范依据 + 本机实验）：
   - Linux `ipv6(7)`：`IPV6_V6ONLY` 默认值来自 `/proc/sys/net/ipv6/bindv6only`，通常默认为 `0`；`0` 时 IPv6 wildcard socket 可覆盖 IPv4-mapped IPv6。
   - Windows Winsock：IPv6 socket 默认 `IPV6_V6ONLY=1`，只有显式设为 `0` 才 dual-stack；因此同一组地址在 Win/Lin 上可能出现不同的二次绑定结果。
@@ -372,6 +373,7 @@ frps -> start listeners
 - 管理 API 也会等待同一轮首轮扫描完成后才开始监听；因此外部首次看到的管理状态已经包含首轮扫描结果，不会先暴露“未扫描”的初始视图。
 - 启动完成后仍有一个后台轮询，只继续扫描“当前没有 listener”的启用 tunnel；已经真实监听中的 tunnel 不参与这条轮询路径。
 - 对于离线分组，这条轮询只负责写入和清理 runtime issue；对于在线但仅部分 tunnel 已监听的分组，这条轮询还会在恢复后复用当前 session 补启动缺失 tunnel。
+- 如果在线 session 当前生效快照是“因 `effective_ip` 失效而下发的空配置”，轮询在确认 `effective_ip` 已恢复可绑定后，不会直接在服务端本地补开 listener，而是先重新下发仓库里的完整快照，等待客户端 `ack` 后再恢复 listener，避免两端运行态快照分裂。
 
 ### 6.3 配置快照
 
@@ -446,6 +448,7 @@ frps -> start listeners
 - `frps` 只有在对应 `config.ack(status=ok)` 成功后，才按新快照重新启动 listener；冻结期间旧 listener 即使仍有并发 accept / read，也会按快照代际被拒绝继续打开新的 `stream.open` / `udp.open`。
 - 如果刷新时已有未确认 `config.push`，服务端继续按当前边界直接断开控制连接，而不是排队叠加第二版热重载。
 - 因此，当前 `config.ack(status=ok)` 已经可以明确表示：客户端本地资源清理和运行态快照替换已经完成；`frps` 收到后才会重新开放 listener。
+- 如果某个在线分组因为 `effective_ip` 暂时不在本机而被收缩成空配置，后续不会要求客户端必须重连；后台未监听轮询在确认该 `effective_ip` 已重新可绑定后，会复用当前 session 再补发一次完整 `config.push`，把客户端和服务端一起拉回仓库当前快照。
 
 ### 6.5 listener 启动失败的运行态回传
 

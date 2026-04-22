@@ -136,20 +136,20 @@ func (s *Server) recoverScannedActiveSessionTunnels(group GroupRuntime, targetTu
 	if s == nil || group.ID <= 0 || len(targetTunnels) == 0 {
 		return nil
 	}
-	if !hasRecoverableScannedTunnels(targetTunnels, staticConflictIDs, issues) {
-		return nil
-	}
-
-	active, ok := s.activeSession(group.ID)
+	active, ok := s.lockCurrentActiveSession(group.ID)
 	if !ok || active == nil || active.conn == nil || active.session == nil {
+		if active != nil {
+			active.mu.Unlock()
+		}
 		return nil
 	}
+	defer active.mu.Unlock()
 	if active.session.hasPendingConfig() {
 		return nil
 	}
 
 	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
-	if currentGroup.EffectiveIP != group.EffectiveIP || !sameRuntimeSnapshot(currentSnapshot, group.Snapshot) {
+	if currentGroup.EffectiveIP != group.EffectiveIP {
 		return nil
 	}
 
@@ -158,7 +158,34 @@ func (s *Server) recoverScannedActiveSessionTunnels(group GroupRuntime, targetTu
 		"group_id", currentGroup.ID,
 		"group_name", currentGroup.Name,
 	)
-	return s.ensureTunnelListeners(active.conn, logger, active.session)
+	if sameRuntimeSnapshot(currentSnapshot, group.Snapshot) {
+		if !hasRecoverableScannedTunnels(targetTunnels, staticConflictIDs, issues) {
+			return nil
+		}
+		return s.ensureTunnelListeners(active.conn, logger, active.session)
+	}
+	if !shouldRecoverScannedActiveSessionConfig(currentSnapshot, group.Snapshot) {
+		return nil
+	}
+	if _, err := s.resolveGroupEffectiveIP(group); err != nil {
+		return nil
+	}
+	logger.Info(
+		"recovering active session config after runtime prerequisites returned",
+		"config_version", group.Snapshot.Version,
+		"tunnel_count", len(group.Snapshot.Tunnels),
+	)
+	return s.pushReloadConfig(active.conn, active.session, group, group.Snapshot)
+}
+
+func shouldRecoverScannedActiveSessionConfig(currentSnapshot, nextSnapshot ConfigSnapshot) bool {
+	if sameRuntimeSnapshot(currentSnapshot, nextSnapshot) {
+		return false
+	}
+	if len(currentSnapshot.Tunnels) != 0 {
+		return false
+	}
+	return len(nextSnapshot.Tunnels) > 0
 }
 
 func hasRecoverableScannedTunnels(targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) bool {

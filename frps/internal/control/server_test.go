@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -2894,6 +2895,218 @@ func TestServerRefreshGroupPushesEmptyConfigWhenEffectiveIPBecomesNotCurrentLoca
 	}
 }
 
+func TestServerScanNonListeningTunnelRuntimeIssuesRepushesConfigAfterEffectiveIPBecomesLocalAgain(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	tcpPort := freeTCPPort(t)
+	repo := &mutableRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: "127.0.0.1",
+			TokenHash:   tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: uint16(tcpPort),
+						RemoteEnd:   uint16(tcpPort),
+						LocalHost:   host,
+						LocalStart:  2200,
+						LocalEnd:    2200,
+					},
+				},
+			},
+		},
+	}
+	network := &mutableSnapshotReader{
+		snapshot: system.Snapshot{
+			AvailableIPs: []system.IPAddress{
+				{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository: repo,
+			Network:    network,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	active, ok := server.activeSession(repo.group.ID)
+	if !ok || active == nil {
+		waitForActiveGroupSession(t, server, repo.group.ID)
+		active, ok = server.activeSession(repo.group.ID)
+	}
+	if !ok || active == nil {
+		t.Fatalf("active session for group %d not found", repo.group.ID)
+	}
+	waitForIdleConfig(t, active.session)
+
+	repo.group.EffectiveIP = "127.0.0.2"
+	repo.group.Snapshot = ConfigSnapshot{
+		Version:       2,
+		GeneratedAtMs: 200,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    7,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: uint16(tcpPort),
+				RemoteEnd:   uint16(tcpPort),
+				LocalHost:   host,
+				LocalStart:  2200,
+				LocalEnd:    2200,
+			},
+		},
+	}
+
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		server.RefreshGroup(repo.group.ID)
+	}()
+
+	refreshedFrame := readMessage(t, clientConn)
+	if refreshedFrame.Type != protocol.TypeConfigPush {
+		t.Fatalf("expected empty config.push, got %s", refreshedFrame.Type.String())
+	}
+	refreshedPush, err := protocol.UnmarshalConfigPush(refreshedFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal empty refreshed config.push: %v", err)
+	}
+	if refreshedPush.ConfigVersion != 2 || len(refreshedPush.Tunnels) != 0 {
+		t.Fatalf("unexpected empty refreshed config: %#v", refreshedPush)
+	}
+	writeConfigAck(t, clientConn, refreshedFrame.RequestID, refreshedPush.ConfigVersion)
+
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete")
+	}
+
+	waitForIdleConfig(t, active.session)
+	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	if currentGroup.EffectiveIP != "127.0.0.2" {
+		t.Fatalf("unexpected effective_ip after empty config refresh: %q", currentGroup.EffectiveIP)
+	}
+	if currentSnapshot.Version != 2 || len(currentSnapshot.Tunnels) != 0 {
+		t.Fatalf("unexpected snapshot after empty config refresh: %#v", currentSnapshot)
+	}
+	if reason := server.TunnelRuntimeIssues()[7]; !strings.Contains(reason, "当前不存在于本机") {
+		t.Fatalf("unexpected runtime issue after empty config refresh: %#v", server.TunnelRuntimeIssues())
+	}
+
+	network.setSnapshot(system.Snapshot{
+		AvailableIPs: []system.IPAddress{
+			{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+			{Addr: "127.0.0.2", Family: system.FamilyIPv4},
+		},
+	})
+
+	scanDone := make(chan error, 1)
+	go func() {
+		scanDone <- server.scanNonListeningTunnelRuntimeIssues(context.Background())
+	}()
+
+	recoveredFrame := readMessage(t, clientConn)
+	if recoveredFrame.Type != protocol.TypeConfigPush {
+		t.Fatalf("expected recovered config.push, got %s", recoveredFrame.Type.String())
+	}
+	recoveredPush, err := protocol.UnmarshalConfigPush(recoveredFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal recovered config.push: %v", err)
+	}
+	if recoveredPush.ConfigVersion != 2 || len(recoveredPush.Tunnels) != 1 {
+		t.Fatalf("unexpected recovered config.push: %#v", recoveredPush)
+	}
+	writeConfigAck(t, clientConn, recoveredFrame.RequestID, recoveredPush.ConfigVersion)
+
+	select {
+	case err := <-scanDone:
+		if err != nil {
+			t.Fatalf("scan runtime issues after effective_ip recovery: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("scan did not complete")
+	}
+
+	waitForIdleConfig(t, active.session)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active.session.runtimeMu.Lock()
+		listenerCount := len(active.session.listeners[7])
+		active.session.runtimeMu.Unlock()
+		if listenerCount == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected recovered listener to start, got %d", listenerCount)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	currentGroup, currentSnapshot = active.session.currentGroupAndSnapshot()
+	if currentGroup.EffectiveIP != "127.0.0.2" {
+		t.Fatalf("unexpected effective_ip after recovered config push: %q", currentGroup.EffectiveIP)
+	}
+	if currentSnapshot.Version != 2 || len(currentSnapshot.Tunnels) != 1 {
+		t.Fatalf("unexpected snapshot after recovered config push: %#v", currentSnapshot)
+	}
+	if issues := server.TunnelRuntimeIssues(); len(issues) != 0 {
+		t.Fatalf("expected runtime issues to clear after config recovery: %#v", issues)
+	}
+
+	pingBody, err := protocol.MarshalHeartbeatPing(protocol.HeartbeatPing{ClientUnixMs: 12345})
+	if err != nil {
+		t.Fatalf("marshal heartbeat.ping: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeHeartbeatPing,
+		RequestID: 3,
+		Body:      pingBody,
+	})
+	pongFrame := readMessage(t, clientConn)
+	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 3 {
+		t.Fatalf("unexpected heartbeat.pong after recovered config push: %#v", pongFrame)
+	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
 func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConflictsWithActiveGroup(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
@@ -3914,4 +4127,27 @@ type staticSnapshotReader struct {
 
 func (r staticSnapshotReader) Current() system.Snapshot {
 	return r.snapshot
+}
+
+type mutableSnapshotReader struct {
+	mu       sync.RWMutex
+	snapshot system.Snapshot
+}
+
+func (r *mutableSnapshotReader) Current() system.Snapshot {
+	if r == nil {
+		return system.Snapshot{}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.snapshot
+}
+
+func (r *mutableSnapshotReader) setSnapshot(snapshot system.Snapshot) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.snapshot = snapshot
 }
