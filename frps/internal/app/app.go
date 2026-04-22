@@ -25,6 +25,8 @@ type App struct {
 	store   *storage.SQL
 }
 
+var newControlServer = control.NewServer
+
 func New(cfg config.Config, logger *slog.Logger, version string) *App {
 	return &App{
 		config:  cfg,
@@ -51,7 +53,7 @@ func (a *App) Run(parent context.Context) error {
 		return err
 	}
 
-	a.control = control.NewServer(
+	a.control = newControlServer(
 		control.Options{
 			Addr:        a.config.ControlListenAddr,
 			Store:       a.store,
@@ -61,6 +63,12 @@ func (a *App) Run(parent context.Context) error {
 		a.logger.With("subsystem", "control"),
 		a.version,
 	)
+	if err := a.control.EnsureInitialRuntimeScan(ctx); err != nil {
+		_ = a.closeLocalNetwork(context.Background())
+		a.closeDatabase()
+		a.closeAuth()
+		return fmt.Errorf("init control runtime scan: %w", err)
+	}
 
 	apiServer, err := api.NewServer(
 		api.Options{

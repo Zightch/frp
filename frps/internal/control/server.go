@@ -60,7 +60,9 @@ type Server struct {
 	challengeMu sync.Mutex
 	challenges  map[uint32]*authChallenge
 
-	runtimeScanCancel context.CancelFunc
+	initialRuntimeScanMu   sync.Mutex
+	initialRuntimeScanDone bool
+	runtimeScanCancel      context.CancelFunc
 
 	nextChallengeID atomic.Uint32
 	nextSessionID   atomic.Uint64
@@ -152,7 +154,7 @@ func (s *Server) recordTunnelRuntimeIssue(tunnelID uint32, reason string) {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
-	if err := s.scanNonListeningTunnelRuntimeIssues(ctx); err != nil {
+	if err := s.EnsureInitialRuntimeScan(ctx); err != nil {
 		return err
 	}
 
@@ -219,6 +221,24 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	case <-done:
 		return nil
 	}
+}
+
+func (s *Server) EnsureInitialRuntimeScan(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+
+	s.initialRuntimeScanMu.Lock()
+	defer s.initialRuntimeScanMu.Unlock()
+
+	if s.initialRuntimeScanDone {
+		return nil
+	}
+	if err := s.scanNonListeningTunnelRuntimeIssues(ctx); err != nil {
+		return err
+	}
+	s.initialRuntimeScanDone = true
+	return nil
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
