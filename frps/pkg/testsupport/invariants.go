@@ -115,13 +115,13 @@ func CheckEmptyConfigRecoveryOrder(input InvariantCheckInput) []InvariantViolati
 		if beforeSession.RecoveryMode != RecoveryModeEmptyConfig {
 			continue
 		}
-		if afterSession.RecoveryMode == RecoveryModeRunning && afterSession.LastAckedConfigVersion == beforeSession.LastAckedConfigVersion {
+		if afterSession.RecoveryMode == RecoveryModeRunning && afterSession.SnapshotTunnelCount == 0 {
 			violations = append(violations, InvariantViolation{
 				Rule:     "recovery.full_snapshot_before_listener_resume",
-				Summary:  "空配置保活恢复时未看到新的完整快照 ack 就恢复到了 running",
-				Expected: "恢复到 running 前 lastAckedConfigVersion 必须推进",
-				Actual:   fmt.Sprintf("group_id=%d lastAcked stayed at %d", afterSession.GroupID, afterSession.LastAckedConfigVersion),
-				Fields:   []string{"server.sessions.recovery_mode", "server.sessions.last_acked_config_version"},
+				Summary:  "空配置保活恢复时未先切回完整快照就恢复到了 running",
+				Expected: "恢复到 running 前 snapshot_tunnel_count 必须大于 0",
+				Actual:   fmt.Sprintf("group_id=%d snapshot_tunnel_count=%d", afterSession.GroupID, afterSession.SnapshotTunnelCount),
+				Fields:   []string{"server.sessions.recovery_mode", "server.sessions.snapshot_tunnel_count"},
 			})
 		}
 	}

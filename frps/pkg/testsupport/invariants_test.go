@@ -50,14 +50,14 @@ func TestCheckEmptyConfigRecoveryOrder(t *testing.T) {
 		Before: &ObservedState{
 			Server: ServerObservedState{
 				Sessions: []SessionObservedState{
-					{GroupID: 1, SessionID: 1, RecoveryMode: RecoveryModeEmptyConfig, LastAckedConfigVersion: 3},
+					{GroupID: 1, SessionID: 1, RecoveryMode: RecoveryModeEmptyConfig, LastAckedConfigVersion: 3, SnapshotTunnelCount: 0},
 				},
 			},
 		},
 		After: &ObservedState{
 			Server: ServerObservedState{
 				Sessions: []SessionObservedState{
-					{GroupID: 1, SessionID: 1, RecoveryMode: RecoveryModeRunning, LastAckedConfigVersion: 3},
+					{GroupID: 1, SessionID: 1, RecoveryMode: RecoveryModeRunning, LastAckedConfigVersion: 3, SnapshotTunnelCount: 0},
 				},
 			},
 		},
@@ -67,5 +67,27 @@ func TestCheckEmptyConfigRecoveryOrder(t *testing.T) {
 	}
 	if violations[0].Rule != "recovery.full_snapshot_before_listener_resume" {
 		t.Fatalf("unexpected rule: %s", violations[0].Rule)
+	}
+}
+
+func TestCheckEmptyConfigRecoveryOrderAllowsReusedConfigVersionWithFullSnapshot(t *testing.T) {
+	violations := CheckEmptyConfigRecoveryOrder(InvariantCheckInput{
+		Before: &ObservedState{
+			Server: ServerObservedState{
+				Sessions: []SessionObservedState{
+					{GroupID: 1, SessionID: 1, RecoveryMode: RecoveryModeEmptyConfig, LastAckedConfigVersion: 3, SnapshotTunnelCount: 0},
+				},
+			},
+		},
+		After: &ObservedState{
+			Server: ServerObservedState{
+				Sessions: []SessionObservedState{
+					{GroupID: 1, SessionID: 1, RecoveryMode: RecoveryModeRunning, LastAckedConfigVersion: 3, SnapshotTunnelCount: 2},
+				},
+			},
+		},
+	})
+	if len(violations) != 0 {
+		t.Fatalf("expected no violations, got %#v", violations)
 	}
 }
