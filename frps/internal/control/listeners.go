@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/zightch/frp/frps/internal/ports"
 	"github.com/zightch/frp/frps/internal/system"
+	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -24,7 +26,7 @@ type udpTunnelListener struct {
 	configVersion uint64
 	tunnel        protocol.TunnelEntry
 	remotePort    uint16
-	listener      *net.UDPConn
+	listener      UDPListener
 }
 
 type tunnelListenerStartError struct {
@@ -143,7 +145,7 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 			)
 			continue
 		}
-		started, startErr := startTunnelListeners(snapshot.Version, tunnel, bindIP)
+		started, startErr := s.startTunnelListeners(group.ID, snapshot.Version, tunnel, bindIP)
 		if startErr != nil {
 			s.recordTunnelRuntimeIssue(tunnel.TunnelID, startErr.Error())
 			logger.Warn(
@@ -305,19 +307,29 @@ func (s *Server) activeRuntimeGroups(exclude *sessionState) []runtimeGroupSnapsh
 type tunnelListenerBatch struct {
 	tcpListeners []net.Listener
 	tcpRuntimes  []tcpTunnelListener
-	udpListeners []*net.UDPConn
+	udpListeners []UDPListener
 	udpRuntimes  []udpTunnelListener
 }
 
-func startTunnelListeners(configVersion uint64, tunnel protocol.TunnelEntry, bindIP string) (tunnelListenerBatch, error) {
+func (s *Server) startTunnelListeners(groupID int64, configVersion uint64, tunnel protocol.TunnelEntry, bindIP string) (tunnelListenerBatch, error) {
 	started := tunnelListenerBatch{}
 	switch tunnel.Protocol {
 	case protocol.ProtocolTCP:
 		started.tcpListeners = make([]net.Listener, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
 		started.tcpRuntimes = make([]tcpTunnelListener, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
 		for remotePort := int(tunnel.RemoteStart); remotePort <= int(tunnel.RemoteEnd); remotePort++ {
-			addr := net.JoinHostPort(bindIP, strconv.Itoa(remotePort))
-			listener, err := net.Listen("tcp", addr)
+			bind := ListenerBind{
+				GroupID:       groupID,
+				TunnelID:      tunnel.TunnelID,
+				ConfigVersion: configVersion,
+				Kind:          BindKindRuntimeStart,
+				Key: ListenKey{
+					Protocol: "tcp",
+					IP:       bindIP,
+					Port:     uint16(remotePort),
+				},
+			}
+			listener, err := s.listenTCP(context.Background(), bind)
 			if err != nil {
 				closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
 				return tunnelListenerBatch{}, &tunnelListenerStartError{
@@ -337,11 +349,21 @@ func startTunnelListeners(configVersion uint64, tunnel protocol.TunnelEntry, bin
 			})
 		}
 	case protocol.ProtocolUDP:
-		started.udpListeners = make([]*net.UDPConn, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
+		started.udpListeners = make([]UDPListener, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
 		started.udpRuntimes = make([]udpTunnelListener, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
 		for remotePort := int(tunnel.RemoteStart); remotePort <= int(tunnel.RemoteEnd); remotePort++ {
-			addr := net.JoinHostPort(bindIP, strconv.Itoa(remotePort))
-			udpAddr, err := net.ResolveUDPAddr("udp", addr)
+			bind := ListenerBind{
+				GroupID:       groupID,
+				TunnelID:      tunnel.TunnelID,
+				ConfigVersion: configVersion,
+				Kind:          BindKindRuntimeStart,
+				Key: ListenKey{
+					Protocol: "udp",
+					IP:       bindIP,
+					Port:     uint16(remotePort),
+				},
+			}
+			udpAddr, err := s.resolveUDPAddr(context.Background(), bind)
 			if err != nil {
 				closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
 				return tunnelListenerBatch{}, &tunnelListenerStartError{
@@ -352,7 +374,7 @@ func startTunnelListeners(configVersion uint64, tunnel protocol.TunnelEntry, bin
 					Cause:       err,
 				}
 			}
-			listener, err := net.ListenUDP("udp", udpAddr)
+			listener, err := s.listenUDP(context.Background(), bind, udpAddr)
 			if err != nil {
 				closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
 				return tunnelListenerBatch{}, &tunnelListenerStartError{
@@ -424,12 +446,32 @@ func (s *Server) resolveGroupEffectiveIP(group GroupRuntime) (string, error) {
 	return effectiveIP, nil
 }
 
-func closeStartedTunnelListeners(tcpListeners []net.Listener, udpListeners []*net.UDPConn) {
+func closeStartedTunnelListeners(tcpListeners []net.Listener, udpListeners []UDPListener) {
 	for _, listener := range tcpListeners {
+		testhooks.Point(
+			"control.listener.before_close",
+			testhooks.F("protocol", "tcp"),
+			testhooks.F("addr", listener.Addr().String()),
+		)
 		_ = listener.Close()
+		testhooks.Point(
+			"control.listener.after_close",
+			testhooks.F("protocol", "tcp"),
+			testhooks.F("addr", listener.Addr().String()),
+		)
 	}
 	for _, listener := range udpListeners {
+		testhooks.Point(
+			"control.listener.before_close",
+			testhooks.F("protocol", "udp"),
+			testhooks.F("addr", listener.LocalAddr().String()),
+		)
 		_ = listener.Close()
+		testhooks.Point(
+			"control.listener.after_close",
+			testhooks.F("protocol", "udp"),
+			testhooks.F("addr", listener.LocalAddr().String()),
+		)
 	}
 }
 
@@ -516,7 +558,7 @@ func (s *Server) serveTunnelListener(conn net.Conn, logger Logger, session *sess
 	}
 }
 
-func (s *Server) serveUDPTunnelListener(conn net.Conn, logger Logger, session *sessionState, configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, listener *net.UDPConn) {
+func (s *Server) serveUDPTunnelListener(conn net.Conn, logger Logger, session *sessionState, configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, listener UDPListener) {
 	buffer := make([]byte, protocol.MaxDataBodyLen)
 	for {
 		n, clientAddr, err := listener.ReadFromUDP(buffer)

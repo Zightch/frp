@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/zightch/frp/frps/internal/clock"
+	"github.com/zightch/frp/frps/internal/testhooks"
 )
 
 const defaultPollInterval = 5 * time.Second
@@ -59,12 +62,16 @@ type SnapshotReader interface {
 type Options struct {
 	PollInterval time.Duration
 	Collector    collector
+	Clock        clock.Clock
+	Scheduler    clock.Scheduler
 }
 
 type NetworkSnapshotService struct {
 	logger       *slog.Logger
 	collector    collector
 	pollInterval time.Duration
+	clock        clock.Clock
+	scheduler    clock.Scheduler
 
 	mu       sync.RWMutex
 	snapshot Snapshot
@@ -89,11 +96,20 @@ func NewNetworkSnapshotService(options Options, logger *slog.Logger) *NetworkSna
 	if options.Collector == nil {
 		options.Collector = newPlatformCollector()
 	}
+	if options.Clock == nil {
+		realClock := clock.NewRealClock()
+		options.Clock = realClock
+	}
+	if options.Scheduler == nil {
+		options.Scheduler = clock.NewRealScheduler()
+	}
 
 	return &NetworkSnapshotService{
 		logger:       logger,
 		collector:    options.Collector,
 		pollInterval: options.PollInterval,
+		clock:        options.Clock,
+		scheduler:    options.Scheduler,
 	}
 }
 
@@ -102,10 +118,12 @@ func (s *NetworkSnapshotService) Start(parent context.Context) error {
 		parent = context.Background()
 	}
 
+	testhooks.Point("network.snapshot.start.before_collect")
 	initialSnapshot, err := s.collector.Collect()
 	if err != nil {
 		return fmt.Errorf("collect initial local network snapshot: %w", err)
 	}
+	testhooks.Point("network.snapshot.start.after_collect", testhooks.F("address_count", len(initialSnapshot.AvailableIPs)))
 
 	ctx, cancel := context.WithCancel(parent)
 
@@ -118,7 +136,6 @@ func (s *NetworkSnapshotService) Start(parent context.Context) error {
 	s.snapshot = cloneSnapshot(initialSnapshot)
 	s.started = true
 	s.cancel = cancel
-	s.wg.Add(1)
 	s.mu.Unlock()
 
 	s.logger.Info(
@@ -128,7 +145,14 @@ func (s *NetworkSnapshotService) Start(parent context.Context) error {
 		"address_count", len(initialSnapshot.AvailableIPs),
 	)
 
-	go s.poll(ctx)
+	task := s.scheduler.Every(ctx, "system.network_snapshot_poll", s.pollInterval, func(ctx context.Context, _ time.Time) {
+		s.pollOnce(ctx)
+	})
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		<-task.Done()
+	}()
 	return nil
 }
 
@@ -166,36 +190,32 @@ func (s *NetworkSnapshotService) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (s *NetworkSnapshotService) poll(ctx context.Context) {
-	defer s.wg.Done()
+func (s *NetworkSnapshotService) pollOnce(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
 
-	ticker := time.NewTicker(s.pollInterval)
-	defer ticker.Stop()
+	testhooks.Point("network.snapshot.poll.before_collect")
+	snapshot, err := s.collector.Collect()
+	if err != nil {
+		s.logger.Warn(
+			"refresh local network snapshot failed",
+			"platform", s.collector.Platform(),
+			"error", err,
+		)
+		return
+	}
+	testhooks.Point("network.snapshot.poll.after_collect", testhooks.F("address_count", len(snapshot.AvailableIPs)))
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			snapshot, err := s.collector.Collect()
-			if err != nil {
-				s.logger.Warn(
-					"refresh local network snapshot failed",
-					"platform", s.collector.Platform(),
-					"error", err,
-				)
-				continue
-			}
-
-			if s.storeSnapshot(snapshot) {
-				s.logger.Info(
-					"local network snapshot updated",
-					"platform", snapshot.Platform,
-					"interface_count", len(snapshot.Interfaces),
-					"address_count", len(snapshot.AvailableIPs),
-				)
-			}
-		}
+	if s.storeSnapshot(snapshot) {
+		s.logger.Info(
+			"local network snapshot updated",
+			"platform", snapshot.Platform,
+			"interface_count", len(snapshot.Interfaces),
+			"address_count", len(snapshot.AvailableIPs),
+		)
 	}
 }
 
@@ -205,6 +225,11 @@ func (s *NetworkSnapshotService) storeSnapshot(next Snapshot) bool {
 
 	changed := !sameSnapshotContent(s.snapshot, next)
 	s.snapshot = cloneSnapshot(next)
+	testhooks.Point(
+		"network.snapshot.poll.after_store",
+		testhooks.F("changed", changed),
+		testhooks.F("address_count", len(next.AvailableIPs)),
+	)
 	return changed
 }
 

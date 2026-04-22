@@ -567,7 +567,7 @@ func TestServerCleansUpIdleUDPSessionAndNotifiesClient(t *testing.T) {
 		udpSessions:    make(map[uint32]*publicUDPSession),
 		udpSessionKeys: make(map[string]uint32),
 		listeners:      make(map[uint32][]net.Listener),
-		udpListeners:   make(map[uint32][]*net.UDPConn),
+		udpListeners:   make(map[uint32][]UDPListener),
 		done:           make(chan struct{}),
 	}
 	defer server.shutdownSession(session)
@@ -4116,7 +4116,7 @@ func newTestSessionState(group GroupRuntime, snapshot ConfigSnapshot) *sessionSt
 		udpSessions:    make(map[uint32]*publicUDPSession),
 		udpSessionKeys: make(map[string]uint32),
 		listeners:      make(map[uint32][]net.Listener),
-		udpListeners:   make(map[uint32][]*net.UDPConn),
+		udpListeners:   make(map[uint32][]UDPListener),
 		done:           make(chan struct{}),
 	}
 }

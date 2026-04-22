@@ -830,17 +830,17 @@ type ScenarioStep struct {
 - `Faults`：可稳定制造的故障原语。
 - `Main Scenarios`：直接覆盖的场景类型。
 - `Required Seams`：依赖的 hook / fake / harness / scheduler。
-- `Current Status`：`已定稿待实现`、`部分缺口`、`未开始`。
+- `Current Status`：`已可用（最小实现）`、`已定稿待实现`、`部分缺口`、`未开始`。
 - `Gap`：当前还不能稳定表达的边界。
 
 第一版覆盖表按当前主线收口如下：
 
 | Capability | Faults | Main Scenarios | Required Seams | Current Status | Gap |
 | --- | --- | --- | --- | --- | --- |
-| 启动门闩编排 | 首轮扫描未完成前阻止控制端口开放、阻止管理 API 首次可见、阻止登录进入 | 启动序列、管理 API 首次可见、首登前门闩 | hook、场景编排器、状态观测 | 已定稿待实现 | 需要统一跨进程 barrier 控制面 |
-| 手动时间推进 | 轮询、heartbeat、backoff、超时、网络快照刷新 | 未监听 tunnel 轮询恢复、热更新恢复、断线重连 | manual clock、manual scheduler、场景编排器 | 已定稿待实现 | 仍需把更多真实 `time.*` 路径切到 seam |
-| listener 绑定世界 | bind 失败、probe 失败、close 晚到、外部占用、部分端口失败、释放后复占 | 首轮冲突、后续恢复、局部补 listener、close/rebind 竞态 | fake listener、hook、状态观测 | 已定稿待实现 | 尚未覆盖真实 accept/read 数据面 |
-| 网络快照世界 | 非法 IP、非本机 IP、地址族变化、快照抖动、采集错误、发布延迟 | 首登非法 `effective_ip`、运行时空配置保活、恢复补推完整快照 | fake snapshot、hook、manual scheduler、状态观测 | 已定稿待实现 | 仍需统一发布版本号和消费版本观测 |
+| 启动门闩编排 | 首轮扫描未完成前阻止控制端口开放、阻止管理 API 首次可见、阻止登录进入 | 启动序列、管理 API 首次可见、首登前门闩 | hook、场景编排器、状态观测 | 已可用（最小实现） | 已有单进程 hook/controller；仍需统一跨进程 barrier 控制面与更多登录/配置阶段命中点 |
+| 手动时间推进 | 轮询、heartbeat、backoff、超时、网络快照刷新 | 未监听 tunnel 轮询恢复、热更新恢复、断线重连 | manual clock、manual scheduler、场景编排器 | 已可用（最小实现） | `runtime scan` 与 `network snapshot` 已接入；`frpc` backoff/heartbeat 与更多 `time.*` 路径仍待切 seam |
+| listener 绑定世界 | bind 失败、probe 失败、close 晚到、外部占用、部分端口失败、释放后复占 | 首轮冲突、后续恢复、局部补 listener、close/rebind 竞态 | fake listener、hook、状态观测 | 已可用（最小实现） | `start/probe/close` 已统一走 seam；close 延迟释放、部分 range 脚本与真实 accept/read 数据面仍未覆盖 |
+| 网络快照世界 | 非法 IP、非本机 IP、地址族变化、快照抖动、采集错误、发布延迟 | 首登非法 `effective_ip`、运行时空配置保活、恢复补推完整快照 | fake snapshot、hook、manual scheduler、状态观测 | 已可用（最小实现） | fake collector / reader 与手动轮询已落地；发布版本号、消费侧统一观测和更复杂抖动剧本仍待补齐 |
 | 控制连接世界 | `config.push` 前后断线、`config.ack` 晚到/重复/乱序、heartbeat 丢失/晚到、半关闭、旧连接残帧 | 热更新、session replacement、旧 session 晚到消息隔离 | fake transport、session harness、hook、manual scheduler | 已定稿待实现 | 仍缺跨进程版 transport 控制接口 |
 | 统一状态观测 | active session、pending config、listener 集合、runtime issue、恢复模式、管理 API 门闩 | 所有主线场景 | 观测骨架、场景编排器 | 已定稿待实现 | 仍需统一导出跨端快照 |
 | 不变量断言 | 启动门闩、单 pending、静态 `冲突` 优先级、空配置恢复顺序、旧 session 隔离 | 所有进入矩阵的正式场景 | 断言库、观测骨架 | 已定稿待实现 | 仍需补步骤化快照输入 |

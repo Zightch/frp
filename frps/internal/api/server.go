@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
 	authn "github.com/zightch/frp/frps/internal/auth"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
+	"github.com/zightch/frp/frps/internal/testhooks"
 )
 
 type Options struct {
@@ -96,8 +98,14 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) ListenAndServe() error {
+	testhooks.Point("startup.management_api.before_open", testhooks.F("addr", s.server.Addr))
+	listener, err := net.Listen("tcp", s.server.Addr)
+	if err != nil {
+		return err
+	}
 	s.logger.Info("management api listening", "addr", s.server.Addr)
-	err := s.server.ListenAndServe()
+	testhooks.Point("startup.management_api.after_open", testhooks.F("addr", s.server.Addr))
+	err = s.server.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

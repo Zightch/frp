@@ -111,7 +111,7 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		udpSessions:    make(map[uint32]*publicUDPSession),
 		udpSessionKeys: make(map[string]uint32),
 		listeners:      make(map[uint32][]net.Listener),
-		udpListeners:   make(map[uint32][]*net.UDPConn),
+		udpListeners:   make(map[uint32][]UDPListener),
 		done:           make(chan struct{}),
 	}
 	session.nextServerRequestID.Store(initialServerRequestID - 1)
@@ -158,7 +158,7 @@ func (s *Server) issueChallenge(tokenHash [32]byte) (protocol.AuthChallenge, err
 		challengeID = s.nextChallengeID.Add(1)
 	}
 
-	now := time.Now().UTC()
+	now := s.clock.Now()
 	s.challengeMu.Lock()
 	defer s.challengeMu.Unlock()
 
@@ -177,7 +177,7 @@ func (s *Server) issueChallenge(tokenHash [32]byte) (protocol.AuthChallenge, err
 }
 
 func (s *Server) consumeChallenge(challengeID uint32, response [32]byte) error {
-	now := time.Now().UTC()
+	now := s.clock.Now()
 
 	s.challengeMu.Lock()
 	defer s.challengeMu.Unlock()

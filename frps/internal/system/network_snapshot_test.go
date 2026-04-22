@@ -2,12 +2,13 @@ package system
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/zightch/frp/frps/internal/clock"
 )
 
 func TestSnapshotFromDiscoveredInterfacesNormalizesAndDeduplicates(t *testing.T) {
@@ -64,18 +65,18 @@ func TestNetworkSnapshotServicePollsAndKeepsLastGoodSnapshot(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	first := testSnapshot("windows", time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC), "10.0.0.1")
 	second := testSnapshot("windows", time.Date(2026, 4, 21, 12, 0, 1, 0, time.UTC), "10.0.0.2", "2001:db8::1")
+	manual := clock.NewManual(time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC))
 
 	service := NewNetworkSnapshotService(Options{
-		PollInterval: 10 * time.Millisecond,
-		Collector: &fakeCollector{
-			platform: "windows",
-			results: []fakeCollectResult{
-				{snapshot: first},
-				{snapshot: second},
-				{err: errors.New("temporary collector failure")},
-				{err: errors.New("temporary collector failure")},
-			},
-		},
+		PollInterval: time.Second,
+		Collector: NewScriptedCollector("windows",
+			CollectResult{Snapshot: first},
+			CollectResult{Snapshot: second},
+			CollectResult{Err: errTemporaryCollect},
+			CollectResult{Err: errTemporaryCollect},
+		),
+		Clock:     manual,
+		Scheduler: manual,
 	}, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -96,11 +97,8 @@ func TestNetworkSnapshotServicePollsAndKeepsLastGoodSnapshot(t *testing.T) {
 		t.Fatalf("expected initial snapshot to be visible: %#v", service.Current())
 	}
 
-	waitFor(t, time.Second, func() bool {
-		return service.Current().HasIP("10.0.0.2")
-	})
-
-	time.Sleep(40 * time.Millisecond)
+	manual.Advance(time.Second)
+	manual.WaitIdle()
 
 	current := service.Current()
 	if !current.HasIP("10.0.0.2") || !current.HasIP("2001:db8::1") {
@@ -115,33 +113,14 @@ func TestNetworkSnapshotServicePollsAndKeepsLastGoodSnapshot(t *testing.T) {
 	if service.Current().Interfaces[0].IPs[0].Addr == "mutated" {
 		t.Fatal("expected Current to return a defensive copy")
 	}
-}
 
-type fakeCollectResult struct {
-	snapshot Snapshot
-	err      error
-}
+	manual.Advance(2 * time.Second)
+	manual.WaitIdle()
 
-type fakeCollector struct {
-	platform string
-	results  []fakeCollectResult
-}
-
-func (c *fakeCollector) Platform() string {
-	return c.platform
-}
-
-func (c *fakeCollector) Collect() (Snapshot, error) {
-	if len(c.results) == 0 {
-		return Snapshot{}, errors.New("unexpected extra collect")
+	current = service.Current()
+	if !current.HasIP("10.0.0.2") || !current.HasIP("2001:db8::1") {
+		t.Fatalf("expected latest successful snapshot to be retained after collector failures: %#v", current)
 	}
-
-	result := c.results[0]
-	c.results = c.results[1:]
-	if result.err != nil {
-		return Snapshot{}, result.err
-	}
-	return cloneSnapshot(result.snapshot), nil
 }
 
 func testSnapshot(platform string, capturedAt time.Time, addrs ...string) Snapshot {
@@ -172,16 +151,4 @@ func testSnapshot(platform string, capturedAt time.Time, addrs ...string) Snapsh
 	}
 }
 
-func waitFor(t *testing.T, timeout time.Duration, predicate func() bool) {
-	t.Helper()
-
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if predicate() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatal("condition was not met before timeout")
-}
+var errTemporaryCollect = io.EOF

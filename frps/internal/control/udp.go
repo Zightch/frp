@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -17,7 +18,7 @@ type publicUDPSession struct {
 	remotePort       uint16
 	clientAddr       protocol.SockAddr
 	publicAddr       *net.UDPAddr
-	listener         *net.UDPConn
+	listener         UDPListener
 	idleTimeout      time.Duration
 	lastActiveUnixMs atomic.Int64
 }
@@ -44,7 +45,7 @@ func (s *Server) handleUDPData(conn net.Conn, session *sessionState, frame proto
 		}
 		return nil
 	}
-	udpSession.touch(time.Now().UTC())
+	udpSession.touch(s.clock.Now())
 	return nil
 }
 
@@ -79,19 +80,20 @@ func (s *Server) sendUDPClose(conn net.Conn, session *sessionState, sessionID ui
 }
 
 func (s *Server) serveUDPIdleCleanup(conn net.Conn, logger Logger, session *sessionState) {
-	ticker := time.NewTicker(defaultUDPIdleSweep)
-	defer ticker.Stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	for {
-		select {
-		case <-session.doneCh():
-			return
-		case now := <-ticker.C:
-			if err := s.cleanupIdlePublicUDPSessions(conn, logger, session, now.UTC()); err != nil {
-				logger.Warn("udp session idle cleanup failed", "error", err)
-			}
+	go func() {
+		<-session.doneCh()
+		cancel()
+	}()
+
+	task := s.scheduler.Every(ctx, "control.udp_idle_cleanup", defaultUDPIdleSweep, func(ctx context.Context, now time.Time) {
+		if err := s.cleanupIdlePublicUDPSessions(conn, logger, session, now.UTC()); err != nil {
+			logger.Warn("udp session idle cleanup failed", "error", err)
 		}
-	}
+	})
+	<-task.Done()
 }
 
 func (s *Server) cleanupIdlePublicUDPSessions(conn net.Conn, logger Logger, session *sessionState, now time.Time) error {
@@ -110,8 +112,8 @@ func (s *Server) cleanupIdlePublicUDPSessions(conn net.Conn, logger Logger, sess
 	return nil
 }
 
-func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, session *sessionState, configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, listener *net.UDPConn, clientAddr *net.UDPAddr, payload []byte) error {
-	now := time.Now().UTC()
+func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, session *sessionState, configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, listener UDPListener, clientAddr *net.UDPAddr, payload []byte) error {
+	now := s.clock.Now()
 	udpSession := newPublicUDPSession(session.nextTunnelStreamID(), tunnel, remotePort, listener, clientAddr, now)
 	udpSession, created := session.bindPublicUDPSession(udpSession, configVersion)
 	if udpSession == nil {
@@ -228,7 +230,7 @@ func (s *sessionState) takeIdlePublicUDPSessions(now time.Time) []*publicUDPSess
 	return idleSessions
 }
 
-func newPublicUDPSession(sessionID uint32, tunnel protocol.TunnelEntry, remotePort uint16, listener *net.UDPConn, clientAddr *net.UDPAddr, now time.Time) *publicUDPSession {
+func newPublicUDPSession(sessionID uint32, tunnel protocol.TunnelEntry, remotePort uint16, listener UDPListener, clientAddr *net.UDPAddr, now time.Time) *publicUDPSession {
 	udpSession := &publicUDPSession{
 		sessionID:   sessionID,
 		tunnelID:    tunnel.TunnelID,

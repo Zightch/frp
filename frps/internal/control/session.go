@@ -34,7 +34,7 @@ type sessionState struct {
 	udpSessions       map[uint32]*publicUDPSession
 	udpSessionKeys    map[string]uint32
 	listeners         map[uint32][]net.Listener
-	udpListeners      map[uint32][]*net.UDPConn
+	udpListeners      map[uint32][]UDPListener
 	listenersStarted  bool
 	udpCleanupStarted bool
 	runtimeFrozen     bool
@@ -133,7 +133,7 @@ func (s *sessionState) hasActiveRuntimeListeners() bool {
 	return s.hasRuntimeListenersLocked()
 }
 
-func (s *sessionState) attachTunnelListeners(configVersion uint64, tunnelID uint32, tcpListeners []net.Listener, udpListeners []*net.UDPConn) (bool, bool) {
+func (s *sessionState) attachTunnelListeners(configVersion uint64, tunnelID uint32, tcpListeners []net.Listener, udpListeners []UDPListener) (bool, bool) {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
 	if s.runtimeFrozen {
@@ -307,7 +307,7 @@ func (s *sessionState) hasPendingConfig() bool {
 	return s.pendingConfigRequestID != 0
 }
 
-func (s *sessionState) freezeTunnelRuntime() ([]net.Listener, []*net.UDPConn, map[uint32]*publicStream, []*publicUDPSession) {
+func (s *sessionState) freezeTunnelRuntime() ([]net.Listener, []UDPListener, map[uint32]*publicStream, []*publicUDPSession) {
 	s.runtimeIOMu.Lock()
 	defer s.runtimeIOMu.Unlock()
 	s.runtimeMu.Lock()
@@ -322,7 +322,7 @@ func (s *sessionState) freezeTunnelRuntime() ([]net.Listener, []*net.UDPConn, ma
 		delete(s.listeners, tunnelID)
 		listeners = append(listeners, tunnelListeners...)
 	}
-	udpListeners := make([]*net.UDPConn, 0, len(s.udpListeners))
+	udpListeners := make([]UDPListener, 0, len(s.udpListeners))
 	for tunnelID, tunnelListeners := range s.udpListeners {
 		delete(s.udpListeners, tunnelID)
 		udpListeners = append(udpListeners, tunnelListeners...)

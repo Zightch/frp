@@ -10,8 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zightch/frp/frps/internal/clock"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
+	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/transport"
 )
@@ -36,14 +38,20 @@ type Options struct {
 	ChallengeTTL      time.Duration
 	HeartbeatInterval time.Duration
 	RuntimeScanPoll   time.Duration
+	Clock             clock.Clock
+	Scheduler         clock.Scheduler
+	ListenerFactory   ListenerFactory
 }
 
 type Server struct {
-	options Options
-	logger  *slog.Logger
-	version string
-	repo    Repository
-	network system.SnapshotReader
+	options   Options
+	logger    *slog.Logger
+	version   string
+	repo      Repository
+	network   system.SnapshotReader
+	clock     clock.Clock
+	scheduler clock.Scheduler
+	listeners ListenerFactory
 
 	mu         sync.Mutex
 	listener   net.Listener
@@ -93,6 +101,16 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 	if options.Repository == nil && options.Store != nil {
 		options.Repository = NewRepository(options.Store)
 	}
+	if options.Clock == nil {
+		realClock := clock.NewRealClock()
+		options.Clock = realClock
+	}
+	if options.Scheduler == nil {
+		options.Scheduler = clock.NewRealScheduler()
+	}
+	if options.ListenerFactory == nil {
+		options.ListenerFactory = NewNetListenerFactory()
+	}
 
 	return &Server{
 		options:             options,
@@ -100,6 +118,9 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		version:             version,
 		repo:                options.Repository,
 		network:             options.Network,
+		clock:               options.Clock,
+		scheduler:           options.Scheduler,
+		listeners:           options.ListenerFactory,
 		activeConn:          make(map[net.Conn]struct{}),
 		sessions:            make(map[int64]*activeSession),
 		tunnelRuntimeIssues: make(map[int64]string),
@@ -158,6 +179,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return err
 	}
 
+	testhooks.Point("startup.control_listener.before_open", testhooks.F("addr", s.options.Addr))
 	listenConfig := net.ListenConfig{}
 	listener, err := listenConfig.Listen(ctx, "tcp", s.options.Addr)
 	if err != nil {
@@ -168,6 +190,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.listener = listener
 	s.mu.Unlock()
 
+	testhooks.Point("startup.control_listener.after_open", testhooks.F("addr", s.options.Addr))
 	s.startRuntimeIssuePolling(ctx)
 	s.logger.Info("frpc control listener ready", "addr", s.options.Addr)
 
@@ -234,9 +257,11 @@ func (s *Server) EnsureInitialRuntimeScan(ctx context.Context) error {
 	if s.initialRuntimeScanDone {
 		return nil
 	}
+	testhooks.Point("startup.initial_scan.before_full_scan")
 	if err := s.scanNonListeningTunnelRuntimeIssues(ctx); err != nil {
 		return err
 	}
+	testhooks.Point("startup.initial_scan.after_full_scan")
 	s.initialRuntimeScanDone = true
 	return nil
 }
@@ -353,7 +378,7 @@ func (s *Server) handleHeartbeatPing(conn net.Conn, session *sessionState, frame
 
 	body, err := protocol.MarshalHeartbeatPong(protocol.HeartbeatPong{
 		ClientUnixMs: ping.ClientUnixMs,
-		ServerUnixMs: uint64(time.Now().UTC().UnixMilli()),
+		ServerUnixMs: uint64(s.clock.Now().UnixMilli()),
 	})
 	if err != nil {
 		return err
