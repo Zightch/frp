@@ -2663,6 +2663,237 @@ func TestServerRefreshGroupRebindsListenersWhenOnlyEffectiveIPChanges(t *testing
 	}
 }
 
+func TestServerRefreshGroupPushesEmptyConfigWhenEffectiveIPBecomesNotCurrentLocalIP(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	tcpPort := freeTCPPort(t)
+
+	repo := &mutableRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: "127.0.0.1",
+			TokenHash:   tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: uint16(tcpPort),
+						RemoteEnd:   uint16(tcpPort),
+						LocalHost:   host,
+						LocalStart:  2200,
+						LocalEnd:    2200,
+					},
+				},
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository: repo,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	active, ok := server.activeSession(repo.group.ID)
+	if !ok || active == nil {
+		waitForActiveGroupSession(t, server, repo.group.ID)
+		active, ok = server.activeSession(repo.group.ID)
+	}
+	if !ok || active == nil {
+		t.Fatalf("active session for group %d not found", repo.group.ID)
+	}
+	waitForIdleConfig(t, active.session)
+
+	publicConn := waitForTCPDial(t, tcpPort)
+	defer publicConn.Close()
+
+	streamOpenFrame := readMessage(t, clientConn)
+	if streamOpenFrame.Type != protocol.TypeStreamOpen {
+		t.Fatalf("expected stream.open, got %s", streamOpenFrame.Type.String())
+	}
+	streamOpenedBody, err := protocol.MarshalStreamOpened(protocol.StreamOpened{Status: protocol.StatusOK})
+	if err != nil {
+		t.Fatalf("marshal stream.opened: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeStreamOpened,
+		RequestID: streamOpenFrame.RequestID,
+		StreamID:  streamOpenFrame.StreamID,
+		Body:      streamOpenedBody,
+	})
+
+	repo.group.EffectiveIP = "127.0.0.2"
+	repo.group.Snapshot = ConfigSnapshot{
+		Version:       2,
+		GeneratedAtMs: 200,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    7,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: uint16(tcpPort),
+				RemoteEnd:   uint16(tcpPort),
+				LocalHost:   host,
+				LocalStart:  2200,
+				LocalEnd:    2200,
+			},
+		},
+	}
+
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		server.RefreshGroup(repo.group.ID)
+	}()
+
+	var (
+		gotStreamClose bool
+		refreshedFrame protocol.Frame
+	)
+	deadline := time.Now().Add(2 * time.Second)
+	for !(gotStreamClose && refreshedFrame.Type == protocol.TypeConfigPush) {
+		frame, err := readMessageWithin(clientConn, 200*time.Millisecond)
+		if err != nil {
+			if isTimeoutError(err) && time.Now().Before(deadline) {
+				continue
+			}
+			t.Fatalf("read refresh frame: %v", err)
+		}
+
+		switch frame.Type {
+		case protocol.TypeStreamClose:
+			streamClose, err := protocol.UnmarshalStreamClose(frame.Body)
+			if err != nil {
+				t.Fatalf("unmarshal stream.close: %v", err)
+			}
+			if frame.StreamID != streamOpenFrame.StreamID {
+				t.Fatalf("unexpected stream.close stream id: got %d want %d", frame.StreamID, streamOpenFrame.StreamID)
+			}
+			if streamClose.ReasonCode != protocol.CloseReasonAdminTerminated || streamClose.Message != "reload in progress" {
+				t.Fatalf("unexpected stream.close body: %#v", streamClose)
+			}
+			gotStreamClose = true
+		case protocol.TypeConfigPush:
+			refreshedFrame = frame
+		default:
+			t.Fatalf("unexpected frame during refresh: %s", frame.Type.String())
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for refresh frames")
+		}
+	}
+
+	refreshedPush, err := protocol.UnmarshalConfigPush(refreshedFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal refreshed config.push: %v", err)
+	}
+	if refreshedPush.ConfigVersion != 2 {
+		t.Fatalf("unexpected refreshed config version: %d", refreshedPush.ConfigVersion)
+	}
+	if len(refreshedPush.Tunnels) != 0 {
+		t.Fatalf("expected empty refreshed tunnel list, got %d", len(refreshedPush.Tunnels))
+	}
+
+	assertTCPDialFails(t, tcpPort)
+
+	if err := publicConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatalf("set public conn deadline: %v", err)
+	}
+	buffer := make([]byte, 1)
+	if _, err := publicConn.Read(buffer); err == nil {
+		t.Fatal("expected active public tcp connection to close during invalid effective_ip refresh")
+	}
+
+	writeConfigAck(t, clientConn, refreshedFrame.RequestID, refreshedPush.ConfigVersion)
+
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete")
+	}
+
+	waitForIdleConfig(t, active.session)
+	if _, ok := server.activeSession(repo.group.ID); !ok {
+		t.Fatal("expected active session to remain after empty config refresh")
+	}
+
+	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	if currentGroup.EffectiveIP != "127.0.0.2" {
+		t.Fatalf("unexpected effective_ip after empty config refresh: %q", currentGroup.EffectiveIP)
+	}
+	if currentSnapshot.Version != 2 {
+		t.Fatalf("unexpected snapshot version after empty config refresh: %d", currentSnapshot.Version)
+	}
+	if len(currentSnapshot.Tunnels) != 0 {
+		t.Fatalf("expected empty snapshot after invalid effective_ip refresh, got %d tunnels", len(currentSnapshot.Tunnels))
+	}
+	if pendingRequestID, _ := active.session.configAckState(); pendingRequestID != 0 {
+		t.Fatalf("expected no pending config request after empty config refresh, got %d", pendingRequestID)
+	}
+	if listeners := active.session.listeners[7]; len(listeners) != 0 {
+		t.Fatalf("expected no active listeners after empty config refresh, got %d", len(listeners))
+	}
+	if reason := server.TunnelRuntimeIssues()[7]; !strings.Contains(reason, "当前不存在于本机") {
+		t.Fatalf("unexpected runtime issue after invalid effective_ip refresh: %#v", server.TunnelRuntimeIssues())
+	}
+
+	pingBody, err := protocol.MarshalHeartbeatPing(protocol.HeartbeatPing{ClientUnixMs: 12345})
+	if err != nil {
+		t.Fatalf("marshal heartbeat.ping: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeHeartbeatPing,
+		RequestID: 3,
+		Body:      pingBody,
+	})
+	pongFrame := readMessage(t, clientConn)
+	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 3 {
+		t.Fatalf("unexpected heartbeat.pong after empty config refresh: %#v", pongFrame)
+	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
 func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActiveGroup(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))

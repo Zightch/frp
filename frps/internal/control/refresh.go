@@ -120,6 +120,28 @@ func (s *Server) RefreshGroup(groupID int64) {
 		_ = active.conn.Close()
 		return
 	}
+	if emptySnapshot, effectiveIPErr, shrinkToEmpty := s.runtimeRefreshSnapshot(group, snapshot); shrinkToEmpty {
+		s.logger.Info(
+			"shrinking active group runtime to empty config after effective_ip became unavailable",
+			"group_id", groupID,
+			"session_id", active.session.ID,
+			"effective_ip", group.EffectiveIP,
+			"error", effectiveIPErr,
+		)
+		if err := s.freezeGroupRuntime(active.conn, active.session); err != nil {
+			s.logger.Warn("freeze active group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
+			_ = active.conn.Close()
+			return
+		}
+		if err := s.pushReloadConfig(active.conn, active.session, group, emptySnapshot); err != nil {
+			if errors.Is(err, errConfigUpdateInFlight) {
+				s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
+			}
+			s.logger.Warn("push empty config after effective_ip refresh failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
+			_ = active.conn.Close()
+		}
+		return
+	}
 
 	if sameRuntimeSnapshot(currentSnapshot, snapshot) {
 		if currentGroup.EffectiveIP == group.EffectiveIP {
@@ -188,6 +210,29 @@ func (s *Server) rebindGroupRuntime(conn net.Conn, session *sessionState, group 
 		"group_name", group.Name,
 	)
 	return s.ensureTunnelListeners(conn, logger, session)
+}
+
+func (s *Server) runtimeRefreshSnapshot(group GroupRuntime, snapshot ConfigSnapshot) (ConfigSnapshot, error, bool) {
+	enabled := enabledTunnels(snapshot)
+	if len(enabled) == 0 {
+		return snapshot, nil, false
+	}
+
+	if _, err := s.resolveGroupEffectiveIP(group); err != nil {
+		s.clearTunnelRuntimeIssues(group.Snapshot.Tunnels)
+		reason := buildGroupEffectiveIPRuntimeReason(group, err)
+		for _, tunnel := range enabled {
+			s.recordTunnelRuntimeIssue(tunnel.TunnelID, reason)
+		}
+		return emptyConfigSnapshot(snapshot), err, true
+	}
+
+	return snapshot, nil, false
+}
+
+func emptyConfigSnapshot(snapshot ConfigSnapshot) ConfigSnapshot {
+	snapshot.Tunnels = nil
+	return snapshot
 }
 
 func sameRuntimeSnapshot(current, next ConfigSnapshot) bool {
