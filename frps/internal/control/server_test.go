@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -3018,7 +3019,14 @@ func writeUDPAndReadOpenFrame(t *testing.T, controlConn net.Conn, publicConn *ne
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if _, err := publicConn.Write(payload); err != nil {
-			t.Fatalf("write udp datagram: %v", err)
+			if !isRetryableUDPWriteError(err) {
+				t.Fatalf("write udp datagram: %v", err)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for udp write to succeed: %v", err)
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 
 		frame, err := readMessageWithin(controlConn, 100*time.Millisecond)
@@ -3041,7 +3049,14 @@ func writeUDPToAndReadOpenFrame(t *testing.T, controlConn net.Conn, publicConn *
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if _, err := publicConn.WriteToUDP(payload, remoteAddr); err != nil {
-			t.Fatalf("write udp datagram to %s: %v", remoteAddr.String(), err)
+			if !isRetryableUDPWriteError(err) {
+				t.Fatalf("write udp datagram to %s: %v", remoteAddr.String(), err)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for udp write to %s to succeed: %v", remoteAddr.String(), err)
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 
 		frame, err := readMessageWithin(controlConn, 100*time.Millisecond)
@@ -3072,6 +3087,17 @@ func isTimeoutError(err error) bool {
 	}
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func isRetryableUDPWriteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "connection refused") || strings.Contains(message, "connection reset")
 }
 
 func waitForActiveGroupSession(t *testing.T, server *Server, groupID int64) {
