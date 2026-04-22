@@ -154,6 +154,84 @@ barrier 语义统一为“双边握手 + 明确放行”：
 
 在可测性基建完成前，`-race`、高频扰动、多 `GOMAXPROCS`、长稳 soak 只作为补充捞漏手段，不作为通过依据。
 
+### 2.4.2 可控调度骨架
+
+时间相关路径统一按“同一套 clock 负责时间值，同一套 scheduler 负责等待与周期驱动”收口，先把测试从 `sleep` 驱动改成手动推进：
+
+- 业务代码不再直接调用 `time.Now`、`time.NewTimer`、`time.NewTicker`、`time.After`、`time.Sleep`；统一经由注入的 `clock / timer / ticker` 接口取时间和等待。
+- 背景轮询与周期任务不再各自手写 `go func + for + select + ticker`；统一经由注入的 `scheduler` 启动，便于测试识别“任务已启动、正在等下一拍、这一拍已执行完”。
+- 生产默认注入 real clock / real scheduler，只是薄封装标准库，不改变运行行为。
+- 测试注入 manual clock / manual scheduler；测试只通过显式 `Advance(...)`、`WaitIdle()`、hook/barrier 放行来推进时序，不再用 `sleep` 给 goroutine“让路”。
+
+第一版骨架建议固定为下列分层：
+
+```go
+type Clock interface {
+    Now() time.Time
+    NewTimer(d time.Duration) Timer
+    NewTicker(d time.Duration) Ticker
+}
+
+type Timer interface {
+    C() <-chan time.Time
+    Stop() bool
+    Reset(d time.Duration) bool
+}
+
+type Ticker interface {
+    C() <-chan time.Time
+    Stop()
+    Reset(d time.Duration)
+}
+
+type Scheduler interface {
+    Go(name string, fn func(context.Context))
+    Every(ctx context.Context, name string, interval time.Duration, fn func(time.Time))
+}
+```
+
+其中 `Scheduler` 不是为了重新发明 goroutine，而是为了把“后台任务生命周期”和“时间推进后的收敛点”固定下来：
+
+- `Go` / `Every` 都带稳定名字，便于测试日志、hook 和后续场景编排器引用。
+- `Every` 默认串行执行，同一个周期任务上一轮未返回时，不允许并发重入下一轮；跨过多个周期时最多积压一次待执行轮次，避免一口气补跑出多个重叠扫描。
+- manual scheduler 必须额外提供测试控制面，例如 `Advance(...)`、`WaitIdle()`、`PendingJobs()` 或等价能力；这些 API 只给测试代码使用，不进入业务接口。
+
+manual clock / scheduler 的时间语义固定如下：
+
+- `Advance(d)` 只允许单调前进，不允许回拨；所有到期 timer / ticker / periodic job 按 `(dueAt, registerSeq)` 的稳定顺序变为 ready。
+- 时间推进后，测试必须能显式等待“本次推进唤醒的任务都已执行到下一阻塞点或已返回”；否则仍然会退化成“先推进时间，再 `sleep` 一会儿”等待 goroutine 消化。
+- 所有写入协议或运行时状态的时间戳都必须来自同一个 `clock.Now()`，包括 `config.generated_at`、`config.ack.applied_at`、heartbeat 时间戳、UDP `lastActive`、网络快照 `captured_at` 等，避免测试里一半是手动时间、一半是真实墙钟。
+- 需要超时 `context` 的路径，禁止继续直接调用 `context.WithTimeout`；改为走 clock-aware helper 或 scheduler 包装，让测试可在手动时间下触发超时。
+
+当前与端口冲突检查、热更新和会话恢复直接相关的第一批落点如下：
+
+- `frps/internal/control/runtime_scan.go`：`startRuntimeIssuePolling()` 的轮询周期先切到 manual ticker / scheduler，这是当前“未监听 tunnel 轮询恢复”最直接的时间入口。
+- `frps/internal/system/network_snapshot.go`：`poll()` 的本机快照刷新周期切到同一套 scheduler，后续 `effective_ip` 变化、非法地址恢复、地址抖动场景都依赖它可手动推进。
+- `frpc/internal/client/client.go`：`Run()` 的重连 backoff 改成 manual timer，保证断线、踢下线、空配置保活后的重连测试不靠真实秒级等待。
+- `frpc/internal/client/session.go`：`heartbeatLoop()` 的周期发送改成 manual ticker；`frpc/internal/client/client.go` 的 `config.ack.applied_at` 也改走同一时钟。
+- `frps/internal/control/tcp_bridge.go`：等待 `stream.ready` 的打开超时改成 manual timer，保证“旧 session 晚到 / 新 session 接管 / stream open timeout”类场景可精确触发。
+- `frps/internal/control/udp.go`：UDP idle sweep、`lastActive` 更新时间统一走同一时钟，后续空闲清理与重入竞争才能稳定复现。
+- `frps/internal/control/repository.go`、`frps/internal/control/server.go`、`frps/internal/system/network_collect.go`：凡是会写入 `GeneratedAtMs`、heartbeat pong 时间戳、本机快照采集时间的地方，都要改为从注入时钟取值，避免版本号和状态戳在测试中漂移。
+
+当前先不把所有“带 timeout 的标准库调用”都强塞进 manual clock：
+
+- `frps/pkg/transport/transport.go` 的 `SetReadDeadline` / `SetWriteDeadline` 依赖底层 `net.Conn` 和内核时间；需要确定性测试时，应配套 fake conn / fake transport，而不是只改 `clock`。
+- `frps/internal/control/config.go`、`frps/internal/app/app.go` 里的 `context.WithTimeout`、HTTP shutdown timeout 等可以作为第二批接入点；等 fake transport / fake server harness 到位后再一起收口，避免只改一半接口。
+
+测试编排方式固定如下：
+
+1. 先安装 hook / barrier 和 manual clock / scheduler。
+2. 启动 `frps` / `frpc` 或目标子模块，确认后台任务已经注册并进入等待点。
+3. 用 `Advance(...)` 推进一个明确时间步，例如一个轮询周期、一次 heartbeat 间隔、一次 backoff。
+4. 用 `WaitIdle()`、hook 命中确认或显式状态断言收敛本次推进结果。
+5. 若还需要交错另一条并发路径，先等 hook 到达，再继续 `Advance(...)` 或 `Release()`；整个过程中不写 `sleep`。
+
+验收口径固定如下：
+
+- 端口冲突检查、未监听 tunnel 轮询恢复、首轮扫描后放行登录、`effective_ip` 变化恢复、会话 heartbeat / backoff 这几类路径，后续测试都应能在 manual 时间下推进，不再依赖真实秒级等待。
+- 如果某个场景仍然必须依赖真实时间，先判断是缺少 clock seam、缺少 fake transport、还是缺少 fake listener；补前置基建，不允许直接把 `sleep` 塞回测试。
+- 生产构建默认不暴露任何“手动推进时间”的入口；manual clock / scheduler 只作为测试注入实现存在。
+
 ## 3. 当前手工调试入口
 
 ### 3.1 服务是否启动
