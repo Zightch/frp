@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zightch/frp/frps/internal/storage"
@@ -117,6 +118,98 @@ INSERT INTO tunnels (
 	}
 	if group.Snapshot.Tunnels[1].TunnelFlags&protocol.TunnelFlagRange == 0 {
 		t.Fatalf("expected second tunnel to be marked as range: %#v", group.Snapshot.Tunnels[1])
+	}
+}
+
+func TestSQLRepositoryListGroupRuntimes(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "control-list.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite database: %v", err)
+	}
+	defer db.Close()
+
+	store, err := storage.NewSQLWithConn(t.Name(), db)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	defer store.Close()
+
+	for _, statement := range []string{
+		`
+CREATE TABLE proxy_groups (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	token_id TEXT NOT NULL,
+	token_hash TEXT NOT NULL,
+	effective_ip TEXT NOT NULL,
+	enabled INTEGER NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+		`
+CREATE TABLE tunnels (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	group_id INTEGER NOT NULL,
+	name TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	remote_type TEXT NOT NULL,
+	remote_start INTEGER NOT NULL,
+	remote_end INTEGER NOT NULL,
+	local_host TEXT NOT NULL,
+	local_start INTEGER NOT NULL,
+	local_end INTEGER NOT NULL,
+	enabled INTEGER NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+	} {
+		if _, err := store.Exec(statement); err != nil {
+			t.Fatalf("bootstrap test schema: %v", err)
+		}
+	}
+
+	if _, err := store.Exec(
+		`
+INSERT INTO proxy_groups (name, token_id, token_hash, effective_ip, enabled, updated_at)
+VALUES
+	(?, ?, ?, ?, ?, ?),
+	(?, ?, ?, ?, ?, ?)
+`,
+		"group-a", "00112233445566778899aabbccddeeff", strings.Repeat("aa", 32), "127.0.0.1", 1, "2026-04-18 10:00:00.000001",
+		"group-b", "ffeeddccbbaa99887766554433221100", strings.Repeat("bb", 32), "0.0.0.0", 0, "2026-04-18 10:00:00.000002",
+	); err != nil {
+		t.Fatalf("insert proxy groups: %v", err)
+	}
+
+	if _, err := store.Exec(
+		`
+INSERT INTO tunnels (
+	group_id, name, protocol, remote_type, remote_start, remote_end, local_host, local_start, local_end, enabled, updated_at
+) VALUES
+	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`,
+		1, "ssh", "tcp", "single", 20000, 20000, "127.0.0.1", 22, 22, 1, "2026-04-18 10:00:00.000003",
+		2, "dns", "udp", "single", 30000, 30000, "127.0.0.1", 53, 53, 1, "2026-04-18 10:00:00.000004",
+	); err != nil {
+		t.Fatalf("insert tunnels: %v", err)
+	}
+
+	repo := NewRepository(store)
+	groups, err := repo.ListGroupRuntimes(context.Background())
+	if err != nil {
+		t.Fatalf("list group runtimes: %v", err)
+	}
+
+	if len(groups) != 2 {
+		t.Fatalf("unexpected group count: %d", len(groups))
+	}
+	if groups[0].ID != 1 || groups[1].ID != 2 {
+		t.Fatalf("unexpected group ordering: %#v", groups)
+	}
+	if len(groups[0].Snapshot.Tunnels) != 1 || groups[0].Snapshot.Tunnels[0].TunnelID != 1 {
+		t.Fatalf("unexpected first group snapshot: %#v", groups[0].Snapshot)
+	}
+	if len(groups[1].Snapshot.Tunnels) != 1 || groups[1].Snapshot.Tunnels[0].TunnelID != 2 {
+		t.Fatalf("unexpected second group snapshot: %#v", groups[1].Snapshot)
 	}
 }
 

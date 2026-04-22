@@ -23,6 +23,7 @@ const (
 	defaultHeartbeatInterval = 15 * time.Second
 	defaultUDPIdleTimeout    = 30 * time.Second
 	defaultUDPIdleSweep      = time.Second
+	defaultRuntimeScanPoll   = 5 * time.Second
 )
 
 type Options struct {
@@ -34,6 +35,7 @@ type Options struct {
 	WriteTimeout      time.Duration
 	ChallengeTTL      time.Duration
 	HeartbeatInterval time.Duration
+	RuntimeScanPoll   time.Duration
 }
 
 type Server struct {
@@ -53,9 +55,12 @@ type Server struct {
 	groupSlots map[int64]uint64
 	closeOnce  sync.Once
 	connWG     sync.WaitGroup
+	scanWG     sync.WaitGroup
 
 	challengeMu sync.Mutex
 	challenges  map[uint32]*authChallenge
+
+	runtimeScanCancel context.CancelFunc
 
 	nextChallengeID atomic.Uint32
 	nextSessionID   atomic.Uint64
@@ -79,6 +84,9 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 	}
 	if options.HeartbeatInterval <= 0 {
 		options.HeartbeatInterval = defaultHeartbeatInterval
+	}
+	if options.RuntimeScanPoll <= 0 {
+		options.RuntimeScanPoll = defaultRuntimeScanPoll
 	}
 	if options.Repository == nil && options.Store != nil {
 		options.Repository = NewRepository(options.Store)
@@ -144,6 +152,10 @@ func (s *Server) recordTunnelRuntimeIssue(tunnelID uint32, reason string) {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	if err := s.scanNonListeningTunnelRuntimeIssues(ctx); err != nil {
+		return err
+	}
+
 	listenConfig := net.ListenConfig{}
 	listener, err := listenConfig.Listen(ctx, "tcp", s.options.Addr)
 	if err != nil {
@@ -154,6 +166,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.listener = listener
 	s.mu.Unlock()
 
+	s.startRuntimeIssuePolling(ctx)
 	s.logger.Info("frpc control listener ready", "addr", s.options.Addr)
 
 	for {
@@ -179,8 +192,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		for conn := range s.activeConn {
 			activeConn = append(activeConn, conn)
 		}
+		runtimeScanCancel := s.runtimeScanCancel
 		s.mu.Unlock()
 
+		if runtimeScanCancel != nil {
+			runtimeScanCancel()
+		}
 		if listener != nil {
 			_ = listener.Close()
 		}
@@ -193,6 +210,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	go func() {
 		defer close(done)
 		s.connWG.Wait()
+		s.scanWG.Wait()
 	}()
 
 	select {

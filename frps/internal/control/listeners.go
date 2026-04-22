@@ -77,11 +77,15 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 		return nil
 	}
 
+	s.clearTunnelRuntimeIssues(snapshot.Tunnels)
 	bindIP, err := s.resolveGroupEffectiveIP(group)
 	if err != nil {
-		return err
+		reason := buildGroupEffectiveIPRuntimeReason(group, err)
+		for _, tunnel := range enabledTunnels(snapshot) {
+			s.recordTunnelRuntimeIssue(tunnel.TunnelID, reason)
+		}
+		return errors.New(reason)
 	}
-	s.clearTunnelRuntimeIssues(snapshot.Tunnels)
 	if issues, conflictErr := s.detectRuntimePortConflictIssues(session, group, snapshot, bindIP); conflictErr != nil {
 		for tunnelID, reason := range issues {
 			s.recordTunnelRuntimeIssue(tunnelID, reason)

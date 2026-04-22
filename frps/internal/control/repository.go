@@ -23,6 +23,7 @@ var ErrGroupNotFound = errors.New("proxy group not found")
 type Repository interface {
 	LoadGroupRuntime(ctx context.Context, tokenID [16]byte) (GroupRuntime, error)
 	LoadGroupRuntimeByID(ctx context.Context, groupID int64) (GroupRuntime, error)
+	ListGroupRuntimes(ctx context.Context) ([]GroupRuntime, error)
 }
 
 type SQLRepository struct {
@@ -84,6 +85,41 @@ WHERE id = ?
 	)
 }
 
+func (r *SQLRepository) ListGroupRuntimes(ctx context.Context) ([]GroupRuntime, error) {
+	if r == nil || r.store == nil {
+		return nil, fmt.Errorf("repository store is nil")
+	}
+
+	result, err := r.store.QueryContext(
+		ctx,
+		`
+SELECT
+	id,
+	name,
+	token_hash,
+	effective_ip,
+	enabled,
+	updated_at
+FROM proxy_groups
+ORDER BY id
+`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list proxy groups: %w", err)
+	}
+
+	groups := make([]GroupRuntime, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		group, err := r.decodeGroupRuntimeRow(ctx, row)
+		if err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+
+	return groups, nil
+}
+
 func (r *SQLRepository) loadGroupRuntime(ctx context.Context, query string, arg any) (GroupRuntime, error) {
 	if r == nil || r.store == nil {
 		return GroupRuntime{}, fmt.Errorf("repository store is nil")
@@ -101,10 +137,15 @@ func (r *SQLRepository) loadGroupRuntime(ctx context.Context, query string, arg 
 		return GroupRuntime{}, fmt.Errorf("load proxy group: %w", err)
 	}
 
+	return r.decodeGroupRuntimeRow(ctx, row)
+}
+
+func (r *SQLRepository) decodeGroupRuntimeRow(ctx context.Context, row storage.Row) (GroupRuntime, error) {
 	group := GroupRuntime{
 		Name: strings.TrimSpace(rowString(row, "name")),
 	}
 
+	var err error
 	if group.ID, err = rowInt64(row, "id"); err != nil {
 		return GroupRuntime{}, fmt.Errorf("decode group id: %w", err)
 	}
@@ -119,7 +160,6 @@ func (r *SQLRepository) loadGroupRuntime(ctx context.Context, query string, arg 
 	}
 
 	groupUpdatedAt := rowTime(row, "updated_at")
-
 	tunnels, latestUpdatedAt, err := r.loadTunnels(ctx, group.ID)
 	if err != nil {
 		return GroupRuntime{}, err
@@ -135,7 +175,6 @@ func (r *SQLRepository) loadGroupRuntime(ctx context.Context, query string, arg 
 		GeneratedAtMs: unixMillis(generatedAt),
 		Tunnels:       tunnels,
 	}
-
 	return group, nil
 }
 

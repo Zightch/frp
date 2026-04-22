@@ -287,6 +287,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
   - 该矩阵适用于 `single-single`、`single-range`、`range-range` 全部组合；端口只要相交即按矩阵比较。
   - 统一保守策略：即使某一平台/调用顺序下某组 `bind` 偶然成功，只要命中矩阵冲突，管理面仍拒绝写库。
   - 控制面现在也接入同一套运行态冲突语义：`ensureTunnelListeners()` 与 `effective_ip` 本地重绑前会先按当前在线运行态比较监听声明；若命中运行态冲突或外部进程抢占导致 `listen` 失败，都会统一回传明确的端口冲突原因，但不反向放宽静态规则。
+  - 控制面还会在启动阶段先对“当前没有 listener 的启用隧道”做一次全量运行态扫描，完成隧道异常标记后才开放 `frpc` 控制端口；启动后继续固定轮询同一批“当前没有 listener”的隧道，用于清理已恢复的旧异常或补记新的运行态失败。
 - Linux / Windows 差异与采用该唯一方案的原因（规范依据 + 本机实验）：
   - Linux `ipv6(7)`：`IPV6_V6ONLY` 默认值来自 `/proc/sys/net/ipv6/bindv6only`，通常默认为 `0`；`0` 时 IPv6 wildcard socket 可覆盖 IPv4-mapped IPv6。
   - Windows Winsock：IPv6 socket 默认 `IPV6_V6ONLY=1`，只有显式设为 `0` 才 dual-stack；因此同一组地址在 Win/Lin 上可能出现不同的二次绑定结果。
@@ -312,13 +313,13 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 
 1. `禁用`：分组禁用或隧道禁用
 2. `冲突`：命中当前已实现的跨平台统一静态端口冲突
-3. `异常`：隧道启用且不冲突，但 listener 启动失败
+3. `异常`：隧道启用且不冲突，但启动期扫描、未监听轮询、listener 启动或 `effective_ip` 重绑发现运行态失败
 4. `启用`：其余情况
 
 其中 `status_reason` 当前只用于：
 
 - 指向冲突对端隧道与冲突监听空间
-- 承接 listener 启动失败的错误原因
+- 承接启动期全量扫描、未监听轮询、listener 启动或 `effective_ip` 重绑发现的运行态失败原因
 
 ## 6. 控制面设计
 
@@ -361,6 +362,13 @@ frps -> start listeners
 7. 抢占单分组单客户端槽位
 8. 返回 `server.hello`
 9. 下发首次 `config.push`
+
+补充启动期门闩：
+
+- 控制面在打开 `frpc` 控制监听端口前，会先完成一次“全部未监听启用隧道”的运行态扫描。
+- 这次扫描会尝试解析 `effective_ip`、比较与当前在线 listener 的运行态冲突，并对无 listener 的启用 tunnel 逐个做临时 `bind` 探测。
+- 扫描完成后才真正开放控制端口，因此新 `frpc` 登录不会早于首轮隧道状态标记。
+- 启动完成后仍有一个后台轮询，只继续扫描“当前没有 listener”的启用 tunnel；已经真实监听中的 tunnel 不参与这条轮询路径。
 
 ### 6.3 配置快照
 

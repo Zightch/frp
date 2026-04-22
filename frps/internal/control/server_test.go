@@ -732,8 +732,11 @@ func TestServerEnsureTunnelListenersRejectsMissingLocalEffectiveIP(t *testing.T)
 	if err == nil {
 		t.Fatal("expected missing local effective_ip to be rejected")
 	}
-	if !strings.Contains(err.Error(), "not a current local IP") {
+	if !strings.Contains(err.Error(), "当前不存在于本机") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason := server.TunnelRuntimeIssues()[7]; !strings.Contains(reason, "当前不存在于本机") {
+		t.Fatalf("expected runtime issue for missing effective_ip, got %#v", server.TunnelRuntimeIssues())
 	}
 }
 
@@ -752,6 +755,108 @@ func TestServerResolveGroupEffectiveIPAllowsSpecialIPv6WithoutSnapshot(t *testin
 	}
 	if bindIP != system.AnyIPv6 {
 		t.Fatalf("unexpected bind ip: got %q want %q", bindIP, system.AnyIPv6)
+	}
+}
+
+func TestServerListenAndServeCompletesInitialRuntimeScanBeforeOpeningControlListener(t *testing.T) {
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	controlPort := freeTCPPort(t)
+	remotePort := freeTCPPortExcept(t, controlPort)
+	repo := &blockingRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: "127.0.0.1",
+			Snapshot: ConfigSnapshot{
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: uint16(remotePort),
+						RemoteEnd:   uint16(remotePort),
+						LocalHost:   host,
+						LocalStart:  22,
+						LocalEnd:    22,
+					},
+				},
+			},
+		},
+		loadAllStarted: make(chan struct{}, 1),
+		allowLoadAll:   make(chan struct{}),
+	}
+
+	server := NewServer(
+		Options{
+			Addr:       net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+			Repository: repo,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			RuntimeScanPoll: time.Hour,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- server.ListenAndServe(ctx)
+	}()
+
+	select {
+	case <-repo.loadAllStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial runtime scan did not start")
+	}
+
+	if conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)), 100*time.Millisecond); err == nil {
+		_ = conn.Close()
+		t.Fatal("expected control listener to remain closed until initial scan completes")
+	}
+
+	close(repo.allowLoadAll)
+
+	var conn net.Conn
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err = net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)), 100*time.Millisecond)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if conn == nil {
+		t.Fatal("expected control listener to open after initial scan completes")
+	}
+	_ = conn.Close()
+
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown server: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("listen and serve returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("listen and serve did not exit")
 	}
 }
 
@@ -2562,8 +2667,15 @@ func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActive
 	}
 	waitForIdleConfig(t, active.session)
 
-	if listeners := active.session.listeners[7]; len(listeners) != 1 {
-		t.Fatalf("unexpected initial listener count: %d", len(listeners))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if listeners := active.session.listeners[7]; len(listeners) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("unexpected initial listener count: %d", len(active.session.listeners[7]))
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	repo.group.EffectiveIP = system.AnyIPv4
@@ -2574,7 +2686,7 @@ func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActive
 		server.RefreshGroup(repo.group.ID)
 	}()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(2 * time.Second)
 	for {
 		frame, err := readMessageWithin(clientConn, 100*time.Millisecond)
 		if err == nil {
@@ -2889,6 +3001,13 @@ func (r stubRepository) LoadGroupRuntimeByID(_ context.Context, _ int64) (GroupR
 	return r.group, nil
 }
 
+func (r stubRepository) ListGroupRuntimes(_ context.Context) ([]GroupRuntime, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return []GroupRuntime{r.group}, nil
+}
+
 type mutableRepository struct {
 	group   GroupRuntime
 	loadErr error
@@ -2908,11 +3027,20 @@ func (r *mutableRepository) LoadGroupRuntimeByID(_ context.Context, _ int64) (Gr
 	return r.group, nil
 }
 
+func (r *mutableRepository) ListGroupRuntimes(_ context.Context) ([]GroupRuntime, error) {
+	if r.loadErr != nil {
+		return nil, r.loadErr
+	}
+	return []GroupRuntime{r.group}, nil
+}
+
 type blockingRepository struct {
 	group           GroupRuntime
 	loadErr         error
 	loadByIDStarted chan struct{}
 	allowLoadByID   chan struct{}
+	loadAllStarted  chan struct{}
+	allowLoadAll    chan struct{}
 }
 
 func (r *blockingRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
@@ -2940,6 +3068,26 @@ func (r *blockingRepository) LoadGroupRuntimeByID(ctx context.Context, _ int64) 
 		}
 	}
 	return r.group, nil
+}
+
+func (r *blockingRepository) ListGroupRuntimes(ctx context.Context) ([]GroupRuntime, error) {
+	if r.loadErr != nil {
+		return nil, r.loadErr
+	}
+	if r.loadAllStarted != nil {
+		select {
+		case r.loadAllStarted <- struct{}{}:
+		default:
+		}
+	}
+	if r.allowLoadAll != nil {
+		select {
+		case <-r.allowLoadAll:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return []GroupRuntime{r.group}, nil
 }
 
 type connWithRemoteAddr struct {

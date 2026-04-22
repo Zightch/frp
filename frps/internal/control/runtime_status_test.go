@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -192,5 +193,140 @@ func TestServerEnsureTunnelListenersDetectsRuntimeConflictWithActiveGroup(t *tes
 	}
 	if len(currentSession.listeners[7]) != 0 {
 		t.Fatalf("unexpected listeners started for conflicted tunnel: %#v", currentSession.listeners[7])
+	}
+}
+
+func TestServerScanNonListeningTunnelRuntimeIssuesRecordsAndClearsRecoveredBindFailure(t *testing.T) {
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	remotePort := freeTCPPort(t)
+	blocker, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(remotePort)))
+	if err != nil {
+		t.Fatalf("listen blocker: %v", err)
+	}
+	defer blocker.Close()
+
+	repo := &mutableRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: "127.0.0.1",
+			Snapshot: ConfigSnapshot{
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: uint16(remotePort),
+						RemoteEnd:   uint16(remotePort),
+						LocalHost:   host,
+						LocalStart:  22,
+						LocalEnd:    22,
+					},
+				},
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository: repo,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	if err := server.scanNonListeningTunnelRuntimeIssues(context.Background()); err != nil {
+		t.Fatalf("scan runtime issues with blocker: %v", err)
+	}
+	if reason := server.TunnelRuntimeIssues()[7]; !strings.Contains(reason, "端口冲突") {
+		t.Fatalf("unexpected recorded runtime issue after blocker: %#v", server.TunnelRuntimeIssues())
+	}
+
+	_ = blocker.Close()
+
+	if err := server.scanNonListeningTunnelRuntimeIssues(context.Background()); err != nil {
+		t.Fatalf("scan runtime issues after unblocking: %v", err)
+	}
+	if issues := server.TunnelRuntimeIssues(); len(issues) != 0 {
+		t.Fatalf("expected runtime issues to clear after port recovery: %#v", issues)
+	}
+}
+
+func TestServerScanNonListeningTunnelRuntimeIssuesRecordsEffectiveIPFailureForEnabledTunnels(t *testing.T) {
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	repo := &mutableRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: "127.0.0.2",
+			Snapshot: ConfigSnapshot{
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: 21001,
+						RemoteEnd:   21001,
+						LocalHost:   host,
+						LocalStart:  22,
+						LocalEnd:    22,
+					},
+					{
+						TunnelID:    8,
+						Protocol:    protocol.ProtocolUDP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: 22001,
+						RemoteEnd:   22001,
+						LocalHost:   host,
+						LocalStart:  53,
+						LocalEnd:    53,
+					},
+				},
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository: repo,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	if err := server.scanNonListeningTunnelRuntimeIssues(context.Background()); err != nil {
+		t.Fatalf("scan runtime issues with missing effective_ip: %v", err)
+	}
+
+	issues := server.TunnelRuntimeIssues()
+	for _, tunnelID := range []int64{7, 8} {
+		reason := issues[tunnelID]
+		if !strings.Contains(reason, "当前不存在于本机") || !strings.Contains(reason, "无法启动监听") {
+			t.Fatalf("unexpected recorded effective_ip runtime issue: %#v", issues)
+		}
 	}
 }
