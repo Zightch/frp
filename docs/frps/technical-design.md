@@ -273,21 +273,26 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
   - 只比较同协议监听空间
   - 只比较相同的具体 `effective_ip`
   - `0.0.0.0`、`::` 及其相关 wildcard 冲突规则暂未进入这一阶段
-- 下一阶段 wildcard 静态冲突规则已收口（当前仅规则定稿，尚未接入第一阶段实现）：
-  - 仍然只比较同协议监听空间（`tcp` 与 `udp` 隔离）
-  - 仍然要求远端端口区间相交才算冲突
-  - `0.0.0.0` 与任意具体 IPv4 冲突
-  - `::` 与任意具体 IPv6 冲突
-  - `0.0.0.0` 与 `::` 按冲突处理（统一保守策略）
-  - 具体 IPv4 与具体 IPv6 不冲突
-  - 具体 IPv4 与 `::` 当前不按静态冲突处理
-  - 具体 IPv6 与 `0.0.0.0` 当前不按静态冲突处理
-- Linux / Windows 差异与统一策略（规范依据 + 本机实验）：
-  - Linux `ipv6(7)`：`IPV6_V6ONLY` 默认值来自 `/proc/sys/net/ipv6/bindv6only`，通常默认为 `0`；`0` 时 IPv6 wildcard socket 可以接收 IPv4-mapped IPv6，`1` 时才允许 IPv4 与 IPv6 在同端口并存。
-  - Windows Winsock：IPv6 socket 默认 `IPV6_V6ONLY=1`，只有显式改成 `0` 才是 dual-stack；因此部分 IPv4/IPv6 wildcard 组合在 Windows 上可并存、在 Linux 上会冲突。
-  - Windows Winsock 还明确提示 `SO_REUSEADDR` 可能导致多 socket 抢占同端口并出现不确定性；Go `net` 在 Windows listener 默认不设置 `SO_REUSEADDR`，而 Linux listener 默认会设置 `SO_REUSEADDR`，两端行为基线不同。
-  - 本机实验（2026-04-22）已归档：`test/wildcard_bind_matrix.py` + `test/linux_network_snapshot_probe.py`。实测显示 Linux/Windows 在 `wildcard-specific`、`wildcard-wildcard`、TCP/UDP 的可并存组合确实存在平台差异。
-  - 因此管理面静态判定继续采用“跨平台可预期优先”的保守策略：不以单机一次 `bind` 偶然成功作为配置合法性依据，统一按监听空间重叠规则拒绝风险配置。
+- 跨平台唯一方案（V1，当前定稿）：
+  - 管理面与控制面共用同一判定语义：`同协议 + 端口区间相交 + 监听空间重叠 => 冲突`。
+  - 监听空间只按 `effective_ip` 类型比较：`Any4(0.0.0.0)`、`Any6(::)`、`Specific4`、`Specific6`。
+  - 固定冲突矩阵如下（与平台无关，不做 Linux/Windows 分支）：
+
+| 左/右 | Any4 | Any6 | Specific4 | Specific6 |
+| --- | --- | --- | --- | --- |
+| Any4 | 冲突 | 冲突 | 冲突 | 不冲突 |
+| Any6 | 冲突 | 冲突 | 不冲突 | 冲突 |
+| Specific4 | 冲突 | 不冲突 | 同 IP 冲突 | 不冲突 |
+| Specific6 | 不冲突 | 冲突 | 不冲突 | 同 IP 冲突 |
+
+  - 该矩阵适用于 `single-single`、`single-range`、`range-range` 全部组合；端口只要相交即按矩阵比较。
+  - 统一保守策略：即使某一平台/调用顺序下某组 `bind` 偶然成功，只要命中矩阵冲突，管理面仍拒绝写库。
+  - 控制面仍保留运行态兜底：若外部进程抢占或极端竞态导致 `listen` 失败，仍按现有 `异常` 路径回传，不反向放宽静态规则。
+- Linux / Windows 差异与采用该唯一方案的原因（规范依据 + 本机实验）：
+  - Linux `ipv6(7)`：`IPV6_V6ONLY` 默认值来自 `/proc/sys/net/ipv6/bindv6only`，通常默认为 `0`；`0` 时 IPv6 wildcard socket 可覆盖 IPv4-mapped IPv6。
+  - Windows Winsock：IPv6 socket 默认 `IPV6_V6ONLY=1`，只有显式设为 `0` 才 dual-stack；因此同一组地址在 Win/Lin 上可能出现不同的二次绑定结果。
+  - Go `net` 默认 listener 选项在 Win/Lin 也不同（Windows 默认不设置 listener `SO_REUSEADDR`，Linux 默认设置），会进一步放大平台差异。
+  - 本机实验（2026-04-22，`test/wildcard_bind_matrix.py`）已确认 `wildcard-specific`、`wildcard-wildcard` 在 Win/Lin 上存在差异；因此必须固定一套跨平台静态规则，避免离线可写、上线失败或跨系统迁移后行为变化。
 - `createTunnel()`、`updateTunnel()`、`updateProxyGroup()` 在写库前重算受影响隧道集合；命中冲突时直接返回 `409`
 
 参考资料：
