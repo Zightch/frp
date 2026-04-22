@@ -286,7 +286,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 
   - 该矩阵适用于 `single-single`、`single-range`、`range-range` 全部组合；端口只要相交即按矩阵比较。
   - 统一保守策略：即使某一平台/调用顺序下某组 `bind` 偶然成功，只要命中矩阵冲突，管理面仍拒绝写库。
-  - 控制面仍保留运行态兜底：若外部进程抢占或极端竞态导致 `listen` 失败，仍按现有 `异常` 路径回传，不反向放宽静态规则。
+  - 控制面现在也接入同一套运行态冲突语义：`ensureTunnelListeners()` 与 `effective_ip` 本地重绑前会先按当前在线运行态比较监听声明；若命中运行态冲突或外部进程抢占导致 `listen` 失败，都会统一回传明确的端口冲突原因，但不反向放宽静态规则。
 - Linux / Windows 差异与采用该唯一方案的原因（规范依据 + 本机实验）：
   - Linux `ipv6(7)`：`IPV6_V6ONLY` 默认值来自 `/proc/sys/net/ipv6/bindv6only`，通常默认为 `0`；`0` 时 IPv6 wildcard socket 可覆盖 IPv4-mapped IPv6。
   - Windows Winsock：IPv6 socket 默认 `IPV6_V6ONLY=1`，只有显式设为 `0` 才 dual-stack；因此同一组地址在 Win/Lin 上可能出现不同的二次绑定结果。
@@ -438,7 +438,9 @@ frps -> start listeners
 
 ### 6.5 listener 启动失败的运行态回传
 
-- `listeners.go` 在按快照启动 tunnel listener 时，如果底层 `net.Listen` / `net.ListenUDP` 失败，会包装成 `tunnelListenerStartError`。
+- `listeners.go` 在按快照启动 tunnel listener 前，会先把“当前待启动分组”和“其他在线且 listener 已启动的分组”统一投影成 `ports.Claim`，按同一套冲突矩阵做运行态预检查。
+- 如果运行态预检查命中冲突，当前待启动分组会直接拒绝启动 listener，不再依赖底层 `listen` 报错才发现问题。
+- 如果底层 `net.Listen` / `net.ListenUDP` 真实失败，`listeners.go` 会包装成 `tunnelListenerStartError`；其中端口已占用会统一收口为明确的“端口冲突，无法启动”原因。
 - `server.go` 维护 `tunnelRuntimeIssues map[int64]string`，记录最近一次 tunnel listener 启动失败原因。
 - 同一 tunnel 后续成功启动 listener 时，会清理对应运行态异常记录。
 - `internal/api` 通过 `TunnelRuntimeStatusReader` 读取这份运行态异常，并把满足条件的隧道状态派生为 `异常`。

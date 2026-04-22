@@ -2461,6 +2461,156 @@ func TestServerRefreshGroupRebindsListenersWhenOnlyEffectiveIPChanges(t *testing
 	}
 }
 
+func TestServerRefreshGroupClosesSessionWhenEffectiveIPRebindConflictsWithActiveGroup(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	tcpPort := freeTCPPort(t)
+	repo := &mutableRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: "127.0.0.1",
+			TokenHash:   tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: uint16(tcpPort),
+						RemoteEnd:   uint16(tcpPort),
+						LocalHost:   host,
+						LocalStart:  2200,
+						LocalEnd:    2200,
+					},
+				},
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository: repo,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	otherSession := newTestSessionState(GroupRuntime{
+		ID:          2,
+		Name:        "group-b",
+		Enabled:     true,
+		EffectiveIP: "127.0.0.2",
+	}, ConfigSnapshot{
+		Version: 1,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    8,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: uint16(tcpPort),
+				RemoteEnd:   uint16(tcpPort),
+				LocalHost:   host,
+				LocalStart:  3200,
+				LocalEnd:    3200,
+			},
+		},
+	})
+	otherSession.listenersStarted = true
+	otherClientConn, otherServerConn := net.Pipe()
+	defer otherClientConn.Close()
+	defer otherServerConn.Close()
+	server.registerActiveSession(otherServerConn, otherSession)
+	defer server.unregisterActiveSession(otherSession)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	active, ok := server.activeSession(repo.group.ID)
+	if !ok || active == nil {
+		waitForActiveGroupSession(t, server, repo.group.ID)
+		active, ok = server.activeSession(repo.group.ID)
+	}
+	if !ok || active == nil {
+		t.Fatalf("active session for group %d not found", repo.group.ID)
+	}
+	waitForIdleConfig(t, active.session)
+
+	if listeners := active.session.listeners[7]; len(listeners) != 1 {
+		t.Fatalf("unexpected initial listener count: %d", len(listeners))
+	}
+
+	repo.group.EffectiveIP = system.AnyIPv4
+
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		server.RefreshGroup(repo.group.ID)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		frame, err := readMessageWithin(clientConn, 100*time.Millisecond)
+		if err == nil {
+			t.Fatalf("did not expect frame during conflicting effective_ip rebind: %s", frame.Type.String())
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+			break
+		}
+		if isTimeoutError(err) && time.Now().Before(deadline) {
+			continue
+		}
+		t.Fatalf("expected session close during conflicting effective_ip rebind, got: %v", err)
+	}
+
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("conflicting effective_ip refresh did not complete")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit after conflicting rebind")
+	}
+
+	issues := server.TunnelRuntimeIssues()
+	reason := issues[7]
+	if !strings.Contains(reason, `分组"group-b"`) || !strings.Contains(reason, "无法启动监听") {
+		t.Fatalf("unexpected runtime issue after conflicting rebind: %#v", issues)
+	}
+	if _, ok := server.activeSession(repo.group.ID); ok {
+		t.Fatalf("expected active session to be removed after conflicting rebind")
+	}
+}
+
 func TestServerFreezeGroupRuntimeDropsBufferedTCPData(t *testing.T) {
 	server := NewServer(
 		Options{
