@@ -88,6 +88,29 @@ wsl -d ubuntu -u root bash -lc "python3 /mnt/c/Users/Zightch/Desktop/Aicksaim/fr
 - `linux_network_snapshot_probe.py` 按 `frps/internal/system/network_collect.go` 的排序与去重规则产出 Linux 地址快照，并校验关键 IP 是否存在。
 - 两个脚本均为 Python，无需临时编译。
 
+### 2.4 测试做法
+
+对于涉及状态机、并发、热更新、轮询恢复、会话切换和故障注入的测试，统一按下面做法执行：
+
+1. 先做可测性基建，再做具体场景。
+2. 先把关键竞态点变成“可阻塞、可放行、可注入、可重复”，再写故障测试、竞争态测试和压力测试。
+
+测试前默认先准备以下能力：
+
+- 关键路径测试钩子：首轮扫描完成、控制端口开放、管理 API 首次可见、`config.push`、`pending config`、`config.ack`、listener freeze/close/bind、runtime scan、session shutdown、本机网络快照刷新等位置要能被测试明确卡住和放行。
+- 确定性并发编排：竞争态测试默认使用 barrier/hook 编排交错顺序，不以 `sleep` 或“多跑几次”作为主手段。
+- 可控时钟：轮询周期、超时、重试、心跳等等待逻辑优先用 fake clock / manual ticker 驱动。
+- 可控注入：listener/bind、网络快照、传输层、session 行为要能脚本化制造占用、释放、断线、重连、重复 ack、晚到 ack、乱序 ack、地址抖动等场景。
+- 不变量断言：优先断言状态机结果；对当前端口冲突与热更新链路，至少包括“首轮扫描完成前不可登录”“任一时刻最多一个有效 pending config”“旧 session 晚到消息不能污染新 session”“静态 `冲突` 优先于 runtime `异常`”“空配置恢复必须先补推完整快照再恢复 listener”。
+
+测试时禁止把以下方式当作主验证：
+
+- 依赖 CPU 快慢或调度偶然性触发竞态。
+- 依赖长时间 `sleep` 窗口碰运气。
+- 只看日志，不校验状态机不变量。
+
+在可测性基建完成前，`-race`、高频扰动、多 `GOMAXPROCS`、长稳 soak 只作为补充捞漏手段，不作为通过依据。
+
 ## 3. 当前手工调试入口
 
 ### 3.1 服务是否启动
