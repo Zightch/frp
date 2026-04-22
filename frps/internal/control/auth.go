@@ -102,6 +102,19 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		return nil, s.replyProtocolError(conn, frame, err)
 	}
 
+	group, err = s.loadGroupRuntime(begin.TokenID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrGroupNotFound):
+			return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidToken, "token id not found")
+		default:
+			return nil, err
+		}
+	}
+	if !group.Enabled {
+		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthGroupDisabled, "proxy group is disabled")
+	}
+
 	session := &sessionState{
 		ID:             s.nextSessionID.Add(1),
 		Group:          group,

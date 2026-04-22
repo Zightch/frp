@@ -5,17 +5,22 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/control"
+	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	scenariotest "github.com/zightch/frp/frps/internal/testsupport"
@@ -202,6 +207,95 @@ func TestAppStartupScenarioPublishesControlBeforeManagementVisibility(t *testing
 	}
 }
 
+func TestAppStartupScenarioFirstManagementResponseContainsInitialRuntimeStatus(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+
+	controller := testhooks.NewController()
+	controller.AddBarrier("startup.management_api.before_open", 1)
+	restoreHooks := testhooks.Install(controller)
+	defer restoreHooks()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	controlPort := freeTCPPort(t)
+	managementPort := freeTCPPortExcept(t, controlPort)
+	blockedPort := freeTCPPortExcept(t, controlPort, managementPort)
+
+	blocker, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(blockedPort)))
+	if err != nil {
+		t.Fatalf("listen blocker: %v", err)
+	}
+	defer blocker.Close()
+
+	dbPath := filepath.Join(workdir, "frps.sqlite")
+	seedStartupScenarioDatabase(t, dbPath, blockedPort)
+
+	application := New(config.Config{
+		ControlListenAddr:    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		ManagementListenAddr: net.JoinHostPort("127.0.0.1", strconv.Itoa(managementPort)),
+		ReadHeaderTimeout:    "1s",
+		ShutdownTimeout:      "1s",
+		Database: config.DatabaseConfig{
+			Type: "sqlite",
+			Path: dbPath,
+		},
+		WebUI: config.WebUIConfig{
+			DistDir: filepath.Join(workdir, "missing-webui"),
+		},
+	}, logger, "test-server")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- application.Run(ctx)
+	}()
+	defer func() {
+		cancel()
+		waitForAppRunExit(t, done)
+	}()
+
+	waitForHookHit(t, controller, "startup.management_api.before_open", 1)
+
+	token := issueStartupManagementToken(t, application, "startup-management-secret")
+
+	preVisible := application.ObserveState()
+	if preVisible.App.ManagementAPIVisible {
+		t.Fatal("expected management api to remain hidden while before_open barrier is held")
+	}
+	if len(preVisible.Server.Tunnels) != 1 {
+		t.Fatalf("expected one observed tunnel before management api becomes visible, got %#v", preVisible.Server.Tunnels)
+	}
+	if preVisible.Server.Tunnels[0].FinalStatus != "异常" || !strings.Contains(preVisible.Server.Tunnels[0].RuntimeIssue, "端口冲突") {
+		t.Fatalf("expected initial scan to finish before management api opens, got %#v", preVisible.Server.Tunnels[0])
+	}
+
+	if !controller.Release("startup.management_api.before_open", 1) {
+		t.Fatal("release management_api.before_open barrier failed")
+	}
+	waitForHookHit(t, controller, "startup.management_api.after_open", 1)
+
+	payload := waitForAuthorizedJSON(
+		t,
+		"http://"+net.JoinHostPort("127.0.0.1", strconv.Itoa(managementPort))+"/api/v1/tunnels",
+		token,
+	)
+	items, ok := payload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("unexpected tunnel payload: %#v", payload)
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected tunnel item payload: %#v", items[0])
+	}
+	if item["status"] != "异常" {
+		t.Fatalf("expected first visible tunnel status to already be 异常, got %#v", item)
+	}
+	reason, _ := item["status_reason"].(string)
+	if !strings.Contains(reason, "端口冲突") {
+		t.Fatalf("expected first visible tunnel reason to contain port conflict, got %#v", item)
+	}
+}
+
 func startStartupScenarioApp(t *testing.T) (*App, string, string, context.CancelFunc, <-chan error) {
 	t.Helper()
 
@@ -353,5 +447,126 @@ func waitForAppRunExit(t *testing.T, done <-chan error) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("app run did not exit")
+	}
+}
+
+func seedStartupScenarioDatabase(t *testing.T, dbPath string, blockedPort int) {
+	t.Helper()
+
+	db, err := openDatabase(context.Background(), config.DatabaseConfig{
+		Type: "sqlite",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("open startup scenario database: %v", err)
+	}
+	defer db.Close()
+
+	store := storage.NewSQL(appStoreObjectID)
+	if err := store.SetConn(db); err != nil {
+		t.Fatalf("attach startup scenario store: %v", err)
+	}
+	defer store.Close()
+
+	if err := ensureDatabaseSchema(context.Background(), store, "sqlite"); err != nil {
+		t.Fatalf("ensure startup scenario schema: %v", err)
+	}
+
+	tokenID := hex.EncodeToString([]byte("startup-scan-token-id-1234567890"))[:32]
+	tokenHash := sha256.Sum256([]byte("startup-scan-token-secret"))
+	now := time.Now().UTC().Format("2006-01-02 15:04:05.000000")
+
+	if _, err := store.Exec(
+		`INSERT INTO proxy_groups (id, name, token_id, token_hash, effective_ip, enabled, rate_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		1,
+		"group-a",
+		tokenID,
+		hex.EncodeToString(tokenHash[:]),
+		"127.0.0.1",
+		1,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert startup scenario proxy group: %v", err)
+	}
+
+	if _, err := store.Exec(
+		`INSERT INTO tunnels (id, group_id, name, protocol, remote_type, remote_start, remote_end, local_host, local_start, local_end, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		7,
+		1,
+		"blocked-tunnel",
+		"tcp",
+		"single",
+		blockedPort,
+		blockedPort,
+		"127.0.0.1",
+		8080,
+		8080,
+		1,
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert startup scenario tunnel: %v", err)
+	}
+}
+
+func issueStartupManagementToken(t *testing.T, application *App, secret string) string {
+	t.Helper()
+
+	if application == nil || application.auth == nil {
+		t.Fatal("management auth is not initialized")
+	}
+
+	secretHash := sha256.Sum256([]byte(secret))
+	if err := application.auth.Initialize(hex.EncodeToString(secretHash[:])); err != nil {
+		t.Fatalf("initialize management auth: %v", err)
+	}
+	challenge, err := application.auth.IssueChallenge()
+	if err != nil {
+		t.Fatalf("issue management auth challenge: %v", err)
+	}
+	proof := sha256.Sum256([]byte(hex.EncodeToString(secretHash[:]) + challenge.Salt))
+	_, token, err := application.auth.Login(challenge.ID, hex.EncodeToString(proof[:]))
+	if err != nil {
+		t.Fatalf("login management auth: %v", err)
+	}
+	return token
+}
+
+func waitForAuthorizedJSON(t *testing.T, url string, token string) map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	for {
+		request, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("new request %s: %v", url, err)
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+
+		response, err := client.Do(request)
+		if err == nil {
+			rawBody, readErr := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if readErr != nil {
+				t.Fatalf("read response body for %s: %v", url, readErr)
+			}
+			if response.StatusCode == http.StatusOK {
+				payload := make(map[string]any)
+				if err := json.Unmarshal(rawBody, &payload); err != nil {
+					t.Fatalf("decode response body for %s: %v body=%s", url, err, string(rawBody))
+				}
+				return payload
+			}
+		}
+
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("request %s: %v", url, err)
+			}
+			t.Fatalf("timed out waiting for %s to return 200", url)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
