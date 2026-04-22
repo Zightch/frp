@@ -288,6 +288,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
   - 统一保守策略：即使某一平台/调用顺序下某组 `bind` 偶然成功，只要命中矩阵冲突，管理面仍拒绝写库。
   - 控制面现在也接入同一套运行态冲突语义：`ensureTunnelListeners()` 与 `effective_ip` 本地重绑前会先按当前在线运行态比较监听声明；若命中运行态冲突或外部进程抢占导致 `listen` 失败，都会统一回传明确的端口冲突原因，但不反向放宽静态规则。
   - 控制面还会在启动阶段先对“当前没有 listener 的启用隧道”做一次全量运行态扫描，完成隧道异常标记后才开放 `frpc` 控制端口；启动后继续固定轮询同一批“当前没有 listener”的隧道，用于清理已恢复的旧异常或补记新的运行态失败。
+  - 如果某个在线分组当前只拉起了部分 tunnel，轮询会继续扫描该分组剩余“启用但未监听”的 tunnel；一旦冲突/占用消失，就直接在现有 session 上补启动这些已恢复 tunnel。
 - Linux / Windows 差异与采用该唯一方案的原因（规范依据 + 本机实验）：
   - Linux `ipv6(7)`：`IPV6_V6ONLY` 默认值来自 `/proc/sys/net/ipv6/bindv6only`，通常默认为 `0`；`0` 时 IPv6 wildcard socket 可覆盖 IPv4-mapped IPv6。
   - Windows Winsock：IPv6 socket 默认 `IPV6_V6ONLY=1`，只有显式设为 `0` 才 dual-stack；因此同一组地址在 Win/Lin 上可能出现不同的二次绑定结果。
@@ -370,6 +371,7 @@ frps -> start listeners
 - 扫描完成后才真正开放控制端口，因此新 `frpc` 登录不会早于首轮隧道状态标记。
 - 管理 API 也会等待同一轮首轮扫描完成后才开始监听；因此外部首次看到的管理状态已经包含首轮扫描结果，不会先暴露“未扫描”的初始视图。
 - 启动完成后仍有一个后台轮询，只继续扫描“当前没有 listener”的启用 tunnel；已经真实监听中的 tunnel 不参与这条轮询路径。
+- 对于离线分组，这条轮询只负责写入和清理 runtime issue；对于在线但仅部分 tunnel 已监听的分组，这条轮询还会在恢复后复用当前 session 补启动缺失 tunnel。
 
 ### 6.3 配置快照
 
@@ -453,6 +455,7 @@ frps -> start listeners
 - `server.go` 维护 `tunnelRuntimeIssues map[int64]string`，记录最近一次 tunnel listener 启动失败原因。
 - 同一 tunnel 后续成功启动 listener 时，会清理对应运行态异常记录。
 - `internal/api` 通过 `TunnelRuntimeStatusReader` 读取这份运行态异常，并把满足条件的隧道状态派生为 `异常`。
+- 静态配置冲突仍然优先显示为 `冲突`；启动期扫描、后续轮询和 listener 启动失败都不会把这类 tunnel 再额外覆盖成 runtime `异常`。
 
 端口范围在热重载中的判定固定为“按 tunnel 整体替换”，不做重叠区间复用优化：
 
