@@ -60,7 +60,6 @@
 - 关键路径测试钩子：在首轮扫描完成、控制端口开放、管理 API 首次可见、`config.push` 发送、`pending config` 变更、`config.ack` 应用、listener freeze/close/bind、runtime scan 读写状态、session shutdown、本机网络快照刷新等位置提供仅测试可用的 barrier/hook。
 - 确定性并发编排：所有竞争态测试默认通过“双边握手 + 明确放行”编排交错顺序，不允许依赖 `sleep`、超短时间窗或“多跑几次碰碰运气”。
 - 可控时钟与轮询驱动：为扫描周期、超时、重试、心跳和恢复等待提供 fake clock / manual ticker，保证测试可手动推进，不依赖机器性能和真实时间。
-- 可控 listener/bind 注入：提供 fake listener factory 或等价注入点，可精确制造占用、释放、重复占用、晚释放、特定第 N 次 bind 失败、部分 tunnel 失败等场景。
 - 可控网络快照注入：提供 fake network snapshot provider，可按脚本返回本机 IP 集合变化、非法 `effective_ip`、地址族切换和高频抖动序列。
 - 可控传输与会话注入：提供 fake transport/session harness，可脚本化制造断线、重连、重复 ack、旧 ack 晚到、ack 乱序、心跳晚到、错误回包晚到。
 - 状态机不变量断言：每类测试都必须优先断言状态机结果，而不是只看日志；至少覆盖“首轮扫描未完成前不可登录/不可见 API”“任一时刻最多一个有效 pending config”“旧 session 晚到消息不能污染新 session”“静态 `冲突` 优先于 runtime `异常`”“空配置恢复必须先补推完整快照再恢复 listener”。
@@ -68,7 +67,6 @@
 - 竞态放大基线：在确定性编排之外，再准备 `-race`、多 `GOMAXPROCS`、高频扰动、长稳 soak 作为补充捞漏层，但不把这类随机测试当作主验证手段。
 - 测试验收口径：任何故障/竞争态场景若不能在单机重复、跨快慢机器复现同一时序与同一状态结论，就不算“已可测”，需先补前置注入能力再写场景。
 - 上述前置方案在进入任何故障测试、竞争态测试、压力测试之前，先拆成以下具体工作内容并逐项完成：
-- listener 故障注入骨架：为 TCP/UDP listener 创建、bind、freeze、close 和端口占用判断准备统一注入点，能稳定脚本化制造“首次失败、第 N 次失败、部分 tunnel 失败、占用后释放、释放后复占、关闭晚到”等情况。
 - 网络快照故障注入骨架：为本机地址采集和 `effective_ip` 解析准备 fake provider，能够按测试脚本返回固定快照、快照跳变、地址族切换、非法地址、非本机地址和高频抖动序列。
 - 控制连接故障注入骨架：为 `config.push` / `config.ack` / heartbeat / shutdown 等控制面交互准备 fake transport 或脚本化 session harness，能稳定制造断线、重连、重复 ack、乱序 ack、晚到 ack、晚到错误回包、半关闭和旧 session 残留消息。
 - 状态观测骨架：补齐统一的测试态观测入口，能直接断言 listener 集合、runtime issue、静态 `冲突` / runtime `异常` 优先级、pending config、active session、已生效快照和空配置保活状态，而不是从日志反推。
@@ -86,4 +84,4 @@
 
 当前唯一下一步：
 
-- listener 故障注入骨架：为 TCP/UDP listener 创建、bind、freeze、close 和端口占用判断准备统一注入点，能稳定脚本化制造“首次失败、第 N 次失败、部分 tunnel 失败、占用后释放、释放后复占、关闭晚到”等情况。
+- 网络快照故障注入骨架：为本机地址采集和 `effective_ip` 解析准备 fake provider，能够按测试脚本返回固定快照、快照跳变、地址族切换、非法地址、非本机地址和高频抖动序列。

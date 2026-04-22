@@ -232,6 +232,112 @@ manual clock / scheduler 的时间语义固定如下：
 - 如果某个场景仍然必须依赖真实时间，先判断是缺少 clock seam、缺少 fake transport、还是缺少 fake listener；补前置基建，不允许直接把 `sleep` 塞回测试。
 - 生产构建默认不暴露任何“手动推进时间”的入口；manual clock / scheduler 只作为测试注入实现存在。
 
+### 2.4.3 listener 故障注入骨架
+
+listener 相关测试统一按“正式启动路径和 runtime probe 路径共用同一套 bind seam”设计，避免一边 fake、一边还残留真实 `net.Listen`：
+
+- `frps/internal/control/listeners.go` 的 `startTunnelListeners()` 和 `closeStartedTunnelListeners()`，以及 `frps/internal/control/runtime_scan.go` 的 `probeTunnelRuntimeIssue()`，后续都必须改走同一个注入的 listener factory / binder。
+- 第一版注入点至少同时覆盖：
+  - TCP `Listen`
+  - UDP `ResolveUDPAddr + ListenUDP`
+  - `Close`
+  - “端口当前是否已被本进程或外部占用”的判断结果
+- 这样正式 listener 启动、轮询探测、freeze 后 close、shutdown 清理、恢复时重绑，才会共享同一套故障脚本和同一套资源视图，不会出现“探测结果和实际启动结果来自两套世界”的假阳性。
+
+第一版边界建议固定为“两层实现”：
+
+- real impl：只是对 `net.Listen`、`net.ResolveUDPAddr`、`net.ListenUDP`、真实 listener `Close()` 的薄封装，不额外改变当前生产行为。
+- fake impl：维护一份测试内的“监听资源账本”，按脚本决定每次 bind / close / probe 的返回结果，并能精确记录资源何时真正释放。
+- 业务代码只依赖稳定接口，不感知 fake 细节；测试代码只通过脚本和观测接口控制 fake，不直接改内部 map。
+
+第一版 listener seam 至少要能表达以下信息：
+
+```go
+type ListenKey struct {
+    Protocol string
+    IP       string
+    Port     uint16
+}
+
+type BindKind string
+
+const (
+    BindKindRuntimeProbe BindKind = "runtime_probe"
+    BindKindRuntimeStart BindKind = "runtime_start"
+)
+```
+
+- `ListenKey` 作为统一资源键，正式启动和 runtime probe 都按同一维度占位。
+- `BindKind` 必须区分“探测性临时绑定”和“正式 listener 启动”，因为两者虽然共用同一资源空间，但测试里往往需要对两类路径下发不同故障脚本。
+- 对 range tunnel，不按整个区间一次性返回成功/失败；而是保留逐端口 bind 事件，才能稳定覆盖“第 N 个端口失败”“部分端口成功后回滚 close”。
+
+第一版脚本能力固定至少支持以下故障原语：
+
+- 首次 bind 失败。
+- 第 `N` 次 bind 失败。
+- 指定 `groupID / tunnelID / configVersion / protocol / port` 失败。
+- probe 成功但正式 start 失败。
+- start 成功后，下一次 probe 看到“仍被占用”。
+- 外部占用先存在，随后释放。
+- 释放后再次被外部占用。
+- `Close()` 调用已发起，但资源延迟到测试显式放行后才真正释放。
+- 同一 tunnel 的部分端口成功、部分端口失败。
+- TCP 成功但 UDP 失败，或 UDP 成功但 TCP 失败。
+- UDP `ResolveUDPAddr` 失败与 `ListenUDP` 失败要能分开制造，不能都压成同一种错误。
+
+这些故障都必须是“脚本化稳定复现”，不是依赖真实系统端口抢占：
+
+- fake binder 提供按调用序列匹配的 rule/step 机制，测试可声明“第 1 次 probe 返回占用，第 2 次 probe 返回成功，第 1 次正式 bind 在端口 7001 失败”。
+- 对“占用后释放”“释放后复占”“close 晚到”这类场景，资源状态变化必须由测试显式推进，例如通过 `ReleaseClose(handleID)`、`SetOccupied(key, true/false)` 或等价脚本步骤完成，而不是靠真实 OS 何时回收 socket。
+- 这样快机器、慢机器、不同 `GOMAXPROCS` 下看到的仍是同一时序，不会出现“本机来不及撞上窗口，CI 又偶现”的情况。
+
+与现有 hook / barrier / manual scheduler 的配合方式固定如下：
+
+- hook/barrier 继续负责“卡在 bind 前后、attach 前后、freeze 后、close 前后”这些并发边界。
+- fake listener 负责“这一拍 bind / probe / close 到底成功、失败、还是延迟释放”。
+- manual scheduler 负责驱动轮询恢复、心跳、重试等时间推进；但 listener 资源状态本身不依赖真实时间自动变化，必须由测试显式脚本或 fake close 完成。
+- 若某个 listener 场景要同时覆盖“轮询推进 + 资源释放 + 热更新交错”，推荐顺序固定为：
+  1. 先用 hook 卡住目标边界。
+  2. 用 fake listener 改写占用/释放状态。
+  3. 用 manual `Advance(...)` 推进轮询或重试。
+  4. 用 `WaitIdle()` 和状态断言收敛，再决定是否放行下一道 barrier。
+
+第一批需要打开 listener seam 的代码位置如下：
+
+- `frps/internal/control/listeners.go`
+  - `startTunnelListeners()`
+  - `closeStartedTunnelListeners()`
+  - `ensureTunnelListeners()`
+- `frps/internal/control/runtime_scan.go`
+  - `probeTunnelRuntimeIssue()`
+  - `scanGroupRuntimeIssues()`
+  - `recoverScannedActiveSessionTunnels()`
+- `frps/internal/control/session.go`
+  - `freezeTunnelRuntime()`
+  - `resetTunnelRuntime()`
+  - `shutdownSession()`
+
+其中职责边界固定如下：
+
+- `startTunnelListeners()` 和 `probeTunnelRuntimeIssue()` 只负责声明“我要按什么 key 绑定、这是 probe 还是 start”，不各自私下直接调用 `net.Listen`。
+- `closeStartedTunnelListeners()` 统一经由注入 listener handle 关闭，不能一部分走 fake、一部分还直接 `.Close()` 真 listener。
+- `serveTunnelListener()` / `serveUDPTunnelListener()` 当前重点仍在 I/O；第一版 listener 故障注入不要求 fake 完整 accept/read 数据面，只要能稳定覆盖 bind/close 生命周期即可。
+
+必须直接可观测的测试态信息固定如下，后续测试不得只靠日志判断：
+
+- 当前哪些 `ListenKey` 处于已占用、待释放、已释放状态。
+- 每个占用的 owner 是 runtime probe、runtime start、还是外部占用。
+- 每个 fake listener handle 的 `created / closeCalled / closeCompleted` 时序。
+- 指定 tunnel 当前已 attach 的 listener 数量、缺失的端口集合、最近一次失败原因。
+- 每次 bind/probe 命中的 rule、调用序号、返回错误和关联的 `groupID / tunnelID / configVersion`。
+
+第一版验收口径固定如下：
+
+- 能稳定制造“首次失败、第 `N` 次失败、部分 tunnel 失败、占用后释放、释放后复占、close 晚到、TCP/UDP 差异化失败”这些场景。
+- 同一份脚本下，`probeTunnelRuntimeIssue()` 与 `startTunnelListeners()` 观察到的是同一资源世界，不会一边判可用、一边又稳定绑定失败。
+- freeze / shutdown / reload 触发的 close 必须可被观测到“调用已发生”和“资源已真正释放”两个阶段，便于后续覆盖 close 晚到竞态。
+- 若某个 listener 竞争态测试仍然必须启动真实外部占用进程或靠 `sleep` 等待端口释放，说明 fake listener 能力还不够，先补基建，不进入场景实现。
+
 ## 3. 当前手工调试入口
 
 ### 3.1 服务是否启动
