@@ -107,7 +107,7 @@ func (s *Server) RefreshGroup(groupID int64) {
 		return
 	}
 
-	currentGroup := active.session.currentGroup()
+	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
 	if currentGroup.TokenHash != group.TokenHash {
 		s.logger.Info("closing active session after proxy group token reset", "group_id", groupID, "session_id", active.session.ID)
 		_ = active.conn.Close()
@@ -118,6 +118,26 @@ func (s *Server) RefreshGroup(groupID int64) {
 	if active.session.hasPendingConfig() {
 		s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
 		_ = active.conn.Close()
+		return
+	}
+
+	if sameRuntimeSnapshot(currentSnapshot, snapshot) {
+		if currentGroup.EffectiveIP == group.EffectiveIP {
+			active.session.replaceGroupRuntime(group)
+			return
+		}
+
+		s.logger.Info(
+			"rebinding active group runtime after effective_ip change",
+			"group_id", groupID,
+			"session_id", active.session.ID,
+			"old_effective_ip", currentGroup.EffectiveIP,
+			"new_effective_ip", group.EffectiveIP,
+		)
+		if err := s.rebindGroupRuntime(active.conn, active.session, group); err != nil {
+			s.logger.Warn("rebind active group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
+			_ = active.conn.Close()
+		}
 		return
 	}
 
@@ -154,4 +174,60 @@ func (s *Server) freezeGroupRuntime(conn net.Conn, session *sessionState) error 
 		}
 	}
 	return freezeErr
+}
+
+func (s *Server) rebindGroupRuntime(conn net.Conn, session *sessionState, group GroupRuntime) error {
+	if err := s.freezeGroupRuntime(conn, session); err != nil {
+		return err
+	}
+	session.replaceGroupRuntime(group)
+	session.allowTunnelRuntimeStart()
+	logger := s.logger.With(
+		"session_id", session.ID,
+		"group_id", group.ID,
+		"group_name", group.Name,
+	)
+	return s.ensureTunnelListeners(conn, logger, session)
+}
+
+func sameRuntimeSnapshot(current, next ConfigSnapshot) bool {
+	return sameTunnelEntries(current.Tunnels, next.Tunnels)
+}
+
+func sameTunnelEntries(left, right []protocol.TunnelEntry) bool {
+	if len(left) == 0 && len(right) == 0 {
+		return true
+	}
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if !sameTunnelEntry(left[index], right[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameTunnelEntry(left, right protocol.TunnelEntry) bool {
+	return left.TunnelID == right.TunnelID &&
+		left.Protocol == right.Protocol &&
+		left.TunnelFlags == right.TunnelFlags &&
+		left.RemoteStart == right.RemoteStart &&
+		left.RemoteEnd == right.RemoteEnd &&
+		sameHost(left.LocalHost, right.LocalHost) &&
+		left.LocalStart == right.LocalStart &&
+		left.LocalEnd == right.LocalEnd
+}
+
+func sameHost(left, right protocol.Host) bool {
+	if left.Type != right.Type || left.Name != right.Name {
+		return false
+	}
+	switch left.Type {
+	case protocol.HostTypeIPv4, protocol.HostTypeIPv6:
+		return left.IP.Equal(right.IP)
+	default:
+		return true
+	}
 }

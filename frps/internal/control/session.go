@@ -148,6 +148,13 @@ func (s *sessionState) currentGroup() GroupRuntime {
 	return s.Group
 }
 
+func (s *sessionState) replaceGroupRuntime(group GroupRuntime) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	group.Snapshot = s.Snapshot
+	s.Group = group
+}
+
 func (s *sessionState) reconfigure(group GroupRuntime, snapshot ConfigSnapshot, requestID uint32) error {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
