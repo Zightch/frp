@@ -134,10 +134,17 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `single` 隧道要求远端和本地都为单端口
 - `range` 隧道要求远端和本地跨度一致
 - `local_host` 必须是合法 IP 或 hostname
+- 当前管理面已接入第 1 阶段端口冲突校验：
+  - 只处理 `specific-specific`
+  - 只在分组和隧道都启用时参与比较
+  - 只比较同协议监听空间；`tcp` 和 `udp` 完全隔离
+  - 只比较相同的具体 `effective_ip`
+  - `0.0.0.0`、`::` 及其相关 wildcard 冲突规则当前仍未接入这一阶段
+  - `create tunnel`、`update tunnel`、`update proxy group(effective_ip/enabled)` 命中冲突时返回 `409`
 
 当前不做：
 
-- 端口冲突检测
+- wildcard 相关端口冲突检测
 - 隧道入口 ACL 配置
 - 分组总限速执行
 - 抓包配置
@@ -163,10 +170,21 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `local_start`
 - `local_end`
 - `enabled`
+- `status`
+- `status_reason`
 - `created_at`
 - `updated_at`
 
-管理 API 当前只返回持久化隧道配置；分组 `rate_limit` 不会通过管理 API / WebUI 编辑，抓包这类运行时控制也不在隧道返回模型内。
+其中隧道 `status` 当前固定为四态：
+
+- `禁用`：分组禁用或隧道禁用
+- `冲突`：命中当前已实现的 `specific-specific` 静态端口冲突
+- `异常`：隧道本身启用且不冲突，但 `frpc` 登录后对应 listener 启动失败
+- `启用`：其余情况
+
+`status_reason` 只在 `冲突` 或 `异常` 时返回，用于直接展示冲突对象或 listener 启动失败原因。这个状态是运行态派生值，不单独持久化入库。
+
+管理 API 当前返回“持久化隧道配置 + 运行态派生状态”；分组 `rate_limit` 不会通过管理 API / WebUI 编辑，抓包这类运行时控制也不在隧道返回模型内。
 
 ## 5. frpc 登录与配置下发
 
@@ -253,6 +271,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `frps` 收到对应 `config.ack(status=ok)` 前，不会重新开放 listener；因此热重载窗口内不会继续接受该分组新的公网连接。
 - 如果此时又收到第二次运行态变更，而上一版 `config.push` 仍未确认，服务端直接断开该分组控制连接，交给 `frpc` 重连后重新领取完整快照。
 - 因此当前 `config.ack(status=ok)` 已可对外承诺：客户端运行态已完成本地资源清理和快照切换；`frps` 收到后才重新开放 listener。
+- 如果 `frps` 在 `config.ack(status=ok)` 后按新快照启动 listener 时命中外部端口占用或其他 bind 失败，当前不会改写数据库配置；对应隧道会在管理 API 中显示为 `异常`，并携带具体启动失败原因。
 
 端口范围在在线热重载中的规则与单端口一致，只是作用对象换成整个范围 tunnel：
 

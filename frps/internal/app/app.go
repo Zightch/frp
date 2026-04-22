@@ -69,6 +69,7 @@ func (a *App) Run(parent context.Context) error {
 			Store:             a.store,
 			Network:           a.network,
 			RuntimeRefresher:  a.control,
+			RuntimeStatus:     a.control,
 			Auth:              a.auth,
 			WebUIDistDir:      a.config.WebUI.DistDir,
 		},

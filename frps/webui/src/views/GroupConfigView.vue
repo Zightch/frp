@@ -767,8 +767,19 @@ function copyToken() {
               </el-table-column>
               <el-table-column label="状态" width="80" align="center">
                 <template #default="{ row }">
-                  <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
-                    {{ row.enabled ? '启用' : '禁用' }}
+                  <el-tooltip
+                    v-if="(row.status === '冲突' || row.status === '异常') && row.status_reason"
+                    :content="row.status_reason"
+                    placement="top"
+                  >
+                    <el-tag type="danger" size="small">{{ row.status }}</el-tag>
+                  </el-tooltip>
+                  <el-tag
+                    v-else
+                    :type="row.status === '启用' ? 'success' : row.status === '禁用' ? 'info' : 'danger'"
+                    size="small"
+                  >
+                    {{ row.status }}
                   </el-tag>
                 </template>
               </el-table-column>

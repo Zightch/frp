@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -968,6 +969,315 @@ func TestManagementMutationsRefreshAffectedGroups(t *testing.T) {
 	}
 }
 
+func TestTunnelStatusesIncludeEnabledDisabledConflictAndAbnormal(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+	runtime := &recordingTunnelRuntimeStatusReader{
+		issues: map[int64]string{
+			5: "tcp listener 127.0.0.1:21000 start failed: bind blocked",
+		},
+	}
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			RuntimeStatus: runtime,
+			Auth:          manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	insertProxyGroup(t, store, 1, "group-a", "token-a", "hash-a", "127.0.0.1", true)
+	insertProxyGroup(t, store, 2, "group-b", "token-b", "hash-b", "127.0.0.1", true)
+	insertTunnel(t, store, 1, 1, "conflict-a", "tcp", 20000, 20000, true)
+	insertTunnel(t, store, 2, 1, "disabled-a", "tcp", 20001, 20001, false)
+	insertTunnel(t, store, 3, 2, "conflict-b", "tcp", 20000, 20000, true)
+	insertTunnel(t, store, 4, 1, "enabled-a", "tcp", 22000, 22000, true)
+	insertTunnel(t, store, 5, 1, "abnormal-a", "tcp", 21000, 21000, true)
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+	result := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/tunnels",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+
+	items, ok := result.JSON["items"].([]any)
+	if !ok || len(items) != 5 {
+		t.Fatalf("unexpected tunnel list payload: %#v", result.JSON)
+	}
+
+	statuses := make(map[string]map[string]any, len(items))
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected tunnel item: %#v", raw)
+		}
+		statuses[item["name"].(string)] = item
+	}
+
+	if statuses["conflict-a"]["status"] != tunnelStatusConflict {
+		t.Fatalf("unexpected conflict-a status: %#v", statuses["conflict-a"])
+	}
+	if statuses["conflict-b"]["status"] != tunnelStatusConflict {
+		t.Fatalf("unexpected conflict-b status: %#v", statuses["conflict-b"])
+	}
+	if !strings.Contains(statuses["conflict-a"]["status_reason"].(string), `隧道"conflict-b"`) {
+		t.Fatalf("unexpected conflict-a reason: %#v", statuses["conflict-a"])
+	}
+	if statuses["disabled-a"]["status"] != tunnelStatusDisabled {
+		t.Fatalf("unexpected disabled-a status: %#v", statuses["disabled-a"])
+	}
+	if statuses["enabled-a"]["status"] != tunnelStatusEnabled {
+		t.Fatalf("unexpected enabled-a status: %#v", statuses["enabled-a"])
+	}
+	if statuses["abnormal-a"]["status"] != tunnelStatusAbnormal {
+		t.Fatalf("unexpected abnormal-a status: %#v", statuses["abnormal-a"])
+	}
+	if statuses["abnormal-a"]["status_reason"] != runtime.issues[5] {
+		t.Fatalf("unexpected abnormal-a reason: %#v", statuses["abnormal-a"])
+	}
+}
+
+func TestCreateTunnelRejectsSpecificConflict(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			Auth: manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	groupA := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-a",
+			"effective_ip": "127.0.0.1",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupAID := int64(groupA.JSON["item"].(map[string]any)["id"].(float64))
+
+	groupB := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-b",
+			"effective_ip": "127.0.0.1",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupBID := int64(groupB.JSON["item"].(map[string]any)["id"].(float64))
+
+	created := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupAID,
+			"name":         "tunnel-a",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 20000,
+			"remote_end":   20000,
+			"local_host":   "127.0.0.1",
+			"local_start":  8080,
+			"local_end":    8080,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	if created.JSON["item"].(map[string]any)["status"] != tunnelStatusEnabled {
+		t.Fatalf("unexpected created tunnel status: %#v", created.JSON)
+	}
+
+	conflict := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupBID,
+			"name":         "tunnel-b",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 20000,
+			"remote_end":   20000,
+			"local_host":   "127.0.0.1",
+			"local_start":  8081,
+			"local_end":    8081,
+			"enabled":      true,
+		},
+		http.StatusConflict,
+		sessionCookie,
+	)
+	if !strings.Contains(conflict.JSON["error"].(string), `隧道"tunnel-a"`) {
+		t.Fatalf("unexpected conflict error: %#v", conflict.JSON)
+	}
+}
+
+func TestUpdateProxyGroupRejectsSpecificConflict(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7500",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+						{Addr: "127.0.0.2", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			Auth: manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	groupA := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-a",
+			"effective_ip": "127.0.0.1",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupAID := int64(groupA.JSON["item"].(map[string]any)["id"].(float64))
+
+	groupB := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-b",
+			"effective_ip": "127.0.0.2",
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupBID := int64(groupB.JSON["item"].(map[string]any)["id"].(float64))
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupAID,
+			"name":         "tunnel-a",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 20010,
+			"remote_end":   20010,
+			"local_host":   "127.0.0.1",
+			"local_start":  8080,
+			"local_end":    8080,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupBID,
+			"name":         "tunnel-b",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 20010,
+			"remote_end":   20010,
+			"local_host":   "127.0.0.1",
+			"local_start":  8081,
+			"local_end":    8081,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+
+	conflict := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/proxy-groups/"+jsonNumberString(float64(groupBID)),
+		map[string]any{
+			"effective_ip": "127.0.0.1",
+		},
+		http.StatusConflict,
+		sessionCookie,
+	)
+	if !strings.Contains(conflict.JSON["error"].(string), `隧道"tunnel-a"`) {
+		t.Fatalf("unexpected proxy group conflict error: %#v", conflict.JSON)
+	}
+}
+
 func TestProxyGroupCreateAllowsSpecialIPv6WithoutSnapshot(t *testing.T) {
 	store := newTestStore(t)
 	manager := newTestAuthManager(t, true)
@@ -1725,4 +2035,63 @@ func (r *recordingGroupRefresher) calls() []int64 {
 
 func (r *recordingGroupRefresher) reset() {
 	r.groupIDs = nil
+}
+
+type recordingTunnelRuntimeStatusReader struct {
+	issues map[int64]string
+}
+
+func (r *recordingTunnelRuntimeStatusReader) TunnelRuntimeIssues() map[int64]string {
+	if r == nil || len(r.issues) == 0 {
+		return nil
+	}
+	issues := make(map[int64]string, len(r.issues))
+	for tunnelID, reason := range r.issues {
+		issues[tunnelID] = reason
+	}
+	return issues
+}
+
+func insertProxyGroup(t *testing.T, store *storage.SQL, id int64, name, tokenID, tokenHash, effectiveIP string, enabled bool) {
+	t.Helper()
+	now := schemaTimestamp()
+	if _, err := store.Exec(
+		`INSERT INTO proxy_groups (id, name, token_id, token_hash, effective_ip, enabled, rate_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		id,
+		name,
+		tokenID,
+		tokenHash,
+		effectiveIP,
+		boolToInt(enabled),
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert proxy group: %v", err)
+	}
+}
+
+func insertTunnel(t *testing.T, store *storage.SQL, id int64, groupID int64, name, protocol string, remoteStart, remoteEnd int64, enabled bool) {
+	t.Helper()
+	now := schemaTimestamp()
+	remoteType := "single"
+	if remoteStart != remoteEnd {
+		remoteType = "range"
+	}
+	if _, err := store.Exec(
+		`INSERT INTO tunnels (id, group_id, name, protocol, remote_type, remote_start, remote_end, local_host, local_start, local_end, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, '127.0.0.1', ?, ?, ?, ?, ?)`,
+		id,
+		groupID,
+		name,
+		protocol,
+		remoteType,
+		remoteStart,
+		remoteEnd,
+		8080,
+		8080+(remoteEnd-remoteStart),
+		boolToInt(enabled),
+		now,
+		now,
+	); err != nil {
+		t.Fatalf("insert tunnel: %v", err)
+	}
 }

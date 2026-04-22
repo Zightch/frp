@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zightch/frp/frps/internal/ports"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -30,12 +31,18 @@ const (
 
 	proxyGroupStatusReasonMissingLocalIP      = "已配置 IP 当前不存在于本机"
 	proxyGroupStatusReasonSnapshotUnavailable = "本机 IP 列表暂不可用"
+
+	tunnelStatusEnabled  = "启用"
+	tunnelStatusDisabled = "禁用"
+	tunnelStatusConflict = "冲突"
+	tunnelStatusAbnormal = "异常"
 )
 
 type managementService struct {
 	store     *storage.SQL
 	network   system.SnapshotReader
 	refresher GroupRuntimeRefresher
+	runtime   TunnelRuntimeStatusReader
 }
 
 type proxyGroupView struct {
@@ -51,20 +58,25 @@ type proxyGroupView struct {
 }
 
 type tunnelView struct {
-	ID          int64  `json:"id"`
-	GroupID     int64  `json:"group_id"`
-	GroupName   string `json:"group_name"`
-	Name        string `json:"name"`
-	Protocol    string `json:"protocol"`
-	RemoteType  string `json:"remote_type"`
-	RemoteStart int64  `json:"remote_start"`
-	RemoteEnd   int64  `json:"remote_end"`
-	LocalHost   string `json:"local_host"`
-	LocalStart  int64  `json:"local_start"`
-	LocalEnd    int64  `json:"local_end"`
-	Enabled     bool   `json:"enabled"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ID           int64  `json:"id"`
+	GroupID      int64  `json:"group_id"`
+	GroupName    string `json:"group_name"`
+	Name         string `json:"name"`
+	Protocol     string `json:"protocol"`
+	RemoteType   string `json:"remote_type"`
+	RemoteStart  int64  `json:"remote_start"`
+	RemoteEnd    int64  `json:"remote_end"`
+	LocalHost    string `json:"local_host"`
+	LocalStart   int64  `json:"local_start"`
+	LocalEnd     int64  `json:"local_end"`
+	Enabled      bool   `json:"enabled"`
+	Status       string `json:"status"`
+	StatusReason string `json:"status_reason,omitempty"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+
+	GroupEffectiveIP string `json:"-"`
+	GroupEnabled     bool   `json:"-"`
 }
 
 type proxyGroupCreateRequest struct {
@@ -123,11 +135,11 @@ func (e *apiError) Error() string {
 	return e.Message
 }
 
-func newManagementService(store *storage.SQL, network system.SnapshotReader, refresher GroupRuntimeRefresher) *managementService {
+func newManagementService(store *storage.SQL, network system.SnapshotReader, refresher GroupRuntimeRefresher, runtime TunnelRuntimeStatusReader) *managementService {
 	if store == nil {
 		return nil
 	}
-	return &managementService{store: store, network: network, refresher: refresher}
+	return &managementService{store: store, network: network, refresher: refresher, runtime: runtime}
 }
 
 func (s *Server) handleProxyGroups(writer http.ResponseWriter, request *http.Request) {
@@ -433,6 +445,9 @@ func (m *managementService) updateProxyGroup(ctx context.Context, id int64, payl
 		if err != nil {
 			return err
 		}
+		if err := m.ensureSpecificConflictFreeForGroupUpdate(ctx, tx, id, current, normalized); err != nil {
+			return err
+		}
 
 		result, err := tx.ExecContext(
 			ctx,
@@ -539,42 +554,11 @@ WHERE id = ?
 }
 
 func (m *managementService) listTunnels(ctx context.Context) ([]tunnelView, error) {
-	result, err := m.store.QueryContext(
-		ctx,
-		`
-SELECT
-	t.id,
-	t.group_id,
-	COALESCE(g.name, '') AS group_name,
-	t.name,
-	t.protocol,
-	t.remote_type,
-	t.remote_start,
-	t.remote_end,
-	t.local_host,
-	t.local_start,
-	t.local_end,
-	t.enabled,
-	t.created_at,
-	t.updated_at
-FROM tunnels AS t
-LEFT JOIN proxy_groups AS g ON g.id = t.group_id
-ORDER BY t.id
-`,
-	)
+	items, err := m.loadTunnelsWithGroupState(ctx, m.store)
 	if err != nil {
-		return nil, fmt.Errorf("list tunnels: %w", err)
+		return nil, err
 	}
-
-	items := make([]tunnelView, 0, len(result.Rows))
-	for _, row := range result.Rows {
-		item, err := decodeTunnelRow(row)
-		if err != nil {
-			return nil, fmt.Errorf("decode tunnel: %w", err)
-		}
-		items = append(items, item)
-	}
-	return items, nil
+	return m.withTunnelStatuses(items), nil
 }
 
 func (m *managementService) createTunnel(ctx context.Context, payload tunnelRequest) (tunnelView, error) {
@@ -583,9 +567,13 @@ func (m *managementService) createTunnel(ctx context.Context, payload tunnelRequ
 		return tunnelView{}, err
 	}
 
-	var item tunnelView
+	var createdID int64
 	err = m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
-		if err := ensureProxyGroupExists(ctx, tx, normalized.GroupID); err != nil {
+		group, err := m.loadProxyGroupByID(ctx, tx, normalized.GroupID)
+		if err != nil {
+			return err
+		}
+		if err := m.ensureSpecificConflictFreeForTunnelCreate(ctx, tx, normalized, group); err != nil {
 			return err
 		}
 
@@ -625,9 +613,14 @@ INSERT INTO tunnels (
 			return writeConflictError(err, "tunnel name already exists in the selected proxy group")
 		}
 
-		item, err = m.loadTunnelByID(ctx, tx, result.LastInsertID)
-		return err
+		createdID = result.LastInsertID
+		return nil
 	})
+	if err != nil {
+		return tunnelView{}, err
+	}
+
+	item, err := m.loadTunnelByIDWithStatus(ctx, createdID)
 	if err != nil {
 		return tunnelView{}, err
 	}
@@ -659,7 +652,11 @@ func (m *managementService) updateTunnel(ctx context.Context, id int64, payload 
 			return fmt.Errorf("decode tunnel group_id: %w", err)
 		}
 
-		if err := ensureProxyGroupExists(ctx, tx, normalized.GroupID); err != nil {
+		group, err := m.loadProxyGroupByID(ctx, tx, normalized.GroupID)
+		if err != nil {
+			return err
+		}
+		if err := m.ensureSpecificConflictFreeForTunnelUpdate(ctx, tx, id, normalized, group); err != nil {
 			return err
 		}
 
@@ -700,10 +697,13 @@ WHERE id = ?
 		if result.RowsAffected == 0 {
 			return &apiError{Status: http.StatusNotFound, Message: "tunnel not found"}
 		}
-
-		item, err = m.loadTunnelByID(ctx, tx, id)
-		return err
+		return nil
 	})
+	if err != nil {
+		return tunnelView{}, err
+	}
+
+	item, err = m.loadTunnelByIDWithStatus(ctx, id)
 	if err != nil {
 		return tunnelView{}, err
 	}
@@ -829,6 +829,20 @@ WHERE id = ?
 	return m.withProxyGroupStatus(item), nil
 }
 
+func (m *managementService) loadTunnelByIDWithStatus(ctx context.Context, id int64) (tunnelView, error) {
+	items, err := m.loadTunnelsWithGroupState(ctx, m.store)
+	if err != nil {
+		return tunnelView{}, err
+	}
+	items = m.withTunnelStatuses(items)
+	for _, item := range items {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return tunnelView{}, &apiError{Status: http.StatusNotFound, Message: "tunnel not found"}
+}
+
 func (m *managementService) loadTunnelByID(ctx context.Context, conn storage.Conn, id int64) (tunnelView, error) {
 	row, err := conn.QueryOneContext(
 		ctx,
@@ -837,6 +851,8 @@ SELECT
 	t.id,
 	t.group_id,
 	COALESCE(g.name, '') AS group_name,
+	COALESCE(g.effective_ip, '') AS group_effective_ip,
+	COALESCE(g.enabled, 0) AS group_enabled,
 	t.name,
 	t.protocol,
 	t.remote_type,
@@ -868,6 +884,47 @@ WHERE t.id = ?
 	return item, nil
 }
 
+func (m *managementService) loadTunnelsWithGroupState(ctx context.Context, conn storage.Conn) ([]tunnelView, error) {
+	result, err := conn.QueryContext(
+		ctx,
+		`
+SELECT
+	t.id,
+	t.group_id,
+	COALESCE(g.name, '') AS group_name,
+	COALESCE(g.effective_ip, '') AS group_effective_ip,
+	COALESCE(g.enabled, 0) AS group_enabled,
+	t.name,
+	t.protocol,
+	t.remote_type,
+	t.remote_start,
+	t.remote_end,
+	t.local_host,
+	t.local_start,
+	t.local_end,
+	t.enabled,
+	t.created_at,
+	t.updated_at
+FROM tunnels AS t
+LEFT JOIN proxy_groups AS g ON g.id = t.group_id
+ORDER BY t.id
+`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list tunnels: %w", err)
+	}
+
+	items := make([]tunnelView, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		item, err := decodeTunnelRow(row)
+		if err != nil {
+			return nil, fmt.Errorf("decode tunnel: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 func ensureProxyGroupExists(ctx context.Context, conn storage.Conn, id int64) error {
 	if id <= 0 {
 		return &apiError{Status: http.StatusBadRequest, Message: "group_id must be greater than zero"}
@@ -877,6 +934,107 @@ func ensureProxyGroupExists(ctx context.Context, conn storage.Conn, id int64) er
 			return &apiError{Status: http.StatusBadRequest, Message: "group_id does not exist"}
 		}
 		return fmt.Errorf("load proxy group: %w", err)
+	}
+	return nil
+}
+
+func (m *managementService) ensureSpecificConflictFreeForTunnelCreate(ctx context.Context, conn storage.Conn, normalized normalizedTunnel, group proxyGroupView) error {
+	if !group.Enabled || !normalized.Enabled || !ports.IsSpecificListenIP(group.EffectiveIP) {
+		return nil
+	}
+
+	items, err := m.loadTunnelsWithGroupState(ctx, conn)
+	if err != nil {
+		return err
+	}
+	items = append(items, tunnelView{
+		ID:               -1,
+		GroupID:          group.ID,
+		GroupName:        group.Name,
+		GroupEffectiveIP: group.EffectiveIP,
+		GroupEnabled:     group.Enabled,
+		Name:             normalized.Name,
+		Protocol:         normalized.Protocol,
+		RemoteType:       normalized.RemoteType,
+		RemoteStart:      normalized.RemoteStart,
+		RemoteEnd:        normalized.RemoteEnd,
+		LocalHost:        normalized.LocalHost,
+		LocalStart:       normalized.LocalStart,
+		LocalEnd:         normalized.LocalEnd,
+		Enabled:          normalized.Enabled,
+	})
+	return specificConflictErrorForTargets(items, map[int64]struct{}{-1: {}})
+}
+
+func (m *managementService) ensureSpecificConflictFreeForTunnelUpdate(ctx context.Context, conn storage.Conn, tunnelID int64, normalized normalizedTunnel, group proxyGroupView) error {
+	items, err := m.loadTunnelsWithGroupState(ctx, conn)
+	if err != nil {
+		return err
+	}
+
+	for index := range items {
+		if items[index].ID != tunnelID {
+			continue
+		}
+		items[index].GroupID = group.ID
+		items[index].GroupName = group.Name
+		items[index].GroupEffectiveIP = group.EffectiveIP
+		items[index].GroupEnabled = group.Enabled
+		items[index].Name = normalized.Name
+		items[index].Protocol = normalized.Protocol
+		items[index].RemoteType = normalized.RemoteType
+		items[index].RemoteStart = normalized.RemoteStart
+		items[index].RemoteEnd = normalized.RemoteEnd
+		items[index].LocalHost = normalized.LocalHost
+		items[index].LocalStart = normalized.LocalStart
+		items[index].LocalEnd = normalized.LocalEnd
+		items[index].Enabled = normalized.Enabled
+		return specificConflictErrorForTargets(items, map[int64]struct{}{tunnelID: {}})
+	}
+
+	return &apiError{Status: http.StatusNotFound, Message: "tunnel not found"}
+}
+
+func (m *managementService) ensureSpecificConflictFreeForGroupUpdate(ctx context.Context, conn storage.Conn, groupID int64, current proxyGroupView, normalized normalizedProxyGroup) error {
+	if current.Enabled == normalized.Enabled && current.EffectiveIP == normalized.EffectiveIP {
+		return nil
+	}
+
+	items, err := m.loadTunnelsWithGroupState(ctx, conn)
+	if err != nil {
+		return err
+	}
+
+	targetIDs := make(map[int64]struct{})
+	for index := range items {
+		if items[index].GroupID != groupID {
+			continue
+		}
+		items[index].GroupEnabled = normalized.Enabled
+		items[index].GroupEffectiveIP = normalized.EffectiveIP
+		targetIDs[items[index].ID] = struct{}{}
+	}
+
+	return specificConflictErrorForTargets(items, targetIDs)
+}
+
+func specificConflictErrorForTargets(items []tunnelView, targetIDs map[int64]struct{}) error {
+	if len(targetIDs) == 0 {
+		return nil
+	}
+
+	conflicts, itemsByID := detectSpecificTunnelConflicts(items)
+	for tunnelID := range targetIDs {
+		conflict, ok := conflicts[tunnelID]
+		if !ok {
+			continue
+		}
+		target := itemsByID[tunnelID]
+		other := itemsByID[conflict.OtherOwnerID]
+		return &apiError{
+			Status:  http.StatusConflict,
+			Message: buildSpecificTunnelConflictReason(target, other, conflict),
+		}
 	}
 	return nil
 }
@@ -1070,8 +1228,12 @@ func decodeTunnelRow(row storage.Row) (tunnelView, error) {
 	if item.Enabled, err = rowBool(row, "enabled"); err != nil {
 		return item, fmt.Errorf("enabled: %w", err)
 	}
+	if item.GroupEnabled, err = rowBool(row, "group_enabled"); err != nil {
+		return item, fmt.Errorf("group_enabled: %w", err)
+	}
 
 	item.GroupName = rowString(row, "group_name")
+	item.GroupEffectiveIP = rowString(row, "group_effective_ip")
 	item.Name = rowString(row, "name")
 	item.Protocol = rowString(row, "protocol")
 	item.RemoteType = rowString(row, "remote_type")
@@ -1079,6 +1241,81 @@ func decodeTunnelRow(row storage.Row) (tunnelView, error) {
 	item.CreatedAt = rowTimeString(row, "created_at")
 	item.UpdatedAt = rowTimeString(row, "updated_at")
 	return item, nil
+}
+
+func (m *managementService) withTunnelStatuses(items []tunnelView) []tunnelView {
+	conflicts, itemsByID := detectSpecificTunnelConflicts(items)
+	runtimeIssues := map[int64]string(nil)
+	if m != nil && m.runtime != nil {
+		runtimeIssues = m.runtime.TunnelRuntimeIssues()
+	}
+
+	for index := range items {
+		item := &items[index]
+		switch {
+		case !item.GroupEnabled || !item.Enabled:
+			item.Status = tunnelStatusDisabled
+			item.StatusReason = ""
+		case conflictReasonForTunnel(item.ID, conflicts, itemsByID) != "":
+			item.Status = tunnelStatusConflict
+			item.StatusReason = conflictReasonForTunnel(item.ID, conflicts, itemsByID)
+		case strings.TrimSpace(runtimeIssues[item.ID]) != "":
+			item.Status = tunnelStatusAbnormal
+			item.StatusReason = strings.TrimSpace(runtimeIssues[item.ID])
+		default:
+			item.Status = tunnelStatusEnabled
+			item.StatusReason = ""
+		}
+	}
+
+	return items
+}
+
+func detectSpecificTunnelConflicts(items []tunnelView) (map[int64]ports.SpecificConflict, map[int64]tunnelView) {
+	claims := make([]ports.SpecificClaim, 0, len(items))
+	itemsByID := make(map[int64]tunnelView, len(items))
+	for _, item := range items {
+		itemsByID[item.ID] = item
+		if !item.GroupEnabled || !item.Enabled || !ports.IsSpecificListenIP(item.GroupEffectiveIP) {
+			continue
+		}
+		claims = append(claims, ports.SpecificClaim{
+			OwnerID:     item.ID,
+			Protocol:    strings.ToLower(strings.TrimSpace(item.Protocol)),
+			EffectiveIP: item.GroupEffectiveIP,
+			PortStart:   item.RemoteStart,
+			PortEnd:     item.RemoteEnd,
+		})
+	}
+	return ports.DetectSpecificConflicts(claims), itemsByID
+}
+
+func conflictReasonForTunnel(tunnelID int64, conflicts map[int64]ports.SpecificConflict, itemsByID map[int64]tunnelView) string {
+	conflict, ok := conflicts[tunnelID]
+	if !ok {
+		return ""
+	}
+	target := itemsByID[tunnelID]
+	other := itemsByID[conflict.OtherOwnerID]
+	return buildSpecificTunnelConflictReason(target, other, conflict)
+}
+
+func buildSpecificTunnelConflictReason(target, other tunnelView, conflict ports.SpecificConflict) string {
+	return fmt.Sprintf(
+		`与分组"%s"中的隧道"%s"在 %s %s:%s 上冲突`,
+		other.GroupName,
+		other.Name,
+		strings.ToUpper(conflict.Protocol),
+		conflict.EffectiveIP,
+		formatPortRange(conflict.ConflictStart, conflict.ConflictEnd),
+	)
+}
+
+func formatPortRange(start, end int64) string {
+	if start == end {
+		return strconv.FormatInt(start, 10)
+	}
+	return fmt.Sprintf("%d-%d", start, end)
 }
 
 func parseResourcePath(path, prefix string) (int64, string, error) {

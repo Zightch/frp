@@ -33,6 +33,8 @@ export interface Tunnel {
   local_start: number
   local_end: number
   enabled: boolean
+  status: string
+  status_reason?: string
   created_at: string
   updated_at: string
 }

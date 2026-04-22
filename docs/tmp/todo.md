@@ -4,24 +4,22 @@
 
 当前总目标：
 
-- 完成 `frps` 端口冲突检测的最小闭环，先在管理面拦住可判定冲突，再补控制面运行态兜底，并同步测试与正式文档。
+- 完成 `frps` 端口冲突检测的最小闭环，在已落地 `specific-specific` 的基础上补齐 wildcard 相关平台语义，再决定下一阶段扩展实现。
 
 子步骤：
 
-- 实现共享监听占位 helper，预计落点在 `frps/internal/ports`，让管理面和控制面都走同一套冲突比较逻辑。
-- 在管理面落地静态校验：`createTunnel()`、`updateTunnel()`、`updateProxyGroup()` 在写库前重算受影响的监听声明并拒绝冲突配置。
-- 在控制面补充运行态兜底：`ensureTunnelListeners()` 和 `effective_ip` 重绑路径在真正绑定前复用同一套声明模型，并把底层 bind 失败收敛成明确的端口冲突语义。
-- 补齐回归测试，并把最终已实现口径同步到 `docs/progress/`、`docs/frps/functional-spec.md`、`docs/frps/technical-design.md`。
+- 梳理并验证 Linux / Windows 下 `wildcard-specific`、`wildcard-wildcard`、IPv4 / IPv6 的真实绑定行为差异。
+- 基于平台实验结果，确定下一阶段静态冲突判定是否继续采用保守策略，以及矩阵/规则如何扩展到 wildcard。
+- 在规则收口后，再继续实现 wildcard 相关冲突检测和后续矩阵化检查。
 
 当前轮边界：
 
 - 当前轮只处理 `frps` 公网监听端口冲突，不处理 `frpc` 本地目标端口冲突。
-- 当前轮优先处理仓库内可由配置静态判定的冲突；对操作系统上其他外部进程的端口占用，当前至少要在控制面做 listener 启动兜底，但是否在管理面提前探测，不在本轮第一步直接拍板。
-- 端口冲突判定矩阵和共享监听占位模型已归档到 `docs/progress/2026-04-22.md`；后续实现按该口径推进，不在代码阶段再临时改规则。
-- 当前轮优先复用服务端已有错误返回与日志链路，不新增前端专用预测逻辑；WebUI 先消费管理 API 的明确报错。
-- 当前轮如果发现“禁用分组/禁用隧道是否占位”会显著影响实现范围，先在本轮口径梳理阶段定清楚，再进入代码实现，不边写边改规则。
+- `specific-specific` 静态冲突检测、隧道四态和 listener 启动失败到 `异常` 的运行态回传已经归档到 `docs/progress/2026-04-22.md`，后续不回退这一步。
+- 当前下一步只做 wildcard 相关平台行为澄清和规则收口，不直接扩展实现，更不提前混入共享逻辑、外部进程扫描矩阵或全量矩阵化执行。
+- 当前轮优先把 Windows / Linux 的监听行为差异说清楚，再决定管理面和控制面的统一保守策略。
 - 按 `docs/workflow.md` 执行：每完成一个子步骤，先归档、检查 `.gitignore`、提交并重写 `todo`，然后停下等待确认。
 
 当前唯一下一步：
 
-- 先实现共享监听占位 helper，并把它接入管理面的 `createTunnel()`、`updateTunnel()`、`updateProxyGroup()` 写库前校验，先收口配置层静态冲突拒绝。
+- 先通过平台实验和规则梳理，明确 Linux / Windows 下 `wildcard-specific`、`wildcard-wildcard`、IPv4 / IPv6 的真实监听冲突行为，并收口下一阶段的静态判定规则。

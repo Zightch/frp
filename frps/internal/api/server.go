@@ -20,12 +20,17 @@ type Options struct {
 	Store             *storage.SQL
 	Network           system.SnapshotReader
 	RuntimeRefresher  GroupRuntimeRefresher
+	RuntimeStatus     TunnelRuntimeStatusReader
 	Auth              *authn.Manager
 	WebUIDistDir      string
 }
 
 type GroupRuntimeRefresher interface {
 	RefreshGroup(groupID int64)
+}
+
+type TunnelRuntimeStatusReader interface {
+	TunnelRuntimeIssues() map[int64]string
 }
 
 type Server struct {
@@ -56,7 +61,7 @@ func NewServer(options Options, logger *slog.Logger, version string) (*Server, e
 		startedAt: time.Now().UTC(),
 		version:   version,
 		auth:      options.Auth,
-		manager:   newManagementService(options.Store, options.Network, options.RuntimeRefresher),
+		manager:   newManagementService(options.Store, options.Network, options.RuntimeRefresher, options.RuntimeStatus),
 		webui:     webuiHandler,
 	}
 

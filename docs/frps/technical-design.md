@@ -127,6 +127,12 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `sockaddr.go`：地址转换辅助
 - `repository.go`：从数据库构造 `GroupRuntime` 和 `ConfigSnapshot`
 
+### 3.8 `internal/ports`
+
+- 承接管理面当前已经落地的共享监听占位比较 helper。
+- 现阶段只实现 `specific-specific` 监听空间冲突检测，不处理 wildcard 相关规则。
+- 输出冲突双方和冲突端口区间，供管理 API 生成稳定错误文案和状态原因。
+
 ## 4. 当前数据模型
 
 当前配置明确分成两层：
@@ -261,8 +267,31 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `single` 模式下起止端口必须相同
 - `range` 模式下本地和远端跨度必须一致
 - `local_host` 使用 `protocol.ParseHost` 校验
+- 管理面当前已接入第一阶段静态端口冲突校验：
+  - 只处理 `specific-specific`
+  - 只在分组和隧道都启用时参与比较
+  - 只比较同协议监听空间
+  - 只比较相同的具体 `effective_ip`
+  - `0.0.0.0`、`::` 及其相关 wildcard 冲突规则暂未进入这一阶段
+- `createTunnel()`、`updateTunnel()`、`updateProxyGroup()` 在写库前重算受影响隧道集合；命中冲突时直接返回 `409`
 
-当前不校验端口冲突，也不暴露分组 `rate_limit` 管理入口；抓包控制也不作为 `tunnels` 持久化字段或管理入口出现。
+当前仍不暴露分组 `rate_limit` 管理入口；抓包控制也不作为 `tunnels` 持久化字段或管理入口出现。
+
+### 5.4 隧道状态派生
+
+管理 API 当前会给隧道返回一个运行态派生 `status` 与可选 `status_reason`，但不把它持久化入库。
+
+状态优先级固定为：
+
+1. `禁用`：分组禁用或隧道禁用
+2. `冲突`：命中当前已实现的 `specific-specific` 静态冲突
+3. `异常`：隧道启用且不冲突，但 listener 启动失败
+4. `启用`：其余情况
+
+其中 `status_reason` 当前只用于：
+
+- 指向冲突对端隧道与冲突监听空间
+- 承接 listener 启动失败的错误原因
 
 ## 6. 控制面设计
 
@@ -379,6 +408,13 @@ frps -> start listeners
 - `frps` 只有在对应 `config.ack(status=ok)` 成功后，才按新快照重新启动 listener；冻结期间旧 listener 即使仍有并发 accept / read，也会按快照代际被拒绝继续打开新的 `stream.open` / `udp.open`。
 - 如果刷新时已有未确认 `config.push`，服务端继续按当前边界直接断开控制连接，而不是排队叠加第二版热重载。
 - 因此，当前 `config.ack(status=ok)` 已经可以明确表示：客户端本地资源清理和运行态快照替换已经完成；`frps` 收到后才会重新开放 listener。
+
+### 6.5 listener 启动失败的运行态回传
+
+- `listeners.go` 在按快照启动 tunnel listener 时，如果底层 `net.Listen` / `net.ListenUDP` 失败，会包装成 `tunnelListenerStartError`。
+- `server.go` 维护 `tunnelRuntimeIssues map[int64]string`，记录最近一次 tunnel listener 启动失败原因。
+- 同一 tunnel 后续成功启动 listener 时，会清理对应运行态异常记录。
+- `internal/api` 通过 `TunnelRuntimeStatusReader` 读取这份运行态异常，并把满足条件的隧道状态派生为 `异常`。
 
 端口范围在热重载中的判定固定为“按 tunnel 整体替换”，不做重叠区间复用优化：
 

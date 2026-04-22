@@ -24,6 +24,34 @@ type udpTunnelListener struct {
 	listener      *net.UDPConn
 }
 
+type tunnelListenerStartError struct {
+	TunnelID    uint32
+	Protocol    uint8
+	EffectiveIP string
+	RemotePort  uint16
+	Cause       error
+}
+
+func (e *tunnelListenerStartError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s listener %s:%d start failed: %v",
+		protocolName(e.Protocol),
+		e.EffectiveIP,
+		e.RemotePort,
+		e.Cause,
+	)
+}
+
+func (e *tunnelListenerStartError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *sessionState) error {
 	session.runtimeMu.Lock()
 	if session.listenersStarted || session.runtimeFrozen {
@@ -48,6 +76,7 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 		}
 		session.listenersStarted = true
 		session.runtimeMu.Unlock()
+		s.clearTunnelRuntimeIssues(snapshot.Tunnels)
 		return nil
 	}
 
@@ -67,7 +96,15 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 				listener, err := net.Listen("tcp", addr)
 				if err != nil {
 					closeStartedTunnelListeners(startedTCP, startedUDP)
-					return err
+					startErr := &tunnelListenerStartError{
+						TunnelID:    tunnel.TunnelID,
+						Protocol:    tunnel.Protocol,
+						EffectiveIP: bindIP,
+						RemotePort:  uint16(remotePort),
+						Cause:       err,
+					}
+					s.recordTunnelRuntimeIssue(tunnel.TunnelID, startErr.Error())
+					return startErr
 				}
 				startedTCP = append(startedTCP, listener)
 				startedTCPByTunnel[tunnel.TunnelID] = append(startedTCPByTunnel[tunnel.TunnelID], listener)
@@ -84,12 +121,28 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 				udpAddr, err := net.ResolveUDPAddr("udp", addr)
 				if err != nil {
 					closeStartedTunnelListeners(startedTCP, startedUDP)
-					return err
+					startErr := &tunnelListenerStartError{
+						TunnelID:    tunnel.TunnelID,
+						Protocol:    tunnel.Protocol,
+						EffectiveIP: bindIP,
+						RemotePort:  uint16(remotePort),
+						Cause:       err,
+					}
+					s.recordTunnelRuntimeIssue(tunnel.TunnelID, startErr.Error())
+					return startErr
 				}
 				listener, err := net.ListenUDP("udp", udpAddr)
 				if err != nil {
 					closeStartedTunnelListeners(startedTCP, startedUDP)
-					return err
+					startErr := &tunnelListenerStartError{
+						TunnelID:    tunnel.TunnelID,
+						Protocol:    tunnel.Protocol,
+						EffectiveIP: bindIP,
+						RemotePort:  uint16(remotePort),
+						Cause:       err,
+					}
+					s.recordTunnelRuntimeIssue(tunnel.TunnelID, startErr.Error())
+					return startErr
 				}
 				startedUDP = append(startedUDP, listener)
 				startedUDPByTunnel[tunnel.TunnelID] = append(startedUDPByTunnel[tunnel.TunnelID], listener)
@@ -148,6 +201,7 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 		go s.serveUDPTunnelListener(conn, logger, session, runtime.configVersion, runtime.tunnel, runtime.remotePort, runtime.listener)
 	}
 
+	s.clearTunnelRuntimeIssues(snapshot.Tunnels)
 	return nil
 }
 
@@ -171,6 +225,17 @@ func closeStartedTunnelListeners(tcpListeners []net.Listener, udpListeners []*ne
 	}
 	for _, listener := range udpListeners {
 		_ = listener.Close()
+	}
+}
+
+func protocolName(value uint8) string {
+	switch value {
+	case protocol.ProtocolTCP:
+		return "tcp"
+	case protocol.ProtocolUDP:
+		return "udp"
+	default:
+		return fmt.Sprintf("protocol(%d)", value)
 	}
 }
 
