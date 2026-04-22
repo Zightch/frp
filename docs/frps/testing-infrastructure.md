@@ -594,3 +594,86 @@ type ObservedState struct {
 - 任一测试都能直接断言“当前是空配置保活，还是天然无 tunnel，还是等待恢复补推完整快照”，不再靠 `len(snapshot.Tunnels)` 猜业务模式。
 - 任一测试都能直接断言“旧 session 的晚到 ack / heartbeat / error 最终落到哪个连接和 session 身份上”，不再只得到一条模糊日志。
 - 如果某个场景仍然必须靠日志关键字、端口探活、或临时读取私有字段来判断是否成功，说明状态观测骨架还不够，先补观测口子，不进入不变量断言库和具体场景实现。
+
+## 9. 不变量断言库
+
+不变量断言相关测试后续统一按“直接消费结构化状态快照，不从日志和端口旁证反推业务结论”收口，避免测试断言本身又退回非确定性：
+
+- 断言 helper 必须直接读取上一节状态观测骨架导出的 `ObservedState` 或等价不可变快照，不能自己重新扫描 listener、重跑冲突判定、重算 session 归属。
+- 日志只能作为失败时的补充线索，不能作为主断言输入；日志存在丢行、异步刷新、语义漂移问题，无法稳定支撑竞争态测试。
+- 端口探活、HTTP 首次可见性探测、真实连接拨测也只能作为补充旁证，不能代替状态断言；这些方法会把测试结果重新绑回 OS 调度、网络栈和机器速度。
+- 断言库的职责是“把已经观测到的结构化状态变成统一规则校验与稳定失败输出”，不是替代 hook、manual scheduler、fake listener 或 fake transport。
+
+第一版断言 helper 建议固定为分层设计，而不是把所有规则塞进一个巨型 `AssertEverything()`：
+
+- 启动门闩断言：
+  - 校验 `InitialRuntimeScanDone`、`ControlListenerOpen`、`LoginGateOpen`、`ManagementAPIVisible` 的先后关系。
+  - 用于首轮扫描、控制端口开放、管理 API 首次可见这类启动序列场景。
+- session / pending config 断言：
+  - 校验 active session 唯一性、group slot 归属、`pendingConfigRequestID`、`pendingSnapshot.Version`、`LastAckedConfigVersion` 的一致关系。
+  - 用于首登、热更新、断线重连、session replacement、旧 ack 晚到场景。
+- listener / runtime issue / 最终状态断言：
+  - 校验 listener 集合、缺失端口集合、runtime issue、静态 `冲突`、最终派生状态之间是否匹配。
+  - 用于端口冲突、轮询恢复、局部补 listener、静态 `冲突` 优先级场景。
+- 空配置保活与恢复顺序断言：
+  - 校验 `effective_ip` 失效时是否进入空配置保活，恢复时是否先补推完整快照，再等待 `config.ack`，最后恢复 listener。
+  - 用于运行时 `effective_ip` 非法、非本机、网络快照恢复、热更新恢复场景。
+- 旧 session 晚到消息隔离断言：
+  - 校验旧连接的晚到 `config.ack`、heartbeat、error、shutdown 帧不会污染新 session 的 pending config、ack 版本、活跃 listener 和恢复模式。
+  - 用于重连接管、旧连接残帧、重复 ack、乱序 ack 场景。
+
+第一版最少必须沉淀的核心不变量固定如下：
+
+- 首轮扫描未完成前，不允许任何客户端登录路径进入“已通过登录门闩”的状态；如果当前实现通过“控制端口尚未监听”达成，也必须在快照里体现为 `LoginGateOpen=false`。
+- 管理 API 首次可见前，不允许暴露半成品状态；至少要保证首轮扫描结论、初始 tunnel 派生状态、管理 API 首次可见门闩已经一起收敛。
+- 任一时刻，同一 active session 最多只有一个有效 `pending config`；同一 group 也不能同时存在两个“当前有效”的 `pendingConfigRequestID`。
+- 旧 session 的晚到消息不能污染新 session；旧 `ConnID / SessionID` 上收到的 `config.ack`、heartbeat、error 只能被连接层拒绝、协议层拒绝或被显式忽略，不能改变当前 active session 状态。
+- 运行时 `effective_ip` 失效后进入空配置保活时，不允许直接恢复 listener；恢复顺序必须是“网络快照恢复有效 -> 补推完整快照 -> 等待 `config.ack` -> listener 恢复”。
+- 静态 `冲突` 优先于 runtime `异常`；如果某个 tunnel 同时命中两类原因，最终派生状态必须稳定显示 `冲突`，runtime issue 只作为原始观测存在。
+- 后续轮询只扫描当前没有监听的 tunnel 时，断言结果必须允许“之前冲突/异常的 tunnel 在条件恢复后被重新评估并补启动”，而不是永远停在旧异常。
+
+断言 helper 的输入输出形式建议固定如下：
+
+```go
+type InvariantCheckInput struct {
+    Before *ObservedState
+    After  *ObservedState
+
+    ExpectedGroupID   string
+    ExpectedTunnelIDs []string
+    ExpectedSessionID uint64
+}
+
+type InvariantViolation struct {
+    Rule     string
+    Summary  string
+    Expected string
+    Actual   string
+    Fields   []string
+}
+```
+
+- 单点状态规则可以只消费 `After`；涉及顺序和因果关系的规则，例如“先补推完整快照再恢复 listener”，必须同时消费 `Before/After` 或一段显式步骤快照。
+- helper 返回值要么为空表示通过，要么返回结构化 `InvariantViolation` 列表；测试框架再统一决定是立即 `Fatal`、累计多个失败还是转为 diff 输出。
+- 断言 helper 不直接依赖 `testing.T`，避免后续单测、双进程 harness、脚本化 e2e 场景各自再抄一套断言逻辑。
+
+失败输出格式必须优先可定位，而不是只打一段泛化报错；建议统一包含以下信息：
+
+- 规则名，例如 `startup.login_gate_before_initial_scan`、`session.single_pending_config`、`recovery.full_snapshot_before_listener_resume`。
+- 失败摘要，直接说明违反了什么顺序或唯一性约束。
+- 关键身份字段：`groupID / tunnelID / connID / sessionID / requestID / configVersion`。
+- 关键状态差异：例如 `expected LoginGateOpen=false, actual=true`，或 `expected pending request count<=1, actual=2`。
+- 必要时附上观测快照子树 diff，但只打印相关字段，不整份 dump 所有状态，避免失败输出被噪声淹没。
+
+断言库与场景编排器的边界固定如下：
+
+- 场景编排器负责“何时采样”和“采样哪些步骤”，例如在 barrier 放行前后、手动时间推进后、延迟 frame 放行后抓快照。
+- 不变量断言库负责“拿到这些快照后如何校验规则”，不负责启动进程、不负责推进时间、不负责释放 barrier。
+- 如果某条规则必须通过“先抓 A 点、再抓 B 点、再抓 C 点”才能表达，应由场景编排器提供步骤化快照，再由断言库消费；不要把编排逻辑偷偷塞回断言 helper。
+- 若某个场景无法给出稳定快照切面，只能靠日志串推导是否成功，说明仍缺 hook、fake 或观测口，不应靠更复杂的断言 helper 硬补。
+
+第一版验收口径固定如下：
+
+- 任一后续测试都能复用同一组 helper 直接断言“首轮扫描门闩”“管理 API 首次可见”“pending config 唯一性”“旧 session 晚到消息隔离”“空配置恢复顺序”“静态 `冲突` 优先级”这些规则。
+- 任一后续测试失败时，都能输出稳定的规则名、身份字段和状态差异，不再出现“只知道某条日志没打出来”这类不可定位失败。
+- 任一后续测试若仍必须自己重新扫 listener、重算冲突、拼接 session 上下文后才能断言，说明断言库或状态观测骨架还不够，先补基建，不进入场景实现。
