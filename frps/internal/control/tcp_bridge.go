@@ -21,57 +21,57 @@ type publicStream struct {
 	closeOnce     sync.Once
 }
 
-func (s *Server) handlePublicConnection(controlConn net.Conn, logger Logger, session *sessionState, configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, publicConn net.Conn) {
-	streamID := session.nextTunnelStreamID()
-	requestID := session.nextRequestID()
+func (s *Server) handlePublicConnection(serve tunnelRuntimeServeContext, publicConn net.Conn) {
+	streamID := serve.session.nextTunnelStreamID()
+	requestID := serve.session.nextRequestID()
 	stream := &publicStream{
-		configVersion: configVersion,
+		configVersion: serve.configVersion,
 		conn:          publicConn,
-		tunnel:        tunnel,
+		tunnel:        serve.tunnel,
 		openRequestID: requestID,
 		ready:         make(chan error, 1),
 	}
 
-	if !session.addPublicStream(streamID, stream, configVersion) {
+	if !serve.session.addPublicStream(streamID, stream, serve.configVersion) {
 		_ = publicConn.Close()
 		return
 	}
 
 	body, err := protocol.MarshalStreamOpen(protocol.StreamOpen{
-		TunnelID:   tunnel.TunnelID,
-		RemotePort: remotePort,
+		TunnelID:   serve.tunnel.TunnelID,
+		RemotePort: serve.remotePort,
 		ClientAddr: sockAddrFromNetAddr(publicConn.RemoteAddr()),
 		OpenedAtMs: uint64(time.Now().UTC().UnixMilli()),
 	})
 	if err != nil {
-		session.closePublicStream(streamID)
+		serve.session.closePublicStream(streamID)
 		return
 	}
 
-	if err := s.writeRuntimeFrameWithSession(controlConn, session, stream.configVersion, protocol.Frame{
+	if err := s.writeRuntimeFrameWithSession(serve.controlConn, serve.session, stream.configVersion, protocol.Frame{
 		Type:      protocol.TypeStreamOpen,
 		RequestID: requestID,
 		StreamID:  streamID,
 		Body:      body,
 	}); err != nil {
-		session.closePublicStream(streamID)
+		serve.session.closePublicStream(streamID)
 		return
 	}
 
 	select {
 	case openErr := <-stream.ready:
 		if openErr != nil {
-			logger.Warn("stream open rejected", "stream_id", streamID, "tunnel_id", tunnel.TunnelID, "error", openErr)
-			session.closePublicStream(streamID)
+			serve.logger.Warn("stream open rejected", "stream_id", streamID, "tunnel_id", serve.tunnel.TunnelID, "error", openErr)
+			serve.session.closePublicStream(streamID)
 			return
 		}
 	case <-time.After(s.options.WriteTimeout):
-		_ = s.sendStreamClose(controlConn, session, streamID, protocol.CloseReasonIdleTimeout, "stream open timeout")
-		session.closePublicStream(streamID)
+		_ = s.sendStreamClose(serve.controlConn, serve.session, streamID, protocol.CloseReasonIdleTimeout, "stream open timeout")
+		serve.session.closePublicStream(streamID)
 		return
 	}
 
-	go s.copyPublicToClient(controlConn, session, streamID, stream)
+	go s.copyPublicToClient(serve.controlConn, serve.session, streamID, stream)
 }
 
 func (s *Server) handleStreamOpened(conn net.Conn, session *sessionState, frame protocol.Frame) error {

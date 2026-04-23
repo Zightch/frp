@@ -169,13 +169,11 @@ func (c runtimeCoordinator) execute(target runtimeRecoveryTarget, plan runtimeRe
 		if err := c.server.freezeGroupRuntime(target.conn, target.session); err != nil {
 			return err
 		}
-		target.session.setRecoveryMode(testsupport.RecoveryModePendingEmptyConfig)
 		return c.server.pushReloadConfig(target.conn, target.session, plan.group, plan.snapshot)
 	case runtimeRecoveryActionPushFullConfig:
 		if err := c.server.freezeGroupRuntime(target.conn, target.session); err != nil {
 			return err
 		}
-		target.session.setRecoveryMode(testsupport.RecoveryModePendingFullConfig)
 		return c.server.pushReloadConfig(target.conn, target.session, plan.group, plan.snapshot)
 	case runtimeRecoveryActionCloseSession:
 		if target.conn == nil {

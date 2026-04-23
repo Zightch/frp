@@ -229,24 +229,7 @@ func (s runtimeSessionSnapshot) activeRuntimeTunnelIDs() map[uint32]struct{} {
 	if s.runtime.frozen {
 		return nil
 	}
-
-	active := make(map[uint32]struct{})
-	for tunnelID, listeners := range s.runtime.tcpListeners {
-		if len(listeners) == 0 {
-			continue
-		}
-		active[tunnelID] = struct{}{}
-	}
-	for tunnelID, listeners := range s.runtime.udpListeners {
-		if len(listeners) == 0 {
-			continue
-		}
-		active[tunnelID] = struct{}{}
-	}
-	if len(active) == 0 {
-		return nil
-	}
-	return active
+	return s.runtime.activeTunnelIDs
 }
 
 func (s *Server) reserveGroupSlot(groupID int64, sessionID uint64) bool {

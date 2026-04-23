@@ -9,7 +9,6 @@ import (
 
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
-	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 var (
@@ -71,7 +70,8 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		testhooks.F("request_id", frame.RequestID),
 		testhooks.F("config_version", ack.ConfigVersion),
 	)
-	if err := session.acceptConfigAck(frame.RequestID, ack.ConfigVersion); err != nil {
+	appliedConfig, err := session.acceptConfigAck(frame.RequestID, ack.ConfigVersion)
+	if err != nil {
 		switch {
 		case errors.Is(err, errUnexpectedConfigAck):
 			return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unexpected config.ack requestId %d", frame.RequestID)
@@ -90,24 +90,17 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 			return err
 		}
 	}
-	acceptedGroup, acceptedSnapshot := session.currentGroupAndSnapshot()
 	testhooks.Point(
 		"control.config_ack.after_accept",
-		testhooks.F("group_id", acceptedGroup.ID),
+		testhooks.F("group_id", appliedConfig.group.ID),
 		testhooks.F("session_id", session.ID),
 		testhooks.F("request_id", frame.RequestID),
 		testhooks.F("config_version", ack.ConfigVersion),
 	)
 	logger.Info("config acknowledged", "config_version", ack.ConfigVersion, "applied_at_ms", ack.AppliedAtMs)
-	if len(acceptedSnapshot.Tunnels) == 0 {
-		session.setRecoveryMode(testsupport.RecoveryModeEmptyConfig)
-	} else {
-		session.setRecoveryMode(testsupport.RecoveryModeRunning)
-	}
-	session.allowTunnelRuntimeStart()
-	if err := s.ensureTunnelListeners(conn, logger, session); err != nil {
+	if err := s.applyAcceptedConfig(conn, logger, session, appliedConfig); err != nil {
 		if isInitialStartup {
-			if reason, ok := buildInitialStartupRejectedReason(session.currentGroup(), err); ok {
+			if reason, ok := buildInitialStartupRejectedReason(appliedConfig.group, err); ok {
 				return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeConfigApplyFailed, "%s", reason)
 			}
 		}
@@ -143,7 +136,6 @@ func runtimeSnapshotForGroup(group GroupRuntime) ConfigSnapshot {
 }
 
 func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group GroupRuntime, snapshot ConfigSnapshot) error {
-	requestID := session.nextRequestID()
 	body, err := protocol.MarshalConfigPush(protocol.ConfigPush{
 		ConfigVersion: snapshot.Version,
 		GeneratedAtMs: snapshot.GeneratedAtMs,
@@ -152,37 +144,38 @@ func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group Gr
 	if err != nil {
 		return err
 	}
-	if err := session.reconfigure(group, snapshot, requestID); err != nil {
+	pushOp, err := session.prepareConfigPush(group, snapshot)
+	if err != nil {
 		return err
-	}
-	if len(snapshot.Tunnels) == 0 {
-		session.setRecoveryMode(testsupport.RecoveryModePendingEmptyConfig)
-	} else {
-		session.setRecoveryMode(testsupport.RecoveryModePendingFullConfig)
 	}
 	testhooks.Point(
 		"control.config_push.before_write",
-		testhooks.F("group_id", group.ID),
+		testhooks.F("group_id", pushOp.group.ID),
 		testhooks.F("session_id", session.ID),
-		testhooks.F("request_id", requestID),
-		testhooks.F("config_version", snapshot.Version),
-		testhooks.F("tunnel_count", len(snapshot.Tunnels)),
+		testhooks.F("request_id", pushOp.requestID),
+		testhooks.F("config_version", pushOp.snapshot.Version),
+		testhooks.F("tunnel_count", len(pushOp.snapshot.Tunnels)),
 	)
 	if err := s.writeFrameWithSession(conn, session, protocol.Frame{
 		Type:      protocol.TypeConfigPush,
-		RequestID: requestID,
+		RequestID: pushOp.requestID,
 		Body:      body,
 	}); err != nil {
-		session.clearPendingConfigRequest(requestID)
+		session.clearPendingConfigRequest(pushOp.requestID)
 		return err
 	}
 	testhooks.Point(
 		"control.config_push.after_write",
-		testhooks.F("group_id", group.ID),
+		testhooks.F("group_id", pushOp.group.ID),
 		testhooks.F("session_id", session.ID),
-		testhooks.F("request_id", requestID),
-		testhooks.F("config_version", snapshot.Version),
-		testhooks.F("tunnel_count", len(snapshot.Tunnels)),
+		testhooks.F("request_id", pushOp.requestID),
+		testhooks.F("config_version", pushOp.snapshot.Version),
+		testhooks.F("tunnel_count", len(pushOp.snapshot.Tunnels)),
 	)
 	return nil
+}
+
+func (s *Server) applyAcceptedConfig(conn net.Conn, logger Logger, session *sessionState, _ sessionConfigApplyResult) error {
+	session.allowTunnelRuntimeStart()
+	return s.ensureTunnelListeners(conn, logger, session)
 }

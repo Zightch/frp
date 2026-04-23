@@ -348,50 +348,33 @@ func buildInitialStartupRejectedReason(group GroupRuntime, err error) (string, b
 }
 
 func (s *Server) probeTunnelRuntimeIssue(groupID int64, bindIP string, tunnel protocol.TunnelEntry) string {
+	opCtx := newTunnelRuntimeProbeContext(groupID, tunnel, bindIP)
 	switch tunnel.Protocol {
 	case protocol.ProtocolTCP:
-		listeners := make([]net.Listener, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
-		for remotePort := int(tunnel.RemoteStart); remotePort <= int(tunnel.RemoteEnd); remotePort++ {
-			bind := ListenerBind{
-				GroupID:  groupID,
-				TunnelID: tunnel.TunnelID,
-				Kind:     BindKindRuntimeProbe,
-				Key: ListenKey{
-					Protocol: "tcp",
-					IP:       bindIP,
-					Port:     uint16(remotePort),
-				},
-			}
+		listeners := make([]net.Listener, 0, opCtx.remotePortCount())
+		for remotePort := int(opCtx.tunnel.RemoteStart); remotePort <= int(opCtx.tunnel.RemoteEnd); remotePort++ {
+			bind := opCtx.listenerBind(uint16(remotePort))
 			listener, err := s.listenTCP(context.Background(), bind)
 			if err != nil {
 				closeStartedTunnelListeners(listeners, nil)
-				return buildTunnelListenerStartReason(tunnel.Protocol, bindIP, uint16(remotePort), err)
+				return buildTunnelListenerStartReason(opCtx.tunnel.Protocol, opCtx.bindIP, uint16(remotePort), err)
 			}
 			listeners = append(listeners, listener)
 		}
 		closeStartedTunnelListeners(listeners, nil)
 	case protocol.ProtocolUDP:
-		listeners := make([]UDPListener, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
-		for remotePort := int(tunnel.RemoteStart); remotePort <= int(tunnel.RemoteEnd); remotePort++ {
-			bind := ListenerBind{
-				GroupID:  groupID,
-				TunnelID: tunnel.TunnelID,
-				Kind:     BindKindRuntimeProbe,
-				Key: ListenKey{
-					Protocol: "udp",
-					IP:       bindIP,
-					Port:     uint16(remotePort),
-				},
-			}
+		listeners := make([]UDPListener, 0, opCtx.remotePortCount())
+		for remotePort := int(opCtx.tunnel.RemoteStart); remotePort <= int(opCtx.tunnel.RemoteEnd); remotePort++ {
+			bind := opCtx.listenerBind(uint16(remotePort))
 			udpAddr, err := s.resolveUDPAddr(context.Background(), bind)
 			if err != nil {
 				closeStartedTunnelListeners(nil, listeners)
-				return buildTunnelListenerStartReason(tunnel.Protocol, bindIP, uint16(remotePort), err)
+				return buildTunnelListenerStartReason(opCtx.tunnel.Protocol, opCtx.bindIP, uint16(remotePort), err)
 			}
 			listener, err := s.listenUDP(context.Background(), bind, udpAddr)
 			if err != nil {
 				closeStartedTunnelListeners(nil, listeners)
-				return buildTunnelListenerStartReason(tunnel.Protocol, bindIP, uint16(remotePort), err)
+				return buildTunnelListenerStartReason(opCtx.tunnel.Protocol, opCtx.bindIP, uint16(remotePort), err)
 			}
 			listeners = append(listeners, listener)
 		}

@@ -3443,12 +3443,14 @@ func TestServerFreezeGroupRuntimeDropsBufferedUDPData(t *testing.T) {
 	forwardDone := make(chan error, 1)
 	go func() {
 		forwardDone <- server.handlePublicUDPDatagram(
-			controlServer,
-			slog.New(slog.NewTextHandler(io.Discard, nil)),
-			session,
-			1,
-			tunnel,
-			remotePort,
+			tunnelRuntimeServeContext{
+				controlConn:   controlServer,
+				logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+				session:       session,
+				configVersion: 1,
+				tunnel:        tunnel,
+				remotePort:    remotePort,
+			},
 			listener,
 			clientAddr,
 			[]byte("late"),

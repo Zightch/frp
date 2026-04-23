@@ -112,16 +112,16 @@ func (s *Server) cleanupIdlePublicUDPSessions(conn net.Conn, logger Logger, sess
 	return nil
 }
 
-func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, session *sessionState, configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, listener UDPListener, clientAddr *net.UDPAddr, payload []byte) error {
+func (s *Server) handlePublicUDPDatagram(serve tunnelRuntimeServeContext, listener UDPListener, clientAddr *net.UDPAddr, payload []byte) error {
 	now := s.clock.Now()
-	udpSession := newPublicUDPSession(session.nextTunnelStreamID(), tunnel, remotePort, listener, clientAddr, now)
-	udpSession, created := session.bindPublicUDPSession(udpSession, configVersion)
+	udpSession := newPublicUDPSession(serve.session.nextTunnelStreamID(), serve.tunnel, serve.remotePort, listener, clientAddr, now)
+	udpSession, created := serve.session.bindPublicUDPSession(udpSession, serve.configVersion)
 	if udpSession == nil {
 		return nil
 	}
 	if !created {
 		udpSession.touch(now)
-		err := s.writeRuntimeFrameWithSession(controlConn, session, configVersion, protocol.Frame{
+		err := s.writeRuntimeFrameWithSession(serve.controlConn, serve.session, serve.configVersion, protocol.Frame{
 			Type:     protocol.TypeUDPData,
 			StreamID: udpSession.sessionID,
 			Body:     payload,
@@ -132,19 +132,19 @@ func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, se
 		return err
 	}
 
-	requestID := session.nextRequestID()
+	requestID := serve.session.nextRequestID()
 	openBody, err := protocol.MarshalUDPOpen(protocol.UDPOpen{
-		TunnelID:      tunnel.TunnelID,
+		TunnelID:      serve.tunnel.TunnelID,
 		RemotePort:    udpSession.remotePort,
 		ClientAddr:    udpSession.clientAddr,
 		IdleTimeoutMs: uint32(udpSession.idleTimeout / time.Millisecond),
 	})
 	if err != nil {
-		session.closePublicUDPSession(udpSession.sessionID)
+		serve.session.closePublicUDPSession(udpSession.sessionID)
 		return err
 	}
 
-	err = s.writeRuntimeFramesWithSession(controlConn, session, configVersion,
+	err = s.writeRuntimeFramesWithSession(serve.controlConn, serve.session, serve.configVersion,
 		protocol.Frame{
 			Type:      protocol.TypeUDPOpen,
 			RequestID: requestID,
@@ -158,14 +158,14 @@ func (s *Server) handlePublicUDPDatagram(controlConn net.Conn, logger Logger, se
 		},
 	)
 	if err != nil {
-		session.closePublicUDPSession(udpSession.sessionID)
+		serve.session.closePublicUDPSession(udpSession.sessionID)
 		if errors.Is(err, errRuntimeIOStopped) {
 			return nil
 		}
 		return err
 	}
 
-	logger.Info("udp session opened", "session_id", udpSession.sessionID, "tunnel_id", tunnel.TunnelID, "client_addr", clientAddr.String())
+	serve.logger.Info("udp session opened", "session_id", udpSession.sessionID, "tunnel_id", serve.tunnel.TunnelID, "client_addr", clientAddr.String())
 	return nil
 }
 

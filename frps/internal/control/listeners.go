@@ -90,108 +90,145 @@ func (e *groupEffectiveIPStartError) Unwrap() error {
 }
 
 func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *sessionState) error {
-	if s.isShuttingDown() || session.isDone() {
-		return nil
+	target := newSessionRuntimeStartTarget(conn, logger, session)
+	plan := s.planSessionRuntimeStart(target)
+	return s.applySessionRuntimeStartPlan(target, plan)
+}
+
+func (s *Server) planSessionRuntimeStart(target sessionRuntimeStartTarget) sessionRuntimeStartPlan {
+	plan := sessionRuntimeStartPlan{
+		group:    target.group,
+		snapshot: target.snapshot,
 	}
-	if !session.canStartTunnelRuntime() {
-		return nil
+	if s.isShuttingDown() || target.session.isDone() || !target.session.canStartTunnelRuntime() {
+		plan.blocked = true
+		return plan
+	}
+	if len(target.snapshot.Tunnels) == 0 {
+		return plan
 	}
 
-	group, snapshot := session.currentGroupAndSnapshot()
-	if len(snapshot.Tunnels) == 0 {
-		session.resetRuntimeGenerationIfIdle()
-		session.setRecoveryMode(testsupport.RecoveryModeEmptyConfig)
-		return nil
+	activeTunnelIDs := target.session.activeRuntimeTunnelIDs()
+	plan.activeRuntime = len(activeTunnelIDs) != 0
+	plan.targetTunnels = selectNonListeningEnabledTunnels(target.snapshot.Tunnels, activeTunnelIDs)
+	plan.clearIssueTunnelIDs = collectRuntimeIssueClearTunnelIDs(target.snapshot.Tunnels, activeTunnelIDs)
+	if len(plan.targetTunnels) == 0 {
+		return plan
 	}
 
-	activeTunnelIDs := session.activeRuntimeTunnelIDs()
-	targetTunnels := selectNonListeningEnabledTunnels(snapshot.Tunnels, activeTunnelIDs)
-	for _, tunnel := range snapshot.Tunnels {
-		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
-			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, "")
-			continue
-		}
-		if _, active := activeTunnelIDs[tunnel.TunnelID]; active {
-			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, "")
-		}
-	}
-	if len(targetTunnels) == 0 {
-		if session.hasActiveRuntimeListeners() {
-			session.setRecoveryMode(testsupport.RecoveryModeRunning)
-		}
-		return nil
-	}
-
-	bindIP, err := s.resolveGroupEffectiveIP(group)
+	bindIP, err := s.resolveGroupEffectiveIP(target.group)
 	if err != nil {
-		reason := buildGroupEffectiveIPRuntimeReason(group, err)
-		for _, tunnel := range enabledTunnels(snapshot) {
-			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, reason)
-		}
-		return fmt.Errorf("%s: %w", reason, err)
+		plan.bindErr = err
+		return plan
 	}
-	conflictIssues := s.detectRuntimePortConflictIssues(group, bindIP, targetTunnels)
-	for tunnelID, reason := range conflictIssues {
-		s.recordTunnelRuntimeIssueForConfig(tunnelID, snapshot.Version, reason)
+	plan.bindIP = bindIP
+	plan.conflictIssues = s.detectRuntimePortConflictIssues(target.group, bindIP, plan.targetTunnels)
+	return plan
+}
+
+func (s *Server) applySessionRuntimeStartPlan(target sessionRuntimeStartTarget, plan sessionRuntimeStartPlan) error {
+	if plan.blocked {
+		return nil
+	}
+	if len(plan.snapshot.Tunnels) == 0 {
+		target.session.resetRuntimeGenerationIfIdle()
+		target.session.setRecoveryMode(testsupport.RecoveryModeEmptyConfig)
+		return nil
+	}
+	for _, tunnelID := range plan.clearIssueTunnelIDs {
+		s.recordTunnelRuntimeIssueForConfig(tunnelID, plan.snapshot.Version, "")
+	}
+	if plan.bindErr != nil {
+		reason := buildGroupEffectiveIPRuntimeReason(plan.group, plan.bindErr)
+		for _, tunnel := range enabledTunnels(plan.snapshot) {
+			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, plan.snapshot.Version, reason)
+		}
+		return fmt.Errorf("%s: %w", reason, plan.bindErr)
+	}
+	for tunnelID, reason := range plan.conflictIssues {
+		s.recordTunnelRuntimeIssueForConfig(tunnelID, plan.snapshot.Version, reason)
+	}
+	if len(plan.targetTunnels) == 0 {
+		if plan.activeRuntime {
+			target.session.setRecoveryMode(testsupport.RecoveryModeRunning)
+		}
+		return nil
 	}
 
-	for _, tunnel := range targetTunnels {
-		if reason := strings.TrimSpace(conflictIssues[tunnel.TunnelID]); reason != "" {
-			logger.Warn(
+	for _, tunnel := range plan.targetTunnels {
+		if reason := strings.TrimSpace(plan.conflictIssues[tunnel.TunnelID]); reason != "" {
+			target.logger.Warn(
 				"skip tunnel listener start because runtime conflict was detected",
 				"tunnel_id", tunnel.TunnelID,
-				"group_id", group.ID,
+				"group_id", plan.group.ID,
 				"reason", reason,
 			)
 			continue
 		}
-		started, startErr := s.startTunnelListeners(group.ID, snapshot.Version, tunnel, bindIP)
+		opCtx := newTunnelRuntimeStartContext(plan.group.ID, plan.snapshot.Version, tunnel, plan.bindIP)
+		started, startErr := s.startTunnelListeners(opCtx)
 		if startErr != nil {
-			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, startErr.Error())
-			logger.Warn(
+			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, plan.snapshot.Version, startErr.Error())
+			target.logger.Warn(
 				"tunnel listener start failed",
 				"tunnel_id", tunnel.TunnelID,
-				"group_id", group.ID,
+				"group_id", plan.group.ID,
 				"error", startErr,
 			)
 			continue
 		}
-		startUDPCleanup, attached := session.attachTunnelListeners(snapshot.Version, tunnel.TunnelID, started.tcpListeners, started.udpListeners)
+		startUDPCleanup, attached := target.session.attachTunnelListeners(plan.snapshot.Version, tunnel.TunnelID, started.tcpListeners, started.udpListeners)
 		if !attached {
 			closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
 			return nil
 		}
-		if s.isShuttingDown() || session.isDone() {
-			s.shutdownSession(session)
+		if s.isShuttingDown() || target.session.isDone() {
+			s.shutdownSession(target.session)
 			return nil
 		}
 		if startUDPCleanup {
-			go s.serveUDPIdleCleanup(conn, logger, session)
+			go s.serveUDPIdleCleanup(target.conn, target.logger, target.session)
 		}
 		for _, runtime := range started.tcpRuntimes {
-			logger.Info(
+			serve := opCtx.serveContext(target.conn, target.logger, target.session, runtime.remotePort)
+			target.logger.Info(
 				"tcp tunnel listener ready",
 				"tunnel_id", runtime.tunnel.TunnelID,
 				"remote_port", runtime.remotePort,
 				"addr", runtime.listener.Addr().String(),
 			)
-			go s.serveTunnelListener(conn, logger, session, runtime.configVersion, runtime.tunnel, runtime.remotePort, runtime.listener)
+			go s.serveTunnelListener(serve, runtime.listener)
 		}
 		for _, runtime := range started.udpRuntimes {
-			logger.Info(
+			serve := opCtx.serveContext(target.conn, target.logger, target.session, runtime.remotePort)
+			target.logger.Info(
 				"udp tunnel listener ready",
 				"tunnel_id", runtime.tunnel.TunnelID,
 				"remote_port", runtime.remotePort,
 				"addr", runtime.listener.LocalAddr().String(),
 			)
-			go s.serveUDPTunnelListener(conn, logger, session, runtime.configVersion, runtime.tunnel, runtime.remotePort, runtime.listener)
+			go s.serveUDPTunnelListener(serve, runtime.listener)
 		}
-		s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, "")
+		s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, plan.snapshot.Version, "")
 	}
-	if session.hasActiveRuntimeListeners() {
-		session.setRecoveryMode(testsupport.RecoveryModeRunning)
+	if target.session.hasActiveRuntimeListeners() {
+		target.session.setRecoveryMode(testsupport.RecoveryModeRunning)
 	}
 	return nil
+}
+
+func collectRuntimeIssueClearTunnelIDs(tunnels []protocol.TunnelEntry, activeTunnelIDs map[uint32]struct{}) []uint32 {
+	clearIDs := make([]uint32, 0, len(tunnels))
+	for _, tunnel := range tunnels {
+		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
+			clearIDs = append(clearIDs, tunnel.TunnelID)
+			continue
+		}
+		if _, active := activeTunnelIDs[tunnel.TunnelID]; active {
+			clearIDs = append(clearIDs, tunnel.TunnelID)
+		}
+	}
+	return clearIDs
 }
 
 type runtimeClaimOwner struct {
@@ -278,84 +315,46 @@ type tunnelListenerBatch struct {
 	udpRuntimes  []udpTunnelListener
 }
 
-func (s *Server) startTunnelListeners(groupID int64, configVersion uint64, tunnel protocol.TunnelEntry, bindIP string) (tunnelListenerBatch, error) {
+func (s *Server) startTunnelListeners(opCtx tunnelListenerOperationContext) (tunnelListenerBatch, error) {
 	started := tunnelListenerBatch{}
-	switch tunnel.Protocol {
+	switch opCtx.tunnel.Protocol {
 	case protocol.ProtocolTCP:
-		started.tcpListeners = make([]net.Listener, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
-		started.tcpRuntimes = make([]tcpTunnelListener, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
-		for remotePort := int(tunnel.RemoteStart); remotePort <= int(tunnel.RemoteEnd); remotePort++ {
-			bind := ListenerBind{
-				GroupID:       groupID,
-				TunnelID:      tunnel.TunnelID,
-				ConfigVersion: configVersion,
-				Kind:          BindKindRuntimeStart,
-				Key: ListenKey{
-					Protocol: "tcp",
-					IP:       bindIP,
-					Port:     uint16(remotePort),
-				},
-			}
+		started.tcpListeners = make([]net.Listener, 0, opCtx.remotePortCount())
+		started.tcpRuntimes = make([]tcpTunnelListener, 0, opCtx.remotePortCount())
+		for remotePort := int(opCtx.tunnel.RemoteStart); remotePort <= int(opCtx.tunnel.RemoteEnd); remotePort++ {
+			bind := opCtx.listenerBind(uint16(remotePort))
 			listener, err := s.listenTCP(context.Background(), bind)
 			if err != nil {
 				closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
-				return tunnelListenerBatch{}, &tunnelListenerStartError{
-					TunnelID:    tunnel.TunnelID,
-					Protocol:    tunnel.Protocol,
-					EffectiveIP: bindIP,
-					RemotePort:  uint16(remotePort),
-					Cause:       err,
-				}
+				return tunnelListenerBatch{}, opCtx.listenerStartError(uint16(remotePort), err)
 			}
 			started.tcpListeners = append(started.tcpListeners, listener)
 			started.tcpRuntimes = append(started.tcpRuntimes, tcpTunnelListener{
-				configVersion: configVersion,
-				tunnel:        tunnel,
+				configVersion: opCtx.configVersion,
+				tunnel:        opCtx.tunnel,
 				remotePort:    uint16(remotePort),
 				listener:      listener,
 			})
 		}
 	case protocol.ProtocolUDP:
-		started.udpListeners = make([]UDPListener, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
-		started.udpRuntimes = make([]udpTunnelListener, 0, int(tunnel.RemoteEnd-tunnel.RemoteStart)+1)
-		for remotePort := int(tunnel.RemoteStart); remotePort <= int(tunnel.RemoteEnd); remotePort++ {
-			bind := ListenerBind{
-				GroupID:       groupID,
-				TunnelID:      tunnel.TunnelID,
-				ConfigVersion: configVersion,
-				Kind:          BindKindRuntimeStart,
-				Key: ListenKey{
-					Protocol: "udp",
-					IP:       bindIP,
-					Port:     uint16(remotePort),
-				},
-			}
+		started.udpListeners = make([]UDPListener, 0, opCtx.remotePortCount())
+		started.udpRuntimes = make([]udpTunnelListener, 0, opCtx.remotePortCount())
+		for remotePort := int(opCtx.tunnel.RemoteStart); remotePort <= int(opCtx.tunnel.RemoteEnd); remotePort++ {
+			bind := opCtx.listenerBind(uint16(remotePort))
 			udpAddr, err := s.resolveUDPAddr(context.Background(), bind)
 			if err != nil {
 				closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
-				return tunnelListenerBatch{}, &tunnelListenerStartError{
-					TunnelID:    tunnel.TunnelID,
-					Protocol:    tunnel.Protocol,
-					EffectiveIP: bindIP,
-					RemotePort:  uint16(remotePort),
-					Cause:       err,
-				}
+				return tunnelListenerBatch{}, opCtx.listenerStartError(uint16(remotePort), err)
 			}
 			listener, err := s.listenUDP(context.Background(), bind, udpAddr)
 			if err != nil {
 				closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
-				return tunnelListenerBatch{}, &tunnelListenerStartError{
-					TunnelID:    tunnel.TunnelID,
-					Protocol:    tunnel.Protocol,
-					EffectiveIP: bindIP,
-					RemotePort:  uint16(remotePort),
-					Cause:       err,
-				}
+				return tunnelListenerBatch{}, opCtx.listenerStartError(uint16(remotePort), err)
 			}
 			started.udpListeners = append(started.udpListeners, listener)
 			started.udpRuntimes = append(started.udpRuntimes, udpTunnelListener{
-				configVersion: configVersion,
-				tunnel:        tunnel,
+				configVersion: opCtx.configVersion,
+				tunnel:        opCtx.tunnel,
 				remotePort:    uint16(remotePort),
 				listener:      listener,
 			})
@@ -510,22 +509,22 @@ func formatConflictPortRange(start, end int64) string {
 	return fmt.Sprintf("%d-%d", start, end)
 }
 
-func (s *Server) serveTunnelListener(conn net.Conn, logger Logger, session *sessionState, configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, listener net.Listener) {
+func (s *Server) serveTunnelListener(serve tunnelRuntimeServeContext, listener net.Listener) {
 	for {
 		publicConn, err := listener.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			logger.Warn("tcp tunnel accept failed", "tunnel_id", tunnel.TunnelID, "error", err)
+			serve.logger.Warn("tcp tunnel accept failed", "tunnel_id", serve.tunnel.TunnelID, "error", err)
 			continue
 		}
 
-		go s.handlePublicConnection(conn, logger, session, configVersion, tunnel, remotePort, publicConn)
+		go s.handlePublicConnection(serve, publicConn)
 	}
 }
 
-func (s *Server) serveUDPTunnelListener(conn net.Conn, logger Logger, session *sessionState, configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, listener UDPListener) {
+func (s *Server) serveUDPTunnelListener(serve tunnelRuntimeServeContext, listener UDPListener) {
 	buffer := make([]byte, protocol.MaxDataBodyLen)
 	for {
 		n, clientAddr, err := listener.ReadFromUDP(buffer)
@@ -533,15 +532,15 @@ func (s *Server) serveUDPTunnelListener(conn net.Conn, logger Logger, session *s
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			logger.Warn("udp tunnel read failed", "tunnel_id", tunnel.TunnelID, "error", err)
+			serve.logger.Warn("udp tunnel read failed", "tunnel_id", serve.tunnel.TunnelID, "error", err)
 			continue
 		}
 		payload := append([]byte(nil), buffer[:n]...)
-		if err := s.handlePublicUDPDatagram(conn, logger, session, configVersion, tunnel, remotePort, listener, clientAddr, payload); err != nil {
-			logger.Warn(
+		if err := s.handlePublicUDPDatagram(serve, listener, clientAddr, payload); err != nil {
+			serve.logger.Warn(
 				"udp tunnel forward failed",
-				"tunnel_id", tunnel.TunnelID,
-				"remote_port", remotePort,
+				"tunnel_id", serve.tunnel.TunnelID,
+				"remote_port", serve.remotePort,
 				"client_addr", clientAddr.String(),
 				"error", err,
 			)

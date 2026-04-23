@@ -31,7 +31,7 @@ func TestStartTunnelListenersUsesInjectedListenerFactory(t *testing.T) {
 		RemoteEnd:   7000,
 	}
 
-	started, err := server.startTunnelListeners(1, 2, tunnel, "127.0.0.1")
+	started, err := server.startTunnelListeners(newTunnelRuntimeStartContext(1, 2, tunnel, "127.0.0.1"))
 	if err != nil {
 		t.Fatalf("start tunnel listeners: %v", err)
 	}

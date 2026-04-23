@@ -145,43 +145,21 @@ func observeSessionState(snapshot runtimeSessionSnapshot) (testsupport.SessionOb
 
 	listeners := make([]testsupport.AttachedListenerObservedState, 0)
 	tunnelPorts := make(map[uint32]map[uint16]struct{})
-	for tunnelID, tunnelListeners := range snapshot.runtime.tcpListeners {
-		for _, listener := range tunnelListeners {
-			bindIP, port := listenerAddr(listener.Addr())
-			if _, ok := tunnelPorts[tunnelID]; !ok {
-				tunnelPorts[tunnelID] = make(map[uint16]struct{})
-			}
-			tunnelPorts[tunnelID][port] = struct{}{}
-			listeners = append(listeners, testsupport.AttachedListenerObservedState{
-				GroupID:       group.ID,
-				SessionID:     snapshot.sessionID,
-				TunnelID:      tunnelID,
-				Protocol:      "tcp",
-				BindIP:        bindIP,
-				Port:          port,
-				ConfigVersion: snapshot.runtime.generation,
-				Kind:          "tcp",
-			})
+	for _, attached := range snapshot.runtime.attachedListeners {
+		if _, ok := tunnelPorts[attached.tunnelID]; !ok {
+			tunnelPorts[attached.tunnelID] = make(map[uint16]struct{})
 		}
-	}
-	for tunnelID, tunnelListeners := range snapshot.runtime.udpListeners {
-		for _, listener := range tunnelListeners {
-			bindIP, port := listenerAddr(listener.LocalAddr())
-			if _, ok := tunnelPorts[tunnelID]; !ok {
-				tunnelPorts[tunnelID] = make(map[uint16]struct{})
-			}
-			tunnelPorts[tunnelID][port] = struct{}{}
-			listeners = append(listeners, testsupport.AttachedListenerObservedState{
-				GroupID:       group.ID,
-				SessionID:     snapshot.sessionID,
-				TunnelID:      tunnelID,
-				Protocol:      "udp",
-				BindIP:        bindIP,
-				Port:          port,
-				ConfigVersion: snapshot.runtime.generation,
-				Kind:          "udp",
-			})
-		}
+		tunnelPorts[attached.tunnelID][attached.port] = struct{}{}
+		listeners = append(listeners, testsupport.AttachedListenerObservedState{
+			GroupID:       group.ID,
+			SessionID:     snapshot.sessionID,
+			TunnelID:      attached.tunnelID,
+			Protocol:      attached.protocol,
+			BindIP:        attached.bindIP,
+			Port:          attached.port,
+			ConfigVersion: snapshot.runtime.generation,
+			Kind:          attached.protocol,
+		})
 	}
 
 	missing := make([]testsupport.MissingListenerObservedState, 0)
@@ -213,28 +191,6 @@ func observeSessionState(snapshot runtimeSessionSnapshot) (testsupport.SessionOb
 	}
 
 	return observed, listeners, missing
-}
-
-func cloneTCPListenerMap(source map[uint32][]net.Listener) map[uint32][]net.Listener {
-	if len(source) == 0 {
-		return nil
-	}
-	cloned := make(map[uint32][]net.Listener, len(source))
-	for tunnelID, listeners := range source {
-		cloned[tunnelID] = append([]net.Listener(nil), listeners...)
-	}
-	return cloned
-}
-
-func cloneUDPListenerMap(source map[uint32][]UDPListener) map[uint32][]UDPListener {
-	if len(source) == 0 {
-		return nil
-	}
-	cloned := make(map[uint32][]UDPListener, len(source))
-	for tunnelID, listeners := range source {
-		cloned[tunnelID] = append([]UDPListener(nil), listeners...)
-	}
-	return cloned
 }
 
 func listenerAddr(addr net.Addr) (string, uint16) {

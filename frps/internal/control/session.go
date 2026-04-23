@@ -30,6 +30,19 @@ type sessionAckedConfigState struct {
 	version uint64
 }
 
+type sessionConfigPushOperation struct {
+	requestID    uint32
+	group        GroupRuntime
+	snapshot     ConfigSnapshot
+	recoveryMode testsupport.RecoveryMode
+}
+
+type sessionConfigApplyResult struct {
+	group        GroupRuntime
+	snapshot     ConfigSnapshot
+	recoveryMode testsupport.RecoveryMode
+}
+
 type sessionConfigState struct {
 	current      sessionAppliedConfigState
 	pending      sessionPendingConfigState
@@ -86,11 +99,18 @@ type observedSessionConfigState struct {
 }
 
 type observedSessionRuntimeState struct {
-	frozen           bool
-	listenersStarted bool
-	generation       uint64
-	tcpListeners     map[uint32][]net.Listener
-	udpListeners     map[uint32][]UDPListener
+	frozen            bool
+	listenersStarted  bool
+	generation        uint64
+	activeTunnelIDs   map[uint32]struct{}
+	attachedListeners []observedSessionRuntimeListener
+}
+
+type observedSessionRuntimeListener struct {
+	tunnelID uint32
+	protocol string
+	bindIP   string
+	port     uint16
 }
 
 func newSessionState(id uint64, group GroupRuntime, snapshot ConfigSnapshot, readTimeout time.Duration) *sessionState {
@@ -366,7 +386,48 @@ func (s *sessionState) replaceGroupRuntime(group GroupRuntime) {
 	s.config.current.group = group
 }
 
+func pendingRecoveryModeForSnapshot(snapshot ConfigSnapshot) testsupport.RecoveryMode {
+	if len(snapshot.Tunnels) == 0 {
+		return testsupport.RecoveryModePendingEmptyConfig
+	}
+	return testsupport.RecoveryModePendingFullConfig
+}
+
+func appliedRecoveryModeForSnapshot(snapshot ConfigSnapshot) testsupport.RecoveryMode {
+	if len(snapshot.Tunnels) == 0 {
+		return testsupport.RecoveryModeEmptyConfig
+	}
+	return testsupport.RecoveryModeRunning
+}
+
+func (s *sessionState) prepareConfigPush(group GroupRuntime, snapshot ConfigSnapshot) (sessionConfigPushOperation, error) {
+	requestID := s.nextRequestID()
+	recoveryMode := pendingRecoveryModeForSnapshot(snapshot)
+
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+
+	if s.config.pending.requestID != 0 {
+		return sessionConfigPushOperation{}, errConfigUpdateInFlight
+	}
+
+	s.config.pending = sessionPendingConfigState{
+		requestID: requestID,
+		group:     group,
+		snapshot:  snapshot,
+	}
+	s.config.recoveryMode = recoveryMode
+	return sessionConfigPushOperation{
+		requestID:    requestID,
+		group:        group,
+		snapshot:     snapshot,
+		recoveryMode: recoveryMode,
+	}, nil
+}
+
 func (s *sessionState) reconfigure(group GroupRuntime, snapshot ConfigSnapshot, requestID uint32) error {
+	recoveryMode := pendingRecoveryModeForSnapshot(snapshot)
+
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 
@@ -379,6 +440,7 @@ func (s *sessionState) reconfigure(group GroupRuntime, snapshot ConfigSnapshot, 
 		group:     group,
 		snapshot:  snapshot,
 	}
+	s.config.recoveryMode = recoveryMode
 	return nil
 }
 
@@ -397,15 +459,15 @@ func (s *sessionState) lastAckedConfigVersion() uint64 {
 	return s.config.acked.version
 }
 
-func (s *sessionState) acceptConfigAck(requestID uint32, version uint64) error {
+func (s *sessionState) acceptConfigAck(requestID uint32, version uint64) (sessionConfigApplyResult, error) {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 
 	if s.config.pending.requestID == 0 || requestID != s.config.pending.requestID {
-		return errUnexpectedConfigAck
+		return sessionConfigApplyResult{}, errUnexpectedConfigAck
 	}
 	if version != s.config.pending.snapshot.Version {
-		return errConfigVersionMismatch
+		return sessionConfigApplyResult{}, errConfigVersionMismatch
 	}
 
 	s.config.current = sessionAppliedConfigState{
@@ -413,8 +475,13 @@ func (s *sessionState) acceptConfigAck(requestID uint32, version uint64) error {
 		snapshot: s.config.pending.snapshot,
 	}
 	s.config.acked.version = version
+	s.config.recoveryMode = appliedRecoveryModeForSnapshot(s.config.current.snapshot)
 	s.config.pending = sessionPendingConfigState{}
-	return nil
+	return sessionConfigApplyResult{
+		group:        s.config.current.group,
+		snapshot:     s.config.current.snapshot,
+		recoveryMode: s.config.recoveryMode,
+	}, nil
 }
 
 func (s *sessionState) clearPendingConfigRequest(requestID uint32) {
@@ -511,15 +578,42 @@ func (s *sessionState) observeState() (observedSessionConfigState, observedSessi
 
 	s.runtimeMu.Lock()
 	runtimeState := observedSessionRuntimeState{
-		frozen:           s.runtime.frozen,
-		listenersStarted: s.runtime.listeners.started,
-		generation:       s.runtime.generation,
-		tcpListeners:     cloneTCPListenerMap(s.runtime.listeners.tcp),
-		udpListeners:     cloneUDPListenerMap(s.runtime.listeners.udp),
+		frozen:            s.runtime.frozen,
+		listenersStarted:  s.runtime.listeners.started,
+		generation:        s.runtime.generation,
+		activeTunnelIDs:   s.activeRuntimeTunnelIDsLocked(),
+		attachedListeners: observeRuntimeListeners(s.runtime.listeners.tcp, s.runtime.listeners.udp),
 	}
 	s.runtimeMu.Unlock()
 
 	return configState, runtimeState
+}
+
+func observeRuntimeListeners(tcp map[uint32][]net.Listener, udp map[uint32][]UDPListener) []observedSessionRuntimeListener {
+	listeners := make([]observedSessionRuntimeListener, 0, len(tcp)+len(udp))
+	for tunnelID, tunnelListeners := range tcp {
+		for _, listener := range tunnelListeners {
+			bindIP, port := listenerAddr(listener.Addr())
+			listeners = append(listeners, observedSessionRuntimeListener{
+				tunnelID: tunnelID,
+				protocol: "tcp",
+				bindIP:   bindIP,
+				port:     port,
+			})
+		}
+	}
+	for tunnelID, tunnelListeners := range udp {
+		for _, listener := range tunnelListeners {
+			bindIP, port := listenerAddr(listener.LocalAddr())
+			listeners = append(listeners, observedSessionRuntimeListener{
+				tunnelID: tunnelID,
+				protocol: "udp",
+				bindIP:   bindIP,
+				port:     port,
+			})
+		}
+	}
+	return listeners
 }
 
 func (s *Server) shutdownSession(session *sessionState) {
