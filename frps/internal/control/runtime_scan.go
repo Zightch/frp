@@ -209,14 +209,21 @@ func (s *Server) preserveScannedHealthyRuntimeIssuesUntilRecovery(group GroupRun
 		return nil
 	}
 	if active.session.hasPendingConfig() {
-		return nil
+		return preserveHealthyScannedTunnels(targetTunnels, staticConflictIDs, issues)
 	}
 
 	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
-	if currentGroup.EffectiveIP != group.EffectiveIP || !sameRuntimeSnapshot(currentSnapshot, group.Snapshot) {
+	if currentGroup.EffectiveIP != group.EffectiveIP {
+		return nil
+	}
+	if !sameRuntimeSnapshot(currentSnapshot, group.Snapshot) && !shouldRecoverScannedActiveSessionConfig(currentSnapshot, group.Snapshot) {
 		return nil
 	}
 
+	return preserveHealthyScannedTunnels(targetTunnels, staticConflictIDs, issues)
+}
+
+func preserveHealthyScannedTunnels(targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) map[uint32]struct{} {
 	preserved := make(map[uint32]struct{})
 	for _, tunnel := range targetTunnels {
 		if _, conflicted := staticConflictIDs[int64(tunnel.TunnelID)]; conflicted {

@@ -264,19 +264,15 @@ func TestServerScenarioRecoversEmptyConfigOnlyAfterAckThenListenerBind(t *testin
 	case <-time.After(time.Second):
 		t.Fatal("refresh did not complete")
 	}
-	waitForIdleConfig(t, active.session)
 
-	emptyState := sharedtestsupport.ObservedState{Server: server.ObserveState()}
-	emptySession := requireObservedSession(t, emptyState.Server, repo.group.ID)
-	if emptySession.RecoveryMode != sharedtestsupport.RecoveryModeEmptyConfig {
-		t.Fatalf("expected empty-config recovery mode, got %s", emptySession.RecoveryMode)
-	}
-	if emptySession.SnapshotTunnelCount != 0 {
-		t.Fatalf("expected empty snapshot after effective_ip loss, got %#v", emptySession)
-	}
-	if countObservedListeners(emptyState.Server, repo.group.ID, 7) != 0 {
-		t.Fatalf("expected listeners to be drained in empty-config mode, got %#v", emptyState.Server.Listeners)
-	}
+	emptyState := waitForObservedState(t, server, nil, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		return session != nil &&
+			session.Pending == nil &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModeEmptyConfig &&
+			session.SnapshotTunnelCount == 0 &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0
+	})
 	if issues := server.TunnelRuntimeIssues(); !strings.Contains(issues[7], "当前不存在于本机") {
 		t.Fatalf("expected runtime issue in empty-config mode, got %#v", issues)
 	}
@@ -867,6 +863,393 @@ func TestServerScenarioReconnectAfterPendingRecoveryPushDropsOldPendingConfig(t 
 	case <-secondDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("replacement session did not exit")
+	}
+}
+
+func TestServerScenarioKeepsEffectiveIPRuntimeIssueAcrossHighFrequencyEmptyAndFullRecoveryFlaps(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	port := uint16(freeTCPPort(t))
+	initialListenKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: port}
+	recoveredListenKey := ListenKey{Protocol: "tcp", IP: "127.0.0.2", Port: port}
+	listenerFactory := NewScriptedListenerFactory()
+	repo := &mutableRepository{
+		group: GroupRuntime{
+			ID:          1,
+			Name:        "group-a",
+			Enabled:     true,
+			EffectiveIP: "127.0.0.1",
+			TokenHash:   tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: port,
+						RemoteEnd:   port,
+						LocalHost:   host,
+						LocalStart:  2200,
+						LocalEnd:    2200,
+					},
+				},
+			},
+		},
+	}
+	network := &mutableSnapshotReader{
+		snapshot: localIPv4Snapshot("127.0.0.1"),
+	}
+
+	server := NewServer(
+		Options{
+			Repository:      repo,
+			Network:         network,
+			ListenerFactory: listenerFactory,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	initialPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, initialPush.ConfigVersion)
+
+	runningState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			session.Pending == nil &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModeRunning &&
+			session.SnapshotVersion == 1 &&
+			session.LastAckedConfigVersion == 1 &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 1 &&
+			handleCountForPort(observed, initialListenKey) == 1 &&
+			handleCountForPort(observed, recoveredListenKey) == 0 &&
+			tunnel != nil &&
+			strings.TrimSpace(tunnel.RuntimeIssue) == "" &&
+			tunnel.FinalStatus == "启用"
+	})
+	if runningState.Server.GroupSlots[repo.group.ID] == 0 {
+		t.Fatalf("expected running session to occupy group slot, got %#v", runningState.Server.GroupSlots)
+	}
+
+	repo.group.EffectiveIP = "127.0.0.2"
+	repo.group.Snapshot = ConfigSnapshot{
+		Version:       2,
+		GeneratedAtMs: 200,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    7,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: port,
+				RemoteEnd:   port,
+				LocalHost:   host,
+				LocalStart:  2200,
+				LocalEnd:    2200,
+			},
+		},
+	}
+
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		server.RefreshGroup(repo.group.ID)
+	}()
+
+	emptyFrame := readMessage(t, clientConn)
+	if emptyFrame.Type != protocol.TypeConfigPush {
+		t.Fatalf("expected empty config.push, got %s", emptyFrame.Type.String())
+	}
+	emptyPush, err := protocol.UnmarshalConfigPush(emptyFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal empty config.push: %v", err)
+	}
+	if emptyPush.ConfigVersion != 2 || len(emptyPush.Tunnels) != 0 {
+		t.Fatalf("unexpected empty config.push during effective_ip flap: %#v", emptyPush)
+	}
+
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("empty-config refresh did not complete")
+	}
+
+	pendingEmptyState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			session.Pending != nil &&
+			session.Pending.Version == 2 &&
+			session.Pending.TunnelCount == 0 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModePendingEmptyConfig &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, initialListenKey) == 0 &&
+			handleCountForPort(observed, recoveredListenKey) == 0 &&
+			tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "当前不存在于本机") &&
+			tunnel.FinalStatus == "异常"
+	})
+	pendingEmptySession := requireObservedSession(t, pendingEmptyState.Server, repo.group.ID)
+	if pendingEmptySession.Pending == nil || pendingEmptySession.Pending.EffectiveIP != "127.0.0.2" {
+		t.Fatalf("expected pending empty config for recovered effective_ip, got %#v", pendingEmptySession)
+	}
+
+	network.setSnapshot(localIPv4Snapshot("127.0.0.1", "127.0.0.2"))
+	if err := server.scanNonListeningTunnelRuntimeIssues(context.Background()); err != nil {
+		t.Fatalf("scan runtime issues while empty config is pending: %v", err)
+	}
+
+	if frame, err := readMessageWithin(clientConn, 200*time.Millisecond); err == nil {
+		t.Fatalf("expected no recovery config.push while empty config is still pending, got %s", frame.Type.String())
+	} else if !isTimeoutError(err) {
+		t.Fatalf("expected idle connection while empty config is pending, got %v", err)
+	}
+
+	heldEmptyState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			session.Pending != nil &&
+			session.Pending.Version == 2 &&
+			session.Pending.TunnelCount == 0 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModePendingEmptyConfig &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, initialListenKey) == 0 &&
+			handleCountForPort(observed, recoveredListenKey) == 0 &&
+			tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "当前不存在于本机") &&
+			tunnel.FinalStatus == "异常"
+	})
+	if len(heldEmptyState.Server.Listeners) != 0 {
+		t.Fatalf("expected no attached listeners while empty config is pending, got %#v", heldEmptyState.Server.Listeners)
+	}
+
+	writeConfigAck(t, clientConn, emptyFrame.RequestID, emptyPush.ConfigVersion)
+
+	emptyState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			session.Pending == nil &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModeEmptyConfig &&
+			session.SnapshotVersion == 2 &&
+			session.SnapshotTunnelCount == 0 &&
+			session.LastAckedConfigVersion == 2 &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, initialListenKey) == 0 &&
+			handleCountForPort(observed, recoveredListenKey) == 0 &&
+			tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "当前不存在于本机") &&
+			tunnel.FinalStatus == "异常"
+	})
+	if emptyState.Server.GroupSlots[repo.group.ID] == 0 {
+		t.Fatalf("expected empty-config session to keep group slot, got %#v", emptyState.Server.GroupSlots)
+	}
+
+	scanDone := make(chan error, 1)
+	go func() {
+		scanDone <- server.scanNonListeningTunnelRuntimeIssues(context.Background())
+	}()
+
+	recoveredFrame := readMessage(t, clientConn)
+	if recoveredFrame.Type != protocol.TypeConfigPush {
+		t.Fatalf("expected recovered full config.push, got %s", recoveredFrame.Type.String())
+	}
+	recoveredPush, err := protocol.UnmarshalConfigPush(recoveredFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal recovered config.push: %v", err)
+	}
+	if recoveredPush.ConfigVersion != 2 || len(recoveredPush.Tunnels) != 1 {
+		t.Fatalf("unexpected recovered config.push after effective_ip flap: %#v", recoveredPush)
+	}
+
+	pendingFullState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			session.Pending != nil &&
+			session.Pending.Version == 2 &&
+			session.Pending.TunnelCount == 1 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModePendingFullConfig &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, initialListenKey) == 0 &&
+			handleCountForPort(observed, recoveredListenKey) == 0 &&
+			tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "当前不存在于本机") &&
+			tunnel.FinalStatus == "异常"
+	})
+	pendingFullSession := requireObservedSession(t, pendingFullState.Server, repo.group.ID)
+	if pendingFullSession.Pending == nil || pendingFullSession.Pending.EffectiveIP != "127.0.0.2" {
+		t.Fatalf("expected pending full config on recovered effective_ip, got %#v", pendingFullSession)
+	}
+
+	network.setSnapshot(localIPv4Snapshot("127.0.0.1"))
+	if err := server.scanNonListeningTunnelRuntimeIssues(context.Background()); err != nil {
+		t.Fatalf("scan runtime issues after effective_ip becomes invalid again: %v", err)
+	}
+
+	invalidFullState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			session.Pending != nil &&
+			session.Pending.Version == 2 &&
+			session.Pending.TunnelCount == 1 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModePendingFullConfig &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, initialListenKey) == 0 &&
+			handleCountForPort(observed, recoveredListenKey) == 0 &&
+			tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "当前不存在于本机") &&
+			tunnel.FinalStatus == "异常"
+	})
+	if len(invalidFullState.Server.Listeners) != 0 {
+		t.Fatalf("expected no attached listeners while full recovery config is pending on invalid effective_ip, got %#v", invalidFullState.Server.Listeners)
+	}
+
+	network.setSnapshot(localIPv4Snapshot("127.0.0.1", "127.0.0.2"))
+	if err := server.scanNonListeningTunnelRuntimeIssues(context.Background()); err != nil {
+		t.Fatalf("scan runtime issues after effective_ip becomes valid again: %v", err)
+	}
+
+	if frame, err := readMessageWithin(clientConn, 200*time.Millisecond); err == nil {
+		t.Fatalf("expected no duplicate recovery config.push while full config is pending, got %s", frame.Type.String())
+	} else if !isTimeoutError(err) {
+		t.Fatalf("expected idle connection while full config is pending, got %v", err)
+	}
+
+	heldFullState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			session.Pending != nil &&
+			session.Pending.Version == 2 &&
+			session.Pending.TunnelCount == 1 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModePendingFullConfig &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, initialListenKey) == 0 &&
+			handleCountForPort(observed, recoveredListenKey) == 0 &&
+			tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "当前不存在于本机") &&
+			tunnel.FinalStatus == "异常"
+	})
+	if len(heldFullState.Server.Listeners) != 0 {
+		t.Fatalf("expected no attached listeners while full config remains pending, got %#v", heldFullState.Server.Listeners)
+	}
+
+	controller := testhooks.NewController()
+	controller.AddBarrier("control.config_ack.before_accept", 1)
+	controller.AddBarrier("control.listener.before_bind", 1)
+	restoreHooks := testhooks.Install(controller)
+	defer restoreHooks()
+
+	writeConfigAck(t, clientConn, recoveredFrame.RequestID, recoveredPush.ConfigVersion)
+	waitForTestHook(t, controller, "control.config_ack.before_accept", 1)
+
+	ackHeldState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			session.Pending != nil &&
+			session.Pending.Version == 2 &&
+			session.Pending.TunnelCount == 1 &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, initialListenKey) == 0 &&
+			handleCountForPort(observed, recoveredListenKey) == 0 &&
+			tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "当前不存在于本机") &&
+			tunnel.FinalStatus == "异常"
+	})
+	if ackHeldState.Server.GroupSlots[repo.group.ID] == 0 {
+		t.Fatalf("expected group slot to stay occupied while recovery ack is held, got %#v", ackHeldState.Server.GroupSlots)
+	}
+
+	if !controller.Release("control.config_ack.before_accept", 1) {
+		t.Fatal("release config_ack.before_accept barrier failed")
+	}
+	bindHit := waitForTestHookHit(t, controller, "control.listener.before_bind", 1)
+	if got := bindHit.Fields["kind"]; got != "runtime_start" {
+		t.Fatalf("expected recovery bind after full config ack, got %#v", bindHit.Fields)
+	}
+
+	beforeBindState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			session.Pending == nil &&
+			session.SnapshotVersion == 2 &&
+			session.LastAckedConfigVersion == 2 &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, initialListenKey) == 0 &&
+			handleCountForPort(observed, recoveredListenKey) == 0 &&
+			tunnel != nil &&
+			strings.Contains(tunnel.RuntimeIssue, "当前不存在于本机") &&
+			tunnel.FinalStatus == "异常"
+	})
+	if beforeBindState.Server.GroupSlots[repo.group.ID] == 0 {
+		t.Fatalf("expected group slot to remain occupied before recovery bind completes, got %#v", beforeBindState.Server.GroupSlots)
+	}
+
+	if !controller.Release("control.listener.before_bind", 1) {
+		t.Fatal("release listener.before_bind barrier failed")
+	}
+
+	select {
+	case err := <-scanDone:
+		if err != nil {
+			t.Fatalf("scan runtime issues for recovered full config: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovery scan did not complete")
+	}
+
+	finalState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			session.Pending == nil &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModeRunning &&
+			session.SnapshotVersion == 2 &&
+			session.LastAckedConfigVersion == 2 &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 1 &&
+			handleCountForPort(observed, initialListenKey) == 0 &&
+			handleCountForPort(observed, recoveredListenKey) == 1 &&
+			tunnel != nil &&
+			strings.TrimSpace(tunnel.RuntimeIssue) == "" &&
+			tunnel.FinalStatus == "启用"
+	})
+	if len(finalState.Server.Listeners) != 1 {
+		t.Fatalf("expected exactly one recovered listener after effective_ip flap, got %#v", finalState.Server.Listeners)
+	}
+	if issues := server.TunnelRuntimeIssues(); len(issues) != 0 {
+		t.Fatalf("expected runtime issues to clear only after full recovery completes, got %#v", issues)
+	}
+
+	assertHeartbeatStillWorks(t, clientConn)
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
 	}
 }
 
