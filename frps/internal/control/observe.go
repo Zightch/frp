@@ -9,7 +9,6 @@ import (
 
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
-	"github.com/zightch/frp/frps/pkg/transport"
 )
 
 const (
@@ -33,6 +32,7 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 	if s.runtimeRegistry != nil {
 		registryState = s.runtimeRegistry.snapshot()
 	}
+	targetSelector := newRuntimeTargetSelector(registryState)
 	runtimeIssues := s.TunnelRuntimeIssues()
 
 	state := testsupport.ServerObservedState{
@@ -42,7 +42,7 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 		GroupSlots:             registryState.groupSlots,
 	}
 
-	for _, session := range registryState.sessions {
+	for _, session := range targetSelector.sessionsList() {
 		sessionState, listeners, missing, connections := observeSessionState(session)
 		state.Sessions = append(state.Sessions, sessionState)
 		state.Listeners = append(state.Listeners, listeners...)
@@ -52,24 +52,16 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 
 	groups := s.observeGroups()
 	staticConflictIDs := detectConfiguredConflictTunnelIDs(groups)
-	for _, group := range groups {
-		for _, tunnel := range group.Snapshot.Tunnels {
-			runtimeReason := strings.TrimSpace(runtimeIssues[int64(tunnel.TunnelID)])
-			staticConflict := false
-			if _, ok := staticConflictIDs[int64(tunnel.TunnelID)]; ok {
-				staticConflict = true
-			}
-			finalStatus, finalReason := observedTunnelStatus(tunnel, staticConflict, runtimeReason)
-			state.Tunnels = append(state.Tunnels, testsupport.TunnelObservedState{
-				GroupID:        group.ID,
-				TunnelID:       tunnel.TunnelID,
-				StaticConflict: staticConflict,
-				RuntimeIssue:   runtimeReason,
-				RuntimeKind:    runtimeIssueKind(runtimeReason),
-				FinalStatus:    finalStatus,
-				FinalReason:    finalReason,
-			})
-		}
+	for _, tunnel := range targetSelector.selectTunnels(groups, runtimeIssues, staticConflictIDs) {
+		state.Tunnels = append(state.Tunnels, testsupport.TunnelObservedState{
+			GroupID:        tunnel.id.GroupID,
+			TunnelID:       tunnel.id.TunnelID,
+			StaticConflict: tunnel.staticConflict,
+			RuntimeIssue:   tunnel.runtimeIssue,
+			RuntimeKind:    tunnel.runtimeKind,
+			FinalStatus:    tunnel.finalStatus,
+			FinalReason:    tunnel.finalReason,
+		})
 	}
 
 	sort.Slice(state.Sessions, func(i, j int) bool {
@@ -130,60 +122,52 @@ func (s *Server) observeGroups() []GroupRuntime {
 	return groups
 }
 
-func observeSessionState(snapshot runtimeSessionSnapshot) (testsupport.SessionObservedState, []testsupport.AttachedListenerObservedState, []testsupport.MissingListenerObservedState, []testsupport.ConnectionObservedState) {
-	group := snapshot.config.group
-	currentSnapshot := snapshot.config.snapshot
-
+func observeSessionState(target runtimeSessionTarget) (testsupport.SessionObservedState, []testsupport.AttachedListenerObservedState, []testsupport.MissingListenerObservedState, []testsupport.ConnectionObservedState) {
 	observed := testsupport.SessionObservedState{
-		GroupID:                group.ID,
-		SessionID:              snapshot.sessionID,
-		ConnID:                 transport.ConnectionID(snapshot.conn),
-		EffectiveIP:            group.EffectiveIP,
-		SnapshotVersion:        currentSnapshot.Version,
-		SnapshotTunnelCount:    len(currentSnapshot.Tunnels),
-		LastAckedConfigVersion: snapshot.config.lastAckedConfigValue,
-		RuntimeFrozen:          snapshot.runtime.frozen,
-		ListenersStarted:       snapshot.runtime.listenersStarted,
-		RuntimeGeneration:      snapshot.runtime.generation,
-		RecoveryMode:           snapshot.config.recoveryMode,
-		ActiveStreams:          snapshot.runtime.activeStreamCount,
-		ActiveUDPSessions:      snapshot.runtime.activeUDPSessionCount,
+		GroupID:                target.id.GroupID,
+		SessionID:              target.id.SessionID,
+		ConnID:                 target.connID,
+		EffectiveIP:            target.effectiveIP,
+		SnapshotVersion:        target.snapshot.Version,
+		SnapshotTunnelCount:    len(target.snapshot.Tunnels),
+		LastAckedConfigVersion: target.lastAckedConfigVersion,
+		RuntimeFrozen:          target.runtimeFrozen,
+		ListenersStarted:       target.listenersStarted,
+		RuntimeGeneration:      target.runtimeGeneration,
+		RecoveryMode:           target.recoveryMode,
+		ActiveStreams:          target.activeStreamCount,
+		ActiveUDPSessions:      target.activeUDPSessionCount,
 	}
-	if snapshot.config.pendingRequestID != 0 {
+	if target.pending != nil {
 		observed.Pending = &testsupport.PendingConfigObservedState{
-			RequestID:   snapshot.config.pendingRequestID,
-			Version:     snapshot.config.pendingSnapshot.Version,
-			TunnelCount: len(snapshot.config.pendingSnapshot.Tunnels),
-			EffectiveIP: snapshot.config.pendingGroup.EffectiveIP,
+			RequestID:   target.pending.RequestID,
+			Version:     target.pending.Version,
+			TunnelCount: target.pending.TunnelCount,
+			EffectiveIP: target.pending.EffectiveIP,
 		}
 	}
 
-	listeners := make([]testsupport.AttachedListenerObservedState, 0)
-	tunnelPorts := make(map[uint32]map[uint16]struct{})
-	for _, attached := range snapshot.runtime.attachedListeners {
-		if _, ok := tunnelPorts[attached.tunnelID]; !ok {
-			tunnelPorts[attached.tunnelID] = make(map[uint16]struct{})
-		}
-		tunnelPorts[attached.tunnelID][attached.port] = struct{}{}
+	listeners := make([]testsupport.AttachedListenerObservedState, 0, len(target.listeners))
+	for _, attached := range target.listeners {
 		listeners = append(listeners, testsupport.AttachedListenerObservedState{
-			GroupID:       group.ID,
-			SessionID:     snapshot.sessionID,
-			TunnelID:      attached.tunnelID,
+			GroupID:       attached.id.GroupID,
+			SessionID:     attached.id.SessionID,
+			TunnelID:      attached.id.TunnelID,
 			Protocol:      attached.protocol,
 			BindIP:        attached.bindIP,
 			Port:          attached.port,
-			ConfigVersion: snapshot.runtime.generation,
-			Kind:          attached.protocol,
+			ConfigVersion: attached.configVersion,
+			Kind:          attached.kind,
 		})
 	}
 
-	connections := make([]testsupport.ConnectionObservedState, 0, len(snapshot.runtime.connections))
-	for _, connection := range snapshot.runtime.connections {
+	connections := make([]testsupport.ConnectionObservedState, 0, len(target.connections))
+	for _, connection := range target.connections {
 		connections = append(connections, testsupport.ConnectionObservedState{
-			GroupID:        group.ID,
-			SessionID:      snapshot.sessionID,
-			ConnectionID:   connection.connectionID,
-			Kind:           connection.kind,
+			GroupID:        connection.id.GroupID,
+			SessionID:      connection.id.SessionID,
+			ConnectionID:   connection.id.ConnectionID,
+			Kind:           connection.id.Kind,
 			Protocol:       connection.protocol,
 			TunnelID:       connection.tunnelID,
 			RemotePort:     connection.remotePort,
@@ -194,31 +178,14 @@ func observeSessionState(snapshot runtimeSessionSnapshot) (testsupport.SessionOb
 		})
 	}
 
-	missing := make([]testsupport.MissingListenerObservedState, 0)
-	for _, tunnel := range currentSnapshot.Tunnels {
-		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
-			continue
-		}
-		actual := tunnelPorts[tunnel.TunnelID]
-		var missingPorts []uint16
-		for port := tunnel.RemoteStart; port <= tunnel.RemoteEnd; port++ {
-			if _, ok := actual[port]; ok {
-				continue
-			}
-			missingPorts = append(missingPorts, port)
-			if port == tunnel.RemoteEnd {
-				break
-			}
-		}
-		if len(missingPorts) == 0 {
-			continue
-		}
+	missing := make([]testsupport.MissingListenerObservedState, 0, len(target.missingListeners))
+	for _, listener := range target.missingListeners {
 		missing = append(missing, testsupport.MissingListenerObservedState{
-			GroupID:      group.ID,
-			SessionID:    snapshot.sessionID,
-			TunnelID:     tunnel.TunnelID,
-			Protocol:     protocolName(tunnel.Protocol),
-			MissingPorts: missingPorts,
+			GroupID:      listener.id.GroupID,
+			SessionID:    listener.id.SessionID,
+			TunnelID:     listener.id.TunnelID,
+			Protocol:     listener.protocol,
+			MissingPorts: listener.missingPorts,
 		})
 	}
 

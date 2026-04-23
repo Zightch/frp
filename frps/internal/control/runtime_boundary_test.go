@@ -43,6 +43,7 @@ func TestRuntimeRegistryBuildsSnapshotAndActiveRuntimeGroups(t *testing.T) {
 	group := GroupRuntime{
 		ID:          1,
 		Name:        "group-a",
+		Enabled:     true,
 		EffectiveIP: "127.0.0.1",
 	}
 	snapshot := ConfigSnapshot{
@@ -60,6 +61,7 @@ func TestRuntimeRegistryBuildsSnapshotAndActiveRuntimeGroups(t *testing.T) {
 			},
 		},
 	}
+	group.Snapshot = snapshot
 	session := newSessionState(11, group, snapshot, 0)
 	session.runtimeMu.Lock()
 	session.runtime.listeners.started = true
@@ -106,6 +108,140 @@ func TestRuntimeRegistryBuildsSnapshotAndActiveRuntimeGroups(t *testing.T) {
 	}
 	if groups := registry.activeRuntimeGroups(session); len(groups) != 0 {
 		t.Fatalf("expected excluded session to be absent from runtime groups, got %#v", groups)
+	}
+}
+
+func TestRuntimeTargetSelectorBuildsSessionTunnelAndConnectionTargets(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	defer closeStartedTunnelListeners([]net.Listener{listener}, nil)
+
+	activePort := uint16(listener.Addr().(*net.TCPAddr).Port)
+	missingPort := activePort + 1
+	group := GroupRuntime{
+		ID:          1,
+		Name:        "group-a",
+		Enabled:     true,
+		EffectiveIP: "127.0.0.1",
+	}
+	snapshot := ConfigSnapshot{
+		Version: 3,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    7,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: activePort,
+				RemoteEnd:   activePort,
+			},
+			{
+				TunnelID:    8,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: missingPort,
+				RemoteEnd:   missingPort,
+			},
+		},
+	}
+	group.Snapshot = snapshot
+	session := newSessionState(11, group, snapshot, 0)
+	session.runtimeMu.Lock()
+	session.runtime.listeners.started = true
+	session.runtime.generation = snapshot.Version
+	session.runtime.listeners.tcp[7] = []net.Listener{listener}
+	session.runtimeMu.Unlock()
+
+	publicClient, publicServer := net.Pipe()
+	defer publicClient.Close()
+	defer publicServer.Close()
+
+	now := time.Unix(1_700_000_200, 0).UTC()
+	streamConn := &connWithRemoteAddr{
+		Conn:   publicServer,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 32000},
+	}
+	streamOpen, err := session.preparePublicStreamOpen(snapshot.Version, snapshot.Tunnels[0], activePort, streamConn, now)
+	if err != nil {
+		t.Fatalf("prepare public stream open: %v", err)
+	}
+	defer session.closePublicStream(streamOpen.streamID)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	registry := newRuntimeRegistry()
+	registry.register(serverConn, session)
+
+	selector := newRuntimeTargetSelector(registry.snapshot())
+	sessions := selector.sessionsList()
+	if len(sessions) != 1 {
+		t.Fatalf("expected one runtime session target, got %#v", sessions)
+	}
+
+	sessionTarget := sessions[0]
+	if sessionTarget.id.GroupID != group.ID || sessionTarget.id.SessionID != session.ID {
+		t.Fatalf("unexpected session target identity: %#v", sessionTarget.id)
+	}
+	if sessionTarget.connID == "" {
+		t.Fatalf("expected session target conn id, got %#v", sessionTarget)
+	}
+	if sessionTarget.activeStreamCount != 1 || sessionTarget.activeUDPSessionCount != 0 {
+		t.Fatalf("unexpected session target connection counters: %#v", sessionTarget)
+	}
+	if _, ok := sessionTarget.activeTunnelIDs[7]; !ok {
+		t.Fatalf("expected active tunnel ids to include tunnel 7, got %#v", sessionTarget.activeTunnelIDs)
+	}
+	if len(sessionTarget.listenersByTunnel[7]) != 1 {
+		t.Fatalf("expected attached listener target on tunnel 7, got %#v", sessionTarget.listenersByTunnel)
+	}
+	missing := sessionTarget.missingListenersByTunnel[8]
+	if missing.id.TunnelID != 8 || len(missing.missingPorts) != 1 || missing.missingPorts[0] != missingPort {
+		t.Fatalf("unexpected missing listener target: %#v", sessionTarget.missingListenersByTunnel)
+	}
+	if len(sessionTarget.connections) != 1 {
+		t.Fatalf("expected one runtime connection target, got %#v", sessionTarget.connections)
+	}
+	connection := sessionTarget.connections[0]
+	if connection.id.ConnectionID != streamOpen.streamID || connection.id.Kind != observedRuntimeConnectionKindTCPStream {
+		t.Fatalf("unexpected runtime connection target identity: %#v", connection)
+	}
+	if connection.tunnelID != 7 || connection.remotePort != activePort || connection.clientAddr != "127.0.0.1:32000" {
+		t.Fatalf("unexpected runtime connection target metadata: %#v", connection)
+	}
+
+	targetTunnels := selector.selectTunnels(
+		[]GroupRuntime{group},
+		map[int64]string{8: "bind failed"},
+		map[int64]struct{}{7: {}},
+	)
+	if len(targetTunnels) != 2 {
+		t.Fatalf("expected two runtime tunnel targets, got %#v", targetTunnels)
+	}
+
+	var activeTunnelTarget runtimeTunnelTarget
+	var missingTunnelTarget runtimeTunnelTarget
+	for _, tunnel := range targetTunnels {
+		switch tunnel.id.TunnelID {
+		case 7:
+			activeTunnelTarget = tunnel
+		case 8:
+			missingTunnelTarget = tunnel
+		}
+	}
+
+	if activeTunnelTarget.id.SessionID != session.ID || !activeTunnelTarget.staticConflict || len(activeTunnelTarget.listeners) != 1 {
+		t.Fatalf("unexpected active tunnel target: %#v", activeTunnelTarget)
+	}
+	if missingTunnelTarget.id.SessionID != session.ID || missingTunnelTarget.runtimeIssue != "bind failed" || len(missingTunnelTarget.missingPorts) != 1 || missingTunnelTarget.missingPorts[0] != missingPort {
+		t.Fatalf("unexpected missing tunnel target: %#v", missingTunnelTarget)
+	}
+
+	nonListening := selector.selectNonListeningEnabledTunnels(group)
+	if len(nonListening) != 1 || nonListening[0].TunnelID != 8 {
+		t.Fatalf("expected only non-listening tunnel 8, got %#v", nonListening)
 	}
 }
 

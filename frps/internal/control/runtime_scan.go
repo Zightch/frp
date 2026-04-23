@@ -64,9 +64,13 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 	s.clearUnknownTunnelRuntimeIssues(knownTunnelIDs)
 
 	staticConflictIDs := detectConfiguredConflictTunnelIDs(groups)
+	targetSelector := runtimeTargetSelector{}
+	if s.runtimeRegistry != nil {
+		targetSelector = newRuntimeTargetSelector(s.runtimeRegistry.snapshot())
+	}
 
 	for _, group := range groups {
-		targetTunnels := s.selectScannedNonListeningTunnels(group)
+		targetTunnels := targetSelector.selectNonListeningEnabledTunnels(group)
 		issues := s.scanGroupRuntimeIssues(group, staticConflictIDs, targetTunnels)
 		preserveHealthyIssues := s.preserveScannedHealthyRuntimeIssuesUntilRecovery(group, targetTunnels, staticConflictIDs, issues)
 		s.applyScannedTunnelRuntimeIssues(group.Snapshot, staticConflictIDs, issues, preserveHealthyIssues)
@@ -109,16 +113,11 @@ func (s *Server) finishRuntimeScanRound() {
 }
 
 func (s *Server) selectScannedNonListeningTunnels(group GroupRuntime) []protocol.TunnelEntry {
-	if !group.Enabled {
-		return nil
+	targetSelector := runtimeTargetSelector{}
+	if s != nil && s.runtimeRegistry != nil {
+		targetSelector = newRuntimeTargetSelector(s.runtimeRegistry.snapshot())
 	}
-
-	active, ok := s.activeSession(group.ID)
-	if !ok || active == nil || active.session == nil {
-		return enabledTunnels(group.Snapshot)
-	}
-
-	return selectNonListeningEnabledTunnels(group.Snapshot.Tunnels, active.session.activeRuntimeTunnelIDs())
+	return targetSelector.selectNonListeningEnabledTunnels(group)
 }
 
 func (s *Server) scanGroupRuntimeIssues(group GroupRuntime, staticConflictIDs map[int64]struct{}, targetTunnels []protocol.TunnelEntry) map[uint32]string {
