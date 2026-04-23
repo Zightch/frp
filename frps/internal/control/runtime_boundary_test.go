@@ -185,6 +185,9 @@ func TestRuntimeTargetSelectorBuildsSessionTunnelAndConnectionTargets(t *testing
 	if sessionTarget.id.GroupID != group.ID || sessionTarget.id.SessionID != session.ID {
 		t.Fatalf("unexpected session target identity: %#v", sessionTarget.id)
 	}
+	if selected, ok := selector.sessionByID(sessionTarget.id); !ok || selected.id != sessionTarget.id {
+		t.Fatalf("expected selector to resolve session by stable id, got ok=%v target=%#v", ok, selected)
+	}
 	if sessionTarget.connID == "" {
 		t.Fatalf("expected session target conn id, got %#v", sessionTarget)
 	}
@@ -243,6 +246,49 @@ func TestRuntimeTargetSelectorBuildsSessionTunnelAndConnectionTargets(t *testing
 	if len(nonListening) != 1 || nonListening[0].TunnelID != 8 {
 		t.Fatalf("expected only non-listening tunnel 8, got %#v", nonListening)
 	}
+
+	observed := sessionTarget.observedState()
+	if observed.GroupID != group.ID || observed.SessionID != session.ID || observed.SnapshotVersion != snapshot.Version {
+		t.Fatalf("unexpected observed session state projection: %#v", observed)
+	}
+	if len(sessionTarget.observedListeners()) != 1 || len(sessionTarget.observedMissingListeners()) != 1 || len(sessionTarget.observedConnections()) != 1 {
+		t.Fatalf("expected observed projections to stay aligned with runtime target, got listeners=%#v missing=%#v connections=%#v", sessionTarget.observedListeners(), sessionTarget.observedMissingListeners(), sessionTarget.observedConnections())
+	}
+}
+
+func TestRuntimeRegistryLockSessionTargetRejectsReplacementSessionID(t *testing.T) {
+	group := GroupRuntime{
+		ID:          1,
+		Name:        "group-a",
+		Enabled:     true,
+		EffectiveIP: "127.0.0.1",
+	}
+	snapshot := ConfigSnapshot{Version: 1}
+	group.Snapshot = snapshot
+
+	oldSession := newSessionState(11, group, snapshot, 0)
+	newSession := newSessionState(12, group, snapshot, 0)
+
+	oldClientConn, oldServerConn := net.Pipe()
+	defer oldClientConn.Close()
+	defer oldServerConn.Close()
+	newClientConn, newServerConn := net.Pipe()
+	defer newClientConn.Close()
+	defer newServerConn.Close()
+
+	registry := newRuntimeRegistry()
+	registry.register(oldServerConn, oldSession)
+	registry.register(newServerConn, newSession)
+
+	if _, ok := registry.lockSessionTarget(runtimeSessionTargetID{GroupID: group.ID, SessionID: oldSession.ID}); ok {
+		t.Fatal("expected replacement session to invalidate stale runtime target id")
+	}
+
+	target, ok := registry.lockSessionTarget(runtimeSessionTargetID{GroupID: group.ID, SessionID: newSession.ID})
+	if !ok {
+		t.Fatal("expected current session target id to resolve")
+	}
+	target.unlock()
 }
 
 func TestSessionConfigApplyTracksPendingAndAppliedRecoveryModes(t *testing.T) {

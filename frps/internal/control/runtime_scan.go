@@ -72,14 +72,14 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 	for _, group := range groups {
 		targetTunnels := targetSelector.selectNonListeningEnabledTunnels(group)
 		issues := s.scanGroupRuntimeIssues(group, staticConflictIDs, targetTunnels)
-		preserveHealthyIssues := s.preserveScannedHealthyRuntimeIssuesUntilRecovery(group, targetTunnels, staticConflictIDs, issues)
+		preserveHealthyIssues := s.preserveScannedHealthyRuntimeIssuesUntilRecovery(targetSelector, group, targetTunnels, staticConflictIDs, issues)
 		s.applyScannedTunnelRuntimeIssues(group.Snapshot, staticConflictIDs, issues, preserveHealthyIssues)
 		testhooks.Point(
 			"runtime.scan.before_group_recover",
 			testhooks.F("group_id", group.ID),
 			testhooks.F("target_tunnel_count", len(targetTunnels)),
 		)
-		if err := s.recoverScannedActiveSessionTunnels(group, targetTunnels, staticConflictIDs, issues); err != nil {
+		if err := s.recoverScannedActiveSessionTunnels(targetSelector, group, targetTunnels, staticConflictIDs, issues); err != nil {
 			s.logger.Warn("recover scanned non-listening tunnels failed", "group_id", group.ID, "error", err)
 		}
 	}
@@ -165,34 +165,34 @@ func (s *Server) scanGroupRuntimeIssues(group GroupRuntime, staticConflictIDs ma
 	return issues
 }
 
-func (s *Server) recoverScannedActiveSessionTunnels(group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) error {
+func (s *Server) recoverScannedActiveSessionTunnels(targetSelector runtimeTargetSelector, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) error {
 	if s == nil || group.ID <= 0 || len(targetTunnels) == 0 {
 		return nil
 	}
-	active, ok := s.lockCurrentActiveSession(group.ID)
-	if !ok || active == nil || active.conn == nil || active.session == nil {
-		if active != nil {
-			active.mu.Unlock()
-		}
+	target, ok := targetSelector.session(group.ID)
+	if !ok {
 		return nil
 	}
-	defer active.mu.Unlock()
+	lockedTarget, ok := s.lockRuntimeAdminOperationTarget(target.id)
+	if !ok {
+		return nil
+	}
+	defer lockedTarget.unlock()
 	logger := s.logger.With(
-		"session_id", active.session.ID,
+		"session_id", target.id.SessionID,
 		"group_id", group.ID,
 		"group_name", group.Name,
 	)
-	coordinator := s.runtimeCoordinator()
-	target := newRuntimeRecoveryTarget(active.conn, logger, active.session)
-	plan := coordinator.planScannedRecovery(target, group, targetTunnels, staticConflictIDs, issues)
-	if plan.action == runtimeRecoveryActionPushFullConfig {
+	coordinator := s.runtimeAdminCoordinator()
+	plan := coordinator.planScannedRecovery(newRuntimeScannedRecoveryRequest(target, group, targetTunnels, staticConflictIDs, issues))
+	if plan.action == runtimeAdminActionPushFullConfig {
 		logger.Info(
 			"recovering active session config after runtime prerequisites returned",
 			"config_version", group.Snapshot.Version,
 			"tunnel_count", len(group.Snapshot.Tunnels),
 		)
 	}
-	return coordinator.execute(target, plan)
+	return coordinator.executeLocked(logger, lockedTarget, plan)
 }
 
 func shouldRecoverScannedActiveSessionConfig(currentSnapshot, nextSnapshot ConfigSnapshot) bool {
@@ -218,24 +218,23 @@ func hasRecoverableScannedTunnels(targetTunnels []protocol.TunnelEntry, staticCo
 	return false
 }
 
-func (s *Server) preserveScannedHealthyRuntimeIssuesUntilRecovery(group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) map[uint32]struct{} {
+func (s *Server) preserveScannedHealthyRuntimeIssuesUntilRecovery(targetSelector runtimeTargetSelector, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) map[uint32]struct{} {
 	if s == nil || group.ID <= 0 || len(targetTunnels) == 0 {
 		return nil
 	}
 
-	active, ok := s.activeSession(group.ID)
-	if !ok || active == nil || active.session == nil {
+	target, ok := targetSelector.session(group.ID)
+	if !ok {
 		return nil
 	}
-	if active.session.hasPendingConfig() {
+	if target.hasPendingConfig() {
 		return preserveHealthyScannedTunnels(targetTunnels, staticConflictIDs, issues)
 	}
 
-	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
-	if currentGroup.EffectiveIP != group.EffectiveIP {
+	if target.group.EffectiveIP != group.EffectiveIP {
 		return nil
 	}
-	if !sameRuntimeSnapshot(currentSnapshot, group.Snapshot) && !shouldRecoverScannedActiveSessionConfig(currentSnapshot, group.Snapshot) {
+	if !sameRuntimeSnapshot(target.snapshot, group.Snapshot) && !shouldRecoverScannedActiveSessionConfig(target.snapshot, group.Snapshot) {
 		return nil
 	}
 

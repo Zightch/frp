@@ -43,25 +43,16 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 	}
 
 	for _, session := range targetSelector.sessionsList() {
-		sessionState, listeners, missing, connections := observeSessionState(session)
-		state.Sessions = append(state.Sessions, sessionState)
-		state.Listeners = append(state.Listeners, listeners...)
-		state.MissingListeners = append(state.MissingListeners, missing...)
-		state.Connections = append(state.Connections, connections...)
+		state.Sessions = append(state.Sessions, session.observedState())
+		state.Listeners = append(state.Listeners, session.observedListeners()...)
+		state.MissingListeners = append(state.MissingListeners, session.observedMissingListeners()...)
+		state.Connections = append(state.Connections, session.observedConnections()...)
 	}
 
 	groups := s.observeGroups()
 	staticConflictIDs := detectConfiguredConflictTunnelIDs(groups)
 	for _, tunnel := range targetSelector.selectTunnels(groups, runtimeIssues, staticConflictIDs) {
-		state.Tunnels = append(state.Tunnels, testsupport.TunnelObservedState{
-			GroupID:        tunnel.id.GroupID,
-			TunnelID:       tunnel.id.TunnelID,
-			StaticConflict: tunnel.staticConflict,
-			RuntimeIssue:   tunnel.runtimeIssue,
-			RuntimeKind:    tunnel.runtimeKind,
-			FinalStatus:    tunnel.finalStatus,
-			FinalReason:    tunnel.finalReason,
-		})
+		state.Tunnels = append(state.Tunnels, tunnel.observedState())
 	}
 
 	sort.Slice(state.Sessions, func(i, j int) bool {
@@ -120,76 +111,6 @@ func (s *Server) observeGroups() []GroupRuntime {
 		return nil
 	}
 	return groups
-}
-
-func observeSessionState(target runtimeSessionTarget) (testsupport.SessionObservedState, []testsupport.AttachedListenerObservedState, []testsupport.MissingListenerObservedState, []testsupport.ConnectionObservedState) {
-	observed := testsupport.SessionObservedState{
-		GroupID:                target.id.GroupID,
-		SessionID:              target.id.SessionID,
-		ConnID:                 target.connID,
-		EffectiveIP:            target.effectiveIP,
-		SnapshotVersion:        target.snapshot.Version,
-		SnapshotTunnelCount:    len(target.snapshot.Tunnels),
-		LastAckedConfigVersion: target.lastAckedConfigVersion,
-		RuntimeFrozen:          target.runtimeFrozen,
-		ListenersStarted:       target.listenersStarted,
-		RuntimeGeneration:      target.runtimeGeneration,
-		RecoveryMode:           target.recoveryMode,
-		ActiveStreams:          target.activeStreamCount,
-		ActiveUDPSessions:      target.activeUDPSessionCount,
-	}
-	if target.pending != nil {
-		observed.Pending = &testsupport.PendingConfigObservedState{
-			RequestID:   target.pending.RequestID,
-			Version:     target.pending.Version,
-			TunnelCount: target.pending.TunnelCount,
-			EffectiveIP: target.pending.EffectiveIP,
-		}
-	}
-
-	listeners := make([]testsupport.AttachedListenerObservedState, 0, len(target.listeners))
-	for _, attached := range target.listeners {
-		listeners = append(listeners, testsupport.AttachedListenerObservedState{
-			GroupID:       attached.id.GroupID,
-			SessionID:     attached.id.SessionID,
-			TunnelID:      attached.id.TunnelID,
-			Protocol:      attached.protocol,
-			BindIP:        attached.bindIP,
-			Port:          attached.port,
-			ConfigVersion: attached.configVersion,
-			Kind:          attached.kind,
-		})
-	}
-
-	connections := make([]testsupport.ConnectionObservedState, 0, len(target.connections))
-	for _, connection := range target.connections {
-		connections = append(connections, testsupport.ConnectionObservedState{
-			GroupID:        connection.id.GroupID,
-			SessionID:      connection.id.SessionID,
-			ConnectionID:   connection.id.ConnectionID,
-			Kind:           connection.id.Kind,
-			Protocol:       connection.protocol,
-			TunnelID:       connection.tunnelID,
-			RemotePort:     connection.remotePort,
-			ClientAddr:     connection.clientAddr,
-			OpenedAtMs:     connection.openedAtMs,
-			LastActiveAtMs: connection.lastActiveAtMs,
-			IdleTimeoutMs:  connection.idleTimeoutMs,
-		})
-	}
-
-	missing := make([]testsupport.MissingListenerObservedState, 0, len(target.missingListeners))
-	for _, listener := range target.missingListeners {
-		missing = append(missing, testsupport.MissingListenerObservedState{
-			GroupID:      listener.id.GroupID,
-			SessionID:    listener.id.SessionID,
-			TunnelID:     listener.id.TunnelID,
-			Protocol:     listener.protocol,
-			MissingPorts: listener.missingPorts,
-		})
-	}
-
-	return observed, listeners, missing, connections
 }
 
 func listenerAddr(addr net.Addr) (string, uint16) {

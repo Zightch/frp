@@ -12,98 +12,99 @@ func (s *Server) RefreshGroup(groupID int64) {
 		return
 	}
 
-	active, ok := s.lockCurrentActiveSession(groupID)
-	if !ok || active == nil || active.conn == nil || active.session == nil {
-		if active != nil {
-			active.mu.Unlock()
-		}
+	targetSelector := runtimeTargetSelector{}
+	if s.runtimeRegistry != nil {
+		targetSelector = newRuntimeTargetSelector(s.runtimeRegistry.snapshot())
+	}
+	target, ok := targetSelector.session(groupID)
+	if !ok {
 		return
 	}
-	defer active.mu.Unlock()
+	lockedTarget, ok := s.lockRuntimeAdminOperationTarget(target.id)
+	if !ok {
+		return
+	}
+	defer lockedTarget.unlock()
 
 	group, err := s.loadGroupRuntimeByID(groupID)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrGroupNotFound):
-			s.logger.Info("closing active session for deleted proxy group", "group_id", groupID, "session_id", active.session.ID)
-			_ = active.conn.Close()
+			s.logger.Info("closing active session for deleted proxy group", "group_id", groupID, "session_id", target.id.SessionID)
+			_ = s.runtimeAdminCoordinator().executeLocked(
+				s.logger.With("session_id", target.id.SessionID, "group_id", groupID),
+				lockedTarget,
+				runtimeAdminActionPlan{action: runtimeAdminActionCloseSession, targetID: target.id},
+			)
 		default:
-			s.logger.Warn("refresh proxy group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
+			s.logger.Warn("refresh proxy group runtime failed", "group_id", groupID, "session_id", target.id.SessionID, "error", err)
 		}
 		return
 	}
 
-	currentGroup, _ := active.session.currentGroupAndSnapshot()
-	if currentGroup.ClientSecretHash != group.ClientSecretHash {
-		s.logger.Info("closing active session after proxy group credential rotation", "group_id", groupID, "session_id", active.session.ID)
-		_ = active.conn.Close()
+	if target.group.ClientSecretHash != group.ClientSecretHash {
+		s.logger.Info("closing active session after proxy group credential rotation", "group_id", groupID, "session_id", target.id.SessionID)
+		_ = s.runtimeAdminCoordinator().executeLocked(
+			s.logger.With("session_id", target.id.SessionID, "group_id", groupID, "group_name", group.Name),
+			lockedTarget,
+			runtimeAdminActionPlan{action: runtimeAdminActionCloseSession, targetID: target.id},
+		)
 		return
 	}
 
-	coordinator := s.runtimeCoordinator()
-	target := newRuntimeRecoveryTarget(
-		active.conn,
-		s.logger.With(
-			"session_id", active.session.ID,
-			"group_id", group.ID,
-			"group_name", group.Name,
-		),
-		active.session,
+	coordinator := s.runtimeAdminCoordinator()
+	logger := s.logger.With(
+		"session_id", target.id.SessionID,
+		"group_id", group.ID,
+		"group_name", group.Name,
 	)
-	plan := coordinator.planRefresh(target, group)
+	plan := coordinator.planRefresh(newRuntimeRefreshRequest(target, group))
 	switch plan.action {
-	case runtimeRecoveryActionNoop:
+	case runtimeAdminActionSyncPendingConfig:
 		message := "deduplicating refresh against matching pending config"
 		if len(plan.snapshot.Tunnels) == 0 {
 			message = "deduplicating refresh against matching pending empty config"
 		}
-		s.logger.Info(message, "group_id", groupID, "session_id", active.session.ID, "config_version", plan.snapshot.Version)
-		return
-	case runtimeRecoveryActionCloseSession:
-		s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
-		_ = active.conn.Close()
-		return
-	case runtimeRecoveryActionRebindRuntime:
-		s.logger.Info(
+		logger.Info(message, "config_version", plan.snapshot.Version)
+	case runtimeAdminActionCloseSession:
+		logger.Info("closing active session because a previous config update is still pending")
+	case runtimeAdminActionRebindRuntime:
+		logger.Info(
 			"rebinding active group runtime after effective_ip change",
-			"group_id", groupID,
-			"session_id", active.session.ID,
-			"old_effective_ip", currentGroup.EffectiveIP,
+			"old_effective_ip", target.group.EffectiveIP,
 			"new_effective_ip", group.EffectiveIP,
 		)
-	case runtimeRecoveryActionPushEmptyConfig:
+	case runtimeAdminActionPushEmptyConfig:
 		if desiredSnapshot := runtimeSnapshotForGroup(group); len(desiredSnapshot.Tunnels) != 0 {
-			s.logger.Info(
+			logger.Info(
 				"shrinking active group runtime to empty config after effective_ip became unavailable",
-				"group_id", groupID,
-				"session_id", active.session.ID,
 				"effective_ip", group.EffectiveIP,
 			)
 		}
 	}
 
-	if err := coordinator.execute(target, plan); err != nil {
+	if err := coordinator.executeLocked(logger, lockedTarget, plan); err != nil {
 		switch plan.action {
-		case runtimeRecoveryActionRebindRuntime:
-			s.logger.Warn("rebind active group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
-		case runtimeRecoveryActionPushEmptyConfig:
+		case runtimeAdminActionRebindRuntime:
+			logger.Warn("rebind active group runtime failed", "error", err)
+		case runtimeAdminActionPushEmptyConfig:
 			if errors.Is(err, errConfigUpdateInFlight) {
-				s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
+				logger.Info("closing active session because a previous config update is still pending")
 			}
 			message := "push empty config failed"
 			if desiredSnapshot := runtimeSnapshotForGroup(group); len(desiredSnapshot.Tunnels) != 0 {
 				message = "push empty config after effective_ip refresh failed"
 			}
-			s.logger.Warn(message, "group_id", groupID, "session_id", active.session.ID, "error", err)
-		case runtimeRecoveryActionPushFullConfig:
+			logger.Warn(message, "error", err)
+		case runtimeAdminActionPushFullConfig:
 			if errors.Is(err, errConfigUpdateInFlight) {
-				s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
+				logger.Info("closing active session because a previous config update is still pending")
 			}
-			s.logger.Warn("push refreshed config failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
+			logger.Warn("push refreshed config failed", "error", err)
 		default:
-			s.logger.Warn("refresh active group runtime failed", "group_id", groupID, "session_id", active.session.ID, "action", plan.action.String(), "error", err)
+			logger.Warn("refresh active group runtime failed", "action", plan.action.String(), "error", err)
 		}
-		_ = active.conn.Close()
+		_ = coordinator.executeLocked(logger, lockedTarget, runtimeAdminActionPlan{action: runtimeAdminActionCloseSession, targetID: target.id})
 		return
 	}
 }

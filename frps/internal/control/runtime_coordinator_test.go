@@ -22,12 +22,16 @@ func TestRuntimeCoordinatorPlanRefreshDeduplicatesMatchingPendingSnapshot(t *tes
 		t.Fatalf("set pending config: %v", err)
 	}
 
-	plan := server.runtimeCoordinator().planRefresh(newRuntimeRecoveryTarget(nil, nil, session), nextGroup)
-	if plan.action != runtimeRecoveryActionNoop {
-		t.Fatalf("expected noop refresh plan, got %s", plan.action.String())
+	target := runtimeCoordinatorTestTarget(session)
+	plan := server.runtimeAdminCoordinator().planRefresh(newRuntimeRefreshRequest(target, nextGroup))
+	if plan.action != runtimeAdminActionSyncPendingConfig {
+		t.Fatalf("expected sync_pending_config refresh plan, got %s", plan.action.String())
 	}
 	if plan.snapshot.Version != nextSnapshot.Version {
 		t.Fatalf("expected deduplicated snapshot version %d, got %d", nextSnapshot.Version, plan.snapshot.Version)
+	}
+	if plan.targetID != target.id {
+		t.Fatalf("expected stable target id %#v, got %#v", target.id, plan.targetID)
 	}
 }
 
@@ -46,8 +50,9 @@ func TestRuntimeCoordinatorPlanRefreshClosesWhenDifferentPendingSnapshotExists(t
 
 	nextSnapshot := runtimeCoordinatorTestSnapshot(t, 3, 7, 7002)
 	nextGroup := runtimeCoordinatorTestGroup("group-a", "127.0.0.1", true, nextSnapshot)
-	plan := server.runtimeCoordinator().planRefresh(newRuntimeRecoveryTarget(nil, nil, session), nextGroup)
-	if plan.action != runtimeRecoveryActionCloseSession {
+	target := runtimeCoordinatorTestTarget(session)
+	plan := server.runtimeAdminCoordinator().planRefresh(newRuntimeRefreshRequest(target, nextGroup))
+	if plan.action != runtimeAdminActionCloseSession {
 		t.Fatalf("expected close_session refresh plan, got %s", plan.action.String())
 	}
 }
@@ -60,8 +65,9 @@ func TestRuntimeCoordinatorPlanRefreshRebindsWhenOnlyEffectiveIPChanges(t *testi
 	session := newSessionState(11, currentGroup, currentSnapshot, 0)
 
 	nextGroup := runtimeCoordinatorTestGroup("group-a", "127.0.0.2", true, runtimeCoordinatorTestSnapshot(t, 3, 7, 7000))
-	plan := server.runtimeCoordinator().planRefresh(newRuntimeRecoveryTarget(nil, nil, session), nextGroup)
-	if plan.action != runtimeRecoveryActionRebindRuntime {
+	target := runtimeCoordinatorTestTarget(session)
+	plan := server.runtimeAdminCoordinator().planRefresh(newRuntimeRefreshRequest(target, nextGroup))
+	if plan.action != runtimeAdminActionRebindRuntime {
 		t.Fatalf("expected rebind_runtime refresh plan, got %s", plan.action.String())
 	}
 }
@@ -75,8 +81,9 @@ func TestRuntimeCoordinatorPlanRefreshShrinksToEmptyWhenEffectiveIPUnavailable(t
 
 	nextSnapshot := runtimeCoordinatorTestSnapshot(t, 3, 7, 7000)
 	nextGroup := runtimeCoordinatorTestGroup("group-a", "10.0.0.1", true, nextSnapshot)
-	plan := server.runtimeCoordinator().planRefresh(newRuntimeRecoveryTarget(nil, nil, session), nextGroup)
-	if plan.action != runtimeRecoveryActionPushEmptyConfig {
+	target := runtimeCoordinatorTestTarget(session)
+	plan := server.runtimeAdminCoordinator().planRefresh(newRuntimeRefreshRequest(target, nextGroup))
+	if plan.action != runtimeAdminActionPushEmptyConfig {
 		t.Fatalf("expected push_empty_config refresh plan, got %s", plan.action.String())
 	}
 	if len(plan.snapshot.Tunnels) != 0 {
@@ -91,14 +98,15 @@ func TestRuntimeCoordinatorPlanScannedRecoveryEnsuresListenersForHealthyRuntime(
 	currentGroup := runtimeCoordinatorTestGroup("group-a", "127.0.0.1", true, currentSnapshot)
 	session := newSessionState(11, currentGroup, currentSnapshot, 0)
 
-	plan := server.runtimeCoordinator().planScannedRecovery(
-		newRuntimeRecoveryTarget(nil, nil, session),
+	target := runtimeCoordinatorTestTarget(session)
+	plan := server.runtimeAdminCoordinator().planScannedRecovery(newRuntimeScannedRecoveryRequest(
+		target,
 		currentGroup,
 		currentSnapshot.Tunnels,
 		nil,
 		map[uint32]string{},
-	)
-	if plan.action != runtimeRecoveryActionEnsureListeners {
+	))
+	if plan.action != runtimeAdminActionEnsureListeners {
 		t.Fatalf("expected ensure_listeners scanned recovery plan, got %s", plan.action.String())
 	}
 }
@@ -112,19 +120,29 @@ func TestRuntimeCoordinatorPlanScannedRecoveryPushesFullConfigAfterEmptyRuntimeR
 
 	nextSnapshot := runtimeCoordinatorTestSnapshot(t, 3, 7, 7000)
 	nextGroup := runtimeCoordinatorTestGroup("group-a", "127.0.0.1", true, nextSnapshot)
-	plan := server.runtimeCoordinator().planScannedRecovery(
-		newRuntimeRecoveryTarget(nil, nil, session),
+	target := runtimeCoordinatorTestTarget(session)
+	plan := server.runtimeAdminCoordinator().planScannedRecovery(newRuntimeScannedRecoveryRequest(
+		target,
 		nextGroup,
 		nextSnapshot.Tunnels,
 		nil,
 		map[uint32]string{},
-	)
-	if plan.action != runtimeRecoveryActionPushFullConfig {
+	))
+	if plan.action != runtimeAdminActionPushFullConfig {
 		t.Fatalf("expected push_full_config scanned recovery plan, got %s", plan.action.String())
 	}
 	if plan.snapshot.Version != nextSnapshot.Version {
 		t.Fatalf("expected recovered config version %d, got %d", nextSnapshot.Version, plan.snapshot.Version)
 	}
+}
+
+func runtimeCoordinatorTestTarget(session *sessionState) runtimeSessionTarget {
+	configState, runtimeState := session.observeState()
+	return newRuntimeSessionTarget(runtimeSessionSnapshot{
+		sessionID: session.ID,
+		config:    configState,
+		runtime:   runtimeState,
+	})
 }
 
 func newRuntimeCoordinatorTestServer(availableIPs ...string) *Server {
