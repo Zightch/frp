@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -61,9 +62,11 @@ type scriptedEndpoint struct {
 	side        FrameSide
 	inbox       chan []byte
 	rawIOError  error
-	readClosed  bool
-	writeClosed bool
-	closed      bool
+	readClosed  atomic.Bool
+	writeClosed atomic.Bool
+	closed      atomic.Bool
+	closedCh    chan struct{}
+	closeOnce   sync.Once
 	localAddr   net.Addr
 	remoteAddr  net.Addr
 }
@@ -98,6 +101,7 @@ func (s *ScriptedFrameIO) OpenConnPair(connID string) (net.Conn, net.Conn) {
 		id:         connID,
 		side:       FrameSideClient,
 		inbox:      make(chan []byte, 32),
+		closedCh:   make(chan struct{}),
 		rawIOError: errors.New("scripted conn raw io is unsupported; use FrameIO"),
 		localAddr:  scriptedAddr{network: "scripted", address: connID + "/client"},
 		remoteAddr: scriptedAddr{network: "scripted", address: connID + "/server"},
@@ -106,6 +110,7 @@ func (s *ScriptedFrameIO) OpenConnPair(connID string) (net.Conn, net.Conn) {
 		id:         connID,
 		side:       FrameSideServer,
 		inbox:      make(chan []byte, 32),
+		closedCh:   make(chan struct{}),
 		rawIOError: errors.New("scripted conn raw io is unsupported; use FrameIO"),
 		localAddr:  scriptedAddr{network: "scripted", address: connID + "/server"},
 		remoteAddr: scriptedAddr{network: "scripted", address: connID + "/client"},
@@ -233,26 +238,26 @@ func (s *ScriptedFrameIO) readFrame(endpoint *scriptedEndpoint, timeout time.Dur
 	if endpoint == nil {
 		return nil, net.ErrClosed
 	}
-	if endpoint.closed || endpoint.readClosed {
+	if endpoint.isClosed() || endpoint.isReadClosed() {
 		return nil, io.EOF
 	}
 
 	if timeout <= 0 {
-		payload, ok := <-endpoint.inbox
-		if !ok {
+		select {
+		case <-endpoint.closedCh:
 			return nil, io.EOF
+		case payload := <-endpoint.inbox:
+			return append([]byte(nil), payload...), nil
 		}
-		return append([]byte(nil), payload...), nil
 	}
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	select {
-	case payload, ok := <-endpoint.inbox:
-		if !ok {
-			return nil, io.EOF
-		}
+	case <-endpoint.closedCh:
+		return nil, io.EOF
+	case payload := <-endpoint.inbox:
 		return append([]byte(nil), payload...), nil
 	case <-timer.C:
 		return nil, &timeoutError{}
@@ -375,7 +380,7 @@ func (s *ScriptedFrameIO) matchRuleLocked(frame testsupport.FrameObservedState) 
 }
 
 func (s *ScriptedFrameIO) deliverToPeer(peer *scriptedEndpoint, payload []byte) bool {
-	if peer == nil || peer.closed || peer.readClosed {
+	if peer == nil || peer.isClosed() || peer.isReadClosed() {
 		return false
 	}
 	select {
@@ -390,20 +395,20 @@ func (s *ScriptedFrameIO) deliverToPeer(peer *scriptedEndpoint, payload []byte) 
 func (s *ScriptedFrameIO) closeRead(endpoint *scriptedEndpoint) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if endpoint == nil || endpoint.closed || endpoint.readClosed {
+	if endpoint == nil || endpoint.isClosed() || endpoint.isReadClosed() {
 		return false
 	}
-	endpoint.readClosed = true
+	endpoint.readClosed.Store(true)
 	return true
 }
 
 func (s *ScriptedFrameIO) closeWrite(endpoint *scriptedEndpoint) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if endpoint == nil || endpoint.closed || endpoint.writeClosed {
+	if endpoint == nil || endpoint.isClosed() || endpoint.isWriteClosed() {
 		return false
 	}
-	endpoint.writeClosed = true
+	endpoint.writeClosed.Store(true)
 	return true
 }
 
@@ -444,17 +449,14 @@ func (c *ScriptedConn) Close() error {
 	if c == nil || c.transport == nil || c.endpoint == nil {
 		return nil
 	}
-	c.transport.mu.Lock()
-	defer c.transport.mu.Unlock()
 	if c.pair == nil {
 		return nil
 	}
 	for _, endpoint := range []*scriptedEndpoint{c.pair.client, c.pair.server} {
-		if endpoint == nil || endpoint.closed {
+		if endpoint == nil {
 			continue
 		}
-		endpoint.closed = true
-		close(endpoint.inbox)
+		endpoint.close()
 	}
 	return nil
 }
@@ -495,15 +497,37 @@ func (a scriptedAddr) String() string {
 
 func endpointState(endpoint *scriptedEndpoint) testsupport.TransportConnState {
 	switch {
-	case endpoint == nil || endpoint.closed:
+	case endpoint == nil || endpoint.isClosed():
 		return testsupport.TransportConnStateClosed
-	case endpoint.readClosed:
+	case endpoint.isReadClosed():
 		return testsupport.TransportConnStateReadClosed
-	case endpoint.writeClosed:
+	case endpoint.isWriteClosed():
 		return testsupport.TransportConnStateWriteClosed
 	default:
 		return testsupport.TransportConnStateOpen
 	}
+}
+
+func (e *scriptedEndpoint) isClosed() bool {
+	return e == nil || e.closed.Load()
+}
+
+func (e *scriptedEndpoint) isReadClosed() bool {
+	return e == nil || e.readClosed.Load()
+}
+
+func (e *scriptedEndpoint) isWriteClosed() bool {
+	return e == nil || e.writeClosed.Load()
+}
+
+func (e *scriptedEndpoint) close() {
+	if e == nil {
+		return
+	}
+	e.closed.Store(true)
+	e.closeOnce.Do(func() {
+		close(e.closedCh)
+	})
 }
 
 func directionFor(side FrameSide) testsupport.FrameDirection {

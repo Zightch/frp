@@ -215,6 +215,11 @@ func TestServerScenarioClosesPartiallyStartedTCPListenersAcrossRepeatedEMFILERec
 	}
 	writeConfigAck(t, clientConn, configFrame.RequestID, initialPush.ConfigVersion)
 	waitForActiveGroupSession(t, server, repo.group.ID)
+	active, ok := server.activeSession(repo.group.ID)
+	if !ok || active == nil {
+		t.Fatalf("active session for group %d not found", repo.group.ID)
+	}
+	waitForIdleConfig(t, active.session)
 
 	repo.group.Snapshot = ConfigSnapshot{
 		Version:       2,
