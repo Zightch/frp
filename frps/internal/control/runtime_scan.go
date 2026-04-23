@@ -282,27 +282,6 @@ func preserveHealthyScannedTunnels(targetTunnels []protocol.TunnelEntry, staticC
 	return preserved
 }
 
-func (s *Server) applyScannedTunnelRuntimeIssues(snapshot ConfigSnapshot, staticConflictIDs map[int64]struct{}, issues map[uint32]string, preserved map[uint32]struct{}) {
-	if s == nil {
-		return
-	}
-
-	for _, tunnel := range snapshot.Tunnels {
-		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
-			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, "")
-			continue
-		}
-		if _, conflicted := staticConflictIDs[int64(tunnel.TunnelID)]; conflicted {
-			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, "")
-			continue
-		}
-		if _, keep := preserved[tunnel.TunnelID]; keep {
-			continue
-		}
-		s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, strings.TrimSpace(issues[tunnel.TunnelID]))
-	}
-}
-
 func detectConfiguredConflictTunnelIDs(groups []GroupRuntime) map[int64]struct{} {
 	claims := make([]ports.Claim, 0)
 	for _, group := range groups {
@@ -339,21 +318,6 @@ func collectKnownTunnelIDs(groups []GroupRuntime) map[int64]struct{} {
 		}
 	}
 	return known
-}
-
-func (s *Server) clearUnknownTunnelRuntimeIssues(knownTunnelIDs map[int64]struct{}) {
-	if s == nil {
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for tunnelID := range s.tunnelRuntimeIssues {
-		if _, ok := knownTunnelIDs[tunnelID]; ok {
-			continue
-		}
-		delete(s.tunnelRuntimeIssues, tunnelID)
-	}
 }
 
 func enabledTunnels(snapshot ConfigSnapshot) []protocol.TunnelEntry {

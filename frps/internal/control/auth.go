@@ -218,23 +218,3 @@ func (s *Server) purgeExpiredChallengesLocked(now time.Time) {
 		}
 	}
 }
-
-func (s *Server) reserveGroupSlot(groupID int64, sessionID uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.groupSlots[groupID]; ok {
-		return false
-	}
-	s.groupSlots[groupID] = sessionID
-	return true
-}
-
-func (s *Server) releaseGroupSlot(groupID int64, sessionID uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.groupSlots[groupID] == sessionID {
-		delete(s.groupSlots, groupID)
-	}
-}

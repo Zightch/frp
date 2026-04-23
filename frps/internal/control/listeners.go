@@ -201,11 +201,6 @@ type runtimeClaimOwner struct {
 	EffectiveIP string
 }
 
-type runtimeGroupSnapshot struct {
-	group    GroupRuntime
-	snapshot ConfigSnapshot
-}
-
 func (s *Server) detectRuntimePortConflictIssues(group GroupRuntime, bindIP string, tunnels []protocol.TunnelEntry) map[uint32]string {
 	claims, owners, targetOrder := buildRuntimeClaims(group, tunnels, bindIP)
 	if len(targetOrder) == 0 {
@@ -274,41 +269,6 @@ func buildRuntimeClaims(group GroupRuntime, tunnels []protocol.TunnelEntry, bind
 		targetOrder = append(targetOrder, tunnel.TunnelID)
 	}
 	return claims, owners, targetOrder
-}
-
-func (s *Server) activeRuntimeGroups(exclude *sessionState) []runtimeGroupSnapshot {
-	if s == nil {
-		return nil
-	}
-
-	s.mu.Lock()
-	sessions := make([]*sessionState, 0, len(s.sessions))
-	for _, active := range s.sessions {
-		if active == nil || active.session == nil || active.session == exclude {
-			continue
-		}
-		sessions = append(sessions, active.session)
-	}
-	s.mu.Unlock()
-
-	result := make([]runtimeGroupSnapshot, 0, len(sessions))
-	for _, activeSession := range sessions {
-		activeTunnelIDs := activeSession.activeRuntimeTunnelIDs()
-		if len(activeTunnelIDs) == 0 {
-			continue
-		}
-
-		group, snapshot := activeSession.currentGroupAndSnapshot()
-		snapshot.Tunnels = filterTunnelsByID(snapshot.Tunnels, activeTunnelIDs)
-		if len(snapshot.Tunnels) == 0 {
-			continue
-		}
-		result = append(result, runtimeGroupSnapshot{
-			group:    group,
-			snapshot: snapshot,
-		})
-	}
-	return result
 }
 
 type tunnelListenerBatch struct {

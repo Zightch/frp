@@ -662,14 +662,15 @@ func TestServerUnregisterOldSessionKeepsReplacementSlotAndSession(t *testing.T) 
 	defer newServer.Close()
 
 	server.registerActiveSession(oldServer, oldSession)
-	server.mu.Lock()
-	server.groupSlots[group.ID] = oldSession.ID
-	server.mu.Unlock()
+	if !server.reserveGroupSlot(group.ID, oldSession.ID) {
+		t.Fatal("expected old session to reserve group slot")
+	}
 
 	server.registerActiveSession(newServer, newSession)
-	server.mu.Lock()
-	server.groupSlots[group.ID] = newSession.ID
-	server.mu.Unlock()
+	server.releaseGroupSlot(group.ID, oldSession.ID)
+	if !server.reserveGroupSlot(group.ID, newSession.ID) {
+		t.Fatal("expected replacement session to reserve group slot")
+	}
 
 	server.unregisterActiveSession(oldSession)
 

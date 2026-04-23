@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,15 +58,12 @@ type Server struct {
 	listener            net.Listener
 	controlListenerOpen bool
 	activeConn          map[net.Conn]struct{}
-	sessions            map[int64]*activeSession
-	// tunnelRuntimeIssues stores the latest listener-start failure observed for a tunnel.
-	tunnelRuntimeIssues map[int64]tunnelRuntimeIssue
-	// groupSlots tracks the occupied single client slot for each proxy group.
-	groupSlots map[int64]uint64
-	closeOnce  sync.Once
-	connWG     sync.WaitGroup
-	scanWG     sync.WaitGroup
-	shutdownCh chan struct{}
+	runtimeIssues       *runtimeIssueStore
+	runtimeRegistry     *runtimeRegistry
+	closeOnce           sync.Once
+	connWG              sync.WaitGroup
+	scanWG              sync.WaitGroup
+	shutdownCh          chan struct{}
 
 	challengeMu sync.Mutex
 	challenges  map[uint32]*authChallenge
@@ -86,11 +82,6 @@ type activeSession struct {
 	mu      sync.Mutex
 	conn    net.Conn
 	session *sessionState
-}
-
-type tunnelRuntimeIssue struct {
-	Reason        string
-	ConfigVersion uint64
 }
 
 func NewServer(options Options, logger *slog.Logger, version string) *Server {
@@ -127,21 +118,20 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 	}
 
 	return &Server{
-		options:             options,
-		logger:              logger,
-		version:             version,
-		repo:                options.Repository,
-		network:             options.Network,
-		clock:               options.Clock,
-		scheduler:           options.Scheduler,
-		listeners:           options.ListenerFactory,
-		frames:              options.FrameIO,
-		activeConn:          make(map[net.Conn]struct{}),
-		sessions:            make(map[int64]*activeSession),
-		tunnelRuntimeIssues: make(map[int64]tunnelRuntimeIssue),
-		groupSlots:          make(map[int64]uint64),
-		shutdownCh:          make(chan struct{}),
-		challenges:          make(map[uint32]*authChallenge),
+		options:         options,
+		logger:          logger,
+		version:         version,
+		repo:            options.Repository,
+		network:         options.Network,
+		clock:           options.Clock,
+		scheduler:       options.Scheduler,
+		listeners:       options.ListenerFactory,
+		frames:          options.FrameIO,
+		activeConn:      make(map[net.Conn]struct{}),
+		runtimeIssues:   newRuntimeIssueStore(),
+		runtimeRegistry: newRuntimeRegistry(),
+		shutdownCh:      make(chan struct{}),
+		challenges:      make(map[uint32]*authChallenge),
 	}
 }
 
@@ -155,60 +145,6 @@ func (s *Server) isShuttingDown() bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func (s *Server) TunnelRuntimeIssues() map[int64]string {
-	if s == nil {
-		return nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if len(s.tunnelRuntimeIssues) == 0 {
-		return nil
-	}
-
-	issues := make(map[int64]string, len(s.tunnelRuntimeIssues))
-	for tunnelID, issue := range s.tunnelRuntimeIssues {
-		issues[tunnelID] = issue.Reason
-	}
-	return issues
-}
-
-func (s *Server) clearTunnelRuntimeIssues(tunnels []protocol.TunnelEntry) {
-	if s == nil || len(tunnels) == 0 {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, tunnel := range tunnels {
-		delete(s.tunnelRuntimeIssues, int64(tunnel.TunnelID))
-	}
-}
-
-func (s *Server) recordTunnelRuntimeIssue(tunnelID uint32, reason string) {
-	s.recordTunnelRuntimeIssueForConfig(tunnelID, 0, reason)
-}
-
-func (s *Server) recordTunnelRuntimeIssueForConfig(tunnelID uint32, configVersion uint64, reason string) {
-	if s == nil || tunnelID == 0 {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.tunnelRuntimeIssues[int64(tunnelID)]
-	if ok && configVersion != 0 && current.ConfigVersion > configVersion {
-		return
-	}
-	if strings.TrimSpace(reason) == "" {
-		delete(s.tunnelRuntimeIssues, int64(tunnelID))
-		return
-	}
-	s.tunnelRuntimeIssues[int64(tunnelID)] = tunnelRuntimeIssue{
-		Reason:        strings.TrimSpace(reason),
-		ConfigVersion: configVersion,
 	}
 }
 
