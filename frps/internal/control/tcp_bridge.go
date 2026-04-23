@@ -6,72 +6,56 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
 type publicStream struct {
-	configVersion uint64
-	conn          net.Conn
-	tunnel        protocol.TunnelEntry
-	openRequestID uint32
-	ready         chan error
-	readyOnce     sync.Once
-	closeOnce     sync.Once
+	configVersion    uint64
+	conn             net.Conn
+	tunnel           protocol.TunnelEntry
+	remotePort       uint16
+	clientAddr       protocol.SockAddr
+	openedAtMs       uint64
+	openRequestID    uint32
+	lastActiveUnixMs atomic.Int64
+	ready            chan error
+	readyOnce        sync.Once
+	closeOnce        sync.Once
 }
 
 func (s *Server) handlePublicConnection(serve tunnelRuntimeServeContext, publicConn net.Conn) {
-	streamID := serve.session.nextTunnelStreamID()
-	requestID := serve.session.nextRequestID()
-	stream := &publicStream{
-		configVersion: serve.configVersion,
-		conn:          publicConn,
-		tunnel:        serve.tunnel,
-		openRequestID: requestID,
-		ready:         make(chan error, 1),
+	openOp, err := serve.session.preparePublicStreamOpen(serve.runtimeIO.configVersion, serve.tunnel, serve.remotePort, publicConn, s.clock.Now().UTC())
+	if err != nil {
+		_ = publicConn.Close()
+		return
 	}
-
-	if !serve.session.addPublicStream(streamID, stream, serve.configVersion) {
+	if openOp.blocked {
 		_ = publicConn.Close()
 		return
 	}
 
-	body, err := protocol.MarshalStreamOpen(protocol.StreamOpen{
-		TunnelID:   serve.tunnel.TunnelID,
-		RemotePort: serve.remotePort,
-		ClientAddr: sockAddrFromNetAddr(publicConn.RemoteAddr()),
-		OpenedAtMs: uint64(time.Now().UTC().UnixMilli()),
-	})
-	if err != nil {
-		serve.session.closePublicStream(streamID)
-		return
-	}
-
-	if err := s.writeRuntimeFrameWithSession(serve.controlConn, serve.session, stream.configVersion, protocol.Frame{
-		Type:      protocol.TypeStreamOpen,
-		RequestID: requestID,
-		StreamID:  streamID,
-		Body:      body,
-	}); err != nil {
-		serve.session.closePublicStream(streamID)
+	if err := serve.runtimeIO.writeFrame(openOp.openFrame); err != nil {
+		serve.session.closePublicStream(openOp.streamID)
 		return
 	}
 
 	select {
-	case openErr := <-stream.ready:
+	case openErr := <-openOp.stream.ready:
 		if openErr != nil {
-			serve.logger.Warn("stream open rejected", "stream_id", streamID, "tunnel_id", serve.tunnel.TunnelID, "error", openErr)
-			serve.session.closePublicStream(streamID)
+			serve.logger.Warn("stream open rejected", "stream_id", openOp.streamID, "tunnel_id", serve.tunnel.TunnelID, "error", openErr)
+			serve.session.closePublicStream(openOp.streamID)
 			return
 		}
 	case <-time.After(s.options.WriteTimeout):
-		_ = s.sendStreamClose(serve.controlConn, serve.session, streamID, protocol.CloseReasonIdleTimeout, "stream open timeout")
-		serve.session.closePublicStream(streamID)
+		_ = s.sendStreamClose(serve.runtimeIO.conn, serve.session, openOp.streamID, protocol.CloseReasonIdleTimeout, "stream open timeout")
+		serve.session.closePublicStream(openOp.streamID)
 		return
 	}
 
-	go s.copyPublicToClient(serve.controlConn, serve.session, streamID, stream)
+	go s.copyPublicToClient(serve.runtimeIO, openOp.streamID, openOp.stream)
 }
 
 func (s *Server) handleStreamOpened(conn net.Conn, session *sessionState, frame protocol.Frame) error {
@@ -124,7 +108,9 @@ func (s *Server) handleStreamData(conn net.Conn, session *sessionState, frame pr
 		if session.closePublicStream(frame.StreamID) {
 			return s.sendStreamClose(conn, session, frame.StreamID, protocol.CloseReasonWriteError, err.Error())
 		}
+		return nil
 	}
+	stream.touch(s.clock.Now())
 	return nil
 }
 
@@ -158,23 +144,24 @@ func (s *Server) sendStreamClose(conn net.Conn, session *sessionState, streamID 
 	})
 }
 
-func (s *Server) copyPublicToClient(conn net.Conn, session *sessionState, streamID uint32, stream *publicStream) {
+func (s *Server) copyPublicToClient(runtimeIO sessionRuntimeIOWriter, streamID uint32, stream *publicStream) {
 	buffer := make([]byte, protocol.MaxDataBodyLen)
 	for {
 		n, err := stream.conn.Read(buffer)
 		if n > 0 {
 			payload := append([]byte(nil), buffer[:n]...)
-			writeErr := s.writeRuntimeFrameWithSession(conn, session, stream.configVersion, protocol.Frame{
+			writeErr := runtimeIO.writeFrame(protocol.Frame{
 				Type:     protocol.TypeStreamData,
 				StreamID: streamID,
 				Body:     payload,
 			})
 			if writeErr != nil {
 				if !errors.Is(writeErr, errRuntimeIOStopped) {
-					session.closePublicStream(streamID)
+					runtimeIO.session.closePublicStream(streamID)
 				}
 				return
 			}
+			stream.touch(s.clock.Now())
 		}
 
 		if err == nil {
@@ -187,11 +174,26 @@ func (s *Server) copyPublicToClient(conn net.Conn, session *sessionState, stream
 			reasonCode = protocol.CloseReasonEOF
 			message = "eof"
 		}
-		if session.closePublicStream(streamID) {
-			_ = s.sendStreamClose(conn, session, streamID, reasonCode, message)
+		if runtimeIO.session.closePublicStream(streamID) {
+			_ = s.sendStreamClose(runtimeIO.conn, runtimeIO.session, streamID, reasonCode, message)
 		}
 		return
 	}
+}
+
+func newPublicStream(configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, openRequestID uint32, publicConn net.Conn, now time.Time) *publicStream {
+	stream := &publicStream{
+		configVersion: configVersion,
+		conn:          publicConn,
+		tunnel:        tunnel,
+		remotePort:    remotePort,
+		clientAddr:    sockAddrFromNetAddr(publicConn.RemoteAddr()),
+		openedAtMs:    uint64(now.UTC().UnixMilli()),
+		openRequestID: openRequestID,
+		ready:         make(chan error, 1),
+	}
+	stream.touch(now)
+	return stream
 }
 
 func writeConnFull(conn net.Conn, payload []byte) error {
@@ -209,6 +211,23 @@ func (s *publicStream) signalReady(err error) {
 	s.readyOnce.Do(func() {
 		s.ready <- err
 	})
+}
+
+func (s *publicStream) touch(now time.Time) {
+	s.lastActiveUnixMs.Store(now.UTC().UnixMilli())
+}
+
+func (s *publicStream) observedConnection(streamID uint32) observedSessionRuntimeConnection {
+	return observedSessionRuntimeConnection{
+		connectionID:   streamID,
+		kind:           observedRuntimeConnectionKindTCPStream,
+		protocol:       "tcp",
+		tunnelID:       s.tunnel.TunnelID,
+		remotePort:     s.remotePort,
+		clientAddr:     sockAddrString(s.clientAddr),
+		openedAtMs:     s.openedAtMs,
+		lastActiveAtMs: nonNegativeUnixMilli(s.lastActiveUnixMs.Load()),
+	}
 }
 
 func (s *publicStream) close() {

@@ -42,6 +42,8 @@ type SessionObservedState struct {
 	ListenersStarted       bool
 	RuntimeGeneration      uint64
 	RecoveryMode           RecoveryMode
+	ActiveStreams          uint32
+	ActiveUDPSessions      uint32
 }
 
 type TunnelObservedState struct {
@@ -73,6 +75,20 @@ type MissingListenerObservedState struct {
 	MissingPorts []uint16
 }
 
+type ConnectionObservedState struct {
+	GroupID        int64
+	SessionID      uint64
+	ConnectionID   uint32
+	Kind           string
+	Protocol       string
+	TunnelID       uint32
+	RemotePort     uint16
+	ClientAddr     string
+	OpenedAtMs     uint64
+	LastActiveAtMs uint64
+	IdleTimeoutMs  uint32
+}
+
 type ServerObservedState struct {
 	InitialRuntimeScanDone bool
 	ControlListenerOpen    bool
@@ -82,6 +98,7 @@ type ServerObservedState struct {
 	Tunnels                []TunnelObservedState
 	Listeners              []AttachedListenerObservedState
 	MissingListeners       []MissingListenerObservedState
+	Connections            []ConnectionObservedState
 }
 
 type ReloadSummaryObservedState struct {

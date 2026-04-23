@@ -35,12 +35,11 @@ type tunnelListenerOperationContext struct {
 }
 
 type tunnelRuntimeServeContext struct {
-	controlConn   net.Conn
-	logger        Logger
-	session       *sessionState
-	configVersion uint64
-	tunnel        protocol.TunnelEntry
-	remotePort    uint16
+	logger     Logger
+	session    *sessionState
+	runtimeIO  sessionRuntimeIOWriter
+	tunnel     protocol.TunnelEntry
+	remotePort uint16
 }
 
 func newSessionRuntimeStartTarget(conn net.Conn, logger Logger, session *sessionState) sessionRuntimeStartTarget {
@@ -101,13 +100,12 @@ func (c tunnelListenerOperationContext) listenerStartError(remotePort uint16, er
 	}
 }
 
-func (c tunnelListenerOperationContext) serveContext(conn net.Conn, logger Logger, session *sessionState, remotePort uint16) tunnelRuntimeServeContext {
+func (c tunnelListenerOperationContext) serveContext(server *Server, conn net.Conn, logger Logger, session *sessionState, remotePort uint16) tunnelRuntimeServeContext {
 	return tunnelRuntimeServeContext{
-		controlConn:   conn,
-		logger:        logger,
-		session:       session,
-		configVersion: c.configVersion,
-		tunnel:        c.tunnel,
-		remotePort:    remotePort,
+		logger:     logger,
+		session:    session,
+		runtimeIO:  newSessionRuntimeIOWriter(server, conn, session, c.configVersion),
+		tunnel:     c.tunnel,
+		remotePort: remotePort,
 	}
 }

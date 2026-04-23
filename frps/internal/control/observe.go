@@ -43,10 +43,11 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 	}
 
 	for _, session := range registryState.sessions {
-		sessionState, listeners, missing := observeSessionState(session)
+		sessionState, listeners, missing, connections := observeSessionState(session)
 		state.Sessions = append(state.Sessions, sessionState)
 		state.Listeners = append(state.Listeners, listeners...)
 		state.MissingListeners = append(state.MissingListeners, missing...)
+		state.Connections = append(state.Connections, connections...)
 	}
 
 	groups := s.observeGroups()
@@ -98,6 +99,18 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 		}
 		return state.MissingListeners[i].GroupID < state.MissingListeners[j].GroupID
 	})
+	sort.Slice(state.Connections, func(i, j int) bool {
+		if state.Connections[i].GroupID == state.Connections[j].GroupID {
+			if state.Connections[i].SessionID == state.Connections[j].SessionID {
+				if state.Connections[i].Kind == state.Connections[j].Kind {
+					return state.Connections[i].ConnectionID < state.Connections[j].ConnectionID
+				}
+				return state.Connections[i].Kind < state.Connections[j].Kind
+			}
+			return state.Connections[i].SessionID < state.Connections[j].SessionID
+		}
+		return state.Connections[i].GroupID < state.Connections[j].GroupID
+	})
 
 	return state
 }
@@ -117,7 +130,7 @@ func (s *Server) observeGroups() []GroupRuntime {
 	return groups
 }
 
-func observeSessionState(snapshot runtimeSessionSnapshot) (testsupport.SessionObservedState, []testsupport.AttachedListenerObservedState, []testsupport.MissingListenerObservedState) {
+func observeSessionState(snapshot runtimeSessionSnapshot) (testsupport.SessionObservedState, []testsupport.AttachedListenerObservedState, []testsupport.MissingListenerObservedState, []testsupport.ConnectionObservedState) {
 	group := snapshot.config.group
 	currentSnapshot := snapshot.config.snapshot
 
@@ -133,6 +146,8 @@ func observeSessionState(snapshot runtimeSessionSnapshot) (testsupport.SessionOb
 		ListenersStarted:       snapshot.runtime.listenersStarted,
 		RuntimeGeneration:      snapshot.runtime.generation,
 		RecoveryMode:           snapshot.config.recoveryMode,
+		ActiveStreams:          snapshot.runtime.activeStreamCount,
+		ActiveUDPSessions:      snapshot.runtime.activeUDPSessionCount,
 	}
 	if snapshot.config.pendingRequestID != 0 {
 		observed.Pending = &testsupport.PendingConfigObservedState{
@@ -159,6 +174,23 @@ func observeSessionState(snapshot runtimeSessionSnapshot) (testsupport.SessionOb
 			Port:          attached.port,
 			ConfigVersion: snapshot.runtime.generation,
 			Kind:          attached.protocol,
+		})
+	}
+
+	connections := make([]testsupport.ConnectionObservedState, 0, len(snapshot.runtime.connections))
+	for _, connection := range snapshot.runtime.connections {
+		connections = append(connections, testsupport.ConnectionObservedState{
+			GroupID:        group.ID,
+			SessionID:      snapshot.sessionID,
+			ConnectionID:   connection.connectionID,
+			Kind:           connection.kind,
+			Protocol:       connection.protocol,
+			TunnelID:       connection.tunnelID,
+			RemotePort:     connection.remotePort,
+			ClientAddr:     connection.clientAddr,
+			OpenedAtMs:     connection.openedAtMs,
+			LastActiveAtMs: connection.lastActiveAtMs,
+			IdleTimeoutMs:  connection.idleTimeoutMs,
 		})
 	}
 
@@ -190,7 +222,7 @@ func observeSessionState(snapshot runtimeSessionSnapshot) (testsupport.SessionOb
 		})
 	}
 
-	return observed, listeners, missing
+	return observed, listeners, missing, connections
 }
 
 func listenerAddr(addr net.Addr) (string, uint16) {

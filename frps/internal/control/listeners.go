@@ -190,7 +190,7 @@ func (s *Server) applySessionRuntimeStartPlan(target sessionRuntimeStartTarget, 
 			go s.serveUDPIdleCleanup(target.conn, target.logger, target.session)
 		}
 		for _, runtime := range started.tcpRuntimes {
-			serve := opCtx.serveContext(target.conn, target.logger, target.session, runtime.remotePort)
+			serve := opCtx.serveContext(s, target.conn, target.logger, target.session, runtime.remotePort)
 			target.logger.Info(
 				"tcp tunnel listener ready",
 				"tunnel_id", runtime.tunnel.TunnelID,
@@ -200,7 +200,7 @@ func (s *Server) applySessionRuntimeStartPlan(target sessionRuntimeStartTarget, 
 			go s.serveTunnelListener(serve, runtime.listener)
 		}
 		for _, runtime := range started.udpRuntimes {
-			serve := opCtx.serveContext(target.conn, target.logger, target.session, runtime.remotePort)
+			serve := opCtx.serveContext(s, target.conn, target.logger, target.session, runtime.remotePort)
 			target.logger.Info(
 				"udp tunnel listener ready",
 				"tunnel_id", runtime.tunnel.TunnelID,

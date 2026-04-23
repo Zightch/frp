@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
@@ -208,5 +209,157 @@ func TestServerPlanSessionRuntimeStartSeparatesActiveAndPendingTunnels(t *testin
 	}
 	if plan.clearIssueTunnelIDs[0] != 6 || plan.clearIssueTunnelIDs[1] != 7 {
 		t.Fatalf("unexpected clear-issue ordering: %#v", plan.clearIssueTunnelIDs)
+	}
+}
+
+func TestSessionPreparePublicStreamOpenBuildsFrameAndTracksConnectionMetadata(t *testing.T) {
+	publicClient, publicServer := net.Pipe()
+	defer publicClient.Close()
+	defer publicServer.Close()
+
+	session := newSessionState(11, GroupRuntime{ID: 1, Name: "group-a"}, ConfigSnapshot{Version: 2}, 0)
+	session.runtimeMu.Lock()
+	session.runtime.listeners.started = true
+	session.runtime.generation = 2
+	session.runtimeMu.Unlock()
+
+	now := time.Unix(1_700_000_000, 0).UTC()
+	streamConn := &connWithRemoteAddr{
+		Conn:   publicServer,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 31000},
+	}
+	streamOpen, err := session.preparePublicStreamOpen(2, protocol.TunnelEntry{
+		TunnelID:    7,
+		Protocol:    protocol.ProtocolTCP,
+		TunnelFlags: protocol.TunnelFlagEnabled,
+	}, 22000, streamConn, now)
+	if err != nil {
+		t.Fatalf("prepare public stream open: %v", err)
+	}
+	if streamOpen.blocked {
+		t.Fatal("expected public stream open to be admitted")
+	}
+	if streamOpen.streamID == 0 || streamOpen.stream == nil {
+		t.Fatalf("unexpected stream open operation: %#v", streamOpen)
+	}
+	if session.publicStream(streamOpen.streamID) != streamOpen.stream {
+		t.Fatal("expected opened stream to be tracked on session")
+	}
+	if streamOpen.openFrame.Type != protocol.TypeStreamOpen || streamOpen.openFrame.StreamID != streamOpen.streamID || streamOpen.openFrame.RequestID == 0 {
+		t.Fatalf("unexpected stream.open frame: %#v", streamOpen.openFrame)
+	}
+
+	streamOpenBody, err := protocol.UnmarshalStreamOpen(streamOpen.openFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal stream.open body: %v", err)
+	}
+	if streamOpenBody.RemotePort != 22000 {
+		t.Fatalf("unexpected stream.open remote port: %#v", streamOpenBody)
+	}
+	if !streamOpenBody.ClientAddr.IP.Equal(net.ParseIP("127.0.0.1").To4()) || streamOpenBody.ClientAddr.Port != 31000 {
+		t.Fatalf("unexpected stream.open client addr: %#v", streamOpenBody.ClientAddr)
+	}
+	if streamOpenBody.OpenedAtMs != uint64(now.UnixMilli()) {
+		t.Fatalf("unexpected stream.open opened_at_ms: %#v", streamOpenBody)
+	}
+
+	_, runtimeState := session.observeState()
+	if runtimeState.activeStreamCount != 1 || runtimeState.activeUDPSessionCount != 0 {
+		t.Fatalf("unexpected runtime connection counts: %#v", runtimeState)
+	}
+	if len(runtimeState.connections) != 1 {
+		t.Fatalf("expected one runtime connection, got %#v", runtimeState.connections)
+	}
+	connection := runtimeState.connections[0]
+	if connection.kind != observedRuntimeConnectionKindTCPStream || connection.protocol != "tcp" {
+		t.Fatalf("unexpected observed stream connection: %#v", connection)
+	}
+	if connection.connectionID != streamOpen.streamID || connection.tunnelID != 7 || connection.remotePort != 22000 {
+		t.Fatalf("unexpected observed stream identity: %#v", connection)
+	}
+	if connection.clientAddr != "127.0.0.1:31000" || connection.openedAtMs != uint64(now.UnixMilli()) {
+		t.Fatalf("unexpected observed stream metadata: %#v", connection)
+	}
+
+	if !session.closePublicStream(streamOpen.streamID) {
+		t.Fatal("expected stream close to succeed")
+	}
+}
+
+func TestSessionPreparePublicUDPDatagramForwardReusesSessionAndTracksConnectionMetadata(t *testing.T) {
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	defer listener.Close()
+
+	session := newSessionState(11, GroupRuntime{ID: 1, Name: "group-a"}, ConfigSnapshot{Version: 4}, 0)
+	session.runtimeMu.Lock()
+	session.runtime.listeners.started = true
+	session.runtime.generation = 4
+	session.runtimeMu.Unlock()
+
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53000}
+	tunnel := protocol.TunnelEntry{
+		TunnelID:    8,
+		Protocol:    protocol.ProtocolUDP,
+		TunnelFlags: protocol.TunnelFlagEnabled,
+	}
+	remotePort := uint16(listener.LocalAddr().(*net.UDPAddr).Port)
+	firstNow := time.Unix(1_700_000_100, 0).UTC()
+	firstForward, err := session.preparePublicUDPDatagramForward(4, tunnel, remotePort, listener, clientAddr, []byte("hello"), firstNow)
+	if err != nil {
+		t.Fatalf("prepare first udp forward: %v", err)
+	}
+	if firstForward.blocked || !firstForward.created || firstForward.udpSession == nil {
+		t.Fatalf("unexpected first udp forward operation: %#v", firstForward)
+	}
+	if len(firstForward.frames) != 2 {
+		t.Fatalf("expected udp.open + udp.data for first datagram, got %#v", firstForward.frames)
+	}
+	if firstForward.frames[0].Type != protocol.TypeUDPOpen || firstForward.frames[0].RequestID == 0 {
+		t.Fatalf("unexpected udp.open frame: %#v", firstForward.frames[0])
+	}
+	if firstForward.frames[1].Type != protocol.TypeUDPData || string(firstForward.frames[1].Body) != "hello" {
+		t.Fatalf("unexpected first udp.data frame: %#v", firstForward.frames[1])
+	}
+
+	secondNow := firstNow.Add(time.Second)
+	secondForward, err := session.preparePublicUDPDatagramForward(4, tunnel, remotePort, listener, clientAddr, []byte("again"), secondNow)
+	if err != nil {
+		t.Fatalf("prepare second udp forward: %v", err)
+	}
+	if secondForward.blocked || secondForward.created {
+		t.Fatalf("expected existing udp session reuse, got %#v", secondForward)
+	}
+	if secondForward.udpSession == nil || secondForward.udpSession.sessionID != firstForward.udpSession.sessionID {
+		t.Fatalf("expected reused udp session id %d, got %#v", firstForward.udpSession.sessionID, secondForward.udpSession)
+	}
+	if len(secondForward.frames) != 1 || secondForward.frames[0].Type != protocol.TypeUDPData || string(secondForward.frames[0].Body) != "again" {
+		t.Fatalf("unexpected reused udp.data frame: %#v", secondForward.frames)
+	}
+
+	_, runtimeState := session.observeState()
+	if runtimeState.activeStreamCount != 0 || runtimeState.activeUDPSessionCount != 1 {
+		t.Fatalf("unexpected runtime connection counts: %#v", runtimeState)
+	}
+	if len(runtimeState.connections) != 1 {
+		t.Fatalf("expected one observed udp connection, got %#v", runtimeState.connections)
+	}
+	connection := runtimeState.connections[0]
+	if connection.kind != observedRuntimeConnectionKindUDPSession || connection.protocol != "udp" {
+		t.Fatalf("unexpected observed udp connection: %#v", connection)
+	}
+	if connection.connectionID != firstForward.udpSession.sessionID || connection.tunnelID != tunnel.TunnelID || connection.remotePort != remotePort {
+		t.Fatalf("unexpected observed udp identity: %#v", connection)
+	}
+	if connection.clientAddr != "127.0.0.1:53000" {
+		t.Fatalf("unexpected observed udp client addr: %#v", connection)
+	}
+	if connection.openedAtMs != uint64(firstNow.UnixMilli()) || connection.lastActiveAtMs != uint64(secondNow.UnixMilli()) {
+		t.Fatalf("unexpected observed udp timestamps: %#v", connection)
+	}
+	if connection.idleTimeoutMs != uint32(defaultUDPIdleTimeout/time.Millisecond) {
+		t.Fatalf("unexpected observed udp idle timeout: %#v", connection)
 	}
 }

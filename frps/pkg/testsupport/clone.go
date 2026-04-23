@@ -52,6 +52,9 @@ func cloneServerObservedState(source ServerObservedState) ServerObservedState {
 			}
 		}
 	}
+	if len(source.Connections) > 0 {
+		cloned.Connections = append([]ConnectionObservedState(nil), source.Connections...)
+	}
 	return cloned
 }
 

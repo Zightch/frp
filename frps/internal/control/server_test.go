@@ -3346,7 +3346,7 @@ func TestServerFreezeGroupRuntimeDropsBufferedTCPData(t *testing.T) {
 	copyDone := make(chan struct{})
 	go func() {
 		defer close(copyDone)
-		server.copyPublicToClient(controlServer, session, streamID, stream)
+		server.copyPublicToClient(newSessionRuntimeIOWriter(server, controlServer, session, 1), streamID, stream)
 	}()
 
 	if _, err := publicClient.Write([]byte("late")); err != nil {
@@ -3444,12 +3444,11 @@ func TestServerFreezeGroupRuntimeDropsBufferedUDPData(t *testing.T) {
 	go func() {
 		forwardDone <- server.handlePublicUDPDatagram(
 			tunnelRuntimeServeContext{
-				controlConn:   controlServer,
-				logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-				session:       session,
-				configVersion: 1,
-				tunnel:        tunnel,
-				remotePort:    remotePort,
+				logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+				session:    session,
+				runtimeIO:  newSessionRuntimeIOWriter(server, controlServer, session, 1),
+				tunnel:     tunnel,
+				remotePort: remotePort,
 			},
 			listener,
 			clientAddr,

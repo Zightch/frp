@@ -99,11 +99,14 @@ type observedSessionConfigState struct {
 }
 
 type observedSessionRuntimeState struct {
-	frozen            bool
-	listenersStarted  bool
-	generation        uint64
-	activeTunnelIDs   map[uint32]struct{}
-	attachedListeners []observedSessionRuntimeListener
+	frozen                bool
+	listenersStarted      bool
+	generation            uint64
+	activeTunnelIDs       map[uint32]struct{}
+	attachedListeners     []observedSessionRuntimeListener
+	activeStreamCount     uint32
+	activeUDPSessionCount uint32
+	connections           []observedSessionRuntimeConnection
 }
 
 type observedSessionRuntimeListener struct {
@@ -577,12 +580,16 @@ func (s *sessionState) observeState() (observedSessionConfigState, observedSessi
 	s.configMu.Unlock()
 
 	s.runtimeMu.Lock()
+	runtimeConnections := observeRuntimeConnections(s.runtime.streams, s.runtime.udp.sessions)
 	runtimeState := observedSessionRuntimeState{
-		frozen:            s.runtime.frozen,
-		listenersStarted:  s.runtime.listeners.started,
-		generation:        s.runtime.generation,
-		activeTunnelIDs:   s.activeRuntimeTunnelIDsLocked(),
-		attachedListeners: observeRuntimeListeners(s.runtime.listeners.tcp, s.runtime.listeners.udp),
+		frozen:                s.runtime.frozen,
+		listenersStarted:      s.runtime.listeners.started,
+		generation:            s.runtime.generation,
+		activeTunnelIDs:       s.activeRuntimeTunnelIDsLocked(),
+		attachedListeners:     observeRuntimeListeners(s.runtime.listeners.tcp, s.runtime.listeners.udp),
+		activeStreamCount:     uint32(len(s.runtime.streams)),
+		activeUDPSessionCount: uint32(len(s.runtime.udp.sessions)),
+		connections:           runtimeConnections,
 	}
 	s.runtimeMu.Unlock()
 
