@@ -137,7 +137,7 @@ type countingRepository struct {
 	listCount int
 }
 
-func (r *countingRepository) LoadGroupRuntime(context.Context, [16]byte) (GroupRuntime, error) {
+func (r *countingRepository) LoadGroupRuntimeByClientID(context.Context, [16]byte) (GroupRuntime, error) {
 	return r.group, nil
 }
 

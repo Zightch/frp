@@ -526,8 +526,15 @@ func TestManagementKeySmokeFlow(t *testing.T) {
 	if !ok || int64(groupID) <= 0 {
 		t.Fatalf("unexpected proxy group id: %#v", item)
 	}
-	if _, ok := createdGroup.JSON["token"].(string); !ok {
-		t.Fatalf("expected proxy group token in response: %#v", createdGroup.JSON)
+	credential, ok := createdGroup.JSON["credential"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected proxy group credential in response: %#v", createdGroup.JSON)
+	}
+	if credential["client_id"] != item["client_id"] {
+		t.Fatalf("expected credential client_id to match item: %#v", createdGroup.JSON)
+	}
+	if _, ok := credential["client_secret"].(string); !ok {
+		t.Fatalf("expected proxy group client_secret in response: %#v", createdGroup.JSON)
 	}
 	if item["effective_ip"] != "0.0.0.0" {
 		t.Fatalf("unexpected effective_ip in create response: %#v", item)
@@ -693,20 +700,20 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 		t,
 		server.Handler(),
 		http.MethodPost,
-		"/api/v1/proxy-groups/"+jsonNumberString(groupID)+"/token",
+		"/api/v1/proxy-groups/"+jsonNumberString(groupID)+"/credentials",
 		nil,
 		http.StatusOK,
 		sessionCookie,
 	)
 	resetItem, ok := reset.JSON["item"].(map[string]any)
 	if !ok {
-		t.Fatalf("unexpected token reset payload: %#v", reset.JSON)
+		t.Fatalf("unexpected credential rotation payload: %#v", reset.JSON)
 	}
 	if resetItem["effective_ip"] != "0.0.0.0" {
-		t.Fatalf("unexpected token reset effective_ip: %#v", resetItem)
+		t.Fatalf("unexpected credential rotation effective_ip: %#v", resetItem)
 	}
 	if resetItem["status"] != proxyGroupStatusDisabled {
-		t.Fatalf("unexpected token reset status: %#v", resetItem)
+		t.Fatalf("unexpected credential rotation status: %#v", resetItem)
 	}
 }
 
@@ -931,13 +938,13 @@ func TestManagementMutationsRefreshAffectedGroups(t *testing.T) {
 		t,
 		server.Handler(),
 		http.MethodPost,
-		"/api/v1/proxy-groups/"+jsonNumberString(float64(groupBID))+"/token",
+		"/api/v1/proxy-groups/"+jsonNumberString(float64(groupBID))+"/credentials",
 		nil,
 		http.StatusOK,
 		sessionCookie,
 	)
 	if got := refresher.calls(); len(got) != 1 || got[0] != groupBID {
-		t.Fatalf("unexpected refresh calls after token reset: %#v", got)
+		t.Fatalf("unexpected refresh calls after credential rotation: %#v", got)
 	}
 	refresher.reset()
 
@@ -2014,8 +2021,8 @@ func newTestStore(t *testing.T) *storage.SQL {
 CREATE TABLE proxy_groups (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL UNIQUE,
-	token_id TEXT NOT NULL UNIQUE,
-	token_hash TEXT NOT NULL,
+	client_id TEXT NOT NULL UNIQUE,
+	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	rate_limit INTEGER NOT NULL DEFAULT 0,
@@ -2314,7 +2321,7 @@ func insertProxyGroup(t *testing.T, store *storage.SQL, id int64, name, tokenID,
 	t.Helper()
 	now := schemaTimestamp()
 	if _, err := store.Exec(
-		`INSERT INTO proxy_groups (id, name, token_id, token_hash, effective_ip, enabled, rate_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		`INSERT INTO proxy_groups (id, name, client_id, client_secret_hash, effective_ip, enabled, rate_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
 		id,
 		name,
 		tokenID,

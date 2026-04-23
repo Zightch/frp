@@ -36,11 +36,11 @@ func TestServerAuthenticateAndHeartbeat(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: system.AnyIPv4,
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      system.AnyIPv4,
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -88,7 +88,7 @@ func TestServerAuthenticateAndHeartbeat(t *testing.T) {
 	}()
 
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
-		TokenID:       tokenID,
+		ClientID:      tokenID,
 		ClientVersion: "test-client",
 		Hostname:      "node-1",
 		OS:            protocol.OSLinux,
@@ -203,11 +203,11 @@ func TestServerForwardsTCPStream(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: system.AnyIPv4,
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      system.AnyIPv4,
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -255,7 +255,7 @@ func TestServerForwardsTCPStream(t *testing.T) {
 	}()
 
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
-		TokenID:       tokenID,
+		ClientID:      tokenID,
 		ClientVersion: "test-client",
 		Hostname:      "node-1",
 		OS:            protocol.OSLinux,
@@ -398,11 +398,11 @@ func TestServerForwardsPublicUDPDatagramsAndReusesSession(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: system.AnyIPv4,
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      system.AnyIPv4,
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -879,11 +879,11 @@ func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testi
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: system.AnyIPv4,
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      system.AnyIPv4,
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -972,11 +972,11 @@ func TestServerRejectsInitialConfigAckWhenEffectiveIPIsNotCurrentLocalIP(t *test
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: "127.0.0.2",
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      "127.0.0.2",
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -1074,11 +1074,11 @@ func TestServerStartsListenersForEnabledTCPRangeTunnelAndUsesMatchedRemotePort(t
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: system.AnyIPv4,
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      system.AnyIPv4,
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -1230,11 +1230,11 @@ func TestServerStartsListenersForEnabledUDPRangeTunnelAndUsesMatchedRemotePort(t
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: system.AnyIPv4,
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      system.AnyIPv4,
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -1424,7 +1424,7 @@ func TestServerRejectsInvalidToken(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
 
-	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{TokenID: tokenID})
+	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{ClientID: tokenID})
 	if err != nil {
 		t.Fatalf("marshal auth.begin: %v", err)
 	}
@@ -1442,7 +1442,7 @@ func TestServerRejectsInvalidToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unmarshal error frame: %v", err)
 	}
-	if errorBody.ErrorCode != protocol.ErrorCodeAuthInvalidToken {
+	if errorBody.ErrorCode != protocol.ErrorCodeAuthInvalidClient {
 		t.Fatalf("unexpected error code: %d", errorBody.ErrorCode)
 	}
 
@@ -1471,11 +1471,11 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: system.AnyIPv4,
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      system.AnyIPv4,
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -1524,7 +1524,7 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 	}()
 
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
-		TokenID:       tokenID,
+		ClientID:      tokenID,
 		ClientVersion: "test-client-2",
 		Hostname:      "node-2",
 		OS:            protocol.OSLinux,
@@ -1613,11 +1613,11 @@ func TestServerHandlesUDPControlFramesWithoutEndingSession(t *testing.T) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: system.AnyIPv4,
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      system.AnyIPv4,
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -1729,11 +1729,11 @@ func TestServerRefreshGroupPushesUpdatedConfigToActiveSession(t *testing.T) {
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: system.AnyIPv4,
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      system.AnyIPv4,
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -1843,11 +1843,11 @@ func TestServerRefreshGroupClosesSessionWhenConfigPushPending(t *testing.T) {
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: system.AnyIPv4,
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      system.AnyIPv4,
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -1913,11 +1913,11 @@ func TestServerRefreshGroupBlocksReplacementSessionUntilRefreshCompletes(t *test
 
 	repo := &blockingRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: system.AnyIPv4,
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      system.AnyIPv4,
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -2003,7 +2003,7 @@ func TestServerRefreshGroupBlocksReplacementSessionUntilRefreshCompletes(t *test
 	}()
 
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
-		TokenID:       tokenID,
+		ClientID:      tokenID,
 		ClientVersion: "test-client",
 		Hostname:      "node-2",
 		OS:            protocol.OSLinux,
@@ -2120,11 +2120,11 @@ func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: system.AnyIPv4,
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      system.AnyIPv4,
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -2383,11 +2383,11 @@ func TestServerRefreshGroupRebindsListenersWhenOnlyEffectiveIPChanges(t *testing
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -2681,11 +2681,11 @@ func TestServerRefreshGroupPushesEmptyConfigWhenEffectiveIPBecomesNotCurrentLoca
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -2911,11 +2911,11 @@ func TestServerScanNonListeningTunnelRuntimeIssuesRepushesConfigAfterEffectiveIP
 	tcpPort := freeTCPPort(t)
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -3124,11 +3124,11 @@ func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConfli
 	healthyPort := freeTCPPortExcept(t, conflictPort)
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -3516,11 +3516,11 @@ func TestServerRefreshGroupClosesSessionAfterTokenReset(t *testing.T) {
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: system.AnyIPv4,
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      system.AnyIPv4,
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -3555,7 +3555,7 @@ func TestServerRefreshGroupClosesSessionAfterTokenReset(t *testing.T) {
 
 	var rotatedSecret [32]byte
 	copy(rotatedSecret[:], []byte("fedcba9876543210fedcba9876543210"))
-	repo.group.TokenHash = sha256.Sum256(rotatedSecret[:])
+	repo.group.ClientSecretHash = sha256.Sum256(rotatedSecret[:])
 
 	server.RefreshGroup(repo.group.ID)
 
@@ -3575,7 +3575,7 @@ type stubRepository struct {
 	err   error
 }
 
-func (r stubRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
+func (r stubRepository) LoadGroupRuntimeByClientID(_ context.Context, _ [16]byte) (GroupRuntime, error) {
 	if r.err != nil {
 		return GroupRuntime{}, r.err
 	}
@@ -3601,7 +3601,7 @@ type mutableRepository struct {
 	loadErr error
 }
 
-func (r *mutableRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
+func (r *mutableRepository) LoadGroupRuntimeByClientID(_ context.Context, _ [16]byte) (GroupRuntime, error) {
 	if r.loadErr != nil {
 		return GroupRuntime{}, r.loadErr
 	}
@@ -3631,7 +3631,7 @@ type blockingRepository struct {
 	allowLoadAll    chan struct{}
 }
 
-func (r *blockingRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
+func (r *blockingRepository) LoadGroupRuntimeByClientID(_ context.Context, _ [16]byte) (GroupRuntime, error) {
 	if r.loadErr != nil {
 		return GroupRuntime{}, r.loadErr
 	}
@@ -4039,7 +4039,7 @@ func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, t
 	}()
 
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
-		TokenID:       tokenID,
+		ClientID:      tokenID,
 		ClientVersion: "test-client",
 		Hostname:      "node-1",
 		OS:            protocol.OSLinux,

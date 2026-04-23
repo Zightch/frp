@@ -230,12 +230,12 @@ func newStabilityFixture(t *testing.T, options stabilityFixtureOptions) *stabili
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
-			Snapshot:    buildStabilitySnapshot(host, 1, 100, options.InitialBasePort, options.TunnelCount),
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
+			Snapshot:         buildStabilitySnapshot(host, 1, 100, options.InitialBasePort, options.TunnelCount),
 		},
 	}
 	network := &mutableSnapshotReader{

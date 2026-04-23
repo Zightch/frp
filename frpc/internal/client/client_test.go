@@ -10,29 +10,17 @@ import (
 	"testing"
 	"time"
 
-	appconfig "github.com/zightch/frp/frpc/internal/config"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/transport"
 )
 
 func TestClientRunSession(t *testing.T) {
-	tokenValue := "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	token, err := appconfig.ParseToken(tokenValue)
-	if err != nil {
-		t.Fatalf("parse token: %v", err)
-	}
+	credentials := testCredentials(t)
 
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 
-	client := New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  tokenValue,
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -83,8 +71,8 @@ func TestClientRunSession(t *testing.T) {
 			t.Errorf("unexpected challenge id: %d", finish.ChallengeID)
 			return
 		}
-		tokenHash := sha256.Sum256(token.Secret[:])
-		expected := protocol.ChallengeResponse(tokenHash, challenge.Nonce)
+		secretHash := sha256.Sum256(credentials.ClientSecret[:])
+		expected := protocol.ChallengeResponse(secretHash, challenge.Nonce)
 		if finish.Response != expected {
 			t.Errorf("unexpected auth response")
 			return
@@ -166,8 +154,8 @@ func TestClientRunSession(t *testing.T) {
 			Body:      pongBodyValue,
 		})
 
-		if begin.TokenID != token.ID {
-			t.Errorf("unexpected token id")
+		if begin.ClientID != credentials.ClientID {
+			t.Errorf("unexpected client id")
 			return
 		}
 
@@ -175,7 +163,7 @@ func TestClientRunSession(t *testing.T) {
 		<-ctx.Done()
 	}()
 
-	if err := client.runSession(ctx, clientConn, token); err != nil {
+	if err := client.runSession(ctx, clientConn, credentials); err != nil {
 		t.Fatalf("run session: %v", err)
 	}
 
@@ -214,14 +202,7 @@ func TestClientHandlesStreamOpenAndData(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	client := New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
 	state := newSessionState(1000)
 	state.setSnapshot(protocol.ConfigPush{
@@ -331,14 +312,7 @@ func TestClientRejectsStreamOpenForUnknownTunnel(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	client := New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
 	state := newSessionState(1000)
 	state.setSnapshot(protocol.ConfigPush{ConfigVersion: 1})
@@ -525,14 +499,7 @@ func TestClientReadLoopHandlesUDPOpenAndClose(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	client := New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
 	state := newSessionState(1000)
 	state.setSnapshot(protocol.ConfigPush{
@@ -650,14 +617,7 @@ func TestClientReadLoopForwardsUDPDatagramsToMappedRangeLocalService(t *testing.
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	client := New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
 	state := newSessionState(1000)
 	state.setSnapshot(protocol.ConfigPush{
@@ -791,14 +751,7 @@ func TestClientReadLoopForwardsUDPDatagramsToLocalService(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	client := New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
 	localPort := uint16(localServer.LocalAddr().(*net.UDPAddr).Port)
 	state := newSessionState(1000)
@@ -907,14 +860,7 @@ func TestClientRejectsUDPDataForUnknownSession(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	client := New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
 	state := newSessionState(1000)
 

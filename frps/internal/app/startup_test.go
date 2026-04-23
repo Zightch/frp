@@ -32,11 +32,11 @@ func TestAppRunDelaysManagementAPIUntilInitialRuntimeScanCompletes(t *testing.T)
 	tokenHash := sha256.Sum256([]byte("startup-scan-token"))
 	repo := &blockingControlRepository{
 		group: control.GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: system.AnyIPv4,
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      system.AnyIPv4,
+			ClientSecretHash: tokenHash,
 			Snapshot: control.ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 1,
@@ -124,7 +124,7 @@ type blockingControlRepository struct {
 	allowLoadAll   chan struct{}
 }
 
-func (r *blockingControlRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (control.GroupRuntime, error) {
+func (r *blockingControlRepository) LoadGroupRuntimeByClientID(_ context.Context, _ [16]byte) (control.GroupRuntime, error) {
 	return r.group, nil
 }
 

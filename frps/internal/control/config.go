@@ -119,10 +119,10 @@ func (s *Server) pushConfig(conn net.Conn, session *sessionState) error {
 	return s.pushReloadConfig(conn, session, group, snapshot)
 }
 
-func (s *Server) loadGroupRuntime(tokenID [16]byte) (GroupRuntime, error) {
+func (s *Server) loadGroupRuntimeByClientID(clientID [16]byte) (GroupRuntime, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.options.ReadTimeout)
 	defer cancel()
-	return s.repo.LoadGroupRuntime(ctx, tokenID)
+	return s.repo.LoadGroupRuntimeByClientID(ctx, clientID)
 }
 
 func (s *Server) loadGroupRuntimeByID(groupID int64) (GroupRuntime, error) {

@@ -17,13 +17,15 @@ var version = "dev"
 
 func main() {
 	var (
-		server      string
-		token       string
-		showVersion bool
+		server       string
+		clientID     string
+		clientSecret string
+		showVersion  bool
 	)
 
 	flag.StringVar(&server, "server", "", "frps control server address, for example 1.2.3.4:7000")
-	flag.StringVar(&token, "token", "", "group token")
+	flag.StringVar(&clientID, "client-id", "", "proxy group client ID")
+	flag.StringVar(&clientSecret, "client-secret", "", "proxy group client secret")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
 
@@ -33,8 +35,9 @@ func main() {
 	}
 
 	cfg := config.Config{
-		Server: server,
-		Token:  token,
+		Server:       server,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "validate config: %v\n", err)

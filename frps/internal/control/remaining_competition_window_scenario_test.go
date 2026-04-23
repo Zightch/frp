@@ -29,11 +29,11 @@ func TestServerScenarioSkipsOverlappingRuntimeScanRoundDuringRecoveryPush(t *tes
 	listenKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: uint16(freeTCPPort(t))}
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -73,11 +73,11 @@ func TestServerScenarioSkipsOverlappingRuntimeScanRoundDuringRecoveryPush(t *tes
 	waitForIdleConfig(t, active.session)
 
 	repo.SetGroup(GroupRuntime{
-		ID:          1,
-		Name:        "group-a",
-		Enabled:     true,
-		EffectiveIP: "127.0.0.1",
-		TokenHash:   tokenHash,
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
 		Snapshot: ConfigSnapshot{
 			Version:       2,
 			GeneratedAtMs: 200,
@@ -210,11 +210,11 @@ func TestServerScenarioScanReusesFreshNetworkSnapshotBeforeRecoveryPush(t *testi
 	network := &mutableSnapshotReader{snapshot: localIPv4Snapshot("127.0.0.1")}
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -266,11 +266,11 @@ func TestServerScenarioScanReusesFreshNetworkSnapshotBeforeRecoveryPush(t *testi
 	}
 
 	repo.group = GroupRuntime{
-		ID:          1,
-		Name:        "group-a",
-		Enabled:     true,
-		EffectiveIP: "127.0.0.2",
-		TokenHash:   tokenHash,
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.2",
+		ClientSecretHash: tokenHash,
 		Snapshot: ConfigSnapshot{
 			Version:       2,
 			GeneratedAtMs: 200,
@@ -520,11 +520,11 @@ func TestServerScenarioShutdownWhileScanRecoveryBindBlockedLeavesNoListenerLeak(
 	listenerFactory.SetExternallyOccupied(listenKey, true)
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -656,11 +656,11 @@ func TestServerScenarioShutdownWhileRefreshBindBlockedDoesNotAttachStaleListener
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -717,11 +717,11 @@ func TestServerScenarioShutdownWhileRefreshBindBlockedDoesNotAttachStaleListener
 	defer restoreHooks()
 
 	repo.SetGroup(GroupRuntime{
-		ID:          1,
-		Name:        "group-a",
-		Enabled:     true,
-		EffectiveIP: "127.0.0.1",
-		TokenHash:   tokenHash,
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
 		Snapshot: ConfigSnapshot{
 			Version:       2,
 			GeneratedAtMs: 200,

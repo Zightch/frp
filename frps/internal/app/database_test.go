@@ -104,8 +104,8 @@ func TestAppInitDatabaseRejectsInvalidSQLiteSchema(t *testing.T) {
 CREATE TABLE proxy_groups (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name INTEGER NOT NULL UNIQUE,
-	token_id TEXT NOT NULL UNIQUE,
-	token_hash TEXT NOT NULL,
+	client_id TEXT NOT NULL UNIQUE,
+	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	rate_limit INTEGER NOT NULL DEFAULT 0,

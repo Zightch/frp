@@ -27,11 +27,11 @@ func TestServerScenarioKeepsSessionAliveWhenTCPRecoveryBindFailsWithPermissionDe
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -181,11 +181,11 @@ func TestServerScenarioClosesPartiallyStartedTCPListenersAcrossRepeatedEMFILERec
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -338,11 +338,11 @@ func TestServerScenarioKeepsSessionAliveWhenUDPRecoveryBindFailsWithPermissionDe
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -477,11 +477,11 @@ func TestServerScenarioServesHeartbeatWhileEmptyAndFullRecoveryConfigsArePending
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,

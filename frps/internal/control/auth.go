@@ -11,10 +11,10 @@ import (
 )
 
 type authChallenge struct {
-	TokenHash [32]byte
-	Nonce     [16]byte
-	ExpiresAt time.Time
-	Used      bool
+	ClientSecretHash [32]byte
+	Nonce            [16]byte
+	ExpiresAt        time.Time
+	Used             bool
 }
 
 func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
@@ -44,11 +44,11 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		return nil, s.replyProtocolError(conn, frame, err)
 	}
 
-	group, err := s.loadGroupRuntime(begin.TokenID)
+	group, err := s.loadGroupRuntimeByClientID(begin.ClientID)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrGroupNotFound):
-			return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidToken, "token id not found")
+			return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidClient, "client_id not found")
 		default:
 			return nil, err
 		}
@@ -57,7 +57,7 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthGroupDisabled, "proxy group is disabled")
 	}
 
-	challenge, err := s.issueChallenge(group.TokenHash)
+	challenge, err := s.issueChallenge(group.ClientSecretHash)
 	if err != nil {
 		return nil, err
 	}
@@ -102,11 +102,11 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		return nil, s.replyProtocolError(conn, frame, err)
 	}
 
-	group, err = s.loadGroupRuntime(begin.TokenID)
+	group, err = s.loadGroupRuntimeByClientID(begin.ClientID)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrGroupNotFound):
-			return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidToken, "token id not found")
+			return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidClient, "client_id not found")
 		default:
 			return nil, err
 		}
@@ -160,7 +160,7 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 	return session, nil
 }
 
-func (s *Server) issueChallenge(tokenHash [32]byte) (protocol.AuthChallenge, error) {
+func (s *Server) issueChallenge(clientSecretHash [32]byte) (protocol.AuthChallenge, error) {
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return protocol.AuthChallenge{}, err
@@ -177,9 +177,9 @@ func (s *Server) issueChallenge(tokenHash [32]byte) (protocol.AuthChallenge, err
 
 	s.purgeExpiredChallengesLocked(now)
 	s.challenges[challengeID] = &authChallenge{
-		TokenHash: tokenHash,
-		Nonce:     nonce,
-		ExpiresAt: now.Add(s.options.ChallengeTTL),
+		ClientSecretHash: clientSecretHash,
+		Nonce:            nonce,
+		ExpiresAt:        now.Add(s.options.ChallengeTTL),
 	}
 
 	return protocol.AuthChallenge{
@@ -210,9 +210,9 @@ func (s *Server) consumeChallenge(challengeID uint32, response [32]byte) error {
 	}
 
 	challenge.Used = true
-	expected := protocol.ChallengeResponse(challenge.TokenHash, challenge.Nonce)
+	expected := protocol.ChallengeResponse(challenge.ClientSecretHash, challenge.Nonce)
 	if subtle.ConstantTimeCompare(expected[:], response[:]) != 1 {
-		return protocol.NewError(protocol.ErrorCodeAuthInvalidToken, "challenge response mismatch")
+		return protocol.NewError(protocol.ErrorCodeAuthInvalidClient, "challenge response mismatch")
 	}
 
 	return nil

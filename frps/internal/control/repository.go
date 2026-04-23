@@ -21,7 +21,7 @@ const schemaTimestampLayout = "2006-01-02 15:04:05.000000"
 var ErrGroupNotFound = errors.New("proxy group not found")
 
 type Repository interface {
-	LoadGroupRuntime(ctx context.Context, tokenID [16]byte) (GroupRuntime, error)
+	LoadGroupRuntimeByClientID(ctx context.Context, clientID [16]byte) (GroupRuntime, error)
 	LoadGroupRuntimeByID(ctx context.Context, groupID int64) (GroupRuntime, error)
 	ListGroupRuntimes(ctx context.Context) ([]GroupRuntime, error)
 }
@@ -31,12 +31,12 @@ type SQLRepository struct {
 }
 
 type GroupRuntime struct {
-	ID          int64
-	Name        string
-	Enabled     bool
-	EffectiveIP string
-	TokenHash   [32]byte
-	Snapshot    ConfigSnapshot
+	ID               int64
+	Name             string
+	Enabled          bool
+	EffectiveIP      string
+	ClientSecretHash [32]byte
+	Snapshot         ConfigSnapshot
 }
 
 type ConfigSnapshot struct {
@@ -49,21 +49,21 @@ func NewRepository(store *storage.SQL) *SQLRepository {
 	return &SQLRepository{store: store}
 }
 
-func (r *SQLRepository) LoadGroupRuntime(ctx context.Context, tokenID [16]byte) (GroupRuntime, error) {
+func (r *SQLRepository) LoadGroupRuntimeByClientID(ctx context.Context, clientID [16]byte) (GroupRuntime, error) {
 	return r.loadGroupRuntime(
 		ctx,
 		`
 SELECT
 	id,
 	name,
-	token_hash,
+	client_secret_hash,
 	effective_ip,
 	enabled,
 	updated_at
 FROM proxy_groups
-WHERE token_id = ?
+WHERE client_id = ?
 `,
-		hex.EncodeToString(tokenID[:]),
+		hex.EncodeToString(clientID[:]),
 	)
 }
 
@@ -74,7 +74,7 @@ func (r *SQLRepository) LoadGroupRuntimeByID(ctx context.Context, groupID int64)
 SELECT
 	id,
 	name,
-	token_hash,
+	client_secret_hash,
 	effective_ip,
 	enabled,
 	updated_at
@@ -96,7 +96,7 @@ func (r *SQLRepository) ListGroupRuntimes(ctx context.Context) ([]GroupRuntime, 
 SELECT
 	id,
 	name,
-	token_hash,
+	client_secret_hash,
 	effective_ip,
 	enabled,
 	updated_at
@@ -153,8 +153,8 @@ func (r *SQLRepository) decodeGroupRuntimeRow(ctx context.Context, row storage.R
 		return GroupRuntime{}, fmt.Errorf("decode group enabled: %w", err)
 	}
 	group.EffectiveIP = decodeStoredEffectiveIP(rowString(row, "effective_ip"))
-	if group.TokenHash, err = decodeHex32(rowString(row, "token_hash")); err != nil {
-		return GroupRuntime{}, fmt.Errorf("decode group token hash: %w", err)
+	if group.ClientSecretHash, err = decodeHex32(rowString(row, "client_secret_hash")); err != nil {
+		return GroupRuntime{}, fmt.Errorf("decode group client secret hash: %w", err)
 	}
 
 	groupUpdatedAt := rowTime(row, "updated_at")

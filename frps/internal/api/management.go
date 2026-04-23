@@ -48,13 +48,18 @@ type managementService struct {
 type proxyGroupView struct {
 	ID           int64  `json:"id"`
 	Name         string `json:"name"`
-	TokenID      string `json:"token_id"`
+	ClientID     string `json:"client_id"`
 	EffectiveIP  string `json:"effective_ip"`
 	Enabled      bool   `json:"enabled"`
 	Status       string `json:"status"`
 	StatusReason string `json:"status_reason,omitempty"`
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
+}
+
+type clientCredentialView struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
 }
 
 type tunnelView struct {
@@ -167,14 +172,14 @@ func (s *Server) handleProxyGroups(writer http.ResponseWriter, request *http.Req
 			return
 		}
 
-		item, token, err := manager.createProxyGroup(request.Context(), payload)
+		item, credential, err := manager.createProxyGroup(request.Context(), payload)
 		if err != nil {
 			writeError(writer, err)
 			return
 		}
 		writeJSON(writer, http.StatusCreated, map[string]any{
-			"item":  item,
-			"token": token,
+			"item":       item,
+			"credential": credential,
 		})
 	default:
 		writeMethodNotAllowed(writer)
@@ -217,15 +222,15 @@ func (s *Server) handleProxyGroupResource(writer http.ResponseWriter, request *h
 			return
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"deleted": true})
-	case suffix == "token" && request.Method == http.MethodPost:
-		item, token, err := manager.resetProxyGroupToken(request.Context(), id)
+	case suffix == "credentials" && request.Method == http.MethodPost:
+		item, credential, err := manager.rotateProxyGroupCredentials(request.Context(), id)
 		if err != nil {
 			writeError(writer, err)
 			return
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{
-			"item":  item,
-			"token": token,
+			"item":       item,
+			"credential": credential,
 		})
 	default:
 		writeMethodNotAllowed(writer)
@@ -351,7 +356,7 @@ func (m *managementService) listProxyGroups(ctx context.Context) ([]proxyGroupVi
 SELECT
 	id,
 	name,
-	token_id,
+	client_id,
 	effective_ip,
 	enabled,
 	created_at,
@@ -375,20 +380,20 @@ ORDER BY id
 	return items, nil
 }
 
-func (m *managementService) createProxyGroup(ctx context.Context, payload proxyGroupCreateRequest) (proxyGroupView, string, error) {
+func (m *managementService) createProxyGroup(ctx context.Context, payload proxyGroupCreateRequest) (proxyGroupView, clientCredentialView, error) {
 	normalized, err := m.normalizeCreateProxyGroup(payload)
 	if err != nil {
-		return proxyGroupView{}, "", err
+		return proxyGroupView{}, clientCredentialView{}, err
 	}
 
 	var (
-		item  proxyGroupView
-		token string
+		item       proxyGroupView
+		credential clientCredentialView
 	)
 
 	err = m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
 		now := schemaTimestamp()
-		tokenValue, tokenID, tokenHash, err := generateToken()
+		clientID, clientSecret, clientSecretHash, err := generateClientCredentials()
 		if err != nil {
 			return err
 		}
@@ -398,8 +403,8 @@ func (m *managementService) createProxyGroup(ctx context.Context, payload proxyG
 			`
 INSERT INTO proxy_groups (
 	name,
-	token_id,
-	token_hash,
+	client_id,
+	client_secret_hash,
 	effective_ip,
 	enabled,
 	rate_limit,
@@ -408,8 +413,8 @@ INSERT INTO proxy_groups (
 ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
 `,
 			normalized.Name,
-			tokenID,
-			tokenHash,
+			clientID,
+			clientSecretHash,
 			normalized.EffectiveIP,
 			boolToInt(normalized.Enabled),
 			now,
@@ -423,14 +428,17 @@ INSERT INTO proxy_groups (
 		if err != nil {
 			return err
 		}
-		token = tokenValue
+		credential = clientCredentialView{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+		}
 		return nil
 	})
 	if err != nil {
-		return proxyGroupView{}, "", err
+		return proxyGroupView{}, clientCredentialView{}, err
 	}
 
-	return item, token, nil
+	return item, credential, nil
 }
 
 func (m *managementService) updateProxyGroup(ctx context.Context, id int64, payload proxyGroupPatchRequest) (proxyGroupView, error) {
@@ -507,14 +515,18 @@ func (m *managementService) deleteProxyGroup(ctx context.Context, id int64) erro
 	return nil
 }
 
-func (m *managementService) resetProxyGroupToken(ctx context.Context, id int64) (proxyGroupView, string, error) {
+func (m *managementService) rotateProxyGroupCredentials(ctx context.Context, id int64) (proxyGroupView, clientCredentialView, error) {
 	var (
-		item  proxyGroupView
-		token string
+		item       proxyGroupView
+		credential clientCredentialView
 	)
 
 	err := m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
-		tokenValue, tokenID, tokenHash, err := generateToken()
+		current, err := m.loadProxyGroupByID(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		clientSecret, clientSecretHash, err := generateClientSecret()
 		if err != nil {
 			return err
 		}
@@ -523,16 +535,15 @@ func (m *managementService) resetProxyGroupToken(ctx context.Context, id int64) 
 			ctx,
 			`
 UPDATE proxy_groups
-SET token_id = ?, token_hash = ?, updated_at = ?
+SET client_secret_hash = ?, updated_at = ?
 WHERE id = ?
 `,
-			tokenID,
-			tokenHash,
+			clientSecretHash,
 			schemaTimestamp(),
 			id,
 		)
 		if err != nil {
-			return writeConflictError(err, "proxy group token reset failed")
+			return writeConflictError(err, "proxy group credential rotation failed")
 		}
 		if result.RowsAffected == 0 {
 			return &apiError{Status: http.StatusNotFound, Message: "proxy group not found"}
@@ -542,15 +553,18 @@ WHERE id = ?
 		if err != nil {
 			return err
 		}
-		token = tokenValue
+		credential = clientCredentialView{
+			ClientID:     current.ClientID,
+			ClientSecret: clientSecret,
+		}
 		return nil
 	})
 	if err != nil {
-		return proxyGroupView{}, "", err
+		return proxyGroupView{}, clientCredentialView{}, err
 	}
 
 	m.refreshGroups(id)
-	return item, token, nil
+	return item, credential, nil
 }
 
 func (m *managementService) listTunnels(ctx context.Context) ([]tunnelView, error) {
@@ -805,7 +819,7 @@ func (m *managementService) loadProxyGroupByID(ctx context.Context, conn storage
 SELECT
 	id,
 	name,
-	token_id,
+	client_id,
 	effective_ip,
 	enabled,
 	created_at,
@@ -1176,7 +1190,7 @@ func decodeProxyGroupRow(row storage.Row) (proxyGroupView, error) {
 		return item, fmt.Errorf("effective_ip: %w", err)
 	}
 	item.Name = rowString(row, "name")
-	item.TokenID = rowString(row, "token_id")
+	item.ClientID = rowString(row, "client_id")
 	item.CreatedAt = rowTimeString(row, "created_at")
 	item.UpdatedAt = rowTimeString(row, "updated_at")
 	return item, nil
@@ -1406,20 +1420,34 @@ func isUniqueConstraintError(err error) bool {
 		strings.Contains(message, "duplicate key")
 }
 
-func generateToken() (string, string, string, error) {
-	var tokenID [16]byte
-	var tokenSecret [32]byte
-	if _, err := rand.Read(tokenID[:]); err != nil {
-		return "", "", "", fmt.Errorf("generate token id: %w", err)
+func generateClientCredentials() (string, string, string, error) {
+	clientID, err := generateClientID()
+	if err != nil {
+		return "", "", "", err
 	}
-	if _, err := rand.Read(tokenSecret[:]); err != nil {
-		return "", "", "", fmt.Errorf("generate token secret: %w", err)
+	clientSecret, clientSecretHash, err := generateClientSecret()
+	if err != nil {
+		return "", "", "", err
+	}
+	return clientID, clientSecret, clientSecretHash, nil
+}
+
+func generateClientID() (string, error) {
+	var clientID [16]byte
+	if _, err := rand.Read(clientID[:]); err != nil {
+		return "", fmt.Errorf("generate client id: %w", err)
+	}
+	return hex.EncodeToString(clientID[:]), nil
+}
+
+func generateClientSecret() (string, string, error) {
+	var clientSecret [32]byte
+	if _, err := rand.Read(clientSecret[:]); err != nil {
+		return "", "", fmt.Errorf("generate client secret: %w", err)
 	}
 
-	tokenHash := sha256.Sum256(tokenSecret[:])
-	tokenIDHex := hex.EncodeToString(tokenID[:])
-	tokenSecretHex := hex.EncodeToString(tokenSecret[:])
-	return tokenIDHex + tokenSecretHex, tokenIDHex, hex.EncodeToString(tokenHash[:]), nil
+	clientSecretHash := sha256.Sum256(clientSecret[:])
+	return hex.EncodeToString(clientSecret[:]), hex.EncodeToString(clientSecretHash[:]), nil
 }
 
 func boolToInt(value bool) int {

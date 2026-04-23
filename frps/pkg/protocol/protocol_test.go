@@ -7,15 +7,15 @@ import (
 )
 
 func TestChallengeResponseStable(t *testing.T) {
-	var tokenHash [32]byte
-	for i := range tokenHash {
-		tokenHash[i] = byte(i)
+	var secretHash [32]byte
+	for i := range secretHash {
+		secretHash[i] = byte(i)
 	}
 
 	var nonce [16]byte
 	copy(nonce[:], []byte("nonce-1234567890"))
 
-	got := ChallengeResponse(tokenHash, nonce)
+	got := ChallengeResponse(secretHash, nonce)
 	want := [32]byte{
 		0xea, 0x7b, 0x82, 0xcb, 0x92, 0x6b, 0xc5, 0x6f,
 		0x20, 0x45, 0x61, 0xab, 0xb7, 0x82, 0xa4, 0x3c,
@@ -85,11 +85,11 @@ func TestParseFrameRejectsInvalidFlags(t *testing.T) {
 }
 
 func TestAuthBeginRoundTrip(t *testing.T) {
-	var tokenID [16]byte
-	copy(tokenID[:], []byte("1234567890abcdef"))
+	var clientID [16]byte
+	copy(clientID[:], []byte("1234567890abcdef"))
 
 	body, err := MarshalAuthBegin(AuthBegin{
-		TokenID:        tokenID,
+		ClientID:       clientID,
 		ClientVersion:  "dev",
 		Hostname:       "node-1",
 		OS:             OSLinux,
@@ -104,8 +104,8 @@ func TestAuthBeginRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unmarshal auth begin: %v", err)
 	}
-	if got.TokenID != tokenID {
-		t.Fatalf("unexpected token id: %x", got.TokenID)
+	if got.ClientID != clientID {
+		t.Fatalf("unexpected client id: %x", got.ClientID)
 	}
 	if got.ClientVersion != "dev" || got.Hostname != "node-1" {
 		t.Fatalf("unexpected client fields: %#v", got)

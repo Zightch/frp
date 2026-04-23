@@ -299,11 +299,11 @@ func newConfigAckMatrixServer(t *testing.T) (*Server, [16]byte, [32]byte) {
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: system.AnyIPv4,
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      system.AnyIPv4,
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -363,8 +363,8 @@ func newDirtyEffectiveIPStore(t *testing.T, effectiveIP string) (*storage.SQL, [
 CREATE TABLE proxy_groups (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL,
-	token_id TEXT NOT NULL,
-	token_hash TEXT NOT NULL,
+	client_id TEXT NOT NULL,
+	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL,
 	updated_at TEXT NOT NULL
@@ -397,7 +397,7 @@ CREATE TABLE tunnels (
 
 	if _, err := store.Exec(
 		`
-INSERT INTO proxy_groups (id, name, token_id, token_hash, effective_ip, enabled, updated_at)
+INSERT INTO proxy_groups (id, name, client_id, client_secret_hash, effective_ip, enabled, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
 `,
 		1,

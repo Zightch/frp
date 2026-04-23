@@ -36,11 +36,11 @@ func TestServerScenarioLateDelayedAckFromClosedSessionDoesNotPolluteReplacementS
 
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -95,11 +95,11 @@ func TestServerScenarioLateDelayedAckFromClosedSessionDoesNotPolluteReplacementS
 	}
 
 	repo.SetGroup(GroupRuntime{
-		ID:          1,
-		Name:        "group-a",
-		Enabled:     true,
-		EffectiveIP: "127.0.0.1",
-		TokenHash:   tokenHash,
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
 		Snapshot: ConfigSnapshot{
 			Version:       2,
 			GeneratedAtMs: 200,
@@ -190,11 +190,11 @@ func TestServerScenarioRejectsOutOfOrderRecoveryAckWithoutLeavingPendingOrListen
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -232,11 +232,11 @@ func TestServerScenarioRejectsOutOfOrderRecoveryAckWithoutLeavingPendingOrListen
 	waitForIdleConfig(t, active.session)
 
 	repo.SetGroup(GroupRuntime{
-		ID:          1,
-		Name:        "group-a",
-		Enabled:     true,
-		EffectiveIP: "127.0.0.1",
-		TokenHash:   tokenHash,
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
 		Snapshot: ConfigSnapshot{
 			Version:       2,
 			GeneratedAtMs: 200,
@@ -353,11 +353,11 @@ func TestServerScenarioRejectsDuplicateRefreshAckWithoutLeavingListenersOrPendin
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -392,11 +392,11 @@ func TestServerScenarioRejectsDuplicateRefreshAckWithoutLeavingListenersOrPendin
 	waitForIdleConfig(t, active.session)
 
 	repo.SetGroup(GroupRuntime{
-		ID:          1,
-		Name:        "group-a",
-		Enabled:     true,
-		EffectiveIP: "127.0.0.1",
-		TokenHash:   tokenHash,
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
 		Snapshot: ConfigSnapshot{
 			Version:       2,
 			GeneratedAtMs: 200,
@@ -510,11 +510,11 @@ func TestServerScenarioDelayedOldHeartbeatAndErrorFramesDoNotAffectReplacementSe
 
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -695,11 +695,11 @@ func TestServerScenarioReleasingBlockedStartupBindAfterClientDisconnectLeavesNoL
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -780,11 +780,11 @@ func TestServerScenarioReleasingBlockedStartupBindAfterDisableRefreshDoesNotAtta
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -829,11 +829,11 @@ func TestServerScenarioReleasingBlockedStartupBindAfterDisableRefreshDoesNotAtta
 	}
 
 	repo.SetGroup(GroupRuntime{
-		ID:          1,
-		Name:        "group-a",
-		Enabled:     false,
-		EffectiveIP: "127.0.0.1",
-		TokenHash:   tokenHash,
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          false,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
 		Snapshot: ConfigSnapshot{
 			Version:       2,
 			GeneratedAtMs: 200,
@@ -936,11 +936,11 @@ func TestServerScenarioReleasingBlockedStartupBindAfterGroupDeletionLeavesNoList
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &deletableRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -1042,7 +1042,7 @@ func authenticateScriptedServerSession(
 	}()
 
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
-		TokenID:       tokenID,
+		ClientID:      tokenID,
 		ClientVersion: "test-client",
 		Hostname:      "node-1",
 		OS:            protocol.OSLinux,
@@ -1208,7 +1208,7 @@ type deletableRuntimeRepository struct {
 	deleted bool
 }
 
-func (r *deletableRuntimeRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
+func (r *deletableRuntimeRepository) LoadGroupRuntimeByClientID(_ context.Context, _ [16]byte) (GroupRuntime, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.deleted {

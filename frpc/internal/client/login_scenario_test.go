@@ -9,16 +9,11 @@ import (
 	"testing"
 	"time"
 
-	appconfig "github.com/zightch/frp/frpc/internal/config"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
 func TestClientRunSessionUsesLoginSnapshotForFirstStream(t *testing.T) {
-	tokenValue := "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	token, err := appconfig.ParseToken(tokenValue)
-	if err != nil {
-		t.Fatalf("parse token: %v", err)
-	}
+	credentials := testCredentials(t)
 
 	loginTarget, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -55,14 +50,7 @@ func TestClientRunSessionUsesLoginSnapshotForFirstStream(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 
-	client := New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  tokenValue,
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -104,8 +92,8 @@ func TestClientRunSessionUsesLoginSnapshotForFirstStream(t *testing.T) {
 			t.Errorf("unmarshal auth.finish: %v", err)
 			return
 		}
-		tokenHash := sha256.Sum256(token.Secret[:])
-		expected := protocol.ChallengeResponse(tokenHash, challenge.Nonce)
+		secretHash := sha256.Sum256(credentials.ClientSecret[:])
+		expected := protocol.ChallengeResponse(secretHash, challenge.Nonce)
 		if finish.Response != expected {
 			t.Errorf("unexpected auth response")
 			return
@@ -228,7 +216,7 @@ func TestClientRunSessionUsesLoginSnapshotForFirstStream(t *testing.T) {
 		<-ctx.Done()
 	}()
 
-	if err := client.runSession(ctx, clientConn, token); err != nil {
+	if err := client.runSession(ctx, clientConn, credentials); err != nil {
 		t.Fatalf("run session: %v", err)
 	}
 

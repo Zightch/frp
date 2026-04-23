@@ -44,11 +44,11 @@ func TestServerScenarioRecoversNonListeningTunnelAfterPollingSeesOccupancyGone(t
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -174,11 +174,11 @@ func TestServerScenarioKeepsRuntimeIssueUntilSamePortFlappingReallyRecovers(t *t
 
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -360,11 +360,11 @@ func TestServerScenarioDeduplicatesMatchingRefreshAndScanRecoveryPush(t *testing
 	listenKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: uint16(freeTCPPort(t))}
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -410,11 +410,11 @@ func TestServerScenarioDeduplicatesMatchingRefreshAndScanRecoveryPush(t *testing
 	defer restoreHooks()
 
 	repo.SetGroup(GroupRuntime{
-		ID:          1,
-		Name:        "group-a",
-		Enabled:     true,
-		EffectiveIP: "127.0.0.1",
-		TokenHash:   tokenHash,
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
 		Snapshot: ConfigSnapshot{
 			Version:       2,
 			GeneratedAtMs: 200,
@@ -542,11 +542,11 @@ func TestServerScenarioIgnoresStaleScanSnapshotAfterRefreshAdvancesVersion(t *te
 	newListenKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: uint16(freeTCPPortExcept(t, int(oldListenKey.Port)))}
 	repo := &scriptedRuntimeRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -593,11 +593,11 @@ func TestServerScenarioIgnoresStaleScanSnapshotAfterRefreshAdvancesVersion(t *te
 	defer restoreHooks()
 
 	repo.SetGroup(GroupRuntime{
-		ID:          1,
-		Name:        "group-a",
-		Enabled:     true,
-		EffectiveIP: "127.0.0.1",
-		TokenHash:   tokenHash,
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
 		Snapshot: ConfigSnapshot{
 			Version:       2,
 			GeneratedAtMs: 200,
@@ -628,11 +628,11 @@ func TestServerScenarioIgnoresStaleScanSnapshotAfterRefreshAdvancesVersion(t *te
 	}
 
 	repo.SetGroup(GroupRuntime{
-		ID:          1,
-		Name:        "group-a",
-		Enabled:     true,
-		EffectiveIP: "127.0.0.1",
-		TokenHash:   tokenHash,
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
 		Snapshot: ConfigSnapshot{
 			Version:       3,
 			GeneratedAtMs: 300,
@@ -742,11 +742,11 @@ func TestServerScenarioUsesFreshSnapshotWhenRepositoryChangesDuringLoginHandshak
 	newListenKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: 21012}
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -797,7 +797,7 @@ func TestServerScenarioUsesFreshSnapshotWhenRepositoryChangesDuringLoginHandshak
 	}()
 
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
-		TokenID:       tokenID,
+		ClientID:      tokenID,
 		ClientVersion: "test-client",
 		Hostname:      "node-1",
 		OS:            protocol.OSLinux,
@@ -925,11 +925,11 @@ func TestServerScenarioKeepsSessionAliveWhenPortBecomesOccupiedRightAfterStartup
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -1041,11 +1041,11 @@ func TestServerScenarioShrinksToEmptyConfigWhenEffectiveIPBecomesInvalidRightAft
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -1327,7 +1327,7 @@ type scriptedRuntimeRepository struct {
 	allowList   chan struct{}
 }
 
-func (r *scriptedRuntimeRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
+func (r *scriptedRuntimeRepository) LoadGroupRuntimeByClientID(_ context.Context, _ [16]byte) (GroupRuntime, error) {
 	if r.loadErr != nil {
 		return GroupRuntime{}, r.loadErr
 	}

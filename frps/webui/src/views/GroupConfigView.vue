@@ -11,7 +11,8 @@ import {
   type ProxyGroup,
   type Tunnel,
   type TunnelPayload,
-  type LocalIP
+  type LocalIP,
+  type ClientCredential
 } from '@/api'
 
 defineOptions({
@@ -64,9 +65,9 @@ const groupFormRules = {
   effective_ip: [{ required: true, message: '请选择生效 IP', trigger: 'change' }]
 }
 
-// New token display
-const newTokenVisible = ref(false)
-const newTokenValue = ref('')
+// New credential display
+const newCredentialVisible = ref(false)
+const newCredential = ref<ClientCredential | null>(null)
 
 // Tunnel drawer
 const tunnelDrawerVisible = ref(false)
@@ -406,9 +407,9 @@ async function submitGroupForm() {
         return
       }
       ElMessage.success('分组创建成功')
-      if (result.data?.token) {
-        newTokenValue.value = result.data.token
-        newTokenVisible.value = true
+      if (result.data?.credential) {
+        newCredential.value = result.data.credential
+        newCredentialVisible.value = true
       }
     } else {
       if (!editingGroupId.value) return
@@ -572,13 +573,13 @@ async function handleDeleteTunnel(tunnel: Tunnel) {
   await loadData()
 }
 
-async function handleResetToken(group: ProxyGroup) {
+async function handleRotateCredentials(group: ProxyGroup) {
   try {
     await ElMessageBox.confirm(
-      `确定重置分组"${group.name}"的 Token 吗？重置后旧 Token 将立即失效。`,
-      '重置 Token',
+      `确定轮转分组"${group.name}"的客户端密钥吗？轮转后旧 client_secret 将立即失效。`,
+      '轮转客户端密钥',
       {
-        confirmButtonText: '重置',
+        confirmButtonText: '轮转',
         cancelButtonText: '取消',
         type: 'warning'
       }
@@ -587,25 +588,29 @@ async function handleResetToken(group: ProxyGroup) {
     return
   }
 
-  const result = await groupConfigApi.resetToken(group.id)
+  const result = await groupConfigApi.rotateCredentials(group.id)
   if (result.error) {
     ElMessage.error(result.error)
     return
   }
 
-  ElMessage.success('Token 已重置')
-  if (result.data?.token) {
-    newTokenValue.value = result.data.token
-    newTokenVisible.value = true
+  ElMessage.success('客户端密钥已轮转')
+  if (result.data?.credential) {
+    newCredential.value = result.data.credential
+    newCredentialVisible.value = true
   }
   await loadData()
 }
 
-function copyToken() {
-  navigator.clipboard.writeText(newTokenValue.value).then(() => {
-    ElMessage.success('已复制到剪贴板')
+function copyCredentialField(label: string, value: string | undefined) {
+  if (!value) {
+    ElMessage.error(`${label} 为空`)
+    return
+  }
+  navigator.clipboard.writeText(value).then(() => {
+    ElMessage.success(`${label} 已复制`)
   }).catch(() => {
-    ElMessage.error('复制失败')
+    ElMessage.error(`${label} 复制失败`)
   })
 }
 </script>
@@ -646,13 +651,13 @@ function copyToken() {
               {{ selectedGroup.status }}
             </el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="Token ID">
-            <code style="font-family: monospace">{{ selectedGroup.token_id }}</code>
+          <el-descriptions-item label="Client ID">
+            <code style="font-family: monospace">{{ selectedGroup.client_id }}</code>
           </el-descriptions-item>
           <el-descriptions-item label="生效 IP">{{ selectedGroup.effective_ip }}</el-descriptions-item>
         </el-descriptions>
         <div style="display: flex; gap: 8px">
-          <el-button size="small" @click="handleResetToken(selectedGroup)">重置 Token</el-button>
+          <el-button size="small" @click="handleRotateCredentials(selectedGroup)">轮转密钥</el-button>
           <el-button size="small" @click="openEditGroupDialog(selectedGroup)">编辑</el-button>
           <el-button size="small" type="danger" @click="handleDeleteGroup(selectedGroup)">删除</el-button>
         </div>
@@ -678,7 +683,7 @@ function copyToken() {
           v-loading="loading"
         >
           <el-table-column prop="name" label="名称" />
-          <el-table-column prop="token_id" label="Token ID" width="200" />
+          <el-table-column prop="client_id" label="Client ID" width="200" />
           <el-table-column label="状态" width="100" align="center">
             <template #default="{ row }">
               <el-tooltip
@@ -812,23 +817,29 @@ function copyToken() {
       </template>
     </el-dialog>
 
-    <!-- New token display dialog -->
+    <!-- New credential display dialog -->
     <el-dialog
-      v-model="newTokenVisible"
-      title="Token 已生成"
+      v-model="newCredentialVisible"
+      title="客户端凭据已生成"
       width="500px"
       :close-on-click-modal="false"
     >
       <div style="text-align: center">
-        <p style="margin-bottom: 12px; color: var(--el-text-color-primary)">请保存以下 Token，用于客户端配置：</p>
-        <div style="display: flex; align-items: center; gap: 8px; padding: 16px; background: var(--el-fill-color); border-radius: 8px; margin-bottom: 12px">
-          <code style="flex: 1; font-family: monospace; word-break: break-all; text-align: left">{{ newTokenValue }}</code>
-          <el-button type="primary" size="small" @click="copyToken">复制</el-button>
+        <p style="margin-bottom: 12px; color: var(--el-text-color-primary)">请保存以下 Client ID 和 Client Secret，用于客户端配置：</p>
+        <div style="display: grid; gap: 12px; padding: 16px; background: var(--el-fill-color); border-radius: 8px; margin-bottom: 12px">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <code style="flex: 1; font-family: monospace; word-break: break-all; text-align: left">{{ newCredential?.client_id }}</code>
+            <el-button type="primary" size="small" @click="copyCredentialField('Client ID', newCredential?.client_id)">复制</el-button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px">
+            <code style="flex: 1; font-family: monospace; word-break: break-all; text-align: left">{{ newCredential?.client_secret }}</code>
+            <el-button type="primary" size="small" @click="copyCredentialField('Client Secret', newCredential?.client_secret)">复制</el-button>
+          </div>
         </div>
-        <p style="color: var(--el-color-warning); font-size: 12px">此 Token 仅显示一次，关闭后将无法再次查看。</p>
+        <p style="color: var(--el-color-warning); font-size: 12px">此 Client Secret 仅显示一次，关闭后将无法再次查看。</p>
       </div>
       <template #footer>
-        <el-button type="primary" @click="newTokenVisible = false">我已保存</el-button>
+        <el-button type="primary" @click="newCredentialVisible = false">我已保存</el-button>
       </template>
     </el-dialog>
 

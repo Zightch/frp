@@ -42,11 +42,11 @@ func TestServerScenarioRejectsInitialInvalidEffectiveIPWithoutLeakingSessionStat
 		Options{
 			Repository: stubRepository{
 				group: GroupRuntime{
-					ID:          1,
-					Name:        "group-a",
-					Enabled:     true,
-					EffectiveIP: "127.0.0.2",
-					TokenHash:   tokenHash,
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      "127.0.0.2",
+					ClientSecretHash: tokenHash,
 					Snapshot: ConfigSnapshot{
 						Version:       99,
 						GeneratedAtMs: 1234,
@@ -163,11 +163,11 @@ func TestServerScenarioRecoversEmptyConfigOnlyAfterAckThenListenerBind(t *testin
 	tcpPort := freeTCPPort(t)
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -431,11 +431,11 @@ func TestServerScenarioReconnectAfterEmptyConfigClearsOldRuntimeIssueAndListener
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -641,11 +641,11 @@ func TestServerScenarioReconnectAfterPendingRecoveryPushDropsOldPendingConfig(t 
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,
@@ -885,11 +885,11 @@ func TestServerScenarioKeepsEffectiveIPRuntimeIssueAcrossHighFrequencyEmptyAndFu
 	listenerFactory := NewScriptedListenerFactory()
 	repo := &mutableRepository{
 		group: GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: "127.0.0.1",
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
 			Snapshot: ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 100,

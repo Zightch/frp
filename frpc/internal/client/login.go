@@ -10,9 +10,9 @@ import (
 	"github.com/zightch/frp/frps/pkg/transport"
 )
 
-func (c *Client) login(conn net.Conn, token appconfig.Token) (*sessionState, error) {
+func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessionState, error) {
 	beginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
-		TokenID:       token.ID,
+		ClientID:      credentials.ClientID,
 		ClientVersion: c.version,
 		Hostname:      hostname(),
 		OS:            detectOS(),
@@ -42,8 +42,8 @@ func (c *Client) login(conn net.Conn, token appconfig.Token) (*sessionState, err
 		return nil, err
 	}
 
-	tokenHash := sha256.Sum256(token.Secret[:])
-	response := protocol.ChallengeResponse(tokenHash, challenge.Nonce)
+	secretHash := sha256.Sum256(credentials.ClientSecret[:])
+	response := protocol.ChallengeResponse(secretHash, challenge.Nonce)
 	finishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
 		ChallengeID: challenge.ChallengeID,
 		Response:    response,

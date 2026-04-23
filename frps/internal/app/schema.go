@@ -48,8 +48,8 @@ var schemaDefinitions = map[string]schemaDefinition{
 CREATE TABLE IF NOT EXISTS proxy_groups (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL UNIQUE,
-	token_id TEXT NOT NULL UNIQUE,
-	token_hash TEXT NOT NULL,
+	client_id TEXT NOT NULL UNIQUE,
+	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	rate_limit INTEGER NOT NULL DEFAULT 0,
@@ -80,8 +80,8 @@ CREATE TABLE IF NOT EXISTS tunnels (
 				columns: []columnSpec{
 					{name: "id", columnType: "integer", nullable: false, primaryKey: true},
 					{name: "name", columnType: "text", nullable: false},
-					{name: "token_id", columnType: "text", nullable: false},
-					{name: "token_hash", columnType: "text", nullable: false},
+					{name: "client_id", columnType: "text", nullable: false},
+					{name: "client_secret_hash", columnType: "text", nullable: false},
 					{name: "effective_ip", columnType: "text", nullable: false},
 					{name: "enabled", columnType: "integer", nullable: false},
 					{name: "rate_limit", columnType: "integer", nullable: false},
@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS tunnels (
 				},
 				uniqueIndexes: [][]string{
 					{"name"},
-					{"token_id"},
+					{"client_id"},
 				},
 			},
 			{
@@ -122,8 +122,8 @@ CREATE TABLE IF NOT EXISTS tunnels (
 CREATE TABLE IF NOT EXISTS proxy_groups (
 	id BIGINT NOT NULL AUTO_INCREMENT,
 	name VARCHAR(128) NOT NULL,
-	token_id CHAR(32) NOT NULL,
-	token_hash CHAR(64) NOT NULL,
+	client_id CHAR(32) NOT NULL,
+	client_secret_hash CHAR(64) NOT NULL,
 	effective_ip VARCHAR(45) NOT NULL,
 	enabled TINYINT(1) NOT NULL DEFAULT 1,
 	rate_limit BIGINT NOT NULL DEFAULT 0,
@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS proxy_groups (
 	updated_at DATETIME(6) NOT NULL,
 	PRIMARY KEY (id),
 	UNIQUE KEY uk_proxy_groups_name (name),
-	UNIQUE KEY uk_proxy_groups_token_id (token_id)
+	UNIQUE KEY uk_proxy_groups_client_id (client_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 			`
 CREATE TABLE IF NOT EXISTS tunnels (
@@ -158,8 +158,8 @@ CREATE TABLE IF NOT EXISTS tunnels (
 				columns: []columnSpec{
 					{name: "id", columnType: "bigint", nullable: false, primaryKey: true, autoIncrement: true},
 					{name: "name", columnType: "varchar(128)", nullable: false},
-					{name: "token_id", columnType: "char(32)", nullable: false},
-					{name: "token_hash", columnType: "char(64)", nullable: false},
+					{name: "client_id", columnType: "char(32)", nullable: false},
+					{name: "client_secret_hash", columnType: "char(64)", nullable: false},
 					{name: "effective_ip", columnType: "varchar(45)", nullable: false},
 					{name: "enabled", columnType: "tinyint(1)", nullable: false},
 					{name: "rate_limit", columnType: "bigint", nullable: false},
@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS tunnels (
 				},
 				uniqueIndexes: [][]string{
 					{"name"},
-					{"token_id"},
+					{"client_id"},
 				},
 			},
 			{

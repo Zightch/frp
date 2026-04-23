@@ -56,7 +56,7 @@ func (c *Client) Run(ctx context.Context) error {
 		return err
 	}
 
-	token, err := appconfig.ParseToken(c.config.Token)
+	credentials, err := appconfig.ParseCredentials(c.config.ClientID, c.config.ClientSecret)
 	if err != nil {
 		return err
 	}
@@ -64,7 +64,7 @@ func (c *Client) Run(ctx context.Context) error {
 	backoff := defaultBackoff
 	for {
 		c.attempt.Add(1)
-		err := c.runOnce(ctx, token)
+		err := c.runOnce(ctx, credentials)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -88,7 +88,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Client) runOnce(ctx context.Context, token appconfig.Token) error {
+func (c *Client) runOnce(ctx context.Context, credentials appconfig.Credentials) error {
 	conn, err := c.dialContext(ctx, "tcp", c.config.Server)
 	if err != nil {
 		return err
@@ -96,15 +96,15 @@ func (c *Client) runOnce(ctx context.Context, token appconfig.Token) error {
 	defer conn.Close()
 
 	c.logger.Info("connected to frps", "server", c.config.Server)
-	err = c.runSession(ctx, conn, token)
+	err = c.runSession(ctx, conn, credentials)
 	if err == nil {
 		return nil
 	}
 	return err
 }
 
-func (c *Client) runSession(ctx context.Context, conn net.Conn, token appconfig.Token) error {
-	state, err := c.login(conn, token)
+func (c *Client) runSession(ctx context.Context, conn net.Conn, credentials appconfig.Credentials) error {
+	state, err := c.login(conn, credentials)
 	if err != nil {
 		return err
 	}

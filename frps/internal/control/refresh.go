@@ -109,8 +109,8 @@ func (s *Server) RefreshGroup(groupID int64) {
 	}
 
 	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
-	if currentGroup.TokenHash != group.TokenHash {
-		s.logger.Info("closing active session after proxy group token reset", "group_id", groupID, "session_id", active.session.ID)
+	if currentGroup.ClientSecretHash != group.ClientSecretHash {
+		s.logger.Info("closing active session after proxy group credential rotation", "group_id", groupID, "session_id", active.session.ID)
 		_ = active.conn.Close()
 		return
 	}

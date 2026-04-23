@@ -14,7 +14,7 @@ import (
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
-func TestSQLRepositoryLoadGroupRuntime(t *testing.T) {
+func TestSQLRepositoryLoadGroupRuntimeByClientID(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "control.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite database: %v", err)
@@ -32,8 +32,8 @@ func TestSQLRepositoryLoadGroupRuntime(t *testing.T) {
 CREATE TABLE proxy_groups (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL,
-	token_id TEXT NOT NULL,
-	token_hash TEXT NOT NULL,
+	client_id TEXT NOT NULL,
+	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL,
 	updated_at TEXT NOT NULL
@@ -65,7 +65,7 @@ CREATE TABLE tunnels (
 
 	if _, err := store.Exec(
 		`
-INSERT INTO proxy_groups (name, token_id, token_hash, effective_ip, enabled, updated_at)
+INSERT INTO proxy_groups (name, client_id, client_secret_hash, effective_ip, enabled, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
 `,
 		"group-a",
@@ -93,7 +93,7 @@ INSERT INTO tunnels (
 	}
 
 	repo := NewRepository(store)
-	group, err := repo.LoadGroupRuntime(context.Background(), tokenID)
+	group, err := repo.LoadGroupRuntimeByClientID(context.Background(), tokenID)
 	if err != nil {
 		t.Fatalf("load group runtime: %v", err)
 	}
@@ -104,8 +104,8 @@ INSERT INTO tunnels (
 	if group.EffectiveIP != "127.0.0.1" {
 		t.Fatalf("unexpected effective ip: %q", group.EffectiveIP)
 	}
-	if group.TokenHash != tokenHash {
-		t.Fatal("unexpected token hash")
+	if group.ClientSecretHash != tokenHash {
+		t.Fatal("unexpected client secret hash")
 	}
 	if group.Snapshot.Version == 0 || group.Snapshot.GeneratedAtMs == 0 {
 		t.Fatalf("expected snapshot metadata, got %#v", group.Snapshot)
@@ -139,8 +139,8 @@ func TestSQLRepositoryListGroupRuntimes(t *testing.T) {
 CREATE TABLE proxy_groups (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL,
-	token_id TEXT NOT NULL,
-	token_hash TEXT NOT NULL,
+	client_id TEXT NOT NULL,
+	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL,
 	updated_at TEXT NOT NULL
@@ -168,7 +168,7 @@ CREATE TABLE tunnels (
 
 	if _, err := store.Exec(
 		`
-INSERT INTO proxy_groups (name, token_id, token_hash, effective_ip, enabled, updated_at)
+INSERT INTO proxy_groups (name, client_id, client_secret_hash, effective_ip, enabled, updated_at)
 VALUES
 	(?, ?, ?, ?, ?, ?),
 	(?, ?, ?, ?, ?, ?)

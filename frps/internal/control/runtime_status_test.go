@@ -541,7 +541,7 @@ type runtimeScanRepository struct {
 	err    error
 }
 
-func (r runtimeScanRepository) LoadGroupRuntime(_ context.Context, _ [16]byte) (GroupRuntime, error) {
+func (r runtimeScanRepository) LoadGroupRuntimeByClientID(_ context.Context, _ [16]byte) (GroupRuntime, error) {
 	if r.err != nil {
 		return GroupRuntime{}, r.err
 	}

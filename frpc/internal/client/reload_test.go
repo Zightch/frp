@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	appconfig "github.com/zightch/frp/frpc/internal/config"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -18,14 +17,7 @@ func TestClientApplyConfigPushClosesLocalRuntimeBeforeAck(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	client := New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
 	state := newSessionState(1000)
 	state.setSnapshot(protocol.ConfigPush{
@@ -197,14 +189,7 @@ func TestClientReadLoopUsesReloadedSnapshotForNewStreams(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	client := New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
 	state := newSessionState(1000)
 	oldPort := freeTCPPort(t)

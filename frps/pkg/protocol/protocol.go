@@ -89,7 +89,7 @@ const (
 	ErrorCodeProtocolInvalidVersion uint16 = 1003
 	ErrorCodeProtocolInvalidFlags   uint16 = 1004
 	ErrorCodeProtocolBadBody        uint16 = 1005
-	ErrorCodeAuthInvalidToken       uint16 = 1101
+	ErrorCodeAuthInvalidClient      uint16 = 1101
 	ErrorCodeAuthDeniedByIP         uint16 = 1102
 	ErrorCodeAuthGroupDisabled      uint16 = 1103
 	ErrorCodeAuthChallengeExpired   uint16 = 1104
@@ -285,7 +285,7 @@ func (t Type) String() string {
 }
 
 type AuthBegin struct {
-	TokenID        [16]byte
+	ClientID       [16]byte
 	ClientVersion  string
 	Hostname       string
 	OS             uint8
@@ -304,9 +304,9 @@ type AuthFinish struct {
 	Response    [32]byte
 }
 
-func ChallengeResponse(tokenHash [32]byte, nonce [16]byte) [32]byte {
+func ChallengeResponse(secretHash [32]byte, nonce [16]byte) [32]byte {
 	var payload [48]byte
-	copy(payload[:32], tokenHash[:])
+	copy(payload[:32], secretHash[:])
 	copy(payload[32:], nonce[:])
 	return sha256.Sum256(payload[:])
 }
@@ -437,7 +437,7 @@ func (h Host) String() string {
 
 func MarshalAuthBegin(message AuthBegin) ([]byte, error) {
 	var enc bodyEncoder
-	enc.bytes(message.TokenID[:])
+	enc.bytes(message.ClientID[:])
 	if err := enc.shortstr(message.ClientVersion); err != nil {
 		return nil, err
 	}
@@ -453,11 +453,11 @@ func MarshalAuthBegin(message AuthBegin) ([]byte, error) {
 func UnmarshalAuthBegin(data []byte) (AuthBegin, error) {
 	var message AuthBegin
 	dec := newBodyDecoder(data)
-	tokenID, err := dec.fixedBytes(16)
+	clientID, err := dec.fixedBytes(16)
 	if err != nil {
 		return message, err
 	}
-	copy(message.TokenID[:], tokenID)
+	copy(message.ClientID[:], clientID)
 	if message.ClientVersion, err = dec.shortstr(); err != nil {
 		return message, err
 	}

@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	appconfig "github.com/zightch/frp/frpc/internal/config"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/transport"
 )
@@ -231,11 +230,7 @@ func TestClientApplyConfigPushRejectsInvalidSnapshotsWithoutAckOrRuntimeTeardown
 }
 
 func TestClientRunSessionSurfacesContactAdministratorMessage(t *testing.T) {
-	tokenValue := "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	token, err := appconfig.ParseToken(tokenValue)
-	if err != nil {
-		t.Fatalf("parse token: %v", err)
-	}
+	credentials := testCredentials(t)
 
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -280,8 +275,8 @@ func TestClientRunSessionSurfacesContactAdministratorMessage(t *testing.T) {
 			t.Errorf("unmarshal auth.finish: %v", err)
 			return
 		}
-		tokenHash := sha256.Sum256(token.Secret[:])
-		if want := protocol.ChallengeResponse(tokenHash, challenge.Nonce); finish.Response != want {
+		secretHash := sha256.Sum256(credentials.ClientSecret[:])
+		if want := protocol.ChallengeResponse(secretHash, challenge.Nonce); finish.Response != want {
 			t.Errorf("unexpected auth response")
 			return
 		}
@@ -333,7 +328,7 @@ func TestClientRunSessionSurfacesContactAdministratorMessage(t *testing.T) {
 		})
 	}()
 
-	err = client.runSession(ctx, clientConn, token)
+	err := client.runSession(ctx, clientConn, credentials)
 	if err == nil {
 		t.Fatal("expected runSession to surface startup rejection")
 	}
@@ -352,14 +347,7 @@ func TestClientRunSessionSurfacesContactAdministratorMessage(t *testing.T) {
 }
 
 func newTestClient() *Client {
-	return New(
-		appconfig.Config{
-			Server: "127.0.0.1:7000",
-			Token:  "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		"test-client",
-	)
+	return New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 }
 
 func validConfigPush(t *testing.T) protocol.ConfigPush {

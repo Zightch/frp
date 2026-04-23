@@ -313,11 +313,11 @@ func startStartupScenarioApp(t *testing.T) (*App, string, string, context.Cancel
 	tokenHash := sha256.Sum256([]byte("startup-scan-token"))
 	repo := &blockingControlRepository{
 		group: control.GroupRuntime{
-			ID:          1,
-			Name:        "group-a",
-			Enabled:     true,
-			EffectiveIP: system.AnyIPv4,
-			TokenHash:   tokenHash,
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      system.AnyIPv4,
+			ClientSecretHash: tokenHash,
 			Snapshot: control.ConfigSnapshot{
 				Version:       1,
 				GeneratedAtMs: 1,
@@ -472,15 +472,15 @@ func seedStartupScenarioDatabase(t *testing.T, dbPath string, blockedPort int) {
 		t.Fatalf("ensure startup scenario schema: %v", err)
 	}
 
-	tokenID := hex.EncodeToString([]byte("startup-scan-token-id-1234567890"))[:32]
+	clientID := hex.EncodeToString([]byte("startup-scan-token-id-1234567890"))[:32]
 	tokenHash := sha256.Sum256([]byte("startup-scan-token-secret"))
 	now := time.Now().UTC().Format("2006-01-02 15:04:05.000000")
 
 	if _, err := store.Exec(
-		`INSERT INTO proxy_groups (id, name, token_id, token_hash, effective_ip, enabled, rate_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		`INSERT INTO proxy_groups (id, name, client_id, client_secret_hash, effective_ip, enabled, rate_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
 		1,
 		"group-a",
-		tokenID,
+		clientID,
 		hex.EncodeToString(tokenHash[:]),
 		"127.0.0.1",
 		1,
