@@ -5,7 +5,6 @@ package control
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -125,7 +124,7 @@ func TestServerScenarioRejectsInitialInvalidEffectiveIPWithoutLeakingSessionStat
 
 	if _, err := readMessageWithin(clientConn, time.Second); err == nil {
 		t.Fatal("expected server to close the startup session after rejection")
-	} else if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+	} else if !errorsIsEOFOrClosed(err) {
 		t.Fatalf("unexpected read error after startup rejection: %v", err)
 	}
 

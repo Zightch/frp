@@ -1036,7 +1036,7 @@ func TestServerRejectsInitialConfigAckWhenEffectiveIPIsNotCurrentLocalIP(t *test
 
 	if _, err := readMessageWithin(clientConn, time.Second); err == nil {
 		t.Fatal("expected server to close the initial session after rejecting startup")
-	} else if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+	} else if !errorsIsEOFOrClosed(err) {
 		t.Fatalf("unexpected read error after startup rejection: %v", err)
 	}
 

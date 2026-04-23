@@ -308,7 +308,7 @@ def main() -> int:
                 str(paths.frpc_bin_path),
                 "--server",
                 f"127.0.0.1:{ports.control}",
-                "--token",
+                "--key",
                 token.frpc_token,
             ],
             cwd=repo_root / "frpc",
@@ -720,8 +720,8 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
             """
             INSERT INTO proxy_groups (
                 name,
-                token_id,
-                token_hash,
+                client_id,
+                client_secret_hash,
                 effective_ip,
                 enabled,
                 rate_limit,

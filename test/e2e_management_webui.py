@@ -283,10 +283,10 @@ def main() -> int:
         )
         created_group_item = require_mapping(created_group, "item")
         created_group_id = int(created_group_item["id"])
-        initial_group_token = require_string(created_group, "token")
+        initial_group_key = require_string(created_group, "key")
         assert_equal(created_group_item.get("effective_ip"), group_effective_ip, "created proxy group effective_ip")
         assert_equal(created_group_item.get("status"), "启用", "created proxy group status")
-        assert_token_matches_db(paths.db_path, created_group_id, initial_group_token)
+        assert_key_matches_db(paths.db_path, created_group_id, initial_group_key)
 
         groups_after_create = request_json(opener, "GET", f"{base_url}/api/v1/proxy-groups", expected_status=200)
         group_items = require_list(groups_after_create, "items")
@@ -304,20 +304,20 @@ def main() -> int:
         assert_equal(updated_group_item.get("effective_ip"), group_effective_ip, "patched proxy group preserved effective_ip")
         assert_equal(updated_group_item.get("status"), "启用", "patched proxy group status")
 
-        stage = "reset proxy group token"
+        stage = "reset proxy group key"
         print(f"[stage] {stage}")
         reset_group = request_json(
             opener,
             "POST",
-            f"{base_url}/api/v1/proxy-groups/{created_group_id}/token",
+            f"{base_url}/api/v1/proxy-groups/{created_group_id}/key",
             expected_status=200,
         )
         reset_group_item = require_mapping(reset_group, "item")
-        reset_group_token = require_string(reset_group, "token")
-        if reset_group_token == initial_group_token:
-            raise RuntimeError("proxy group token reset returned the previous token value")
+        reset_group_key = require_string(reset_group, "key")
+        if reset_group_key == initial_group_key:
+            raise RuntimeError("proxy group key reset returned the previous key value")
         assert_equal(reset_group_item.get("id"), updated_group_item.get("id"), "reset proxy group id")
-        assert_token_matches_db(paths.db_path, created_group_id, reset_group_token)
+        assert_key_matches_db(paths.db_path, created_group_id, reset_group_key)
 
         stage = "create and update tunnel"
         print(f"[stage] {stage}")
@@ -529,6 +529,10 @@ def build_or_resolve_webui_dist(args: argparse.Namespace, repo_root: Path) -> Pa
             raise RuntimeError(f"webui dist directory does not exist: {source}")
         return source
 
+    existing_dist = (repo_root / "frps" / "webui" / "dist").resolve()
+    if existing_dist.is_dir():
+        return existing_dist
+
     npm_executable = resolve_npm_executable()
     if npm_executable is None:
         raise RuntimeError("npm executable not found in PATH; pass --webui-dist to skip building")
@@ -556,7 +560,8 @@ def build_or_resolve_webui_dist(args: argparse.Namespace, repo_root: Path) -> Pa
 
 
 def resolve_npm_executable() -> str | None:
-    for candidate in ("npm.cmd", "npm"):
+    candidates = ("npm.cmd", "npm") if os.name == "nt" else ("npm",)
+    for candidate in candidates:
         resolved = shutil.which(candidate)
         if resolved:
             return resolved
@@ -790,33 +795,33 @@ def assert_equal(actual: object, expected: object, label: str) -> None:
         raise RuntimeError(f"{label} mismatch: got {actual!r} want {expected!r}")
 
 
-def assert_token_matches_db(db_path: Path, group_id: int, token_value: str) -> None:
-    token_id, token_hash = decode_token_material(token_value)
+def assert_key_matches_db(db_path: Path, group_id: int, key_value: str) -> None:
+    client_id, client_secret_hash = decode_key_material(key_value)
     with sqlite3.connect(db_path, timeout=5.0) as conn:
         row = conn.execute(
-            "SELECT token_id, token_hash FROM proxy_groups WHERE id = ?",
+            "SELECT client_id, client_secret_hash FROM proxy_groups WHERE id = ?",
             (group_id,),
         ).fetchone()
     if row is None:
         raise RuntimeError(f"proxy group row not found for id {group_id}")
-    actual_token_id = str(row[0])
-    actual_token_hash = str(row[1])
-    assert_equal(actual_token_id, token_id, f"proxy group {group_id} token_id")
-    assert_equal(actual_token_hash, token_hash, f"proxy group {group_id} token_hash")
+    actual_client_id = str(row[0])
+    actual_client_secret_hash = str(row[1])
+    assert_equal(actual_client_id, client_id, f"proxy group {group_id} client_id")
+    assert_equal(actual_client_secret_hash, client_secret_hash, f"proxy group {group_id} client_secret_hash")
 
 
-def decode_token_material(token_value: str) -> tuple[str, str]:
-    value = token_value.strip().lower()
+def decode_key_material(key_value: str) -> tuple[str, str]:
+    value = key_value.strip().lower()
     if len(value) != 96:
-        raise RuntimeError(f"unexpected token length: {len(value)}")
-    token_id = value[:32]
-    token_secret_hex = value[32:]
+        raise RuntimeError(f"unexpected key length: {len(value)}")
+    client_id = value[:32]
+    client_secret_hex = value[32:]
     try:
-        token_secret = bytes.fromhex(token_secret_hex)
+        client_secret = bytes.fromhex(client_secret_hex)
     except ValueError as exc:
-        raise RuntimeError(f"token secret is not valid hex: {token_value!r}") from exc
-    token_hash = hashlib.sha256(token_secret).hexdigest()
-    return token_id, token_hash
+        raise RuntimeError(f"client secret is not valid hex: {key_value!r}") from exc
+    client_secret_hash = hashlib.sha256(client_secret).hexdigest()
+    return client_id, client_secret_hash
 
 
 def count_rows(db_path: Path, table: str) -> int:
