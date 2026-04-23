@@ -57,11 +57,6 @@ type proxyGroupView struct {
 	UpdatedAt    string `json:"updated_at"`
 }
 
-type clientCredentialView struct {
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-}
-
 type tunnelView struct {
 	ID           int64  `json:"id"`
 	GroupID      int64  `json:"group_id"`
@@ -172,14 +167,14 @@ func (s *Server) handleProxyGroups(writer http.ResponseWriter, request *http.Req
 			return
 		}
 
-		item, credential, err := manager.createProxyGroup(request.Context(), payload)
+		item, key, err := manager.createProxyGroup(request.Context(), payload)
 		if err != nil {
 			writeError(writer, err)
 			return
 		}
 		writeJSON(writer, http.StatusCreated, map[string]any{
-			"item":       item,
-			"credential": credential,
+			"item": item,
+			"key":  key,
 		})
 	default:
 		writeMethodNotAllowed(writer)
@@ -222,15 +217,15 @@ func (s *Server) handleProxyGroupResource(writer http.ResponseWriter, request *h
 			return
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{"deleted": true})
-	case suffix == "credentials" && request.Method == http.MethodPost:
-		item, credential, err := manager.rotateProxyGroupCredentials(request.Context(), id)
+	case suffix == "key" && request.Method == http.MethodPost:
+		item, key, err := manager.rotateProxyGroupKey(request.Context(), id)
 		if err != nil {
 			writeError(writer, err)
 			return
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{
-			"item":       item,
-			"credential": credential,
+			"item": item,
+			"key":  key,
 		})
 	default:
 		writeMethodNotAllowed(writer)
@@ -380,15 +375,15 @@ ORDER BY id
 	return items, nil
 }
 
-func (m *managementService) createProxyGroup(ctx context.Context, payload proxyGroupCreateRequest) (proxyGroupView, clientCredentialView, error) {
+func (m *managementService) createProxyGroup(ctx context.Context, payload proxyGroupCreateRequest) (proxyGroupView, string, error) {
 	normalized, err := m.normalizeCreateProxyGroup(payload)
 	if err != nil {
-		return proxyGroupView{}, clientCredentialView{}, err
+		return proxyGroupView{}, "", err
 	}
 
 	var (
-		item       proxyGroupView
-		credential clientCredentialView
+		item proxyGroupView
+		key  string
 	)
 
 	err = m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
@@ -428,17 +423,14 @@ INSERT INTO proxy_groups (
 		if err != nil {
 			return err
 		}
-		credential = clientCredentialView{
-			ClientID:     clientID,
-			ClientSecret: clientSecret,
-		}
+		key = composeClientKey(clientID, clientSecret)
 		return nil
 	})
 	if err != nil {
-		return proxyGroupView{}, clientCredentialView{}, err
+		return proxyGroupView{}, "", err
 	}
 
-	return item, credential, nil
+	return item, key, nil
 }
 
 func (m *managementService) updateProxyGroup(ctx context.Context, id int64, payload proxyGroupPatchRequest) (proxyGroupView, error) {
@@ -515,10 +507,10 @@ func (m *managementService) deleteProxyGroup(ctx context.Context, id int64) erro
 	return nil
 }
 
-func (m *managementService) rotateProxyGroupCredentials(ctx context.Context, id int64) (proxyGroupView, clientCredentialView, error) {
+func (m *managementService) rotateProxyGroupKey(ctx context.Context, id int64) (proxyGroupView, string, error) {
 	var (
-		item       proxyGroupView
-		credential clientCredentialView
+		item proxyGroupView
+		key  string
 	)
 
 	err := m.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
@@ -543,7 +535,7 @@ WHERE id = ?
 			id,
 		)
 		if err != nil {
-			return writeConflictError(err, "proxy group credential rotation failed")
+			return writeConflictError(err, "proxy group key rotation failed")
 		}
 		if result.RowsAffected == 0 {
 			return &apiError{Status: http.StatusNotFound, Message: "proxy group not found"}
@@ -553,18 +545,15 @@ WHERE id = ?
 		if err != nil {
 			return err
 		}
-		credential = clientCredentialView{
-			ClientID:     current.ClientID,
-			ClientSecret: clientSecret,
-		}
+		key = composeClientKey(current.ClientID, clientSecret)
 		return nil
 	})
 	if err != nil {
-		return proxyGroupView{}, clientCredentialView{}, err
+		return proxyGroupView{}, "", err
 	}
 
 	m.refreshGroups(id)
-	return item, credential, nil
+	return item, key, nil
 }
 
 func (m *managementService) listTunnels(ctx context.Context) ([]tunnelView, error) {
@@ -1430,6 +1419,10 @@ func generateClientCredentials() (string, string, string, error) {
 		return "", "", "", err
 	}
 	return clientID, clientSecret, clientSecretHash, nil
+}
+
+func composeClientKey(clientID, clientSecret string) string {
+	return strings.TrimSpace(clientID) + strings.TrimSpace(clientSecret)
 }
 
 func generateClientID() (string, error) {

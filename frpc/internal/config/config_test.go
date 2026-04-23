@@ -4,9 +4,8 @@ import "testing"
 
 func TestConfigValidate(t *testing.T) {
 	cfg := Config{
-		Server:       "127.0.0.1:7000",
-		ClientID:     "00112233445566778899aabbccddeeff",
-		ClientSecret: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Server: "127.0.0.1:7000",
+		Key:    "00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -14,15 +13,15 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-func TestParseClientIDRejectsInvalidLength(t *testing.T) {
-	if _, err := ParseClientID("abcd"); err == nil {
-		t.Fatal("expected invalid client_id length error")
+func TestParseKeyRejectsInvalidLength(t *testing.T) {
+	if _, err := ParseKey("abcd"); err == nil {
+		t.Fatal("expected invalid key length error")
 	}
 }
 
-func TestParseClientSecretRejectsUppercase(t *testing.T) {
-	_, err := ParseClientSecret("0123456789abcdef0123456789abcdef0123456789abcdef0123456789ABCDEF")
+func TestParseKeyRejectsUppercase(t *testing.T) {
+	_, err := ParseKey("00112233445566778899aabbccddeeff0123456789abcdef0123456789abcdef0123456789abcdef0123456789ABCDEF")
 	if err == nil {
-		t.Fatal("expected uppercase client_secret rejection")
+		t.Fatal("expected uppercase key rejection")
 	}
 }

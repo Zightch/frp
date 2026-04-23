@@ -10,12 +10,12 @@ import (
 const (
 	clientIDHexLen     = 32
 	clientSecretHexLen = 64
+	keyHexLen          = clientIDHexLen + clientSecretHexLen
 )
 
 type Config struct {
-	Server       string
-	ClientID     string
-	ClientSecret string
+	Server string
+	Key    string
 }
 
 type Credentials struct {
@@ -25,29 +25,34 @@ type Credentials struct {
 
 func (c *Config) Validate() error {
 	c.Server = strings.TrimSpace(c.Server)
-	c.ClientID = strings.TrimSpace(c.ClientID)
-	c.ClientSecret = strings.TrimSpace(c.ClientSecret)
+	c.Key = strings.TrimSpace(c.Key)
 
 	if c.Server == "" {
 		return fmt.Errorf("server is required")
 	}
-	if c.ClientID == "" {
-		return fmt.Errorf("client_id is required")
-	}
-	if c.ClientSecret == "" {
-		return fmt.Errorf("client_secret is required")
+	if c.Key == "" {
+		return fmt.Errorf("key is required")
 	}
 	if _, _, err := net.SplitHostPort(c.Server); err != nil {
 		return fmt.Errorf("server: %w", err)
 	}
-	if _, err := ParseClientID(c.ClientID); err != nil {
-		return fmt.Errorf("client_id: %w", err)
-	}
-	if _, err := ParseClientSecret(c.ClientSecret); err != nil {
-		return fmt.Errorf("client_secret: %w", err)
+	if _, err := ParseKey(c.Key); err != nil {
+		return fmt.Errorf("key: %w", err)
 	}
 
 	return nil
+}
+
+func ParseKey(value string) (Credentials, error) {
+	value = strings.TrimSpace(value)
+	if len(value) != keyHexLen {
+		return Credentials{}, fmt.Errorf("expected %d hex characters, got %d", keyHexLen, len(value))
+	}
+
+	return ParseCredentials(
+		value[:clientIDHexLen],
+		value[clientIDHexLen:],
+	)
 }
 
 func ParseCredentials(clientIDValue, clientSecretValue string) (Credentials, error) {
@@ -63,6 +68,10 @@ func ParseCredentials(clientIDValue, clientSecretValue string) (Credentials, err
 		return credentials, err
 	}
 	return credentials, nil
+}
+
+func ComposeKey(clientID, clientSecret string) string {
+	return strings.TrimSpace(clientID) + strings.TrimSpace(clientSecret)
 }
 
 func ParseClientID(value string) ([16]byte, error) {

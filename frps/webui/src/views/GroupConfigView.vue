@@ -11,8 +11,7 @@ import {
   type ProxyGroup,
   type Tunnel,
   type TunnelPayload,
-  type LocalIP,
-  type ClientCredential
+  type LocalIP
 } from '@/api'
 
 defineOptions({
@@ -65,9 +64,9 @@ const groupFormRules = {
   effective_ip: [{ required: true, message: '请选择生效 IP', trigger: 'change' }]
 }
 
-// New credential display
-const newCredentialVisible = ref(false)
-const newCredential = ref<ClientCredential | null>(null)
+// New login key display
+const newKeyVisible = ref(false)
+const newKeyValue = ref('')
 
 // Tunnel drawer
 const tunnelDrawerVisible = ref(false)
@@ -407,9 +406,9 @@ async function submitGroupForm() {
         return
       }
       ElMessage.success('分组创建成功')
-      if (result.data?.credential) {
-        newCredential.value = result.data.credential
-        newCredentialVisible.value = true
+      if (result.data?.key) {
+        newKeyValue.value = result.data.key
+        newKeyVisible.value = true
       }
     } else {
       if (!editingGroupId.value) return
@@ -573,11 +572,11 @@ async function handleDeleteTunnel(tunnel: Tunnel) {
   await loadData()
 }
 
-async function handleRotateCredentials(group: ProxyGroup) {
+async function handleRotateKey(group: ProxyGroup) {
   try {
     await ElMessageBox.confirm(
-      `确定轮转分组"${group.name}"的客户端密钥吗？轮转后旧 client_secret 将立即失效。`,
-      '轮转客户端密钥',
+      `确定轮转分组"${group.name}"的登录 Key 吗？轮转后旧 -key 将立即失效。`,
+      '轮转登录 Key',
       {
         confirmButtonText: '轮转',
         cancelButtonText: '取消',
@@ -588,29 +587,29 @@ async function handleRotateCredentials(group: ProxyGroup) {
     return
   }
 
-  const result = await groupConfigApi.rotateCredentials(group.id)
+  const result = await groupConfigApi.rotateKey(group.id)
   if (result.error) {
     ElMessage.error(result.error)
     return
   }
 
-  ElMessage.success('客户端密钥已轮转')
-  if (result.data?.credential) {
-    newCredential.value = result.data.credential
-    newCredentialVisible.value = true
+  ElMessage.success('登录 Key 已轮转')
+  if (result.data?.key) {
+    newKeyValue.value = result.data.key
+    newKeyVisible.value = true
   }
   await loadData()
 }
 
-function copyCredentialField(label: string, value: string | undefined) {
+function copyKey(value: string) {
   if (!value) {
-    ElMessage.error(`${label} 为空`)
+    ElMessage.error('Key 为空')
     return
   }
   navigator.clipboard.writeText(value).then(() => {
-    ElMessage.success(`${label} 已复制`)
+    ElMessage.success('Key 已复制')
   }).catch(() => {
-    ElMessage.error(`${label} 复制失败`)
+    ElMessage.error('Key 复制失败')
   })
 }
 </script>
@@ -657,7 +656,7 @@ function copyCredentialField(label: string, value: string | undefined) {
           <el-descriptions-item label="生效 IP">{{ selectedGroup.effective_ip }}</el-descriptions-item>
         </el-descriptions>
         <div style="display: flex; gap: 8px">
-          <el-button size="small" @click="handleRotateCredentials(selectedGroup)">轮转密钥</el-button>
+          <el-button size="small" @click="handleRotateKey(selectedGroup)">轮转密钥</el-button>
           <el-button size="small" @click="openEditGroupDialog(selectedGroup)">编辑</el-button>
           <el-button size="small" type="danger" @click="handleDeleteGroup(selectedGroup)">删除</el-button>
         </div>
@@ -817,29 +816,25 @@ function copyCredentialField(label: string, value: string | undefined) {
       </template>
     </el-dialog>
 
-    <!-- New credential display dialog -->
+    <!-- New login key display dialog -->
     <el-dialog
-      v-model="newCredentialVisible"
-      title="客户端凭据已生成"
+      v-model="newKeyVisible"
+      title="客户端登录 Key 已生成"
       width="500px"
       :close-on-click-modal="false"
     >
       <div style="text-align: center">
-        <p style="margin-bottom: 12px; color: var(--el-text-color-primary)">请保存以下 Client ID 和 Client Secret，用于客户端配置：</p>
+        <p style="margin-bottom: 12px; color: var(--el-text-color-primary)">请保存以下登录 Key，并通过 <code>-key</code> 提供给客户端：</p>
         <div style="display: grid; gap: 12px; padding: 16px; background: var(--el-fill-color); border-radius: 8px; margin-bottom: 12px">
           <div style="display: flex; align-items: center; gap: 8px">
-            <code style="flex: 1; font-family: monospace; word-break: break-all; text-align: left">{{ newCredential?.client_id }}</code>
-            <el-button type="primary" size="small" @click="copyCredentialField('Client ID', newCredential?.client_id)">复制</el-button>
-          </div>
-          <div style="display: flex; align-items: center; gap: 8px">
-            <code style="flex: 1; font-family: monospace; word-break: break-all; text-align: left">{{ newCredential?.client_secret }}</code>
-            <el-button type="primary" size="small" @click="copyCredentialField('Client Secret', newCredential?.client_secret)">复制</el-button>
+            <code style="flex: 1; font-family: monospace; word-break: break-all; text-align: left">{{ newKeyValue }}</code>
+            <el-button type="primary" size="small" @click="copyKey(newKeyValue)">复制</el-button>
           </div>
         </div>
-        <p style="color: var(--el-color-warning); font-size: 12px">此 Client Secret 仅显示一次，关闭后将无法再次查看。</p>
+        <p style="color: var(--el-color-warning); font-size: 12px">此 Key 仅显示一次，关闭后将无法再次查看。</p>
       </div>
       <template #footer>
-        <el-button type="primary" @click="newCredentialVisible = false">我已保存</el-button>
+        <el-button type="primary" @click="newKeyVisible = false">我已保存</el-button>
       </template>
     </el-dialog>
 

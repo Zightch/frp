@@ -14,11 +14,6 @@ export interface ProxyGroup {
   updated_at: string
 }
 
-export interface ClientCredential {
-  client_id: string
-  client_secret: string
-}
-
 export interface LocalIP {
   addr: string
   family: string
@@ -121,7 +116,7 @@ export const proxyGroupsApi = {
   list: () => request<{ items: ProxyGroup[] }>('/proxy-groups'),
 
   create: (data: { name: string; effective_ip: string; enabled?: boolean }) =>
-    request<{ item: ProxyGroup; credential: ClientCredential }>('/proxy-groups', {
+    request<{ item: ProxyGroup; key: string }>('/proxy-groups', {
       method: 'POST',
       body: JSON.stringify(data)
     }),
@@ -134,8 +129,8 @@ export const proxyGroupsApi = {
 
   delete: (id: number) => request(`/proxy-groups/${id}`, { method: 'DELETE' }),
 
-  rotateCredentials: (id: number) =>
-    request<{ item: ProxyGroup; credential: ClientCredential }>(`/proxy-groups/${id}/credentials`, {
+  rotateKey: (id: number) =>
+    request<{ item: ProxyGroup; key: string }>(`/proxy-groups/${id}/key`, {
       method: 'POST'
     })
 }

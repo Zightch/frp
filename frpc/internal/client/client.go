@@ -56,7 +56,7 @@ func (c *Client) Run(ctx context.Context) error {
 		return err
 	}
 
-	credentials, err := appconfig.ParseCredentials(c.config.ClientID, c.config.ClientSecret)
+	credentials, err := appconfig.ParseKey(c.config.Key)
 	if err != nil {
 		return err
 	}

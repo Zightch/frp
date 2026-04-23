@@ -526,15 +526,19 @@ func TestManagementKeySmokeFlow(t *testing.T) {
 	if !ok || int64(groupID) <= 0 {
 		t.Fatalf("unexpected proxy group id: %#v", item)
 	}
-	credential, ok := createdGroup.JSON["credential"].(map[string]any)
+	key, ok := createdGroup.JSON["key"].(string)
 	if !ok {
-		t.Fatalf("expected proxy group credential in response: %#v", createdGroup.JSON)
+		t.Fatalf("expected proxy group key in response: %#v", createdGroup.JSON)
 	}
-	if credential["client_id"] != item["client_id"] {
-		t.Fatalf("expected credential client_id to match item: %#v", createdGroup.JSON)
+	clientID, ok := item["client_id"].(string)
+	if !ok {
+		t.Fatalf("expected proxy group client_id in response item: %#v", createdGroup.JSON)
 	}
-	if _, ok := credential["client_secret"].(string); !ok {
-		t.Fatalf("expected proxy group client_secret in response: %#v", createdGroup.JSON)
+	if !strings.HasPrefix(key, clientID) {
+		t.Fatalf("expected key to start with client_id: %#v", createdGroup.JSON)
+	}
+	if len(key) != len(clientID)+64 {
+		t.Fatalf("expected key to include a 64-char client_secret suffix: %#v", createdGroup.JSON)
 	}
 	if item["effective_ip"] != "0.0.0.0" {
 		t.Fatalf("unexpected effective_ip in create response: %#v", item)
@@ -700,7 +704,7 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 		t,
 		server.Handler(),
 		http.MethodPost,
-		"/api/v1/proxy-groups/"+jsonNumberString(groupID)+"/credentials",
+		"/api/v1/proxy-groups/"+jsonNumberString(groupID)+"/key",
 		nil,
 		http.StatusOK,
 		sessionCookie,
@@ -708,6 +712,13 @@ func TestProxyGroupEffectiveIPCRUDValidation(t *testing.T) {
 	resetItem, ok := reset.JSON["item"].(map[string]any)
 	if !ok {
 		t.Fatalf("unexpected credential rotation payload: %#v", reset.JSON)
+	}
+	resetKey, ok := reset.JSON["key"].(string)
+	if !ok {
+		t.Fatalf("expected key in rotation payload: %#v", reset.JSON)
+	}
+	if !strings.HasPrefix(resetKey, resetItem["client_id"].(string)) {
+		t.Fatalf("expected rotated key to start with client_id: %#v", reset.JSON)
 	}
 	if resetItem["effective_ip"] != "0.0.0.0" {
 		t.Fatalf("unexpected credential rotation effective_ip: %#v", resetItem)
@@ -938,7 +949,7 @@ func TestManagementMutationsRefreshAffectedGroups(t *testing.T) {
 		t,
 		server.Handler(),
 		http.MethodPost,
-		"/api/v1/proxy-groups/"+jsonNumberString(float64(groupBID))+"/credentials",
+		"/api/v1/proxy-groups/"+jsonNumberString(float64(groupBID))+"/key",
 		nil,
 		http.StatusOK,
 		sessionCookie,
