@@ -15,13 +15,18 @@ import (
 )
 
 func (s *Server) startRuntimeIssuePolling(parent context.Context) {
-	if s == nil {
+	if s == nil || s.isShuttingDown() {
 		return
 	}
 
 	pollCtx, cancel := context.WithCancel(parent)
 
 	s.mu.Lock()
+	if s.isShuttingDown() {
+		s.mu.Unlock()
+		cancel()
+		return
+	}
 	s.runtimeScanCancel = cancel
 	s.mu.Unlock()
 
@@ -41,6 +46,11 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 	if s == nil {
 		return nil
 	}
+	if !s.beginRuntimeScanRound() {
+		testhooks.Point("runtime.scan.skip_overlap")
+		return nil
+	}
+	defer s.finishRuntimeScanRound()
 	if s.repo == nil {
 		return errors.New("repository not configured")
 	}
@@ -61,6 +71,11 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 		issues := s.scanGroupRuntimeIssues(group, staticConflictIDs, targetTunnels)
 		preserveHealthyIssues := s.preserveScannedHealthyRuntimeIssuesUntilRecovery(group, targetTunnels, staticConflictIDs, issues)
 		s.applyScannedTunnelRuntimeIssues(group.Snapshot, staticConflictIDs, issues, preserveHealthyIssues)
+		testhooks.Point(
+			"runtime.scan.before_group_recover",
+			testhooks.F("group_id", group.ID),
+			testhooks.F("target_tunnel_count", len(targetTunnels)),
+		)
 		if err := s.recoverScannedActiveSessionTunnels(group, targetTunnels, staticConflictIDs, issues); err != nil {
 			s.logger.Warn("recover scanned non-listening tunnels failed", "group_id", group.ID, "error", err)
 		}
@@ -68,6 +83,30 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 
 	testhooks.Point("runtime.scan.after_round", testhooks.F("group_count", len(groups)))
 	return nil
+}
+
+func (s *Server) beginRuntimeScanRound() bool {
+	if s == nil {
+		return false
+	}
+
+	s.runtimeScanStateMu.Lock()
+	defer s.runtimeScanStateMu.Unlock()
+	if s.runtimeScanInFlight {
+		return false
+	}
+	s.runtimeScanInFlight = true
+	return true
+}
+
+func (s *Server) finishRuntimeScanRound() {
+	if s == nil {
+		return
+	}
+
+	s.runtimeScanStateMu.Lock()
+	s.runtimeScanInFlight = false
+	s.runtimeScanStateMu.Unlock()
 }
 
 func (s *Server) selectScannedNonListeningTunnels(group GroupRuntime) []protocol.TunnelEntry {

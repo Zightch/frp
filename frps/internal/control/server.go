@@ -67,6 +67,7 @@ type Server struct {
 	closeOnce  sync.Once
 	connWG     sync.WaitGroup
 	scanWG     sync.WaitGroup
+	shutdownCh chan struct{}
 
 	challengeMu sync.Mutex
 	challenges  map[uint32]*authChallenge
@@ -74,6 +75,8 @@ type Server struct {
 	initialRuntimeScanMu   sync.Mutex
 	initialRuntimeScanDone bool
 	runtimeScanCancel      context.CancelFunc
+	runtimeScanStateMu     sync.Mutex
+	runtimeScanInFlight    bool
 
 	nextChallengeID atomic.Uint32
 	nextSessionID   atomic.Uint64
@@ -132,7 +135,21 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		sessions:            make(map[int64]*activeSession),
 		tunnelRuntimeIssues: make(map[int64]string),
 		groupSlots:          make(map[int64]uint64),
+		shutdownCh:          make(chan struct{}),
 		challenges:          make(map[uint32]*authChallenge),
+	}
+}
+
+func (s *Server) isShuttingDown() bool {
+	if s == nil || s.shutdownCh == nil {
+		return false
+	}
+
+	select {
+	case <-s.shutdownCh:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -182,8 +199,14 @@ func (s *Server) recordTunnelRuntimeIssue(tunnelID uint32, reason string) {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	if s.isShuttingDown() {
+		return nil
+	}
 	if err := s.EnsureInitialRuntimeScan(ctx); err != nil {
 		return err
+	}
+	if s.isShuttingDown() {
+		return nil
 	}
 
 	testhooks.Point("startup.control_listener.before_open", testhooks.F("addr", s.options.Addr))
@@ -192,6 +215,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if s.isShuttingDown() {
+		_ = listener.Close()
+		return nil
+	}
 
 	s.mu.Lock()
 	s.listener = listener
@@ -199,6 +226,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.mu.Unlock()
 
 	testhooks.Point("startup.control_listener.after_open", testhooks.F("addr", s.options.Addr))
+	if s.isShuttingDown() {
+		_ = listener.Close()
+		return nil
+	}
 	s.startRuntimeIssuePolling(ctx)
 	s.logger.Info("frpc control listener ready", "addr", s.options.Addr)
 
@@ -219,6 +250,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.closeOnce.Do(func() {
+		if s.shutdownCh != nil {
+			close(s.shutdownCh)
+		}
 		s.mu.Lock()
 		listener := s.listener
 		s.controlListenerOpen = false
