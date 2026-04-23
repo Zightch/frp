@@ -11,7 +11,6 @@ import (
 	"github.com/zightch/frp/frps/internal/ports"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
-	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 func (s *Server) startRuntimeIssuePolling(parent context.Context) {
@@ -179,43 +178,22 @@ func (s *Server) recoverScannedActiveSessionTunnels(group GroupRuntime, targetTu
 		return nil
 	}
 	defer active.mu.Unlock()
-	if active.session.hasPendingConfig() {
-		return nil
-	}
-	if s.isShuttingDown() || active.session.isDone() {
-		return nil
-	}
-
-	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
-	if currentGroup.EffectiveIP != group.EffectiveIP {
-		return nil
-	}
-
 	logger := s.logger.With(
 		"session_id", active.session.ID,
-		"group_id", currentGroup.ID,
-		"group_name", currentGroup.Name,
+		"group_id", group.ID,
+		"group_name", group.Name,
 	)
-	if sameRuntimeSnapshot(currentSnapshot, group.Snapshot) {
-		if !hasRecoverableScannedTunnels(targetTunnels, staticConflictIDs, issues) {
-			return nil
-		}
-		active.session.setRecoveryMode(testsupport.RecoveryModeListenerRecovery)
-		return s.ensureTunnelListeners(active.conn, logger, active.session)
+	coordinator := s.runtimeCoordinator()
+	target := newRuntimeRecoveryTarget(active.conn, logger, active.session)
+	plan := coordinator.planScannedRecovery(target, group, targetTunnels, staticConflictIDs, issues)
+	if plan.action == runtimeRecoveryActionPushFullConfig {
+		logger.Info(
+			"recovering active session config after runtime prerequisites returned",
+			"config_version", group.Snapshot.Version,
+			"tunnel_count", len(group.Snapshot.Tunnels),
+		)
 	}
-	if !shouldRecoverScannedActiveSessionConfig(currentSnapshot, group.Snapshot) {
-		return nil
-	}
-	if _, err := s.resolveGroupEffectiveIP(group); err != nil {
-		return nil
-	}
-	logger.Info(
-		"recovering active session config after runtime prerequisites returned",
-		"config_version", group.Snapshot.Version,
-		"tunnel_count", len(group.Snapshot.Tunnels),
-	)
-	active.session.setRecoveryMode(testsupport.RecoveryModePendingFullConfig)
-	return s.pushReloadConfig(active.conn, active.session, group, group.Snapshot)
+	return coordinator.execute(target, plan)
 }
 
 func shouldRecoverScannedActiveSessionConfig(currentSnapshot, nextSnapshot ConfigSnapshot) bool {

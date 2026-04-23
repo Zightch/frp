@@ -5,7 +5,6 @@ import (
 	"net"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
-	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 func (s *Server) RefreshGroup(groupID int64) {
@@ -34,64 +33,37 @@ func (s *Server) RefreshGroup(groupID int64) {
 		return
 	}
 
-	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	currentGroup, _ := active.session.currentGroupAndSnapshot()
 	if currentGroup.ClientSecretHash != group.ClientSecretHash {
 		s.logger.Info("closing active session after proxy group credential rotation", "group_id", groupID, "session_id", active.session.ID)
 		_ = active.conn.Close()
 		return
 	}
 
-	snapshot := runtimeSnapshotForGroup(group)
-	desiredSnapshot := snapshot
-	if emptySnapshot, effectiveIPErr, shrinkToEmpty := s.runtimeRefreshSnapshot(group, snapshot); shrinkToEmpty {
-		desiredSnapshot = emptySnapshot
-		if active.session.refreshPendingConfig(group, desiredSnapshot) {
-			s.logger.Info("deduplicating refresh against matching pending empty config", "group_id", groupID, "session_id", active.session.ID, "config_version", desiredSnapshot.Version)
-			return
-		}
-		if active.session.hasPendingConfig() {
-			s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
-			_ = active.conn.Close()
-			return
-		}
-		s.logger.Info(
-			"shrinking active group runtime to empty config after effective_ip became unavailable",
-			"group_id", groupID,
+	coordinator := s.runtimeCoordinator()
+	target := newRuntimeRecoveryTarget(
+		active.conn,
+		s.logger.With(
 			"session_id", active.session.ID,
-			"effective_ip", group.EffectiveIP,
-			"error", effectiveIPErr,
-		)
-		if err := s.freezeGroupRuntime(active.conn, active.session); err != nil {
-			s.logger.Warn("freeze active group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
-			_ = active.conn.Close()
-			return
+			"group_id", group.ID,
+			"group_name", group.Name,
+		),
+		active.session,
+	)
+	plan := coordinator.planRefresh(target, group)
+	switch plan.action {
+	case runtimeRecoveryActionNoop:
+		message := "deduplicating refresh against matching pending config"
+		if len(plan.snapshot.Tunnels) == 0 {
+			message = "deduplicating refresh against matching pending empty config"
 		}
-		active.session.setRecoveryMode(testsupport.RecoveryModePendingEmptyConfig)
-		if err := s.pushReloadConfig(active.conn, active.session, group, emptySnapshot); err != nil {
-			if errors.Is(err, errConfigUpdateInFlight) {
-				s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
-			}
-			s.logger.Warn("push empty config after effective_ip refresh failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
-			_ = active.conn.Close()
-		}
+		s.logger.Info(message, "group_id", groupID, "session_id", active.session.ID, "config_version", plan.snapshot.Version)
 		return
-	}
-	if active.session.refreshPendingConfig(group, desiredSnapshot) {
-		s.logger.Info("deduplicating refresh against matching pending config", "group_id", groupID, "session_id", active.session.ID, "config_version", desiredSnapshot.Version)
-		return
-	}
-	if active.session.hasPendingConfig() {
+	case runtimeRecoveryActionCloseSession:
 		s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
 		_ = active.conn.Close()
 		return
-	}
-
-	if sameRuntimeSnapshot(currentSnapshot, snapshot) {
-		if currentGroup.EffectiveIP == group.EffectiveIP {
-			active.session.replaceGroupRuntime(group)
-			return
-		}
-
+	case runtimeRecoveryActionRebindRuntime:
 		s.logger.Info(
 			"rebinding active group runtime after effective_ip change",
 			"group_id", groupID,
@@ -99,27 +71,40 @@ func (s *Server) RefreshGroup(groupID int64) {
 			"old_effective_ip", currentGroup.EffectiveIP,
 			"new_effective_ip", group.EffectiveIP,
 		)
-		active.session.setRecoveryMode(testsupport.RecoveryModeListenerRecovery)
-		if err := s.rebindGroupRuntime(active.conn, active.session, group); err != nil {
+	case runtimeRecoveryActionPushEmptyConfig:
+		if desiredSnapshot := runtimeSnapshotForGroup(group); len(desiredSnapshot.Tunnels) != 0 {
+			s.logger.Info(
+				"shrinking active group runtime to empty config after effective_ip became unavailable",
+				"group_id", groupID,
+				"session_id", active.session.ID,
+				"effective_ip", group.EffectiveIP,
+			)
+		}
+	}
+
+	if err := coordinator.execute(target, plan); err != nil {
+		switch plan.action {
+		case runtimeRecoveryActionRebindRuntime:
 			s.logger.Warn("rebind active group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
-			_ = active.conn.Close()
+		case runtimeRecoveryActionPushEmptyConfig:
+			if errors.Is(err, errConfigUpdateInFlight) {
+				s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
+			}
+			message := "push empty config failed"
+			if desiredSnapshot := runtimeSnapshotForGroup(group); len(desiredSnapshot.Tunnels) != 0 {
+				message = "push empty config after effective_ip refresh failed"
+			}
+			s.logger.Warn(message, "group_id", groupID, "session_id", active.session.ID, "error", err)
+		case runtimeRecoveryActionPushFullConfig:
+			if errors.Is(err, errConfigUpdateInFlight) {
+				s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
+			}
+			s.logger.Warn("push refreshed config failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
+		default:
+			s.logger.Warn("refresh active group runtime failed", "group_id", groupID, "session_id", active.session.ID, "action", plan.action.String(), "error", err)
 		}
-		return
-	}
-
-	if err := s.freezeGroupRuntime(active.conn, active.session); err != nil {
-		s.logger.Warn("freeze active group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
 		_ = active.conn.Close()
 		return
-	}
-	active.session.setRecoveryMode(testsupport.RecoveryModePendingFullConfig)
-
-	if err := s.pushReloadConfig(active.conn, active.session, group, snapshot); err != nil {
-		if errors.Is(err, errConfigUpdateInFlight) {
-			s.logger.Info("closing active session because a previous config update is still pending", "group_id", groupID, "session_id", active.session.ID)
-		}
-		s.logger.Warn("push refreshed config failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
-		_ = active.conn.Close()
 	}
 }
 
