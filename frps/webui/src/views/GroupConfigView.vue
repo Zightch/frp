@@ -575,10 +575,10 @@ async function handleDeleteTunnel(tunnel: Tunnel) {
 async function handleRotateKey(group: ProxyGroup) {
   try {
     await ElMessageBox.confirm(
-      `确定轮转分组"${group.name}"的登录 Key 吗？轮转后旧 -key 将立即失效。`,
-      '轮转登录 Key',
+      `确定重制分组"${group.name}"的登录 Key 吗？重制后旧 -key 将立即失效。`,
+      '重制登录 Key',
       {
-        confirmButtonText: '轮转',
+        confirmButtonText: '重制',
         cancelButtonText: '取消',
         type: 'warning'
       }
@@ -593,7 +593,7 @@ async function handleRotateKey(group: ProxyGroup) {
     return
   }
 
-  ElMessage.success('登录 Key 已轮转')
+  ElMessage.success('登录 Key 已重制')
   if (result.data?.key) {
     newKeyValue.value = result.data.key
     newKeyVisible.value = true
@@ -656,7 +656,7 @@ function copyKey(value: string) {
           <el-descriptions-item label="生效 IP">{{ selectedGroup.effective_ip }}</el-descriptions-item>
         </el-descriptions>
         <div style="display: flex; gap: 8px">
-          <el-button size="small" @click="handleRotateKey(selectedGroup)">轮转密钥</el-button>
+          <el-button size="small" @click="handleRotateKey(selectedGroup)">重制密钥</el-button>
           <el-button size="small" @click="openEditGroupDialog(selectedGroup)">编辑</el-button>
           <el-button size="small" type="danger" @click="handleDeleteGroup(selectedGroup)">删除</el-button>
         </div>
