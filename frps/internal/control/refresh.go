@@ -15,7 +15,7 @@ func (s *Server) registerActiveSession(conn net.Conn, session *sessionState) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sessions[session.Group.ID] = &activeSession{
+	s.sessions[session.currentGroupID()] = &activeSession{
 		conn:    conn,
 		session: session,
 	}
@@ -26,7 +26,7 @@ func (s *Server) unregisterActiveSession(session *sessionState) {
 		return
 	}
 
-	groupID := session.Group.ID
+	groupID := session.currentGroupID()
 	for {
 		s.mu.Lock()
 		current, ok := s.sessions[groupID]

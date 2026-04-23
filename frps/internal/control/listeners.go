@@ -93,21 +93,13 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 	if s.isShuttingDown() || session.isDone() {
 		return nil
 	}
-	session.runtimeMu.Lock()
-	if session.runtimeFrozen {
-		session.runtimeMu.Unlock()
+	if !session.canStartTunnelRuntime() {
 		return nil
 	}
-	session.runtimeMu.Unlock()
 
 	group, snapshot := session.currentGroupAndSnapshot()
 	if len(snapshot.Tunnels) == 0 {
-		session.runtimeMu.Lock()
-		if !session.hasRuntimeListenersLocked() {
-			session.listenersStarted = false
-			session.runtimeGeneration = 0
-		}
-		session.runtimeMu.Unlock()
+		session.resetRuntimeGenerationIfIdle()
 		session.setRecoveryMode(testsupport.RecoveryModeEmptyConfig)
 		return nil
 	}

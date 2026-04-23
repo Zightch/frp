@@ -542,14 +542,14 @@ func TestServerCleansUpIdleUDPSessionAndNotifiesClient(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	session := &sessionState{
-		ID: 1,
-		Group: GroupRuntime{
+	session := newSessionState(
+		1,
+		GroupRuntime{
 			ID:          1,
 			Name:        "group-a",
 			EffectiveIP: system.AnyIPv4,
 		},
-		Snapshot: ConfigSnapshot{
+		ConfigSnapshot{
 			Tunnels: []protocol.TunnelEntry{
 				{
 					TunnelID:    10,
@@ -563,13 +563,8 @@ func TestServerCleansUpIdleUDPSessionAndNotifiesClient(t *testing.T) {
 				},
 			},
 		},
-		streams:        make(map[uint32]*publicStream),
-		udpSessions:    make(map[uint32]*publicUDPSession),
-		udpSessionKeys: make(map[string]uint32),
-		listeners:      make(map[uint32][]net.Listener),
-		udpListeners:   make(map[uint32][]UDPListener),
-		done:           make(chan struct{}),
-	}
+		0,
+	)
 	defer server.shutdownSession(session)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -670,7 +665,7 @@ func TestServerEnsureTunnelListenersUsesGroupEffectiveIP(t *testing.T) {
 		t.Fatalf("ensure tunnel listeners: %v", err)
 	}
 
-	listeners := session.listeners[7]
+	listeners := session.runtime.listeners.tcp[7]
 	if len(listeners) != 1 {
 		t.Fatalf("unexpected listener count: %d", len(listeners))
 	}
@@ -2584,7 +2579,7 @@ func TestServerRefreshGroupRebindsListenersWhenOnlyEffectiveIPChanges(t *testing
 		t.Fatalf("expected no pending config request after local rebind, got %d", pendingRequestID)
 	}
 
-	tcpListeners := active.session.listeners[7]
+	tcpListeners := active.session.runtime.listeners.tcp[7]
 	if len(tcpListeners) != 1 {
 		t.Fatalf("unexpected tcp listener count after rebind: %d", len(tcpListeners))
 	}
@@ -2596,7 +2591,7 @@ func TestServerRefreshGroupRebindsListenersWhenOnlyEffectiveIPChanges(t *testing
 		t.Fatalf("unexpected rebound tcp listener host: %q", boundHost)
 	}
 
-	udpListeners := active.session.udpListeners[8]
+	udpListeners := active.session.runtime.listeners.udp[8]
 	if len(udpListeners) != 1 {
 		t.Fatalf("unexpected udp listener count after rebind: %d", len(udpListeners))
 	}
@@ -2866,7 +2861,7 @@ func TestServerRefreshGroupPushesEmptyConfigWhenEffectiveIPBecomesNotCurrentLoca
 	if pendingRequestID, _ := active.session.configAckState(); pendingRequestID != 0 {
 		t.Fatalf("expected no pending config request after empty config refresh, got %d", pendingRequestID)
 	}
-	if listeners := active.session.listeners[7]; len(listeners) != 0 {
+	if listeners := active.session.runtime.listeners.tcp[7]; len(listeners) != 0 {
 		t.Fatalf("expected no active listeners after empty config refresh, got %d", len(listeners))
 	}
 	if reason := server.TunnelRuntimeIssues()[7]; !strings.Contains(reason, "当前不存在于本机") {
@@ -3063,7 +3058,7 @@ func TestServerScanNonListeningTunnelRuntimeIssuesRepushesConfigAfterEffectiveIP
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		active.session.runtimeMu.Lock()
-		listenerCount := len(active.session.listeners[7])
+		listenerCount := len(active.session.runtime.listeners.tcp[7])
 		active.session.runtimeMu.Unlock()
 		if listenerCount == 1 {
 			break
@@ -3225,14 +3220,14 @@ func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConfli
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if len(active.session.listeners[7]) == 1 && len(active.session.listeners[9]) == 1 {
+		if len(active.session.runtime.listeners.tcp[7]) == 1 && len(active.session.runtime.listeners.tcp[9]) == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf(
 				"unexpected initial listener counts: tunnel7=%d tunnel9=%d",
-				len(active.session.listeners[7]),
-				len(active.session.listeners[9]),
+				len(active.session.runtime.listeners.tcp[7]),
+				len(active.session.runtime.listeners.tcp[9]),
 			)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -3254,14 +3249,14 @@ func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConfli
 
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		if len(active.session.listeners[7]) == 0 && len(active.session.listeners[9]) == 1 {
+		if len(active.session.runtime.listeners.tcp[7]) == 0 && len(active.session.runtime.listeners.tcp[9]) == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf(
 				"unexpected listener counts after conflicting rebind: tunnel7=%d tunnel9=%d",
-				len(active.session.listeners[7]),
-				len(active.session.listeners[9]),
+				len(active.session.runtime.listeners.tcp[7]),
+				len(active.session.runtime.listeners.tcp[9]),
 			)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -3341,9 +3336,9 @@ func TestServerFreezeGroupRuntimeDropsBufferedTCPData(t *testing.T) {
 	}
 
 	session.runtimeMu.Lock()
-	session.listenersStarted = true
-	session.runtimeGeneration = 1
-	session.streams[streamID] = stream
+	session.runtime.listeners.started = true
+	session.runtime.generation = 1
+	session.runtime.streams[streamID] = stream
 	session.runtimeMu.Unlock()
 
 	session.writeMu.Lock()
@@ -3437,10 +3432,10 @@ func TestServerFreezeGroupRuntimeDropsBufferedUDPData(t *testing.T) {
 	udpSession := newPublicUDPSession(9, tunnel, remotePort, listener, clientAddr, time.Now().UTC())
 
 	session.runtimeMu.Lock()
-	session.listenersStarted = true
-	session.runtimeGeneration = 1
-	session.udpSessions[udpSession.sessionID] = udpSession
-	session.udpSessionKeys[udpSession.key()] = udpSession.sessionID
+	session.runtime.listeners.started = true
+	session.runtime.generation = 1
+	session.runtime.udp.sessions[udpSession.sessionID] = udpSession
+	session.runtime.udp.keys[udpSession.key()] = udpSession.sessionID
 	session.runtimeMu.Unlock()
 
 	session.writeMu.Lock()
@@ -4108,17 +4103,7 @@ func writeConfigAck(t *testing.T, conn net.Conn, requestID uint32, version uint6
 }
 
 func newTestSessionState(group GroupRuntime, snapshot ConfigSnapshot) *sessionState {
-	return &sessionState{
-		ID:             1,
-		Group:          group,
-		Snapshot:       snapshot,
-		streams:        make(map[uint32]*publicStream),
-		udpSessions:    make(map[uint32]*publicUDPSession),
-		udpSessionKeys: make(map[string]uint32),
-		listeners:      make(map[uint32][]net.Listener),
-		udpListeners:   make(map[uint32][]UDPListener),
-		done:           make(chan struct{}),
-	}
+	return newSessionState(1, group, snapshot, 0)
 }
 
 type staticSnapshotReader struct {

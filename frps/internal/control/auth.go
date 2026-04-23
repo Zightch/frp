@@ -115,21 +115,14 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthGroupDisabled, "proxy group is disabled")
 	}
 
-	session := &sessionState{
-		ID:             s.nextSessionID.Add(1),
-		Group:          group,
-		Snapshot:       group.Snapshot,
-		readTimeout:    sessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
-		streams:        make(map[uint32]*publicStream),
-		udpSessions:    make(map[uint32]*publicUDPSession),
-		udpSessionKeys: make(map[string]uint32),
-		listeners:      make(map[uint32][]net.Listener),
-		udpListeners:   make(map[uint32][]UDPListener),
-		done:           make(chan struct{}),
-	}
-	session.nextServerRequestID.Store(initialServerRequestID - 1)
+	session := newSessionState(
+		s.nextSessionID.Add(1),
+		group,
+		group.Snapshot,
+		sessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
+	)
 
-	if !s.reserveGroupSlot(session.Group.ID, session.ID) {
+	if !s.reserveGroupSlot(session.currentGroupID(), session.ID) {
 		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthClientLimitReached, "proxy group already has an active client")
 	}
 
@@ -140,7 +133,7 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		ServerVersion:       s.version,
 	})
 	if err != nil {
-		s.releaseGroupSlot(session.Group.ID, session.ID)
+		s.releaseGroupSlot(session.currentGroupID(), session.ID)
 		return nil, err
 	}
 	if err := s.writeFrame(conn, protocol.Frame{
@@ -148,12 +141,12 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 		RequestID: frame.RequestID,
 		Body:      helloBody,
 	}); err != nil {
-		s.releaseGroupSlot(session.Group.ID, session.ID)
+		s.releaseGroupSlot(session.currentGroupID(), session.ID)
 		return nil, err
 	}
 
 	if err := s.pushConfig(conn, session); err != nil {
-		s.releaseGroupSlot(session.Group.ID, session.ID)
+		s.releaseGroupSlot(session.currentGroupID(), session.ID)
 		return nil, err
 	}
 

@@ -345,18 +345,19 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
+	group, snapshot := session.currentGroupAndSnapshot()
 	logger = logger.With(
 		"session_id", session.ID,
-		"group_id", session.Group.ID,
-		"group_name", session.Group.Name,
+		"group_id", group.ID,
+		"group_name", group.Name,
 	)
 	s.registerActiveSession(conn, session)
 	defer s.unregisterActiveSession(session)
 	defer s.shutdownSession(session)
 	logger.Info(
 		"frpc control login succeeded",
-		"config_version", session.Snapshot.Version,
-		"tunnel_count", len(session.Snapshot.Tunnels),
+		"config_version", snapshot.Version,
+		"tunnel_count", len(snapshot.Tunnels),
 	)
 
 	err = s.runSession(conn, logger, session)
@@ -485,7 +486,7 @@ func (s *Server) frameContext(conn net.Conn, session *sessionState) transport.Fr
 		ConnID: transport.ConnectionID(conn),
 	}
 	if session != nil {
-		frameContext.GroupID = session.Group.ID
+		frameContext.GroupID = session.currentGroupID()
 		frameContext.SessionID = session.ID
 	}
 	return frameContext

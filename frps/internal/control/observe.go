@@ -133,23 +133,9 @@ func (s *Server) observeGroups() []GroupRuntime {
 }
 
 func observeSessionState(session *sessionState, conn net.Conn) (testsupport.SessionObservedState, []testsupport.AttachedListenerObservedState, []testsupport.MissingListenerObservedState) {
-	session.configMu.Lock()
-	group := session.Group
-	snapshot := session.Snapshot
-	lastAcked := session.LastAckedConfigVersion
-	pendingRequestID := session.pendingConfigRequestID
-	pendingGroup := session.pendingGroup
-	pendingSnapshot := session.pendingSnapshot
-	recoveryMode := session.recoveryMode
-	session.configMu.Unlock()
-
-	session.runtimeMu.Lock()
-	runtimeFrozen := session.runtimeFrozen
-	listenersStarted := session.listenersStarted
-	runtimeGeneration := session.runtimeGeneration
-	tcpListeners := cloneTCPListenerMap(session.listeners)
-	udpListeners := cloneUDPListenerMap(session.udpListeners)
-	session.runtimeMu.Unlock()
+	configState, runtimeState := session.observeState()
+	group := configState.group
+	snapshot := configState.snapshot
 
 	observed := testsupport.SessionObservedState{
 		GroupID:                group.ID,
@@ -158,24 +144,24 @@ func observeSessionState(session *sessionState, conn net.Conn) (testsupport.Sess
 		EffectiveIP:            group.EffectiveIP,
 		SnapshotVersion:        snapshot.Version,
 		SnapshotTunnelCount:    len(snapshot.Tunnels),
-		LastAckedConfigVersion: lastAcked,
-		RuntimeFrozen:          runtimeFrozen,
-		ListenersStarted:       listenersStarted,
-		RuntimeGeneration:      runtimeGeneration,
-		RecoveryMode:           recoveryMode,
+		LastAckedConfigVersion: configState.lastAckedConfigValue,
+		RuntimeFrozen:          runtimeState.frozen,
+		ListenersStarted:       runtimeState.listenersStarted,
+		RuntimeGeneration:      runtimeState.generation,
+		RecoveryMode:           configState.recoveryMode,
 	}
-	if pendingRequestID != 0 {
+	if configState.pendingRequestID != 0 {
 		observed.Pending = &testsupport.PendingConfigObservedState{
-			RequestID:   pendingRequestID,
-			Version:     pendingSnapshot.Version,
-			TunnelCount: len(pendingSnapshot.Tunnels),
-			EffectiveIP: pendingGroup.EffectiveIP,
+			RequestID:   configState.pendingRequestID,
+			Version:     configState.pendingSnapshot.Version,
+			TunnelCount: len(configState.pendingSnapshot.Tunnels),
+			EffectiveIP: configState.pendingGroup.EffectiveIP,
 		}
 	}
 
 	listeners := make([]testsupport.AttachedListenerObservedState, 0)
 	tunnelPorts := make(map[uint32]map[uint16]struct{})
-	for tunnelID, tunnelListeners := range tcpListeners {
+	for tunnelID, tunnelListeners := range runtimeState.tcpListeners {
 		for _, listener := range tunnelListeners {
 			bindIP, port := listenerAddr(listener.Addr())
 			if _, ok := tunnelPorts[tunnelID]; !ok {
@@ -189,12 +175,12 @@ func observeSessionState(session *sessionState, conn net.Conn) (testsupport.Sess
 				Protocol:      "tcp",
 				BindIP:        bindIP,
 				Port:          port,
-				ConfigVersion: runtimeGeneration,
+				ConfigVersion: runtimeState.generation,
 				Kind:          "tcp",
 			})
 		}
 	}
-	for tunnelID, tunnelListeners := range udpListeners {
+	for tunnelID, tunnelListeners := range runtimeState.udpListeners {
 		for _, listener := range tunnelListeners {
 			bindIP, port := listenerAddr(listener.LocalAddr())
 			if _, ok := tunnelPorts[tunnelID]; !ok {
@@ -208,7 +194,7 @@ func observeSessionState(session *sessionState, conn net.Conn) (testsupport.Sess
 				Protocol:      "udp",
 				BindIP:        bindIP,
 				Port:          port,
-				ConfigVersion: runtimeGeneration,
+				ConfigVersion: runtimeState.generation,
 				Kind:          "udp",
 			})
 		}

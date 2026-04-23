@@ -31,6 +31,7 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		return s.replyProtocolErrorWithSession(conn, session, frame, err)
 	}
 	pendingRequestID, expectedVersion := session.configAckState()
+	currentGroup := session.currentGroup()
 	isInitialStartup := session.lastAckedConfigVersion() == 0
 	if pendingRequestID == 0 || frame.RequestID != pendingRequestID {
 		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unexpected config.ack requestId %d", frame.RequestID)
@@ -65,7 +66,7 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 
 	testhooks.Point(
 		"control.config_ack.before_accept",
-		testhooks.F("group_id", session.Group.ID),
+		testhooks.F("group_id", currentGroup.ID),
 		testhooks.F("session_id", session.ID),
 		testhooks.F("request_id", frame.RequestID),
 		testhooks.F("config_version", ack.ConfigVersion),
@@ -89,15 +90,16 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 			return err
 		}
 	}
+	acceptedGroup, acceptedSnapshot := session.currentGroupAndSnapshot()
 	testhooks.Point(
 		"control.config_ack.after_accept",
-		testhooks.F("group_id", session.Group.ID),
+		testhooks.F("group_id", acceptedGroup.ID),
 		testhooks.F("session_id", session.ID),
 		testhooks.F("request_id", frame.RequestID),
 		testhooks.F("config_version", ack.ConfigVersion),
 	)
 	logger.Info("config acknowledged", "config_version", ack.ConfigVersion, "applied_at_ms", ack.AppliedAtMs)
-	if len(session.Snapshot.Tunnels) == 0 {
+	if len(acceptedSnapshot.Tunnels) == 0 {
 		session.setRecoveryMode(testsupport.RecoveryModeEmptyConfig)
 	} else {
 		session.setRecoveryMode(testsupport.RecoveryModeRunning)

@@ -173,37 +173,37 @@ func (s *sessionState) bindPublicUDPSession(udpSession *publicUDPSession, config
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
 
-	if s.runtimeFrozen || !s.listenersStarted || s.runtimeGeneration != configVersion {
+	if s.runtime.frozen || !s.runtime.listeners.started || s.runtime.generation != configVersion {
 		return nil, false
 	}
 
 	key := udpSession.key()
-	if sessionID, exists := s.udpSessionKeys[key]; exists {
-		if existing := s.udpSessions[sessionID]; existing != nil {
+	if sessionID, exists := s.runtime.udp.keys[key]; exists {
+		if existing := s.runtime.udp.sessions[sessionID]; existing != nil {
 			return existing, false
 		}
-		delete(s.udpSessionKeys, key)
+		delete(s.runtime.udp.keys, key)
 	}
-	if _, exists := s.udpSessions[udpSession.sessionID]; exists {
-		return s.udpSessions[udpSession.sessionID], false
+	if _, exists := s.runtime.udp.sessions[udpSession.sessionID]; exists {
+		return s.runtime.udp.sessions[udpSession.sessionID], false
 	}
-	s.udpSessions[udpSession.sessionID] = udpSession
-	s.udpSessionKeys[key] = udpSession.sessionID
+	s.runtime.udp.sessions[udpSession.sessionID] = udpSession
+	s.runtime.udp.keys[key] = udpSession.sessionID
 	return udpSession, true
 }
 
 func (s *sessionState) publicUDPSession(sessionID uint32) *publicUDPSession {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
-	return s.udpSessions[sessionID]
+	return s.runtime.udp.sessions[sessionID]
 }
 
 func (s *sessionState) closePublicUDPSession(sessionID uint32) bool {
 	s.runtimeMu.Lock()
-	udpSession, ok := s.udpSessions[sessionID]
+	udpSession, ok := s.runtime.udp.sessions[sessionID]
 	if ok {
-		delete(s.udpSessions, sessionID)
-		delete(s.udpSessionKeys, udpSession.key())
+		delete(s.runtime.udp.sessions, sessionID)
+		delete(s.runtime.udp.keys, udpSession.key())
 	}
 	s.runtimeMu.Unlock()
 	return ok
@@ -214,7 +214,7 @@ func (s *sessionState) takeIdlePublicUDPSessions(now time.Time) []*publicUDPSess
 	defer s.runtimeMu.Unlock()
 
 	idleSessions := make([]*publicUDPSession, 0)
-	for sessionID, udpSession := range s.udpSessions {
+	for sessionID, udpSession := range s.runtime.udp.sessions {
 		lastActiveUnixMs := udpSession.lastActiveUnixMs.Load()
 		if lastActiveUnixMs == 0 {
 			continue
@@ -223,8 +223,8 @@ func (s *sessionState) takeIdlePublicUDPSessions(now time.Time) []*publicUDPSess
 		if now.Before(lastActive) || now.Sub(lastActive) < udpSession.idleTimeout {
 			continue
 		}
-		delete(s.udpSessions, sessionID)
-		delete(s.udpSessionKeys, udpSession.key())
+		delete(s.runtime.udp.sessions, sessionID)
+		delete(s.runtime.udp.keys, udpSession.key())
 		idleSessions = append(idleSessions, udpSession)
 	}
 	return idleSessions
