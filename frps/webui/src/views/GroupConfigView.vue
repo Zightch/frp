@@ -611,38 +611,26 @@ function copyToken() {
 </script>
 
 <template>
-  <div class="group-config-page">
-    <!-- Auth check loading -->
-    <div v-if="checking" class="state-message">
-      检查认证状态...
+  <div v-if="checking" style="display: flex; align-items: center; justify-content: center; height: 100%">
+    <span>检查认证状态...</span>
+  </div>
+
+  <div v-else-if="error" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100; gap: 12px">
+    <span style="color: var(--el-color-danger)">{{ error }}</span>
+    <el-button size="small" @click="loadData">重试</el-button>
+  </div>
+
+  <template v-else-if="authenticated">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px">
+      <h1 style="font-size: 20px; font-weight: 600; margin: 0">分组配置</h1>
+      <el-button @click="loadData" :loading="loading">刷新</el-button>
     </div>
 
-    <!-- Error state -->
-    <div v-else-if="error" class="state-message state-error">
-      <span>{{ error }}</span>
-      <el-button size="small" @click="loadData">重试</el-button>
-    </div>
-
-    <!-- Main content -->
-    <template v-else-if="authenticated">
-      <!-- Page header -->
-      <div class="page-header">
-        <h1>分组配置</h1>
-        <div class="header-actions">
-          <el-button @click="loadData" :loading="loading">刷新</el-button>
-        </div>
-      </div>
-
-      <!-- Operation bar -->
-      <div v-if="selectedGroup" class="operation-bar">
-        <div class="operation-info">
-          <span class="info-item">
-            <span class="info-label">已选中:</span>
-            <span class="info-value">{{ selectedGroup.name }}</span>
-          </span>
-          <span class="info-divider">|</span>
-          <span class="info-item">
-            <span class="info-label">状态:</span>
+    <el-card v-if="selectedGroup" style="margin-bottom: 20px" :body-style="{ padding: '12px 20px' }">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px">
+        <el-descriptions :column="4">
+          <el-descriptions-item label="已选中">{{ selectedGroup.name }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
             <el-tooltip
               v-if="selectedGroup.status === '异常' && selectedGroup.status_reason"
               :content="selectedGroup.status_reason"
@@ -657,145 +645,120 @@ function copyToken() {
             >
               {{ selectedGroup.status }}
             </el-tag>
-          </span>
-          <span class="info-divider">|</span>
-          <span class="info-item">
-            <span class="info-label">Token ID:</span>
-            <span class="info-value token">{{ selectedGroup.token_id }}</span>
-          </span>
-          <span class="info-divider">|</span>
-          <span class="info-item">
-            <span class="info-label">生效 IP:</span>
-            <span class="info-value">{{ selectedGroup.effective_ip }}</span>
-          </span>
-        </div>
-        <div class="operation-actions">
+          </el-descriptions-item>
+          <el-descriptions-item label="Token ID">
+            <code style="font-family: monospace">{{ selectedGroup.token_id }}</code>
+          </el-descriptions-item>
+          <el-descriptions-item label="生效 IP">{{ selectedGroup.effective_ip }}</el-descriptions-item>
+        </el-descriptions>
+        <div style="display: flex; gap: 8px">
           <el-button size="small" @click="handleResetToken(selectedGroup)">重置 Token</el-button>
           <el-button size="small" @click="openEditGroupDialog(selectedGroup)">编辑</el-button>
           <el-button size="small" type="danger" @click="handleDeleteGroup(selectedGroup)">删除</el-button>
         </div>
       </div>
+    </el-card>
 
-      <!-- Loading -->
-      <div v-if="loading" class="state-message">
-        加载中...
-      </div>
-
-      <!-- Content grid -->
-      <div v-else class="content-grid">
-        <!-- Groups panel -->
-        <section class="panel groups-panel">
-          <div class="panel-header">
-            <h2>分组列表</h2>
+    <div style="display: grid; grid-template-columns: minmax(320px, 1fr) minmax(560px, 2fr); gap: 20px; height: calc(100vh - 200px)">
+      <el-card style="display: flex; flex-direction: column">
+        <template #header>
+          <div style="display: flex; justify-content: space-between; align-items: center">
+            <span style="font-weight: 600">分组列表</span>
             <el-button type="primary" size="small" @click="openCreateGroupDialog">新建分组</el-button>
           </div>
-          <div class="panel-body">
-            <div v-if="groups.length === 0" class="empty-message">
-              暂无分组，请新建
-            </div>
-            <el-table
-              v-else
-              :data="groups"
-              height="100%"
-              @row-click="handleGroupRowClick"
-              :row-class-name="getGroupRowClass"
-              highlight-current-row
-            >
-              <el-table-column prop="name" label="名称" />
-              <el-table-column prop="token_id" label="Token ID" width="200" />
-              <el-table-column label="状态" width="100" align="center">
-                <template #default="{ row }">
-                  <el-tooltip
-                    v-if="row.status === '异常' && row.status_reason"
-                    :content="row.status_reason"
-                    placement="top"
-                  >
-                    <el-tag type="danger" size="small">{{ row.status }}</el-tag>
-                  </el-tooltip>
-                  <el-tag
-                    v-else
-                    :type="row.status === '启用' ? 'success' : row.status === '禁用' ? 'info' : 'danger'"
-                    size="small"
-                  >
-                    {{ row.status }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </section>
+        </template>
+        <el-empty v-if="groups.length === 0" description="暂无分组，请新建" />
+        <el-table
+          v-else
+          :data="groups"
+          height="100%"
+          @row-click="handleGroupRowClick"
+          :row-class-name="getGroupRowClass"
+          highlight-current-row
+          v-loading="loading"
+        >
+          <el-table-column prop="name" label="名称" />
+          <el-table-column prop="token_id" label="Token ID" width="200" />
+          <el-table-column label="状态" width="100" align="center">
+            <template #default="{ row }">
+              <el-tooltip
+                v-if="row.status === '异常' && row.status_reason"
+                :content="row.status_reason"
+                placement="top"
+              >
+                <el-tag type="danger" size="small">{{ row.status }}</el-tag>
+              </el-tooltip>
+              <el-tag
+                v-else
+                :type="row.status === '启用' ? 'success' : row.status === '禁用' ? 'info' : 'danger'"
+                size="small"
+              >
+                {{ row.status }}
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
 
-        <!-- Tunnels panel -->
-        <section class="panel tunnels-panel">
-          <div class="panel-header">
-            <h2>
+      <el-card style="display: flex; flex-direction: column">
+        <template #header>
+          <div style="display: flex; justify-content: space-between; align-items: center">
+            <span style="font-weight: 600">
               隧道列表
-              <span v-if="selectedGroup" class="subtitle">（{{ selectedGroup.name }}）</span>
-            </h2>
-            <el-button
-              v-if="selectedGroupId"
-              type="primary"
-              size="small"
-              @click="openCreateTunnelDrawer"
-            >
-              新建隧道
-            </el-button>
+              <span v-if="selectedGroup" style="font-weight: 400; color: var(--el-text-color-secondary)">（{{ selectedGroup.name }}）</span>
+            </span>
+            <el-button v-if="selectedGroupId" type="primary" size="small" @click="openCreateTunnelDrawer">新建隧道</el-button>
           </div>
-          <div class="panel-body">
-            <div v-if="!selectedGroupId" class="empty-message">
-              请选择分组查看隧道
-            </div>
-            <div v-else-if="filteredTunnels.length === 0" class="empty-message">
-              该分组暂无隧道
-            </div>
-            <el-table v-else :data="filteredTunnels" height="100%">
-              <el-table-column prop="name" label="名称" />
-              <el-table-column prop="protocol" label="协议" width="70" align="center">
-                <template #default="{ row }">
-                  <el-tag size="small">{{ row.protocol.toUpperCase() }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="远端" width="120">
-                <template #default="{ row }">
-                  {{ formatRemotePort(row) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="本地">
-                <template #default="{ row }">
-                  {{ formatLocalAddr(row) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="状态" width="80" align="center">
-                <template #default="{ row }">
-                  <el-tooltip
-                    v-if="(row.status === '冲突' || row.status === '异常') && row.status_reason"
-                    :content="row.status_reason"
-                    placement="top"
-                  >
-                    <el-tag type="danger" size="small">{{ row.status }}</el-tag>
-                  </el-tooltip>
-                  <el-tag
-                    v-else
-                    :type="row.status === '启用' ? 'success' : row.status === '禁用' ? 'info' : 'danger'"
-                    size="small"
-                  >
-                    {{ row.status }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="120" align="center">
-                <template #default="{ row }">
-                  <el-button link type="primary" size="small" @click="openEditTunnelDrawer(row)">编辑</el-button>
-                  <el-button link type="danger" size="small" @click="handleDeleteTunnel(row)">删除</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </section>
-      </div>
-    </template>
+        </template>
+        <el-empty v-if="!selectedGroupId" description="请选择分组查看隧道" />
+        <el-empty v-else-if="filteredTunnels.length === 0" description="该分组暂无隧道" />
+        <el-table v-else :data="filteredTunnels" height="100%">
+          <el-table-column prop="name" label="名称" />
+          <el-table-column prop="protocol" label="协议" width="70" align="center">
+            <template #default="{ row }">
+              <el-tag size="small">{{ row.protocol.toUpperCase() }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="远端" width="120">
+            <template #default="{ row }">
+              {{ formatRemotePort(row) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="本地">
+            <template #default="{ row }">
+              {{ formatLocalAddr(row) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="80" align="center">
+            <template #default="{ row }">
+              <el-tooltip
+                v-if="(row.status === '冲突' || row.status === '异常') && row.status_reason"
+                :content="row.status_reason"
+                placement="top"
+              >
+                <el-tag type="danger" size="small">{{ row.status }}</el-tag>
+              </el-tooltip>
+              <el-tag
+                v-else
+                :type="row.status === '启用' ? 'success' : row.status === '禁用' ? 'info' : 'danger'"
+                size="small"
+              >
+                {{ row.status }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="120" align="center">
+            <template #default="{ row }">
+              <el-button link type="primary" size="small" @click="openEditTunnelDrawer(row)">编辑</el-button>
+              <el-button link type="danger" size="small" @click="handleDeleteTunnel(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+    </div>
+  </template>
 
-    <!-- Group create/edit dialog -->
+  <!-- Group create/edit dialog -->
     <el-dialog
       v-model="groupDialogVisible"
       :title="groupDialogMode === 'create' ? '新建分组' : '编辑分组'"
@@ -807,7 +770,7 @@ function copyToken() {
         type="error"
         :closable="false"
         show-icon
-        style="margin-bottom: var(--spacing-md)"
+        style="margin-bottom: 12px"
       >
         <template #title>当前状态：异常</template>
         {{ editingGroupStatusReason }}
@@ -856,13 +819,13 @@ function copyToken() {
       width="500px"
       :close-on-click-modal="false"
     >
-      <div class="token-display">
-        <p class="token-hint">请保存以下 Token，用于客户端配置：</p>
-        <div class="token-box">
-          <code class="token-code">{{ newTokenValue }}</code>
+      <div style="text-align: center">
+        <p style="margin-bottom: 12px; color: var(--el-text-color-primary)">请保存以下 Token，用于客户端配置：</p>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 16px; background: var(--el-fill-color); border-radius: 8px; margin-bottom: 12px">
+          <code style="flex: 1; font-family: monospace; word-break: break-all; text-align: left">{{ newTokenValue }}</code>
           <el-button type="primary" size="small" @click="copyToken">复制</el-button>
         </div>
-        <p class="token-warning">此 Token 仅显示一次，关闭后将无法再次查看。</p>
+        <p style="color: var(--el-color-warning); font-size: 12px">此 Token 仅显示一次，关闭后将无法再次查看。</p>
       </div>
       <template #footer>
         <el-button type="primary" @click="newTokenVisible = false">我已保存</el-button>
@@ -959,223 +922,4 @@ function copyToken() {
         </el-button>
       </template>
     </el-drawer>
-  </div>
-</template>
-
-<style scoped>
-.group-config-page {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--spacing-sm);
-  margin-bottom: var(--spacing-lg);
-  flex-shrink: 0;
-}
-
-.page-header h1 {
-  font-size: var(--font-size-h1);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text-primary);
-  margin: 0;
-}
-
-.header-actions {
-  display: flex;
-  gap: var(--spacing-sm);
-}
-
-.state-message {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: var(--spacing-2xl);
-  color: var(--color-text-secondary);
-}
-
-.state-error {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--spacing-md);
-  color: var(--color-danger);
-}
-
-.content-grid {
-  display: grid;
-  grid-template-columns: minmax(320px, 0.95fr) minmax(560px, 1.75fr);
-  gap: var(--spacing-lg);
-  flex: 1;
-  min-height: 0;
-  align-items: stretch;
-}
-
-.panel {
-  background: var(--color-bg-white);
-  border-radius: var(--radius-base);
-  border: 1px solid var(--color-border-lighter);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.groups-panel {
-  min-width: 320px;
-}
-
-.tunnels-panel {
-  min-width: 560px;
-}
-
-.panel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--spacing-base) var(--spacing-lg);
-  border-bottom: 1px solid var(--color-border-lighter);
-}
-
-.panel-header h2 {
-  font-size: var(--font-size-h2);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text-primary);
-  margin: 0;
-}
-
-.subtitle {
-  font-weight: var(--font-weight-regular);
-  font-size: var(--font-size-body);
-  color: var(--color-text-secondary);
-  margin-left: var(--spacing-xs);
-}
-
-.panel-body {
-  flex: 1;
-  min-height: 0;
-  padding: var(--spacing-base);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.empty-message {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: var(--spacing-base);
-  color: var(--color-text-secondary);
-}
-
-.operation-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--spacing-sm);
-  padding: var(--spacing-base) var(--spacing-lg);
-  margin-bottom: var(--spacing-lg);
-  background: var(--color-bg-white);
-  border-radius: var(--radius-base);
-  border: 1px solid var(--color-border-lighter);
-  flex-shrink: 0;
-}
-
-.operation-info {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--spacing-sm);
-}
-
-.info-item {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-xs);
-}
-
-.info-label {
-  color: var(--color-text-secondary);
-}
-
-.info-value {
-  color: var(--color-text-primary);
-  font-weight: var(--font-weight-medium);
-}
-
-.info-value.token {
-  font-family: monospace;
-}
-
-.info-divider {
-  color: var(--color-border);
-}
-
-.operation-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--spacing-sm);
-}
-
-:deep(.selected-row) {
-  background-color: var(--color-primary-light-9);
-}
-
-:deep(.el-table__header-wrapper th),
-:deep(.el-table__header-wrapper .cell),
-:deep(.el-table__row:not(.selectable-row)),
-:deep(.el-table__row:not(.selectable-row) > td),
-:deep(.el-table__row:not(.selectable-row) .cell) {
-  cursor: default;
-}
-
-:deep(.el-table__row.selectable-row),
-:deep(.el-table__row.selectable-row > td),
-:deep(.el-table__row.selectable-row .cell) {
-  cursor: pointer;
-}
-
-/* Token display dialog */
-.token-display {
-  text-align: center;
-}
-
-.token-hint {
-  margin-bottom: var(--spacing-md);
-  color: var(--color-text-primary);
-}
-
-.token-box {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  padding: var(--spacing-base);
-  background: var(--color-bg-fill);
-  border-radius: var(--radius-base);
-  margin-bottom: var(--spacing-md);
-}
-
-.token-code {
-  flex: 1;
-  font-family: monospace;
-  font-size: var(--font-size-body);
-  word-break: break-all;
-  text-align: left;
-}
-
-.token-warning {
-  color: var(--color-warning);
-  font-size: var(--font-size-small);
-}
-</style>
+  </template>

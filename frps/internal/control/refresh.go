@@ -241,7 +241,7 @@ func (s *Server) runtimeRefreshSnapshot(group GroupRuntime, snapshot ConfigSnaps
 		s.clearTunnelRuntimeIssues(group.Snapshot.Tunnels)
 		reason := buildGroupEffectiveIPRuntimeReason(group, err)
 		for _, tunnel := range enabled {
-			s.recordTunnelRuntimeIssue(tunnel.TunnelID, reason)
+			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, reason)
 		}
 		return emptyConfigSnapshot(snapshot), err, true
 	}

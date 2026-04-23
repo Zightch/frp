@@ -182,6 +182,9 @@ func (s *Server) recoverScannedActiveSessionTunnels(group GroupRuntime, targetTu
 	if active.session.hasPendingConfig() {
 		return nil
 	}
+	if s.isShuttingDown() || active.session.isDone() {
+		return nil
+	}
 
 	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
 	if currentGroup.EffectiveIP != group.EffectiveIP {
@@ -286,17 +289,17 @@ func (s *Server) applyScannedTunnelRuntimeIssues(snapshot ConfigSnapshot, static
 
 	for _, tunnel := range snapshot.Tunnels {
 		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
-			s.recordTunnelRuntimeIssue(tunnel.TunnelID, "")
+			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, "")
 			continue
 		}
 		if _, conflicted := staticConflictIDs[int64(tunnel.TunnelID)]; conflicted {
-			s.recordTunnelRuntimeIssue(tunnel.TunnelID, "")
+			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, "")
 			continue
 		}
 		if _, keep := preserved[tunnel.TunnelID]; keep {
 			continue
 		}
-		s.recordTunnelRuntimeIssue(tunnel.TunnelID, strings.TrimSpace(issues[tunnel.TunnelID]))
+		s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, strings.TrimSpace(issues[tunnel.TunnelID]))
 	}
 }
 

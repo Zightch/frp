@@ -67,6 +67,18 @@ func (s *sessionState) closeDone() {
 	})
 }
 
+func (s *sessionState) isDone() bool {
+	if s == nil || s.done == nil {
+		return false
+	}
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func sessionReadTimeout(heartbeatInterval, minimum time.Duration) time.Duration {
 	timeout := heartbeatInterval * 3
 	if timeout < minimum {

@@ -64,11 +64,13 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div v-if="checking" class="auth-card">
-    <p class="auth-checking">检查登录状态...</p>
-  </div>
-  <div v-else class="auth-card">
-    <h2 class="auth-title">管理登录</h2>
+  <el-card v-if="checking" style="text-align: center; color: var(--el-text-color-secondary); padding: 20px 0">
+    检查登录状态...
+  </el-card>
+  <el-card v-else>
+    <template #header>
+      <span style="font-size: 20px; font-weight: 600">管理登录</span>
+    </template>
     <el-form @submit.prevent="handleLogin">
       <el-form-item>
         <el-input
@@ -90,27 +92,5 @@ async function handleLogin() {
         </el-button>
       </el-form-item>
     </el-form>
-  </div>
+  </el-card>
 </template>
-
-<style scoped>
-.auth-card {
-  padding: var(--spacing-2xl);
-  background: var(--color-bg-white);
-  border-radius: var(--radius-base);
-  border: 1px solid var(--color-border-lighter);
-}
-
-.auth-checking {
-  text-align: center;
-  color: var(--color-text-secondary);
-  padding: var(--spacing-lg) 0;
-}
-
-.auth-title {
-  font-size: var(--font-size-h1);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text-primary);
-  margin-bottom: var(--spacing-xl);
-}
-</style>

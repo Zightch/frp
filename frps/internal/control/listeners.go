@@ -90,6 +90,9 @@ func (e *groupEffectiveIPStartError) Unwrap() error {
 }
 
 func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *sessionState) error {
+	if s.isShuttingDown() || session.isDone() {
+		return nil
+	}
 	session.runtimeMu.Lock()
 	if session.runtimeFrozen {
 		session.runtimeMu.Unlock()
@@ -113,11 +116,11 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 	targetTunnels := selectNonListeningEnabledTunnels(snapshot.Tunnels, activeTunnelIDs)
 	for _, tunnel := range snapshot.Tunnels {
 		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
-			s.recordTunnelRuntimeIssue(tunnel.TunnelID, "")
+			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, "")
 			continue
 		}
 		if _, active := activeTunnelIDs[tunnel.TunnelID]; active {
-			s.recordTunnelRuntimeIssue(tunnel.TunnelID, "")
+			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, "")
 		}
 	}
 	if len(targetTunnels) == 0 {
@@ -131,13 +134,13 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 	if err != nil {
 		reason := buildGroupEffectiveIPRuntimeReason(group, err)
 		for _, tunnel := range enabledTunnels(snapshot) {
-			s.recordTunnelRuntimeIssue(tunnel.TunnelID, reason)
+			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, reason)
 		}
 		return fmt.Errorf("%s: %w", reason, err)
 	}
 	conflictIssues := s.detectRuntimePortConflictIssues(group, bindIP, targetTunnels)
 	for tunnelID, reason := range conflictIssues {
-		s.recordTunnelRuntimeIssue(tunnelID, reason)
+		s.recordTunnelRuntimeIssueForConfig(tunnelID, snapshot.Version, reason)
 	}
 
 	for _, tunnel := range targetTunnels {
@@ -152,7 +155,7 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 		}
 		started, startErr := s.startTunnelListeners(group.ID, snapshot.Version, tunnel, bindIP)
 		if startErr != nil {
-			s.recordTunnelRuntimeIssue(tunnel.TunnelID, startErr.Error())
+			s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, startErr.Error())
 			logger.Warn(
 				"tunnel listener start failed",
 				"tunnel_id", tunnel.TunnelID,
@@ -164,6 +167,10 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 		startUDPCleanup, attached := session.attachTunnelListeners(snapshot.Version, tunnel.TunnelID, started.tcpListeners, started.udpListeners)
 		if !attached {
 			closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
+			return nil
+		}
+		if s.isShuttingDown() || session.isDone() {
+			s.shutdownSession(session)
 			return nil
 		}
 		if startUDPCleanup {
@@ -187,7 +194,7 @@ func (s *Server) ensureTunnelListeners(conn net.Conn, logger Logger, session *se
 			)
 			go s.serveUDPTunnelListener(conn, logger, session, runtime.configVersion, runtime.tunnel, runtime.remotePort, runtime.listener)
 		}
-		s.recordTunnelRuntimeIssue(tunnel.TunnelID, "")
+		s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, snapshot.Version, "")
 	}
 	if session.hasActiveRuntimeListeners() {
 		session.setRecoveryMode(testsupport.RecoveryModeRunning)

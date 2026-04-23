@@ -32,8 +32,8 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 		groupSlots[groupID] = sessionID
 	}
 	runtimeIssues := make(map[int64]string, len(s.tunnelRuntimeIssues))
-	for tunnelID, reason := range s.tunnelRuntimeIssues {
-		runtimeIssues[tunnelID] = reason
+	for tunnelID, issue := range s.tunnelRuntimeIssues {
+		runtimeIssues[tunnelID] = issue.Reason
 	}
 	activeSessions := make([]*activeSession, 0, len(s.sessions))
 	for _, active := range s.sessions {

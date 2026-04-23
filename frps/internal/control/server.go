@@ -61,7 +61,7 @@ type Server struct {
 	activeConn          map[net.Conn]struct{}
 	sessions            map[int64]*activeSession
 	// tunnelRuntimeIssues stores the latest listener-start failure observed for a tunnel.
-	tunnelRuntimeIssues map[int64]string
+	tunnelRuntimeIssues map[int64]tunnelRuntimeIssue
 	// groupSlots tracks the occupied single client slot for each proxy group.
 	groupSlots map[int64]uint64
 	closeOnce  sync.Once
@@ -86,6 +86,11 @@ type activeSession struct {
 	mu      sync.Mutex
 	conn    net.Conn
 	session *sessionState
+}
+
+type tunnelRuntimeIssue struct {
+	Reason        string
+	ConfigVersion uint64
 }
 
 func NewServer(options Options, logger *slog.Logger, version string) *Server {
@@ -133,7 +138,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		frames:              options.FrameIO,
 		activeConn:          make(map[net.Conn]struct{}),
 		sessions:            make(map[int64]*activeSession),
-		tunnelRuntimeIssues: make(map[int64]string),
+		tunnelRuntimeIssues: make(map[int64]tunnelRuntimeIssue),
 		groupSlots:          make(map[int64]uint64),
 		shutdownCh:          make(chan struct{}),
 		challenges:          make(map[uint32]*authChallenge),
@@ -166,8 +171,8 @@ func (s *Server) TunnelRuntimeIssues() map[int64]string {
 	}
 
 	issues := make(map[int64]string, len(s.tunnelRuntimeIssues))
-	for tunnelID, reason := range s.tunnelRuntimeIssues {
-		issues[tunnelID] = reason
+	for tunnelID, issue := range s.tunnelRuntimeIssues {
+		issues[tunnelID] = issue.Reason
 	}
 	return issues
 }
@@ -176,7 +181,6 @@ func (s *Server) clearTunnelRuntimeIssues(tunnels []protocol.TunnelEntry) {
 	if s == nil || len(tunnels) == 0 {
 		return
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, tunnel := range tunnels {
@@ -185,17 +189,27 @@ func (s *Server) clearTunnelRuntimeIssues(tunnels []protocol.TunnelEntry) {
 }
 
 func (s *Server) recordTunnelRuntimeIssue(tunnelID uint32, reason string) {
+	s.recordTunnelRuntimeIssueForConfig(tunnelID, 0, reason)
+}
+
+func (s *Server) recordTunnelRuntimeIssueForConfig(tunnelID uint32, configVersion uint64, reason string) {
 	if s == nil || tunnelID == 0 {
 		return
 	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	current, ok := s.tunnelRuntimeIssues[int64(tunnelID)]
+	if ok && configVersion != 0 && current.ConfigVersion > configVersion {
+		return
+	}
 	if strings.TrimSpace(reason) == "" {
 		delete(s.tunnelRuntimeIssues, int64(tunnelID))
 		return
 	}
-	s.tunnelRuntimeIssues[int64(tunnelID)] = strings.TrimSpace(reason)
+	s.tunnelRuntimeIssues[int64(tunnelID)] = tunnelRuntimeIssue{
+		Reason:        strings.TrimSpace(reason),
+		ConfigVersion: configVersion,
+	}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {

@@ -51,12 +51,14 @@ async function handleInit() {
 </script>
 
 <template>
-  <div v-if="checking" class="auth-card">
-    <p class="auth-checking">检查初始化状态...</p>
-  </div>
-  <div v-else class="auth-card">
-    <h2 class="auth-title">初始化管理密钥</h2>
-    <p class="auth-desc">首次使用需设置管理密钥，此操作仅可执行一次</p>
+  <el-card v-if="checking" style="text-align: center; color: var(--el-text-color-secondary); padding: 20px 0">
+    检查初始化状态...
+  </el-card>
+  <el-card v-else>
+    <template #header>
+      <span style="font-size: 20px; font-weight: 600">初始化管理密钥</span>
+    </template>
+    <p style="color: var(--el-text-color-secondary); margin-bottom: 20px">首次使用需设置管理密钥，此操作仅可执行一次</p>
     <el-form @submit.prevent="handleInit">
       <el-form-item>
         <el-input
@@ -78,33 +80,5 @@ async function handleInit() {
         </el-button>
       </el-form-item>
     </el-form>
-  </div>
+  </el-card>
 </template>
-
-<style scoped>
-.auth-card {
-  padding: var(--spacing-2xl);
-  background: var(--color-bg-white);
-  border-radius: var(--radius-base);
-  border: 1px solid var(--color-border-lighter);
-}
-
-.auth-checking {
-  text-align: center;
-  color: var(--color-text-secondary);
-  padding: var(--spacing-lg) 0;
-}
-
-.auth-title {
-  font-size: var(--font-size-h1);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-text-primary);
-  margin-bottom: var(--spacing-sm);
-}
-
-.auth-desc {
-  font-size: var(--font-size-body);
-  color: var(--color-text-secondary);
-  margin-bottom: var(--spacing-xl);
-}
-</style>
