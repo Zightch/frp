@@ -211,6 +211,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `asset_type`
 - `format_type`
 - `crt`
+- `crt_hash`
 - `key`
 - `issuer_asset_id`
 - `created_at`
@@ -222,6 +223,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `asset_type` 取值固定为 `certificate` 或 `ca`
 - `format_type` 当前固定为 `pem`
 - `crt` 存 PEM 内容；允许只存当前证书，也允许直接存完整 `fullchain`
+- `crt_hash` 存证书内容的稳定哈希，作为快速去重和快速比对字段；建议基于解析后的证书内容计算并建索引，命中相同哈希后仍做精确内容比对
 - `key` 存对应 PEM 私钥内容，可为空
 - `issuer_asset_id` 指向“直接上游”资产，只允许单父引用；根 CA 的 `issuer_asset_id` 为空
 
@@ -262,7 +264,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `not_after`
 - `fingerprint`
 
-这些派生信息统一在读取资产后现场解析，用于 API / WebUI 展示或后续消费方校验；资产表本身只保存原始 PEM 与最小关系字段，不做派生缓存。
+这些派生信息统一在读取资产后现场解析，用于 API / WebUI 展示或后续消费方校验；资产表本身只保存原始 PEM、`crt_hash` 与最小关系字段，不做展示型派生缓存。这里的 `crt_hash` 只服务于去重 / 快速比对，不等价于管理面展示用证书指纹字段。
 
 补充约定：
 
@@ -448,6 +450,7 @@ CA 引用层当前已收口为“隧道级 CA 池”，不再保留分组级 CA 
 - `crt` 必须是当前支持的 PEM 内容
 - 如果 `key` 非空，`key` 也必须是当前支持的 PEM 内容
 - `crt` 必须能解析出至少一张证书
+- 写库前必须先计算 `crt_hash`，并用它做快速候选去重；命中相同 `crt_hash` 后仍需做精确内容比对，避免把哈希字段直接当成唯一真实性判断
 - `asset_type=certificate` 且 `key` 非空时，`key` 必须与叶子证书匹配
 - `asset_type=ca` 时，`crt` 必须能解析出 CA 证书
 

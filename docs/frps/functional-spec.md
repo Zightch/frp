@@ -367,6 +367,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `asset_type`
 - `format_type`
 - `crt`
+- `crt_hash`
 - `key`
 - `issuer_asset_id`
 - `created_at`
@@ -377,6 +378,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `source` 当前只区分 `upload` 和 `generated`
 - `asset_type` 当前只区分 `certificate` 和 `ca`
 - `format_type` 当前固定为 `pem`
+- `crt_hash` 由服务端在写库前计算，作为快速去重和快速比对字段
 - `key` 可为空
 - `issuer_asset_id` 指向直接上游资产；根 CA 为空
 
@@ -422,7 +424,13 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `not_after`
 - `fingerprint`
 
-这类信息统一在读取资产后现场解析，用于管理面展示。
+这类信息统一在读取资产后现场解析，用于管理面展示；`crt_hash` 只作为去重辅助字段，不作为展示型指纹字段直接对外承诺。
+
+当前证书去重规则也已确认：
+
+- 写库前先计算 `crt_hash`
+- 先按 `crt_hash` 做快速候选过滤
+- 命中相同 `crt_hash` 后，仍继续做精确内容比对，再决定是否拦截重复写入
 
 当前同时明确不包含下面这些内容：
 
