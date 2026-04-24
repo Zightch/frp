@@ -34,7 +34,8 @@ const filterSource = ref<'all' | 'upload' | 'generated'>('all')
 // Import dialog
 const importDialogVisible = ref(false)
 const importActiveTab = ref('upload')
-const importFormRef = ref<FormInstance>()
+const importUploadFormRef = ref<FormInstance>()
+const importPasteFormRef = ref<FormInstance>()
 const importSubmitting = ref(false)
 const importForm = ref({
   asset_type: 'certificate' as 'certificate' | 'ca',
@@ -56,7 +57,8 @@ const uploadKeyFile = ref<File | null>(null)
 // Generate dialog
 const generateDialogVisible = ref(false)
 const generateActiveTab = ref('ca')
-const generateFormRef = ref<FormInstance>()
+const generateCaFormRef = ref<FormInstance>()
+const generateCertFormRef = ref<FormInstance>()
 const generateSubmitting = ref(false)
 const generateCaForm = ref({
   name: '',
@@ -114,6 +116,28 @@ const filteredAssets = computed(() => {
 const canIssueCAs = computed(() => {
   return assets.value.filter(item => item.asset_type === 'ca' && item.can_issue)
 })
+
+function getActiveImportForm(): FormInstance | undefined {
+  return importActiveTab.value === 'upload'
+    ? importUploadFormRef.value
+    : importPasteFormRef.value
+}
+
+function clearImportValidation() {
+  importUploadFormRef.value?.clearValidate()
+  importPasteFormRef.value?.clearValidate()
+}
+
+function getActiveGenerateForm(): FormInstance | undefined {
+  return generateActiveTab.value === 'ca'
+    ? generateCaFormRef.value
+    : generateCertFormRef.value
+}
+
+function clearGenerateValidation() {
+  generateCaFormRef.value?.clearValidate()
+  generateCertFormRef.value?.clearValidate()
+}
 
 // Lifecycle
 onMounted(async () => {
@@ -219,7 +243,7 @@ function openImportDialog() {
   uploadCrtFile.value = null
   uploadKeyFile.value = null
   importDialogVisible.value = true
-  nextTick(() => importFormRef.value?.clearValidate())
+  nextTick(() => clearImportValidation())
 }
 
 function handleImportTabChange() {
@@ -227,7 +251,7 @@ function handleImportTabChange() {
   uploadKeyFile.value = null
   importForm.value.crt = ''
   importForm.value.key = ''
-  nextTick(() => importFormRef.value?.clearValidate())
+  nextTick(() => clearImportValidation())
 }
 
 const handleCrtUpload: UploadProps['beforeUpload'] = (file) => {
@@ -243,7 +267,7 @@ const handleKeyUpload: UploadProps['beforeUpload'] = (file) => {
 }
 
 async function submitImport() {
-  const valid = await importFormRef.value?.validate().catch(() => false)
+  const valid = await getActiveImportForm()?.validate().catch(() => false)
   if (!valid) return
 
   importSubmitting.value = true
@@ -313,11 +337,15 @@ function openGenerateDialog() {
     ip_addresses: ''
   }
   generateDialogVisible.value = true
-  nextTick(() => generateFormRef.value?.clearValidate())
+  nextTick(() => clearGenerateValidation())
+}
+
+function handleGenerateTabChange() {
+  nextTick(() => clearGenerateValidation())
 }
 
 async function submitGenerate() {
-  const valid = await generateFormRef.value?.validate().catch(() => false)
+  const valid = await getActiveGenerateForm()?.validate().catch(() => false)
   if (!valid) return
 
   generateSubmitting.value = true
@@ -538,7 +566,7 @@ async function handleDelete(asset: CertificateAsset) {
       <el-tabs v-model="importActiveTab" @tab-change="handleImportTabChange">
         <el-tab-pane label="上传文件" name="upload">
           <el-form
-            ref="importFormRef"
+            ref="importUploadFormRef"
             :model="importForm"
             :rules="importFormRules"
             label-width="80px"
@@ -591,7 +619,7 @@ async function handleDelete(asset: CertificateAsset) {
         </el-tab-pane>
         <el-tab-pane label="粘贴 PEM" name="paste">
           <el-form
-            ref="importFormRef"
+            ref="importPasteFormRef"
             :model="importForm"
             :rules="importFormRules"
             label-width="80px"
@@ -640,10 +668,10 @@ async function handleDelete(asset: CertificateAsset) {
       width="500px"
       :close-on-click-modal="false"
     >
-      <el-tabs v-model="generateActiveTab">
+      <el-tabs v-model="generateActiveTab" @tab-change="handleGenerateTabChange">
         <el-tab-pane label="生成 CA" name="ca">
           <el-form
-            ref="generateFormRef"
+            ref="generateCaFormRef"
             :model="generateCaForm"
             :rules="generateCaFormRules"
             label-width="100px"
@@ -664,7 +692,7 @@ async function handleDelete(asset: CertificateAsset) {
         </el-tab-pane>
         <el-tab-pane label="生成证书" name="certificate">
           <el-form
-            ref="generateFormRef"
+            ref="generateCertFormRef"
             :model="generateCertForm"
             :rules="generateCertFormRules"
             label-width="100px"
