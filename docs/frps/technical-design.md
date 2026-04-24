@@ -198,35 +198,58 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `enabled`
 - `updated_at`
 
-### 4.3 已确认待实现的证书资产层
+### 4.3 已确认待实现的统一证书 / CA 资产层
 
-本节只描述已经确认的设计边界；当前代码和 schema 里还没有落地证书资产层。
+本节只描述已经确认的设计边界；当前代码和 schema 里还没有落地这套证书管理模型。
 
-证书管理当前先只做“资产层”，不做下面这些内容：
-
-- 端口绑定
-- SNI 绑定
-- listener / entrypoint 绑定
-- 分组或隧道级证书绑定
-
-当前已确认的资产模型是一张独立证书表，建议名为 `tls_certificates`，字段只保留原始资产本身：
+当前已确认的资产模型是一张统一资产表，建议名为 `certificate_assets`，同时承载普通证书和 CA：
 
 - `id`
 - `name`
 - `remark`
 - `source`
-- `type`
+- `asset_type`
+- `format_type`
 - `crt`
 - `key`
+- `issuer_asset_id`
 - `created_at`
 - `updated_at`
 
 字段语义固定为：
 
-- `source` 只区分资产来源，当前固定为 `upload` 或 `self_signed`
-- `type` 当前固定为 `pem`
-- `crt` 存完整 PEM 证书内容；如果导入的是 fullchain，则按原样整体保存
-- `key` 存与 `crt` 对应的 PEM 私钥内容
+- `source` 当前取值固定为 `upload` 或 `generated`
+- `asset_type` 取值固定为 `certificate` 或 `ca`
+- `format_type` 当前固定为 `pem`
+- `crt` 存 PEM 内容；允许只存当前证书，也允许直接存完整 `fullchain`
+- `key` 存对应 PEM 私钥内容，可为空
+- `issuer_asset_id` 指向“直接上游”资产，只允许单父引用；根 CA 的 `issuer_asset_id` 为空
+
+多级 CA 链通过 `issuer_asset_id` 递归表达，例如：
+
+- 叶子证书 `certificate -> intermediate ca -> root ca`
+- 中间 CA `ca -> parent ca`
+- 根 CA `ca -> nil`
+
+当前设计只支持“单直接上游”链路，不支持：
+
+- 交叉签名
+- 多父引用
+- AIA 自动补链
+
+资产类型补充约定：
+
+- `asset_type=certificate` 时，运行时如果要拿来做客户端证书，必须有 `key`
+- `asset_type=ca` 时，`key` 可以为空
+- 只有 `asset_type=ca` 且 `key` 非空的资产，后续才能作为签发 CA 使用
+- 上传的外部 CA 通常表现为 `asset_type=ca` 且 `key` 为空
+- 自建 / 自签 CA 表现为 `asset_type=ca` 且 `key` 非空
+
+即使 `crt` 已经直接保存了 `fullchain`，`issuer_asset_id` 也仍然保留，用于：
+
+- 管理面展示上游链
+- 删除保护
+- 后续签发关系追踪
 
 当前刻意不把这些派生信息持久化进表：
 
@@ -239,13 +262,32 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `not_after`
 - `fingerprint`
 
-这些派生信息统一在读取资产后现场解析，用于 API / WebUI 展示或后续消费方校验；资产表本身只保存原始证书内容，避免把资产表做成“原文 + 派生缓存”的混合表。
+这些派生信息统一在读取资产后现场解析，用于 API / WebUI 展示或后续消费方校验；资产表本身只保存原始 PEM 与最小关系字段，不做派生缓存。
 
 补充约定：
 
-- 文件上传和手动粘贴都属于“导入现有证书”，统一落到 `source=upload`
-- 自签证书生成完成后，也按普通证书资产入库，只是 `source=self_signed`
-- 管理认证仍继续使用 `auth.json`；证书资产层不参与管理密钥存储和登录鉴权
+- “文件上传”和“手动粘贴”只是管理面输入方式，统一落成 `source=upload`
+- 管理面生成的 CA 和证书统一落成 `source=generated`
+- 管理面展示时可以按 `asset_type` 拆成“证书资产”和“CA 资产”两个视图，但底层仍是一张统一资产表
+- 管理认证仍继续使用 `auth.json`；证书 / CA 资产层不参与管理密钥存储和登录鉴权
+
+### 4.4 已确认待实现的隧道级 CA 池
+
+CA 引用层当前已收口为“隧道级 CA 池”，不再保留分组级 CA 池口径。
+
+建议独立一张关系表，例如 `tunnel_ca_assets`：
+
+- `tunnel_id`
+- `asset_id`
+- `created_at`
+
+字段语义固定为：
+
+- 一条关系表示“该 tunnel 额外信任这条 CA 资产”
+- `asset_id` 只允许引用 `asset_type=ca` 的资产
+- 同一个 CA 资产可以被多个 tunnel 复用
+
+这张关系表只表达“信任池引用”，不表达签发关系；签发关系仍由 `certificate_assets.issuer_asset_id` 负责。
 
 ## 5. 管理 API 设计
 
@@ -373,31 +415,72 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - 指向冲突对端隧道与冲突监听空间
 - 承接启动期全量扫描、未监听轮询、listener 启动或 `effective_ip` 重绑发现的运行态失败原因
 
-### 5.5 已确认待实现的证书资产管理入口
+### 5.5 已确认待实现的统一证书管理入口
 
 本节同样只描述已确认设计，不表示当前 API 已经实现。
 
-当前已确认的证书资产入口只有两类：
+当前已确认的管理入口包括三类：
 
-- 导入现有证书
-- 自签证书
+- 导入现有证书或 CA
+- 生成 CA
+- 使用现有 CA 或新生成 CA 签发证书
 
-其中“导入现有证书”在管理面需要同时支持两种输入方式：
+“导入现有证书或 CA”在管理面需要同时支持两种输入方式：
 
 - 上传 `crt` / `key` 文件
 - 手动粘贴 `crt` / `key` PEM 文本
 
-两种输入方式最终都进入同一条资产导入路径，并统一写成 `source=upload`；管理面不为“文件上传”和“手动粘贴”再额外拆数据库来源枚举。
+这两种方式最终都进入同一条资产导入路径，不再额外落库存来源字段。
 
-自签证书的管理面入口固定为“生成后直接入库”；生成结果仍作为一条普通证书资产，区别只体现在 `source=self_signed`。
+当前管理面需要能区分两类资产：
+
+- `asset_type=certificate`
+- `asset_type=ca`
+
+后续签发逻辑固定为：
+
+- 只有 `asset_type=ca` 且 `key` 非空的资产，才能被选为签发 CA
+- 生成 CA 后，可以只生成 CA 自身，也可以继续用该 CA 签发新的证书资产
+- 生成的新证书资产应写入 `issuer_asset_id`，指向签发它的直接上游 CA
 
 写入资产时必须做的校验固定为：
 
-- `crt` 和 `key` 都必须是当前支持的 PEM 内容
+- `crt` 必须是当前支持的 PEM 内容
+- 如果 `key` 非空，`key` 也必须是当前支持的 PEM 内容
 - `crt` 必须能解析出至少一张证书
-- `key` 必须能解析，并且与 `crt` 叶子证书匹配
+- `asset_type=certificate` 且 `key` 非空时，`key` 必须与叶子证书匹配
+- `asset_type=ca` 时，`crt` 必须能解析出 CA 证书
 
-当前设计边界里，证书资产管理接口仍然只负责“收证书、存证书、读证书”；如何把某张证书用于 WebUI HTTPS、反向代理或公网 listener，留到后续绑定层单独设计。
+删除保护规则当前也已确认：
+
+- 如果某资产被其他资产通过 `issuer_asset_id` 作为直接上游引用，则禁止删除
+- 如果某 CA 资产被 `tunnel_ca_assets` 引用，则禁止删除
+
+### 5.6 已确认待实现的系统 CA 与下发规则
+
+系统 CA 不进入数据库，也不跨机器复制。
+
+当前已确认的运行时语义如下：
+
+- `frps` 启动时加载自己机器的系统 CA 环境，供未来自己作为 TLS 客户端时使用
+- `frpc` 启动时也加载自己机器的系统 CA 环境，供当前作为 TLS 客户端连接目标主机时使用
+- 数据库里只保存管理员上传或生成的证书 / CA 资产
+
+后续某条 tunnel 的有效信任池建议固定为：
+
+- `use_system_ca ? 执行侧本机系统 CA : 空`
+- `+ tunnel_ca_assets` 引用到的 CA 资产集合
+
+其中：
+
+- 当前正向链路里，“执行侧”是 `frpc`
+- 后续反向代理场景里，如果 `frps` 直接作为客户端连接上游目标服务器，“执行侧”则是 `frps`
+
+`frps -> frpc` 下发规则当前也已确认：
+
+- 只下发当前 tunnel 实际引用到的 CA 资产
+- 不下发 `frps` 本机系统 CA
+- `issuer_asset_id` 用于管理关系和删除保护，不等价于自动把整条上游链都加入 tunnel 信任池；是否信任某条 CA，仍以 `tunnel_ca_assets` 的显式引用为准
 
 ## 6. 控制面设计
 
