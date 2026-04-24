@@ -15,7 +15,7 @@ onMounted(async () => {
   checking.value = false
   if (result.data) {
     if (!result.data.initialized) {
-      router.replace('/init')
+      router.replace({ name: 'Init' })
     } else if (result.data.authenticated) {
       router.replace({ name: 'GroupConfig' })
     }

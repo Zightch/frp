@@ -67,7 +67,8 @@ frps/data/config.json
     "path": "./frps.db"
   },
   "webui": {
-    "dist_dir": "../webui/dist"
+    "dist_dir": "../webui/dist",
+    "path_prefix": ""
   },
   "log": {
     "level": "info",
@@ -105,14 +106,14 @@ frps/data/config.json
 ### 5.2 当前目标
 
 - 只先恢复最小管理前端。
-- 必要功能只保留管理密钥初始化、challenge 登录、分组 CRUD、token 重置和隧道 CRUD。
+- 必要功能只保留管理密钥初始化、challenge 登录、分组 CRUD、登录 `key` 重置和隧道 CRUD。
 - 不先做复杂壳层、额外概览页或未来功能导航。
 
 ### 5.3 目录约定
 
 - `frps/webui/` 作为独立前端目录。
 - 当前目录如果为空，先补最小 `package.json`、基础入口和必要页面。
-- 推荐最小结构只有 `src/main`、`src/router`、`src/api`、`src/views`。
+- 推荐最小结构只有 `src/main`、`src/router`、`src/api`、`src/runtime`、`src/views`。
 - 只有在确实复用时，再补 `src/components` 或状态管理层。
 
 ### 5.4 前端命令约定
@@ -126,7 +127,7 @@ npm.cmd run dev
 npm.cmd run build
 ```
 
-构建产物仍输出到 `frps/webui/dist/`，由 `frps` 按 `webui.dist_dir` 直接托管；如果目录或 `index.html` 缺失，服务会自动回退到内置占位页，不阻塞管理 API 启动。
+构建产物仍输出到 `frps/webui/dist/`，由 `frps` 按 `webui.dist_dir` 直接托管；如果目录或 `index.html` 缺失，服务会自动回退到内置占位页，不阻塞管理 API 启动。当前 `webui.path_prefix` 默认为空；配置后，服务端会在运行时注入 WebUI 基址并提供同前缀下的健康检查与管理 API 别名，因此同一份 `dist` 可以直接用于带前缀部署。
 
 ## 6. 当前修改落点
 

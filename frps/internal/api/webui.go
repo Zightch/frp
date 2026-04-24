@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -80,11 +81,11 @@ const placeholderIndexHTML = `<!DOCTYPE html>
     <p>当前阶段已切换到本地 <code>auth.json</code> 管理密钥方案。完整 WebUI 将在后续阶段迁移为独立的 Node.js + Vue 3 + Element Plus 工程。</p>
     <div class="hint">
       <strong>当前可用最小认证 API</strong>
-      <p><code>GET /api/v1/auth/state</code> 查看是否已初始化。</p>
-      <p><code>POST /api/v1/auth/init</code> 在未初始化时写入管理密钥 hash。</p>
-      <p><code>POST /api/v1/auth/challenge</code> 在已初始化后申请一次性盐 challenge。</p>
-      <p><code>POST /api/v1/auth/login</code> 提交 <code>challenge_id</code> 和 <code>proof</code>，由服务端签发管理会话。</p>
-      <p><code>GET /api/v1/auth/session</code> 查看当前管理会话状态；<code>POST /api/v1/auth/logout</code> 注销当前会话。</p>
+      <p><code>GET __AUTH_STATE_PATH__</code> 查看是否已初始化。</p>
+      <p><code>POST __AUTH_INIT_PATH__</code> 在未初始化时写入管理密钥 hash。</p>
+      <p><code>POST __AUTH_CHALLENGE_PATH__</code> 在已初始化后申请一次性盐 challenge。</p>
+      <p><code>POST __AUTH_LOGIN_PATH__</code> 提交 <code>challenge_id</code> 和 <code>proof</code>，由服务端签发管理会话。</p>
+      <p><code>GET __AUTH_SESSION_PATH__</code> 查看当前管理会话状态；<code>POST __AUTH_LOGOUT_PATH__</code> 注销当前会话。</p>
     </div>
     <p>当前业务管理接口已经要求有效管理会话，后续阶段再切换到独立的 Node.js + Vue 3 + Element Plus WebUI。</p>
   </main>
@@ -92,16 +93,16 @@ const placeholderIndexHTML = `<!DOCTYPE html>
 </html>
 `
 
-func newWebUIHandler(distDir string) (http.Handler, string, error) {
+func newWebUIHandler(distDir string, basePath string) (http.Handler, string, error) {
 	distDir = strings.TrimSpace(distDir)
 	if distDir == "" {
-		return newPlaceholderWebUIHandler(), "", nil
+		return newPlaceholderWebUIHandler(basePath), "", nil
 	}
 
 	info, err := os.Stat(distDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return newPlaceholderWebUIHandler(), fmt.Sprintf("webui.dist_dir %q does not exist", distDir), nil
+			return newPlaceholderWebUIHandler(basePath), fmt.Sprintf("webui.dist_dir %q does not exist", distDir), nil
 		}
 		return nil, "", fmt.Errorf("stat webui.dist_dir %q: %w", distDir, err)
 	}
@@ -113,7 +114,7 @@ func newWebUIHandler(distDir string) (http.Handler, string, error) {
 	indexInfo, err := os.Stat(indexPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return newPlaceholderWebUIHandler(), fmt.Sprintf("webui index %q does not exist", indexPath), nil
+			return newPlaceholderWebUIHandler(basePath), fmt.Sprintf("webui index %q does not exist", indexPath), nil
 		}
 		return nil, "", fmt.Errorf("stat webui index %q: %w", indexPath, err)
 	}
@@ -121,9 +122,15 @@ func newWebUIHandler(distDir string) (http.Handler, string, error) {
 		return nil, "", fmt.Errorf("webui index %q must be a file", indexPath)
 	}
 
+	indexContent, err := buildServedIndexHTML(indexPath, basePath)
+	if err != nil {
+		return nil, "", err
+	}
+
 	return &webUIHandler{
 		distDir:    distDir,
 		indexPath:  indexPath,
+		indexHTML:  indexContent,
 		fileServer: http.FileServer(http.Dir(distDir)),
 	}, "", nil
 }
@@ -131,6 +138,7 @@ func newWebUIHandler(distDir string) (http.Handler, string, error) {
 type webUIHandler struct {
 	distDir    string
 	indexPath  string
+	indexHTML  []byte
 	fileServer http.Handler
 }
 
@@ -173,14 +181,22 @@ func (h *webUIHandler) ServeHTTP(writer http.ResponseWriter, request *http.Reque
 }
 
 func (h *webUIHandler) serveIndex(writer http.ResponseWriter, request *http.Request) {
-	http.ServeFile(writer, request, h.indexPath)
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.WriteHeader(http.StatusOK)
+	if request.Method == http.MethodHead {
+		return
+	}
+	_, _ = writer.Write(h.indexHTML)
 }
 
-func newPlaceholderWebUIHandler() http.Handler {
-	return http.HandlerFunc(handlePlaceholderIndex)
+func newPlaceholderWebUIHandler(basePath string) http.Handler {
+	indexHTML := renderPlaceholderIndexHTML(basePath)
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		handlePlaceholderIndex(writer, request, indexHTML)
+	})
 }
 
-func handlePlaceholderIndex(writer http.ResponseWriter, request *http.Request) {
+func handlePlaceholderIndex(writer http.ResponseWriter, request *http.Request, indexHTML []byte) {
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		http.NotFound(writer, request)
 		return
@@ -195,5 +211,58 @@ func handlePlaceholderIndex(writer http.ResponseWriter, request *http.Request) {
 	if request.Method == http.MethodHead {
 		return
 	}
-	_, _ = writer.Write([]byte(placeholderIndexHTML))
+	_, _ = writer.Write(indexHTML)
+}
+
+func buildServedIndexHTML(indexPath string, basePath string) ([]byte, error) {
+	indexHTML, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, fmt.Errorf("read webui index %q: %w", indexPath, err)
+	}
+	return injectWebUIRuntimeConfig(indexHTML, basePath), nil
+}
+
+func renderPlaceholderIndexHTML(basePath string) []byte {
+	replacer := strings.NewReplacer(
+		"__AUTH_STATE_PATH__", joinURLPath(basePath, "/api/v1/auth/state"),
+		"__AUTH_INIT_PATH__", joinURLPath(basePath, "/api/v1/auth/init"),
+		"__AUTH_CHALLENGE_PATH__", joinURLPath(basePath, "/api/v1/auth/challenge"),
+		"__AUTH_LOGIN_PATH__", joinURLPath(basePath, "/api/v1/auth/login"),
+		"__AUTH_SESSION_PATH__", joinURLPath(basePath, "/api/v1/auth/session"),
+		"__AUTH_LOGOUT_PATH__", joinURLPath(basePath, "/api/v1/auth/logout"),
+	)
+	return injectWebUIRuntimeConfig([]byte(replacer.Replace(placeholderIndexHTML)), basePath)
+}
+
+func injectWebUIRuntimeConfig(indexHTML []byte, basePath string) []byte {
+	basePathJSON, err := json.Marshal(basePath)
+	if err != nil {
+		basePathJSON = []byte(`""`)
+	}
+
+	baseHref := "/"
+	if basePath != "" {
+		baseHref = basePath + "/"
+	}
+
+	bootstrap := `<base href="` + baseHref + `"><script>window.__FRPS_WEBUI_BASE_PATH__=` + string(basePathJSON) + `;</script>`
+	content := string(indexHTML)
+
+	switch {
+	case strings.Contains(content, "</head>"):
+		content = strings.Replace(content, "</head>", bootstrap+"</head>", 1)
+	case strings.Contains(content, "</body>"):
+		content = strings.Replace(content, "</body>", bootstrap+"</body>", 1)
+	default:
+		content += bootstrap
+	}
+
+	return []byte(content)
+}
+
+func joinURLPath(basePath string, suffix string) string {
+	if basePath == "" {
+		return suffix
+	}
+	return basePath + suffix
 }

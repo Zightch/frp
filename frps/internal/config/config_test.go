@@ -34,7 +34,7 @@ func TestLoadAppliesCustomConfig(t *testing.T) {
 		"read_header_timeout":"3s",
 		"shutdown_timeout":"8s",
 		"database":{"type":"mysql","dsn":"user:pass@tcp(127.0.0.1:3306)/frps?parseTime=true"},
-		"webui":{"dist_dir":"./webui-dist"},
+		"webui":{"dist_dir":"./webui-dist","path_prefix":"frps/admin/"},
 		"log":{"level":"debug","format":"json"}
 	}`)
 	if err := os.WriteFile(path, content, 0o644); err != nil {
@@ -61,6 +61,9 @@ func TestLoadAppliesCustomConfig(t *testing.T) {
 	wantDistDir := filepath.Join(tempDir, "webui-dist")
 	if cfg.WebUI.DistDir != wantDistDir {
 		t.Fatalf("unexpected webui dist dir: got %q want %q", cfg.WebUI.DistDir, wantDistDir)
+	}
+	if cfg.WebUI.PathPrefix != "/frps/admin" {
+		t.Fatalf("unexpected webui path prefix: %q", cfg.WebUI.PathPrefix)
 	}
 }
 
@@ -106,5 +109,48 @@ func TestLoadResolvesSQLitePathRelativeToConfigFile(t *testing.T) {
 	wantDistDir := filepath.Clean(filepath.Join(rootDir, "webui", "dist"))
 	if cfg.WebUI.DistDir != wantDistDir {
 		t.Fatalf("unexpected webui dist dir: got %q want %q", cfg.WebUI.DistDir, wantDistDir)
+	}
+}
+
+func TestNormalizeWebUIPathPrefix(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "empty", input: "", want: ""},
+		{name: "slash", input: "/", want: ""},
+		{name: "simple", input: "frps", want: "/frps"},
+		{name: "trim and clean", input: " /ops/frps/ ", want: "/ops/frps"},
+		{name: "nested", input: "/ops/frps/admin", want: "/ops/frps/admin"},
+		{name: "backslash", input: `\frps`, wantErr: true},
+		{name: "query", input: "/frps?x=1", wantErr: true},
+		{name: "fragment", input: "/frps#part", wantErr: true},
+		{name: "reserved api", input: "/api/frps", wantErr: true},
+		{name: "reserved healthz", input: "/healthz/ui", wantErr: true},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := NormalizeWebUIPathPrefix(testCase.input)
+			if testCase.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalize prefix: %v", err)
+			}
+			if got != testCase.want {
+				t.Fatalf("unexpected normalized prefix: got %q want %q", got, testCase.want)
+			}
+		})
 	}
 }

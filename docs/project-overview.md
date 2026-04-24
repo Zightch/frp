@@ -27,6 +27,7 @@
 - `auth.json` 删除检测已落地：认证管理器会按固定间隔轮询文件是否被删除，并清空旧 challenge 和旧会话。
 - 管理 API 已具备最小闭环，WebUI 当前主线为：
   - `frps` 按 `webui.dist_dir` 托管静态目录
+  - 支持按 `webui.path_prefix` 挂到子路径，并同步提供同前缀下的健康检查与管理 API 别名
   - 前端技术栈收口为 `Node.js + Vue 3 + Element Plus`
   - 已实现管理密钥初始化、challenge 登录、分组管理、登录 `key` 轮转和隧道管理
   - 当前主管理页已经接入 `effective_ip` 下拉、分组/隧道状态展示和一次性 `key` 展示弹窗

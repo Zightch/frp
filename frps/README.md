@@ -33,7 +33,8 @@ go build -o ./frps.exe ./cmd/frps
     "path": "./frps.db"
   },
   "webui": {
-    "dist_dir": "../webui/dist"
+    "dist_dir": "../webui/dist",
+    "path_prefix": ""
   },
   "log": {
     "level": "info",
@@ -61,12 +62,13 @@ curl http://127.0.0.1:7080/api/v1/healthz
     "dsn": "frps:123456@tcp(staticplant.top:3306)/frps"
   },
   "webui": {
-    "dist_dir": "../webui/dist"
+    "dist_dir": "../webui/dist",
+    "path_prefix": ""
   }
 }
 ```
 
-`data/config.json` 中的相对路径按配置文件所在目录解析，因此上面的 `./frps.db` 与 `../webui/dist` 都是相对于 `frps/data/` 生效。
+`data/config.json` 中的相对路径按配置文件所在目录解析，因此上面的 `./frps.db` 与 `../webui/dist` 都是相对于 `frps/data/` 生效。`webui.path_prefix` 默认为空；如果配置为 `/frps`，则 WebUI 入口变为 `/frps/`，并同步提供 `/frps/healthz`、`/frps/readyz` 和 `/frps/api/v1/*` 前缀别名，根路径下的健康检查与管理 API 仍保持可用。
 
 应用启动时会在上层按配置打开数据库，并自动执行当前必需表的建表与严格校验。
 当前第一阶段内置的核心表包括：
@@ -93,7 +95,7 @@ curl http://127.0.0.1:7080/api/v1/healthz
 
 - 前端目录仍然放在 `frps/webui/`
 - 技术栈固定为 `Node.js + Vue 3 + Element Plus`
-- 必要功能只保留管理密钥初始化、challenge 登录、分组管理、token 重置和隧道管理
+- 必要功能只保留管理密钥初始化、challenge 登录、分组管理、登录 `key` 重置和隧道管理
 - 不再沿用旧版壳层、概览页或复杂页面结构描述
 
 前端工程重建完成后，开发和构建命令统一收口为：
@@ -105,7 +107,7 @@ npm.cmd run dev
 npm.cmd run build
 ```
 
-构建产物仍输出到 `frps/webui/dist/`。`frps` 管理端会读取配置中的 `webui.dist_dir` 并托管该目录；如果目录或 `index.html` 缺失，则自动回退到内置占位页。
+构建产物仍输出到 `frps/webui/dist/`。`frps` 管理端会读取配置中的 `webui.dist_dir` 并托管该目录；如果目录或 `index.html` 缺失，则自动回退到内置占位页。当前前端构建已固定为相对资源路径，服务端会按 `webui.path_prefix` 在运行时注入 WebUI 基址，因此同一份 `dist` 可以挂在根路径或子路径下。
 
 空库会在启动时自动创建当前必需表；如果现有 SQLite/MySQL 表结构与服务内置 schema 不一致，`frps` 会直接退出，避免带着错误库结构继续运行。当前开发阶段不做数据库 schema 兼容或自动迁移。
 `internal/storage/sql.go` 仍只负责统一封装数据库对象，不承载驱动打开和 schema 迁移逻辑。

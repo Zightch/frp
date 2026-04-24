@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
+import { WEBUI_HISTORY_BASE } from '@/runtime/basePath'
 
 const routes: RouteRecordRaw[] = [
   // 根路径重定向到分组配置
@@ -47,7 +48,7 @@ const routes: RouteRecordRaw[] = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(WEBUI_HISTORY_BASE),
   routes
 })
 

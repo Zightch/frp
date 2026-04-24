@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,7 +45,8 @@ type DatabaseConfig struct {
 }
 
 type WebUIConfig struct {
-	DistDir string `json:"dist_dir"`
+	DistDir    string `json:"dist_dir"`
+	PathPrefix string `json:"path_prefix"`
 }
 
 func Default() Config {
@@ -108,6 +110,7 @@ func (c *Config) Validate() error {
 	c.Database.DSN = strings.TrimSpace(c.Database.DSN)
 	c.Database.Path = strings.TrimSpace(c.Database.Path)
 	c.WebUI.DistDir = strings.TrimSpace(c.WebUI.DistDir)
+	c.WebUI.PathPrefix = strings.TrimSpace(c.WebUI.PathPrefix)
 	c.Log.Level = strings.ToLower(strings.TrimSpace(c.Log.Level))
 	c.Log.Format = strings.ToLower(strings.TrimSpace(c.Log.Format))
 
@@ -135,6 +138,11 @@ func (c *Config) Validate() error {
 	if c.WebUI.DistDir == "" {
 		return fmt.Errorf("webui.dist_dir is required")
 	}
+	pathPrefix, err := NormalizeWebUIPathPrefix(c.WebUI.PathPrefix)
+	if err != nil {
+		return fmt.Errorf("webui.path_prefix: %w", err)
+	}
+	c.WebUI.PathPrefix = pathPrefix
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
 	default:
@@ -162,6 +170,43 @@ func resolveRelativePath(baseDir, value string) string {
 		return value
 	}
 	return filepath.Clean(filepath.Join(baseDir, value))
+}
+
+func NormalizeWebUIPathPrefix(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "/" {
+		return "", nil
+	}
+	if strings.Contains(value, `\`) {
+		return "", fmt.Errorf("must use URL path separators '/'")
+	}
+	if strings.ContainsAny(value, "?#") {
+		return "", fmt.Errorf("must not contain query or fragment")
+	}
+
+	normalized := value
+	if !strings.HasPrefix(normalized, "/") {
+		normalized = "/" + normalized
+	}
+	normalized = path.Clean(normalized)
+	if normalized == "." || normalized == "/" {
+		return "", nil
+	}
+	if strings.HasPrefix(normalized, "/../") || normalized == "/.." {
+		return "", fmt.Errorf("must stay within the URL root")
+	}
+	if strings.Contains(normalized, "//") {
+		return "", fmt.Errorf("must not contain empty path segments")
+	}
+	switch {
+	case normalized == "/api" || strings.HasPrefix(normalized, "/api/"):
+		return "", fmt.Errorf("must not overlap reserved management api paths")
+	case normalized == "/healthz" || strings.HasPrefix(normalized, "/healthz/"):
+		return "", fmt.Errorf("must not overlap reserved health check paths")
+	case normalized == "/readyz" || strings.HasPrefix(normalized, "/readyz/"):
+		return "", fmt.Errorf("must not overlap reserved health check paths")
+	}
+	return normalized, nil
 }
 
 func (c Config) ReadHeaderTimeoutDuration() time.Duration {

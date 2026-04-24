@@ -53,6 +53,7 @@ SQLite / MySQL
 - `database.type = sqlite`
 - `database.path = ./frps.db`
 - `webui.dist_dir = ../webui/dist`
+- `webui.path_prefix = ""`
 
 MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 
@@ -110,7 +111,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `server.go`：HTTP server、路由注册、日志中间件
 - `auth.go`：管理认证路由与 Cookie/Bearer 会话
 - `management.go`：分组和隧道 CRUD
-- `webui.go`：静态资源托管和 SPA fallback
+- `webui.go`：静态资源托管、SPA fallback 和运行时 WebUI 基址注入
 
 ### 3.7 `internal/control`
 

@@ -14,7 +14,7 @@ onMounted(async () => {
   const result = await authApi.state()
   checking.value = false
   if (result.data?.initialized) {
-    router.replace('/login')
+    router.replace({ name: 'Login' })
   }
 })
 
@@ -41,7 +41,7 @@ async function handleInit() {
       return
     }
     ElMessage.success('管理密钥初始化成功')
-    router.push('/login')
+    router.push({ name: 'Login' })
   } catch {
     ElMessage.error('初始化失败')
   } finally {

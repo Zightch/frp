@@ -12,7 +12,7 @@ async function handleLogout() {
     return
   }
   ElMessage.success('已退出登录')
-  router.replace('/login')
+  router.replace({ name: 'Login' })
 }
 </script>
 

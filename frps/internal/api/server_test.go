@@ -1932,6 +1932,92 @@ func TestWebUIHandlerServesStaticFilesAndSPAFallback(t *testing.T) {
 	}
 }
 
+func TestWebUIHandlerSupportsConfiguredPathPrefix(t *testing.T) {
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Auth:              newTestAuthManager(t, false),
+			WebUIDistDir:      newTestWebUIDist(t),
+			WebUIPathPrefix:   "/ops/frps",
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	rootRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rootRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rootRecorder.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("unexpected root redirect status: %d body=%s", rootRecorder.Code, rootRecorder.Body.String())
+	}
+	if location := rootRecorder.Header().Get("Location"); location != "/ops/frps/" {
+		t.Fatalf("unexpected root redirect location: %q", location)
+	}
+
+	indexRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(indexRecorder, httptest.NewRequest(http.MethodGet, "/ops/frps/", nil))
+	if indexRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected prefixed index status: %d body=%s", indexRecorder.Code, indexRecorder.Body.String())
+	}
+	if !bytes.Contains(indexRecorder.Body.Bytes(), []byte(`<base href="/ops/frps/">`)) {
+		t.Fatalf("expected prefixed base href in body: %s", indexRecorder.Body.String())
+	}
+	if !bytes.Contains(indexRecorder.Body.Bytes(), []byte(`window.__FRPS_WEBUI_BASE_PATH__="/ops/frps"`)) {
+		t.Fatalf("expected prefixed runtime config in body: %s", indexRecorder.Body.String())
+	}
+
+	assetRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(assetRecorder, httptest.NewRequest(http.MethodGet, "/ops/frps/assets/app.js", nil))
+	if assetRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected prefixed asset status: %d body=%s", assetRecorder.Code, assetRecorder.Body.String())
+	}
+	if assetRecorder.Body.String() != "console.log('webui-ok');" {
+		t.Fatalf("unexpected prefixed asset body: %s", assetRecorder.Body.String())
+	}
+
+	spaRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(spaRecorder, httptest.NewRequest(http.MethodGet, "/ops/frps/login", nil))
+	if spaRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected prefixed spa status: %d body=%s", spaRecorder.Code, spaRecorder.Body.String())
+	}
+	if !bytes.Contains(spaRecorder.Body.Bytes(), []byte(`<div id="app"></div>`)) {
+		t.Fatalf("unexpected prefixed spa body: %s", spaRecorder.Body.String())
+	}
+
+	rootWebUIRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rootWebUIRecorder, httptest.NewRequest(http.MethodGet, "/login", nil))
+	if rootWebUIRecorder.Code != http.StatusNotFound {
+		t.Fatalf("unexpected unprefixed webui status: %d body=%s", rootWebUIRecorder.Code, rootWebUIRecorder.Body.String())
+	}
+
+	prefixedState := performJSONRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/ops/frps/api/v1/auth/state",
+		nil,
+		http.StatusOK,
+	)
+	if prefixedState["initialized"] != false {
+		t.Fatalf("unexpected prefixed auth state: %#v", prefixedState)
+	}
+
+	rootState := performJSONRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/auth/state",
+		nil,
+		http.StatusOK,
+	)
+	if rootState["initialized"] != false {
+		t.Fatalf("unexpected root auth state: %#v", rootState)
+	}
+}
+
 func TestNewServerFallsBackWhenWebUIDistDirMissing(t *testing.T) {
 	server, err := NewServer(
 		Options{
@@ -2075,7 +2161,7 @@ func newTestWebUIDist(t *testing.T) string {
 		t.Fatalf("create webui dist dir: %v", err)
 	}
 
-	indexHTML := `<!doctype html><html lang="zh-CN"><body><div id="app"></div><script type="module" src="/assets/app.js"></script></body></html>`
+	indexHTML := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head><body><div id="app"></div><script type="module" src="./assets/app.js"></script></body></html>`
 	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte(indexHTML), 0o644); err != nil {
 		t.Fatalf("write webui index: %v", err)
 	}

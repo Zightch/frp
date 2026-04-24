@@ -59,6 +59,7 @@ python test/e2e_udp_single.py --scenario happy_path
 python test/e2e_udp_single.py --scenario idle_cleanup
 python test/e2e_udp_range.py
 python test/e2e_management_webui.py
+python test/e2e_management_webui.py --webui-prefix /frps
 python test/e2e_tcp_perf.py
 ```
 
@@ -69,7 +70,7 @@ python test/e2e_tcp_perf.py
 - UDP 单端口主链路
 - UDP 空闲清理
 - UDP 连续范围映射
-- 管理认证、分组 CRUD、token 重置、隧道 CRUD
+- 管理认证、分组 CRUD、登录 `key` 重置、隧道 CRUD
 - 最小 TCP 健康压测
 
 ### 2.3 Python 平台探针（免编译）
@@ -111,6 +112,8 @@ curl http://127.0.0.1:7080/healthz
 curl http://127.0.0.1:7080/api/v1/auth/state
 Test-NetConnection 127.0.0.1 -Port 7000
 ```
+
+如果配置了 `webui.path_prefix=/frps`，也可以直接检查 `http://127.0.0.1:7080/frps/healthz` 和 `http://127.0.0.1:7080/frps/api/v1/auth/state`。
 
 ### 3.2 管理认证
 

@@ -55,10 +55,12 @@
 当前 WebUI 已完成重建，实际页面如下：
 
 - 技术栈：`Node.js + Vue 3 + Element Plus`
+- 下面路由都相对 WebUI 基址生效；默认基址是 `/`，如果配置 `webui.path_prefix=/frps`，则整体挂到 `/frps/...`
 - `/init`：一次性写入首个管理密钥
 - `/login`：challenge 登录
 - `/proxy-groups`：主管理页，承接分组和隧道管理
-- `/` 重定向到 `/proxy-groups`
+- WebUI 基址内 `/` 重定向到 `/proxy-groups`
+- 如果配置了 `webui.path_prefix`，同前缀下会同步暴露 `/healthz`、`/readyz` 和 `/api/v1/*`
 
 已实现功能：
 - 管理密钥初始化
@@ -275,7 +277,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - 同一分组同一时刻只允许一个未确认的在线配置更新。
 - 如果刷新时前一版 `config.push` 仍未确认，`frps` 直接断开当前控制连接，不排队等待第二版更新。
 - 如果 `config.ack` 超时或返回失败，`frps` 直接断开该分组控制连接，交给 `frpc` 自动重连后重新领取完整快照。
-- token 重置和分组删除继续直接断开当前控制连接，不走热重载。
+- 登录 `key` 重置和分组删除继续直接断开当前控制连接，不走热重载。
 
 截至 2026-04-21，当前产品行为已经落地到：
 

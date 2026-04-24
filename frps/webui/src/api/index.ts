@@ -1,4 +1,4 @@
-const API_BASE = '/api/v1'
+import { API_BASE } from '@/runtime/basePath'
 
 // --- Types ---
 

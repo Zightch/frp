@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import json
 import os
+import posixpath
 import shutil
 import signal
 import sqlite3
@@ -86,6 +87,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MANAGEMENT_SECRET,
         help="Management secret used during the init/login flow.",
     )
+    parser.add_argument(
+        "--webui-prefix",
+        default="",
+        help="Optional WebUI path prefix such as /frps for prefixed reverse proxy deployments.",
+    )
     return parser.parse_args()
 
 
@@ -98,6 +104,7 @@ def main() -> int:
         return 1
 
     validate_args(args)
+    webui_prefix = normalize_webui_prefix(args.webui_prefix)
     output_dir = resolve_output_dir(args, repo_root)
     paths = build_runtime_paths(output_dir)
 
@@ -121,7 +128,7 @@ def main() -> int:
         stage = "write fixed data/config.json"
         print(f"[stage] {stage}")
         control_port, management_port, tunnel_ports = allocate_test_ports(count=6)
-        write_config_file(paths.config_path, control_port, management_port)
+        write_config_file(paths.config_path, control_port, management_port, webui_prefix)
 
         stage = "start frps from isolated workspace"
         print(f"[stage] {stage}")
@@ -133,10 +140,12 @@ def main() -> int:
         )
 
         base_url = f"http://127.0.0.1:{management_port}"
+        webui_base_url = join_webui_base_url(base_url, webui_prefix)
+        api_base_url = f"{webui_base_url}/api/v1"
 
         stage = "wait for management api and sqlite schema"
         print(f"[stage] {stage}")
-        wait_http_ready(f"{base_url}/readyz", args.timeout, process)
+        wait_http_ready(f"{webui_base_url}/readyz", args.timeout, process)
         wait_sqlite_schema(paths.db_path, min(args.timeout, 15.0))
 
         cookie_jar = CookieJar()
@@ -144,23 +153,23 @@ def main() -> int:
 
         stage = "validate webui static entry and spa fallback"
         print(f"[stage] {stage}")
-        root_html = request_text(opener, "GET", f"{base_url}/", expected_status=200)
+        root_html = request_text(opener, "GET", f"{webui_base_url}/", expected_status=200)
         if '<div id="app"></div>' not in root_html:
             raise RuntimeError("webui root did not return the built SPA entry")
-        login_html = request_text(opener, "GET", f"{base_url}/login", expected_status=200)
+        login_html = request_text(opener, "GET", f"{webui_base_url}/login", expected_status=200)
         if '<div id="app"></div>' not in login_html:
             raise RuntimeError("webui SPA fallback did not return the built SPA entry")
 
         stage = "validate pre-init auth state"
         print(f"[stage] {stage}")
-        state_before = request_json(opener, "GET", f"{base_url}/api/v1/auth/state", expected_status=200)
+        state_before = request_json(opener, "GET", f"{api_base_url}/auth/state", expected_status=200)
         assert_equal(state_before.get("initialized"), False, "pre-init initialized")
         assert_equal(state_before.get("authenticated"), False, "pre-init authenticated")
 
         unauthorized_before_init = request_json(
             opener,
             "GET",
-            f"{base_url}/api/v1/proxy-groups",
+            f"{api_base_url}/proxy-groups",
             expected_status=409,
         )
         assert_equal(
@@ -175,7 +184,7 @@ def main() -> int:
         init_result = request_json(
             opener,
             "POST",
-            f"{base_url}/api/v1/auth/init",
+            f"{api_base_url}/auth/init",
             payload={"key_hash": key_hash},
             expected_status=201,
         )
@@ -190,7 +199,7 @@ def main() -> int:
 
         stage = "challenge login and session restore"
         print(f"[stage] {stage}")
-        challenge = request_json(opener, "POST", f"{base_url}/api/v1/auth/challenge", expected_status=200)
+        challenge = request_json(opener, "POST", f"{api_base_url}/auth/challenge", expected_status=200)
         challenge_id = str(challenge.get("challenge_id") or "").strip()
         salt = str(challenge.get("salt") or "").strip()
         if not challenge_id or not salt:
@@ -199,7 +208,7 @@ def main() -> int:
         login_result = request_json(
             opener,
             "POST",
-            f"{base_url}/api/v1/auth/login",
+            f"{api_base_url}/auth/login",
             payload={
                 "challenge_id": challenge_id,
                 "proof": build_management_proof(key_hash, salt),
@@ -211,25 +220,25 @@ def main() -> int:
         if not list(cookie_jar):
             raise RuntimeError("login did not produce a management session cookie")
 
-        state_after_login = request_json(opener, "GET", f"{base_url}/api/v1/auth/state", expected_status=200)
+        state_after_login = request_json(opener, "GET", f"{api_base_url}/auth/state", expected_status=200)
         assert_equal(state_after_login.get("initialized"), True, "post-login initialized")
         assert_equal(state_after_login.get("authenticated"), True, "post-login authenticated")
 
-        session_after_login = request_json(opener, "GET", f"{base_url}/api/v1/auth/session", expected_status=200)
+        session_after_login = request_json(opener, "GET", f"{api_base_url}/auth/session", expected_status=200)
         assert_equal(session_after_login.get("authenticated"), True, "session authenticated")
 
         stage = "delete auth.json and confirm automatic auth reset"
         print(f"[stage] {stage}")
         paths.auth_path.unlink()
 
-        state_after_delete = wait_for_auth_reset(opener, base_url, min(args.timeout, 10.0))
+        state_after_delete = wait_for_auth_reset(opener, api_base_url, min(args.timeout, 10.0))
         assert_equal(state_after_delete.get("initialized"), False, "post-delete initialized")
         assert_equal(state_after_delete.get("authenticated"), False, "post-delete authenticated")
 
         protected_after_delete = request_json(
             opener,
             "GET",
-            f"{base_url}/api/v1/proxy-groups",
+            f"{api_base_url}/proxy-groups",
             expected_status=409,
         )
         assert_equal(
@@ -243,13 +252,13 @@ def main() -> int:
         reinit_result = request_json(
             opener,
             "POST",
-            f"{base_url}/api/v1/auth/init",
+            f"{api_base_url}/auth/init",
             payload={"key_hash": key_hash},
             expected_status=201,
         )
         assert_equal(reinit_result.get("initialized"), True, "reinit response initialized")
 
-        challenge_after_reset = request_json(opener, "POST", f"{base_url}/api/v1/auth/challenge", expected_status=200)
+        challenge_after_reset = request_json(opener, "POST", f"{api_base_url}/auth/challenge", expected_status=200)
         challenge_id = str(challenge_after_reset.get("challenge_id") or "").strip()
         salt = str(challenge_after_reset.get("salt") or "").strip()
         if not challenge_id or not salt:
@@ -258,7 +267,7 @@ def main() -> int:
         relogin_result = request_json(
             opener,
             "POST",
-            f"{base_url}/api/v1/auth/login",
+            f"{api_base_url}/auth/login",
             payload={
                 "challenge_id": challenge_id,
                 "proof": build_management_proof(key_hash, salt),
@@ -273,7 +282,7 @@ def main() -> int:
         created_group = request_json(
             opener,
             "POST",
-            f"{base_url}/api/v1/proxy-groups",
+            f"{api_base_url}/proxy-groups",
             payload={
                 "name": "e2e-group",
                 "effective_ip": group_effective_ip,
@@ -288,14 +297,14 @@ def main() -> int:
         assert_equal(created_group_item.get("status"), "启用", "created proxy group status")
         assert_key_matches_db(paths.db_path, created_group_id, initial_group_key)
 
-        groups_after_create = request_json(opener, "GET", f"{base_url}/api/v1/proxy-groups", expected_status=200)
+        groups_after_create = request_json(opener, "GET", f"{api_base_url}/proxy-groups", expected_status=200)
         group_items = require_list(groups_after_create, "items")
         assert_equal(len(group_items), 1, "proxy group count after create")
 
         updated_group = request_json(
             opener,
             "PATCH",
-            f"{base_url}/api/v1/proxy-groups/{created_group_id}",
+            f"{api_base_url}/proxy-groups/{created_group_id}",
             payload={"name": "e2e-group-renamed", "enabled": True},
             expected_status=200,
         )
@@ -309,7 +318,7 @@ def main() -> int:
         reset_group = request_json(
             opener,
             "POST",
-            f"{base_url}/api/v1/proxy-groups/{created_group_id}/key",
+            f"{api_base_url}/proxy-groups/{created_group_id}/key",
             expected_status=200,
         )
         reset_group_item = require_mapping(reset_group, "item")
@@ -324,7 +333,7 @@ def main() -> int:
         created_tunnel = request_json(
             opener,
             "POST",
-            f"{base_url}/api/v1/tunnels",
+            f"{api_base_url}/tunnels",
             payload={
                 "group_id": created_group_id,
                 "name": "e2e-tunnel",
@@ -343,14 +352,14 @@ def main() -> int:
         created_tunnel_id = int(created_tunnel_item["id"])
         assert_equal(created_tunnel_item.get("group_id"), created_group_id, "created tunnel group_id")
 
-        tunnels_after_create = request_json(opener, "GET", f"{base_url}/api/v1/tunnels", expected_status=200)
+        tunnels_after_create = request_json(opener, "GET", f"{api_base_url}/tunnels", expected_status=200)
         tunnel_items = require_list(tunnels_after_create, "items")
         assert_equal(len(tunnel_items), 1, "tunnel count after create")
 
         updated_tunnel = request_json(
             opener,
             "PATCH",
-            f"{base_url}/api/v1/tunnels/{created_tunnel_id}",
+            f"{api_base_url}/tunnels/{created_tunnel_id}",
             payload={
                 "group_id": created_group_id,
                 "name": "e2e-tunnel-renamed",
@@ -374,7 +383,7 @@ def main() -> int:
         deleted_tunnel = request_json(
             opener,
             "DELETE",
-            f"{base_url}/api/v1/tunnels/{created_tunnel_id}",
+            f"{api_base_url}/tunnels/{created_tunnel_id}",
             expected_status=200,
         )
         assert_equal(deleted_tunnel.get("deleted"), True, "delete tunnel response")
@@ -383,7 +392,7 @@ def main() -> int:
         deleted_group = request_json(
             opener,
             "DELETE",
-            f"{base_url}/api/v1/proxy-groups/{created_group_id}",
+            f"{api_base_url}/proxy-groups/{created_group_id}",
             expected_status=200,
         )
         assert_equal(deleted_group.get("deleted"), True, "delete proxy group response")
@@ -391,13 +400,13 @@ def main() -> int:
 
         stage = "logout and confirm protected api rejection"
         print(f"[stage] {stage}")
-        logout_result = request_json(opener, "POST", f"{base_url}/api/v1/auth/logout", expected_status=200)
+        logout_result = request_json(opener, "POST", f"{api_base_url}/auth/logout", expected_status=200)
         assert_equal(logout_result.get("logged_out"), True, "logout response")
 
         unauthorized_after_logout = request_json(
             opener,
             "GET",
-            f"{base_url}/api/v1/auth/session",
+            f"{api_base_url}/auth/session",
             expected_status=401,
         )
         assert_equal(
@@ -411,6 +420,8 @@ def main() -> int:
             "output_dir": str(paths.output_dir),
             "workspace_dir": str(paths.workspace_dir),
             "management_url": base_url,
+            "webui_prefix": webui_prefix,
+            "webui_base_url": webui_base_url,
             "control_addr": f"127.0.0.1:{control_port}",
             "frps_log_path": str(paths.frps_log_path),
             "config_path": str(paths.config_path),
@@ -425,7 +436,7 @@ def main() -> int:
                 "auth.json deletion resets management auth state",
                 "management secret reinitialization after auth reset",
                 "proxy group create/list/update/delete",
-                "proxy group token reset with sqlite verification",
+                "proxy group login key reset with sqlite verification",
                 "tunnel create/list/update/delete",
                 "logout and protected api rejection",
             ],
@@ -455,12 +466,13 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--timeout must be positive")
     if not args.management_secret.strip():
         raise ValueError("--management-secret must not be empty")
+    normalize_webui_prefix(args.webui_prefix)
 
 
 def resolve_output_dir(args: argparse.Namespace, repo_root: Path) -> Path:
     if args.output_dir:
         return Path(args.output_dir).resolve()
-    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     return (repo_root / "test" / "tmp" / f"management-e2e-{timestamp}").resolve()
 
 
@@ -593,7 +605,7 @@ def allocate_test_ports(count: int) -> tuple[int, int, list[int]]:
     return ports[0], ports[1], ports[2:]
 
 
-def write_config_file(config_path: Path, control_port: int, management_port: int) -> None:
+def write_config_file(config_path: Path, control_port: int, management_port: int, webui_prefix: str) -> None:
     config = {
         "control_listen_addr": f"127.0.0.1:{control_port}",
         "management_listen_addr": f"127.0.0.1:{management_port}",
@@ -605,6 +617,7 @@ def write_config_file(config_path: Path, control_port: int, management_port: int
         },
         "webui": {
             "dist_dir": "../webui/dist",
+            "path_prefix": webui_prefix,
         },
         "log": {
             "level": "info",
@@ -689,12 +702,12 @@ def wait_sqlite_schema(db_path: Path, timeout_seconds: float) -> None:
 
 def wait_for_auth_reset(
     opener: urllib.request.OpenerDirector,
-    base_url: str,
+    api_base_url: str,
     timeout_seconds: float,
 ) -> dict[str, object]:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        state = request_json(opener, "GET", f"{base_url}/api/v1/auth/state", expected_status=200)
+        state = request_json(opener, "GET", f"{api_base_url}/auth/state", expected_status=200)
         if state.get("initialized") is False and state.get("authenticated") is False:
             return state
         time.sleep(0.25)
@@ -836,6 +849,32 @@ def ensure_process_alive(process: ManagedProcess) -> None:
     return_code = process.popen.poll()
     if return_code is not None:
         raise RuntimeError(f"{process.name} exited unexpectedly with code {return_code}")
+
+
+def normalize_webui_prefix(value: str) -> str:
+    trimmed = value.strip()
+    if not trimmed or trimmed == "/":
+        return ""
+    if "\\" in trimmed:
+        raise ValueError("--webui-prefix must use '/' separators")
+    if "?" in trimmed or "#" in trimmed:
+        raise ValueError("--webui-prefix must not contain query or fragment")
+
+    normalized = trimmed if trimmed.startswith("/") else f"/{trimmed}"
+    normalized = posixpath.normpath(normalized)
+    if normalized == "." or normalized == "/":
+        return ""
+    if normalized == "/api" or normalized.startswith("/api/"):
+        raise ValueError("--webui-prefix must not overlap reserved /api paths")
+    if normalized == "/healthz" or normalized.startswith("/healthz/"):
+        raise ValueError("--webui-prefix must not overlap reserved /healthz paths")
+    if normalized == "/readyz" or normalized.startswith("/readyz/"):
+        raise ValueError("--webui-prefix must not overlap reserved /readyz paths")
+    return normalized
+
+
+def join_webui_base_url(base_url: str, webui_prefix: str) -> str:
+    return f"{base_url}{webui_prefix}" if webui_prefix else base_url
 
 
 def terminate_process(process: ManagedProcess) -> None:

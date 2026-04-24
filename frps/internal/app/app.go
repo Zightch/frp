@@ -80,6 +80,7 @@ func (a *App) Run(parent context.Context) error {
 			RuntimeStatus:     a.control,
 			Auth:              a.auth,
 			WebUIDistDir:      a.config.WebUI.DistDir,
+			WebUIPathPrefix:   a.config.WebUI.PathPrefix,
 		},
 		a.logger.With("subsystem", "api"),
 		a.version,
@@ -111,6 +112,7 @@ func (a *App) Run(parent context.Context) error {
 		"control_addr", a.config.ControlListenAddr,
 		"management_addr", a.config.ManagementListenAddr,
 		"webui_dist_dir", a.config.WebUI.DistDir,
+		"webui_path_prefix", a.config.WebUI.PathPrefix,
 		"version", a.version,
 	)
 

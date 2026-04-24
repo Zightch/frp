@@ -11,12 +11,15 @@
 - 前端框架固定为 `Vue 3`。
 - UI 组件库固定为 `Element Plus`。
 - 构建产物输出到 `frps/webui/dist/`，由 `frps` 按 `webui.dist_dir` 托管。
+- 服务端会在运行时注入 WebUI 基址；默认挂在 `/`，配置 `webui.path_prefix` 后可整体挂到子路径。
 
 ## 2. 当前已实现页面
 
+下面这些路由都相对 WebUI 基址生效；默认基址是 `/`，如果配置 `webui.path_prefix=/frps`，则整体变为 `/frps/...`。
+
 | 路由 | 组件 | 说明 |
 |------|------|------|
-| `/` | - | 根路径直接重定向到 `GroupConfig` |
+| `/` | - | WebUI 基址内的根路径重定向到 `GroupConfig` |
 | `/init` | `InitView.vue` | 初始化管理密钥；如果已经初始化则跳转 `/login` |
 | `/login` | `LoginView.vue` | challenge 登录；如果已登录则跳转 `GroupConfig` |
 | `/proxy-groups` | `GroupConfigView.vue` | 主管理页；UI 名称为“分组配置” |
@@ -72,7 +75,7 @@
 
 ## 6. 代码组织
 
-- 当前目录保持最小结构：`src/main.ts`、`src/router`、`src/api`、`src/layouts`、`src/views`。
+- 当前目录保持最小结构：`src/main.ts`、`src/router`、`src/api`、`src/runtime`、`src/layouts`、`src/views`。
 - 业务状态主要收敛在页面组件内，暂未引入额外状态管理层。
 - API 命名仍按后端契约保留 `proxyGroupsApi`、`ProxyGroup` 等名称。
 

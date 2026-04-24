@@ -112,14 +112,14 @@ onMounted(async () => {
   }
 
   if (!authResult.data.initialized) {
-    router.replace('/init')
+    router.replace({ name: 'Init' })
     return
   }
 
   initialized.value = true
 
   if (!authResult.data.authenticated) {
-    router.replace('/login')
+    router.replace({ name: 'Login' })
     return
   }
 
