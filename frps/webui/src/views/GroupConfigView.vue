@@ -628,47 +628,61 @@ function copyKey(value: string) {
     </el-result>
 
     <template v-else-if="authenticated">
-      <el-header height="auto" class="page-header">
+      <div class="page-header">
         <el-row justify="space-between" align="middle">
           <h1>分组配置</h1>
           <el-button @click="loadData" :loading="loading">刷新</el-button>
         </el-row>
-      </el-header>
+      </div>
 
       <el-card
         v-if="selectedGroup"
         class="selected-group-card"
         :body-style="{ padding: '12px 20px' }"
       >
-        <el-row justify="space-between" align="middle">
-          <el-descriptions :column="4">
-            <el-descriptions-item label="已选中">{{ selectedGroup.name }}</el-descriptions-item>
-            <el-descriptions-item label="状态">
-              <el-tooltip
-                v-if="selectedGroup.status === '异常' && selectedGroup.status_reason"
-                :content="selectedGroup.status_reason"
-                placement="top"
-              >
-                <el-tag type="danger" size="small">{{ selectedGroup.status }}</el-tag>
-              </el-tooltip>
-              <el-tag
-                v-else
-                :type="selectedGroup.status === '启用' ? 'success' : selectedGroup.status === '禁用' ? 'info' : 'danger'"
-                size="small"
-              >
-                {{ selectedGroup.status }}
-              </el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="Client ID">
-              <code>{{ selectedGroup.client_id }}</code>
-            </el-descriptions-item>
-            <el-descriptions-item label="生效 IP">{{ selectedGroup.effective_ip }}</el-descriptions-item>
-          </el-descriptions>
-          <el-space>
-            <el-button size="small" @click="handleRotateKey(selectedGroup)">重置密钥</el-button>
-            <el-button size="small" @click="openEditGroupDialog(selectedGroup)">编辑</el-button>
-            <el-button size="small" type="danger" @click="handleDeleteGroup(selectedGroup)">删除</el-button>
-          </el-space>
+        <el-row justify="space-between" align="middle" :gutter="12">
+          <el-col :xs="24" :lg="16">
+            <el-space wrap alignment="center" size="small" class="group-info-bar">
+              <span class="group-info-item">
+                <span class="group-info-label">分组</span>
+                <span class="group-info-value">{{ selectedGroup.name }}</span>
+              </span>
+              <span class="group-info-item">
+                <span class="group-info-label">状态</span>
+                <span class="group-info-value">
+                  <el-tooltip
+                    v-if="selectedGroup.status === '异常' && selectedGroup.status_reason"
+                    :content="selectedGroup.status_reason"
+                    placement="top"
+                  >
+                    <el-tag type="danger" size="small">{{ selectedGroup.status }}</el-tag>
+                  </el-tooltip>
+                  <el-tag
+                    v-else
+                    :type="selectedGroup.status === '启用' ? 'success' : selectedGroup.status === '禁用' ? 'info' : 'danger'"
+                    size="small"
+                  >
+                    {{ selectedGroup.status }}
+                  </el-tag>
+                </span>
+              </span>
+              <span class="group-info-item">
+                <span class="group-info-label">Client ID</span>
+                <code class="group-info-code">{{ selectedGroup.client_id }}</code>
+              </span>
+              <span class="group-info-item">
+                <span class="group-info-label">生效 IP</span>
+                <span class="group-info-value">{{ selectedGroup.effective_ip }}</span>
+              </span>
+            </el-space>
+          </el-col>
+          <el-col :xs="24" :lg="8">
+            <el-space class="group-actions" wrap alignment="center">
+              <el-button size="small" @click="handleRotateKey(selectedGroup)">重置密钥</el-button>
+              <el-button size="small" @click="openEditGroupDialog(selectedGroup)">编辑</el-button>
+              <el-button size="small" type="danger" @click="handleDeleteGroup(selectedGroup)">删除</el-button>
+            </el-space>
+          </el-col>
         </el-row>
       </el-card>
 
@@ -765,7 +779,7 @@ function copyKey(value: string) {
                     </el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="120" align="center">
+                <el-table-column label="操作" width="120" align="center" fixed="right">
                   <template #default="{ row }">
                     <el-button link type="primary" size="small" @click="openEditTunnelDrawer(row)">编辑</el-button>
                     <el-button link type="danger" size="small" @click="handleDeleteTunnel(row)">删除</el-button>
@@ -961,6 +975,43 @@ function copyKey(value: string) {
   margin-top: var(--spacing-base);
 }
 
+.group-info-bar {
+  width: 100%;
+  row-gap: var(--spacing-sm);
+}
+
+.group-info-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-height: 32px;
+  padding-right: var(--spacing-lg);
+}
+
+.group-info-item + .group-info-item {
+  border-left: 1px solid var(--el-border-color-light);
+  padding-left: var(--spacing-lg);
+}
+
+.group-info-label {
+  color: var(--el-text-color-secondary);
+}
+
+.group-info-value,
+.group-info-code {
+  display: inline-flex;
+  align-items: center;
+}
+
+.group-info-code {
+  line-height: 1;
+}
+
+.group-actions {
+  width: 100%;
+  justify-content: flex-end;
+}
+
 .content-main {
   padding: var(--spacing-base) 0 0 0;
   flex: 1;
@@ -1021,6 +1072,19 @@ function copyKey(value: string) {
 
 /* Responsive */
 @media (max-width: 768px) {
+  .group-info-item {
+    padding-right: 0;
+  }
+
+  .group-info-item + .group-info-item {
+    padding-left: 0;
+    border-left: none;
+  }
+
+  .group-actions {
+    justify-content: flex-start;
+  }
+
   .list-col {
     height: auto;
   }
