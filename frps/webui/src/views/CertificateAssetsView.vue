@@ -38,7 +38,6 @@ const importUploadFormRef = ref<FormInstance>()
 const importPasteFormRef = ref<FormInstance>()
 const importSubmitting = ref(false)
 const importForm = ref({
-  asset_type: 'certificate' as 'certificate' | 'ca',
   name: '',
   remark: '',
   crt: '',
@@ -46,7 +45,6 @@ const importForm = ref({
 })
 const importFormRules: FormRules = {
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
-  asset_type: [{ required: true, message: '请选择资产类型', trigger: 'change' }],
   crt: [{ required: true, message: '请输入证书内容', trigger: 'blur' }]
 }
 
@@ -63,6 +61,7 @@ const generateSubmitting = ref(false)
 const generateCaForm = ref({
   name: '',
   remark: '',
+  issuer_asset_id: null as number | null,
   common_name: '',
   validity_days: 3650
 })
@@ -234,7 +233,6 @@ function getStatusText(asset: CertificateAsset): string {
 function openImportDialog() {
   importActiveTab.value = 'upload'
   importForm.value = {
-    asset_type: 'certificate',
     name: '',
     remark: '',
     crt: '',
@@ -282,7 +280,6 @@ async function submitImport() {
       const formData = new FormData()
       formData.append('name', importForm.value.name)
       formData.append('remark', importForm.value.remark)
-      formData.append('asset_type', importForm.value.asset_type)
       formData.append('crt', uploadCrtFile.value, uploadCrtFile.value.name)
       if (uploadKeyFile.value) {
         formData.append('key', uploadKeyFile.value, uploadKeyFile.value.name)
@@ -298,7 +295,6 @@ async function submitImport() {
       const payload: CertificateAssetPastePayload = {
         name: importForm.value.name,
         remark: importForm.value.remark,
-        asset_type: importForm.value.asset_type,
         crt: importForm.value.crt,
         key: importForm.value.key || undefined
       }
@@ -324,6 +320,7 @@ function openGenerateDialog() {
   generateCaForm.value = {
     name: '',
     remark: '',
+    issuer_asset_id: null,
     common_name: '',
     validity_days: 3650
   }
@@ -356,6 +353,7 @@ async function submitGenerate() {
         name: generateCaForm.value.name,
         remark: generateCaForm.value.remark,
         asset_type: 'ca',
+        issuer_asset_id: generateCaForm.value.issuer_asset_id || undefined,
         common_name: generateCaForm.value.common_name,
         validity_days: generateCaForm.value.validity_days
       }
@@ -571,12 +569,6 @@ async function handleDelete(asset: CertificateAsset) {
             :rules="importFormRules"
             label-width="80px"
           >
-            <el-form-item label="资产类型" prop="asset_type">
-              <el-select v-model="importForm.asset_type" class="full-width">
-                <el-option label="证书" value="certificate" />
-                <el-option label="CA" value="ca" />
-              </el-select>
-            </el-form-item>
             <el-form-item label="名称" prop="name">
               <el-input v-model="importForm.name" placeholder="请输入名称" />
             </el-form-item>
@@ -624,12 +616,6 @@ async function handleDelete(asset: CertificateAsset) {
             :rules="importFormRules"
             label-width="80px"
           >
-            <el-form-item label="资产类型" prop="asset_type">
-              <el-select v-model="importForm.asset_type" class="full-width">
-                <el-option label="证书" value="certificate" />
-                <el-option label="CA" value="ca" />
-              </el-select>
-            </el-form-item>
             <el-form-item label="名称" prop="name">
               <el-input v-model="importForm.name" placeholder="请输入名称" />
             </el-form-item>
@@ -681,6 +667,22 @@ async function handleDelete(asset: CertificateAsset) {
             </el-form-item>
             <el-form-item label="备注">
               <el-input v-model="generateCaForm.remark" placeholder="可选备注" />
+            </el-form-item>
+            <el-form-item label="上游 CA">
+              <el-select
+                v-model="generateCaForm.issuer_asset_id"
+                placeholder="留空则生成自签根 CA"
+                class="full-width"
+                clearable
+              >
+                <el-option
+                  v-for="ca in canIssueCAs"
+                  :key="ca.id"
+                  :label="ca.name"
+                  :value="ca.id"
+                />
+              </el-select>
+              <div class="form-hint">选择上游 CA 将生成中间 CA，留空则生成自签根 CA</div>
             </el-form-item>
             <el-form-item label="Common Name" prop="common_name">
               <el-input v-model="generateCaForm.common_name" placeholder="CA 的 CN 字段" />

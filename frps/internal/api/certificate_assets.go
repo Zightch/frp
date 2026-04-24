@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/zightch/frp/frps/internal/certassets"
@@ -41,12 +40,10 @@ type certificateAssetView struct {
 }
 
 type certificateAssetPasteRequest struct {
-	Name          string `json:"name"`
-	Remark        string `json:"remark"`
-	AssetType     string `json:"asset_type"`
-	CRT           string `json:"crt"`
-	Key           string `json:"key"`
-	IssuerAssetID *int64 `json:"issuer_asset_id"`
+	Name   string `json:"name"`
+	Remark string `json:"remark"`
+	CRT    string `json:"crt"`
+	Key    string `json:"key"`
 }
 
 type certificateAssetGenerateRequest struct {
@@ -242,13 +239,11 @@ func (m *managementService) uploadCertificateAsset(request *http.Request) (certi
 	}
 
 	item, err := m.certs.Import(request.Context(), certassets.CreateInput{
-		Name:          strings.TrimSpace(request.FormValue("name")),
-		Remark:        strings.TrimSpace(request.FormValue("remark")),
-		Source:        certassets.SourceUpload,
-		AssetType:     certassets.AssetType(strings.ToLower(strings.TrimSpace(request.FormValue("asset_type")))),
-		CRT:           readUploadedFormFile(request, "crt"),
-		Key:           readUploadedFormFile(request, "key"),
-		IssuerAssetID: parseOptionalInt64(request.FormValue("issuer_asset_id")),
+		Name:   strings.TrimSpace(request.FormValue("name")),
+		Remark: strings.TrimSpace(request.FormValue("remark")),
+		Source: certassets.SourceUpload,
+		CRT:    readUploadedFormFile(request, "crt"),
+		Key:    readUploadedFormFile(request, "key"),
 	})
 	if err != nil {
 		return certificateAssetView{}, mapCertificateAssetError(err)
@@ -262,13 +257,11 @@ func (m *managementService) pasteCertificateAsset(ctx context.Context, payload c
 	}
 
 	item, err := m.certs.Import(ctx, certassets.CreateInput{
-		Name:          payload.Name,
-		Remark:        payload.Remark,
-		Source:        certassets.SourceUpload,
-		AssetType:     certassets.AssetType(strings.ToLower(strings.TrimSpace(payload.AssetType))),
-		CRT:           payload.CRT,
-		Key:           payload.Key,
-		IssuerAssetID: payload.IssuerAssetID,
+		Name:   payload.Name,
+		Remark: payload.Remark,
+		Source: certassets.SourceUpload,
+		CRT:    payload.CRT,
+		Key:    payload.Key,
 	})
 	if err != nil {
 		return certificateAssetView{}, mapCertificateAssetError(err)
@@ -460,19 +453,6 @@ func readUploadedFormFile(request *http.Request, field string) string {
 		return ""
 	}
 	return string(raw)
-}
-
-func parseOptionalInt64(value string) *int64 {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-
-	number, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || number <= 0 {
-		return nil
-	}
-	return &number
 }
 
 func parseBoolQueryValue(value string) bool {

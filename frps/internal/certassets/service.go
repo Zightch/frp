@@ -1,6 +1,7 @@
 package certassets
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -31,13 +32,11 @@ type Service struct {
 }
 
 type CreateInput struct {
-	Name          string
-	Remark        string
-	Source        Source
-	AssetType     AssetType
-	CRT           string
-	Key           string
-	IssuerAssetID *int64
+	Name   string
+	Remark string
+	Source Source
+	CRT    string
+	Key    string
 }
 
 type GenerateInput struct {
@@ -163,7 +162,7 @@ func (s *Service) List(ctx context.Context) ([]DescribedAsset, error) {
 func (s *Service) Import(ctx context.Context, input CreateInput) (DescribedAsset, error) {
 	var created DescribedAsset
 	err := s.withTx(ctx, func(tx *storage.Tx, existing []Asset, preparedExisting []PreparedAsset, now time.Time) error {
-		candidate, err := buildImportedAsset(existing, input)
+		candidate, err := buildImportedAsset(existing, preparedExisting, input)
 		if err != nil {
 			return err
 		}
@@ -275,7 +274,7 @@ func (s *Service) prepareOptionsAt(now time.Time) PrepareOptions {
 	return options
 }
 
-func buildImportedAsset(existing []Asset, input CreateInput) (Asset, error) {
+func buildImportedAsset(existing []Asset, preparedExisting []PreparedAsset, input CreateInput) (Asset, error) {
 	name := strings.TrimSpace(input.Name)
 	remark := strings.TrimSpace(input.Remark)
 	if name == "" {
@@ -283,15 +282,6 @@ func buildImportedAsset(existing []Asset, input CreateInput) (Asset, error) {
 			Field:   "name",
 			Code:    "required",
 			Message: "name is required",
-		})
-	}
-
-	assetType := normalizeAssetType(input.AssetType)
-	if assetType == "" {
-		return Asset{}, validationError("asset_type must be certificate or ca", ValidationIssue{
-			Field:   "asset_type",
-			Code:    "invalid_asset_type",
-			Message: "asset_type must be certificate or ca",
 		})
 	}
 
@@ -312,6 +302,25 @@ func buildImportedAsset(existing []Asset, input CreateInput) (Asset, error) {
 			Message: "crt must be valid PEM certificate content",
 		})
 	}
+
+	certs, err := parseCertificatesPEM(crt)
+	if err != nil {
+		return Asset{}, validationError("crt must be valid PEM certificate content", ValidationIssue{
+			Field:   "crt",
+			Code:    "invalid_crt_pem",
+			Message: "crt must be valid PEM certificate content",
+		})
+	}
+	if len(certs) == 0 || certs[0] == nil {
+		return Asset{}, validationError("crt must contain at least one certificate", ValidationIssue{
+			Field:   "crt",
+			Code:    "empty_certificate_chain",
+			Message: "crt must contain at least one certificate",
+		})
+	}
+
+	assetType := inferImportedAssetType(certs[0])
+	issuerAssetID := inferImportedIssuerAssetID(preparedExisting, certs)
 
 	source := input.Source
 	if source == "" {
@@ -335,9 +344,97 @@ func buildImportedAsset(existing []Asset, input CreateInput) (Asset, error) {
 		CRT:           crt,
 		CRTHash:       crtHash,
 		Key:           normalizePEMText(input.Key),
-		IssuerAssetID: normalizeIssuerAssetID(input.IssuerAssetID),
+		IssuerAssetID: issuerAssetID,
 	}
 	return candidate, nil
+}
+
+func inferImportedAssetType(leaf *x509.Certificate) AssetType {
+	if leaf != nil && leaf.IsCA {
+		return AssetTypeCA
+	}
+	return AssetTypeCertificate
+}
+
+func inferImportedIssuerAssetID(preparedExisting []PreparedAsset, certs []*x509.Certificate) *int64 {
+	if len(certs) == 0 || certs[0] == nil || isSelfSigned(certs[0]) {
+		return nil
+	}
+
+	candidates := make([]PreparedAsset, 0)
+	for _, item := range preparedExisting {
+		if item.Asset.AssetType != AssetTypeCA || item.Leaf == nil {
+			continue
+		}
+		if certs[0].CheckSignatureFrom(item.Leaf) != nil {
+			continue
+		}
+		candidates = append(candidates, item)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	candidates = narrowIssuerCandidatesByEmbeddedChain(candidates, certs)
+	candidates = narrowIssuerCandidatesByAuthorityKeyID(candidates, certs[0])
+	candidates = narrowIssuerCandidatesByKeyPresence(candidates)
+	sort.Slice(candidates, func(left, right int) bool {
+		return candidates[left].Asset.ID < candidates[right].Asset.ID
+	})
+
+	issuerAssetID := candidates[0].Asset.ID
+	return &issuerAssetID
+}
+
+func narrowIssuerCandidatesByEmbeddedChain(candidates []PreparedAsset, certs []*x509.Certificate) []PreparedAsset {
+	if len(candidates) == 0 || len(certs) < 2 || certs[1] == nil {
+		return candidates
+	}
+
+	matches := make([]PreparedAsset, 0)
+	for _, item := range candidates {
+		if item.Leaf != nil && bytes.Equal(item.Leaf.Raw, certs[1].Raw) {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) == 0 {
+		return candidates
+	}
+	return matches
+}
+
+func narrowIssuerCandidatesByAuthorityKeyID(candidates []PreparedAsset, leaf *x509.Certificate) []PreparedAsset {
+	if len(candidates) == 0 || leaf == nil || len(leaf.AuthorityKeyId) == 0 {
+		return candidates
+	}
+
+	matches := make([]PreparedAsset, 0)
+	for _, item := range candidates {
+		if item.Leaf != nil && bytes.Equal(item.Leaf.SubjectKeyId, leaf.AuthorityKeyId) {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) == 0 {
+		return candidates
+	}
+	return matches
+}
+
+func narrowIssuerCandidatesByKeyPresence(candidates []PreparedAsset) []PreparedAsset {
+	if len(candidates) <= 1 {
+		return candidates
+	}
+
+	matches := make([]PreparedAsset, 0)
+	for _, item := range candidates {
+		if item.Asset.HasKey() {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) == 0 {
+		return candidates
+	}
+	return matches
 }
 
 func buildGeneratedAsset(existing []Asset, preparedExisting []PreparedAsset, input GenerateInput, now time.Time) (Asset, error) {

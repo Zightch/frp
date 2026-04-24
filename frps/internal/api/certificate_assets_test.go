@@ -178,10 +178,9 @@ func TestCertificateAssetsPasteRejectsInvalidContent(t *testing.T) {
 		http.MethodPost,
 		"/api/v1/certificate-assets/paste",
 		map[string]any{
-			"name":       "bad-cert",
-			"asset_type": "certificate",
-			"crt":        "not a pem",
-			"key":        "not a key",
+			"name": "bad-cert",
+			"crt":  "not a pem",
+			"key":  "not a key",
 		},
 		http.StatusUnprocessableEntity,
 		sessionCookie,
@@ -198,6 +197,108 @@ func TestCertificateAssetsPasteRejectsInvalidContent(t *testing.T) {
 	firstIssue := issues[0].(map[string]any)
 	if firstIssue["field"] != "crt" {
 		t.Fatalf("unexpected first issue: %#v", firstIssue)
+	}
+}
+
+func TestCertificateAssetsPasteAutoDetectsTypeAndIssuer(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+	now := time.Now().UTC()
+
+	root := issueAPITestCertificate(t, apiTestCertificateSpec{
+		CommonName: "imported-root",
+		IsCA:       true,
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+	})
+	rootResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/paste",
+		map[string]any{
+			"name": "imported-root",
+			"crt":  root.CertPEM,
+			"key":  root.KeyPEM,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	rootItem := rootResponse.JSON["item"].(map[string]any)
+	rootID := int64(rootItem["id"].(float64))
+	if rootItem["asset_type"] != "ca" {
+		t.Fatalf("expected root import to be detected as ca: %#v", rootItem)
+	}
+
+	leaf := issueAPITestCertificate(t, apiTestCertificateSpec{
+		CommonName: "leaf.example.com",
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+		Issuer:     &root,
+	})
+	leafResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/paste",
+		map[string]any{
+			"name": "leaf-cert",
+			"crt":  leaf.CertPEM,
+			"key":  leaf.KeyPEM,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	leafItem := leafResponse.JSON["item"].(map[string]any)
+	if leafItem["asset_type"] != "certificate" {
+		t.Fatalf("expected leaf import to be detected as certificate: %#v", leafItem)
+	}
+	if int64(leafItem["issuer_asset_id"].(float64)) != rootID {
+		t.Fatalf("expected leaf issuer_asset_id to match imported root: %#v", leafItem)
+	}
+
+	intermediate := issueAPITestCertificate(t, apiTestCertificateSpec{
+		CommonName: "intermediate-ca",
+		IsCA:       true,
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+		Issuer:     &root,
+	})
+	intermediateResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/paste",
+		map[string]any{
+			"name": "intermediate-ca",
+			"crt":  intermediate.CertPEM,
+			"key":  intermediate.KeyPEM,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	intermediateItem := intermediateResponse.JSON["item"].(map[string]any)
+	if intermediateItem["asset_type"] != "ca" {
+		t.Fatalf("expected intermediate import to be detected as ca: %#v", intermediateItem)
+	}
+	if int64(intermediateItem["issuer_asset_id"].(float64)) != rootID {
+		t.Fatalf("expected intermediate issuer_asset_id to match imported root: %#v", intermediateItem)
 	}
 }
 
@@ -227,20 +328,25 @@ func TestCertificateAssetsUploadRejectsDuplicateContent(t *testing.T) {
 		NotAfter:   time.Now().UTC().Add(24 * time.Hour),
 	})
 
-	performRequest(
+	created := performMultipartRequest(
 		t,
 		server.Handler(),
 		http.MethodPost,
-		"/api/v1/certificate-assets/paste",
-		map[string]any{
-			"name":       "uploaded-root-a",
-			"asset_type": "ca",
-			"crt":        ca.CertPEM,
-			"key":        ca.KeyPEM,
+		"/api/v1/certificate-assets/upload",
+		map[string]string{
+			"name": "uploaded-root-a",
+		},
+		map[string]string{
+			"crt": ca.CertPEM,
+			"key": ca.KeyPEM,
 		},
 		http.StatusCreated,
 		sessionCookie,
 	)
+	createdItem := created.JSON["item"].(map[string]any)
+	if createdItem["asset_type"] != "ca" {
+		t.Fatalf("expected upload import to be detected as ca: %#v", createdItem)
+	}
 
 	duplicate := performMultipartRequest(
 		t,
@@ -248,8 +354,7 @@ func TestCertificateAssetsUploadRejectsDuplicateContent(t *testing.T) {
 		http.MethodPost,
 		"/api/v1/certificate-assets/upload",
 		map[string]string{
-			"name":       "uploaded-root-b",
-			"asset_type": "ca",
+			"name": "uploaded-root-b",
 		},
 		map[string]string{
 			"crt": ca.CertPEM,

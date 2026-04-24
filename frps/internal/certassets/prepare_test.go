@@ -187,6 +187,115 @@ func TestPrepareRuntimeWithOptionsRejectsCRTHashMismatch(t *testing.T) {
 	}
 }
 
+func TestPrepareRuntimeWithOptionsAllowsIntermediateBackedBySystemCA(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	root := issueTestCertificate(t, certificateSpec{
+		CommonName: "system-root-ca",
+		IsCA:       true,
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+	})
+	intermediate := issueTestCertificate(t, certificateSpec{
+		CommonName: "system-intermediate-ca",
+		IsCA:       true,
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+		Issuer:     &root,
+	})
+
+	intermediateHash, err := ComputeCRTHash(intermediate.CertPEM)
+	if err != nil {
+		t.Fatalf("compute intermediate crt_hash: %v", err)
+	}
+
+	pool := x509.NewCertPool()
+	if ok := pool.AppendCertsFromPEM([]byte(root.CertPEM)); !ok {
+		t.Fatal("append root cert to system pool")
+	}
+
+	runtime, err := PrepareRuntimeWithOptions(context.Background(), staticRepository{
+		assets: []Asset{
+			{
+				ID:         1,
+				Name:       "system-intermediate-ca",
+				Remark:     "",
+				Source:     SourceUpload,
+				AssetType:  AssetTypeCA,
+				FormatType: FormatTypePEM,
+				CRT:        intermediate.CertPEM,
+				CRTHash:    intermediateHash,
+				Key:        intermediate.KeyPEM,
+			},
+		},
+	}, PrepareOptions{
+		Now: now,
+		LoadSystemCertPool: func() (*x509.CertPool, error) {
+			return pool, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare runtime with system-backed intermediate: %v", err)
+	}
+	if runtime.AssetCount() != 1 {
+		t.Fatalf("unexpected asset count: got %d want %d", runtime.AssetCount(), 1)
+	}
+	if runtime.SystemCACount() != 1 {
+		t.Fatalf("unexpected system ca count: got %d want %d", runtime.SystemCACount(), 1)
+	}
+}
+
+func TestPrepareRuntimeWithOptionsRejectsOrphanLeafWithoutIssuerOrSystemCA(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	root := issueTestCertificate(t, certificateSpec{
+		CommonName: "orphan-root-ca",
+		IsCA:       true,
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+	})
+	leaf := issueTestCertificate(t, certificateSpec{
+		CommonName: "orphan-leaf",
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+		Issuer:     &root,
+	})
+
+	leafHash, err := ComputeCRTHash(leaf.CertPEM)
+	if err != nil {
+		t.Fatalf("compute leaf crt_hash: %v", err)
+	}
+
+	_, err = PrepareRuntimeWithOptions(context.Background(), staticRepository{
+		assets: []Asset{
+			{
+				ID:         1,
+				Name:       "orphan-leaf",
+				Remark:     "",
+				Source:     SourceUpload,
+				AssetType:  AssetTypeCertificate,
+				FormatType: FormatTypePEM,
+				CRT:        leaf.CertPEM,
+				CRTHash:    leafHash,
+				Key:        leaf.KeyPEM,
+			},
+		},
+	}, PrepareOptions{
+		Now: now,
+		LoadSystemCertPool: func() (*x509.CertPool, error) {
+			return x509.NewCertPool(), nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected orphan leaf to fail")
+	}
+	if !strings.Contains(err.Error(), "verify certificate chain") {
+		t.Fatalf("expected orphan leaf verification error, got %v", err)
+	}
+}
+
 type staticRepository struct {
 	assets []Asset
 }

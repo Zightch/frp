@@ -233,10 +233,8 @@ export interface CertificateAssetDeleteImpact {
 export interface CertificateAssetPastePayload {
   name: string
   remark?: string
-  asset_type: 'certificate' | 'ca'
   crt: string
   key?: string
-  issuer_asset_id?: number
 }
 
 export interface CertificateAssetGeneratePayload {
