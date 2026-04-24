@@ -57,6 +57,8 @@ export interface TunnelPayload {
 interface ApiResponse<T = unknown> {
   data?: T
   error?: string
+  errorCode?: string
+  details?: unknown
 }
 
 async function request<T>(
@@ -64,10 +66,10 @@ async function request<T>(
   options?: RequestInit & { rawBody?: boolean }
 ): Promise<ApiResponse<T>> {
   try {
-    const { rawBody, ...fetchOptions } = options || {}
-    const headers: Record<string, string> = {}
-    if (!rawBody) {
-      headers['Content-Type'] = 'application/json'
+    const { rawBody, headers: requestHeaders, ...fetchOptions } = options || {}
+    const headers = new Headers(requestHeaders)
+    if (!rawBody && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json')
     }
 
     const response = await fetch(`${API_BASE}${path}`, {
@@ -77,8 +79,35 @@ async function request<T>(
     })
 
     if (!response.ok) {
+      const contentType = response.headers.get('content-type') || ''
+      if (contentType.includes('application/json')) {
+        const payload = await response.json().catch(() => null) as {
+          error?: string
+          error_code?: string
+          details?: unknown
+        } | null
+        if (payload) {
+          return {
+            error: payload.error || response.statusText || '请求失败',
+            errorCode: payload.error_code,
+            details: payload.details
+          }
+        }
+
+        return { error: response.statusText || '请求失败' }
+      }
+
       const error = await response.text()
-      return { error }
+      return { error: error || response.statusText || '请求失败' }
+    }
+
+    if (response.status === 204) {
+      return {}
+    }
+
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.includes('application/json')) {
+      return {}
     }
 
     const data = await response.json()

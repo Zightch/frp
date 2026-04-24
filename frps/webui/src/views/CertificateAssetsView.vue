@@ -62,8 +62,7 @@ const generateCaForm = ref({
   name: '',
   remark: '',
   common_name: '',
-  validity_days: 3650,
-  can_issue: true
+  validity_days: 3650
 })
 const generateCertForm = ref({
   name: '',
@@ -74,16 +73,25 @@ const generateCertForm = ref({
   dns_names: '',
   ip_addresses: ''
 })
+function createValidityDaysValidator(maxDays: number) {
+  return (_rule: unknown, value: number) => {
+    if (!Number.isInteger(value) || value < 1 || value > maxDays) {
+      return Promise.reject(new Error(`有效期必须为 1-${maxDays} 天的整数`))
+    }
+    return Promise.resolve()
+  }
+}
+
 const generateCaFormRules: FormRules = {
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
   common_name: [{ required: true, message: '请输入 Common Name', trigger: 'blur' }],
-  validity_days: [{ required: true, message: '请输入有效期', trigger: 'blur' }]
+  validity_days: [{ asyncValidator: createValidityDaysValidator(3650), trigger: ['blur', 'change'] }]
 }
 const generateCertFormRules: FormRules = {
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
   issuer_asset_id: [{ required: true, message: '请选择签发 CA', trigger: 'change' }],
   common_name: [{ required: true, message: '请输入 Common Name', trigger: 'blur' }],
-  validity_days: [{ required: true, message: '请输入有效期', trigger: 'blur' }]
+  validity_days: [{ asyncValidator: createValidityDaysValidator(3650), trigger: ['blur', 'change'] }]
 }
 
 // Detail drawer
@@ -224,21 +232,13 @@ function handleImportTabChange() {
 
 const handleCrtUpload: UploadProps['beforeUpload'] = (file) => {
   uploadCrtFile.value = file
-  const reader = new FileReader()
-  reader.onload = (e) => {
-    importForm.value.crt = e.target?.result as string
-  }
-  reader.readAsText(file)
+  importForm.value.crt = file.name
   return false
 }
 
 const handleKeyUpload: UploadProps['beforeUpload'] = (file) => {
   uploadKeyFile.value = file
-  const reader = new FileReader()
-  reader.onload = (e) => {
-    importForm.value.key = e.target?.result as string
-  }
-  reader.readAsText(file)
+  importForm.value.key = file.name
   return false
 }
 
@@ -250,12 +250,19 @@ async function submitImport() {
 
   try {
     if (importActiveTab.value === 'upload') {
+      if (!uploadCrtFile.value) {
+        ElMessage.error('请选择证书文件')
+        return
+      }
+
       const formData = new FormData()
       formData.append('name', importForm.value.name)
       formData.append('remark', importForm.value.remark)
       formData.append('asset_type', importForm.value.asset_type)
-      if (importForm.value.crt) formData.append('crt', importForm.value.crt)
-      if (importForm.value.key) formData.append('key', importForm.value.key)
+      formData.append('crt', uploadCrtFile.value, uploadCrtFile.value.name)
+      if (uploadKeyFile.value) {
+        formData.append('key', uploadKeyFile.value, uploadKeyFile.value.name)
+      }
 
       const result = await certificateAssetsApi.upload(formData)
       if (result.error) {
@@ -294,8 +301,7 @@ function openGenerateDialog() {
     name: '',
     remark: '',
     common_name: '',
-    validity_days: 3650,
-    can_issue: true
+    validity_days: 3650
   }
   generateCertForm.value = {
     name: '',
@@ -652,11 +658,7 @@ async function handleDelete(asset: CertificateAsset) {
               <el-input v-model="generateCaForm.common_name" placeholder="CA 的 CN 字段" />
             </el-form-item>
             <el-form-item label="有效期(天)" prop="validity_days">
-              <el-input-number v-model="generateCaForm.validity_days" :min="1" :max="36500" />
-            </el-form-item>
-            <el-form-item label="可签发证书">
-              <el-switch v-model="generateCaForm.can_issue" />
-              <span class="form-hint">启用后将生成带私钥的 CA，可用于签发子证书</span>
+              <el-input-number v-model="generateCaForm.validity_days" :min="1" :max="3650" />
             </el-form-item>
           </el-form>
         </el-tab-pane>
