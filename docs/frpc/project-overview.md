@@ -12,21 +12,22 @@
 
 ## 2. 当前已交付范围
 
-截至 2026-04-20，`frpc` 已具备：
+截至 2026-04-24，`frpc` 已具备：
 
 - CLI 参数：
   - `--server`
-  - `--token`
+  - `--key`
   - `--version`
-- 固定长度 token 解析：
-  - `token_id`：`32` 位小写 hex
-  - `token_secret`：`64` 位小写 hex
+- 固定长度 `key` 解析：
+  - `client_id`：`32` 位小写 hex
+  - `client_secret`：`64` 位小写 hex
 - 登录握手：
   - `auth.begin`
   - `auth.challenge`
   - `auth.finish`
   - `server.hello`
 - 首次 `config.push` / `config.ack`
+- 同一控制连接上的后续在线 `config.push` / `config.ack`
 - 心跳保活
 - TCP 单端口转发
 - TCP 连续范围映射
@@ -46,7 +47,7 @@
 - 服务端限速执行
 - 服务端抓包执行
 - 本地 UDP idle timer
-- 一个 token 对应多个并发客户端的竞争语义
+- 一个分组多个并发客户端的竞争语义
 
 `frpc` 当前只执行来自 `frps` 的指令，不自行决定隧道规则。
 
@@ -75,7 +76,7 @@ frpc/
 ## 5. 当前运行方式
 
 ```text
-frpc --server 1.2.3.4:7000 --token <token>
+frpc --server 1.2.3.4:7000 --key <key>
 ```
 
 日志级别通过环境变量控制：
@@ -87,13 +88,13 @@ frpc --server 1.2.3.4:7000 --token <token>
 当前启动后流程固定为：
 
 1. 校验 `server`
-2. 解析 token
+2. 解析 `key`
 3. 建立控制连接
 4. 登录
 5. 接收首次配置
 6. 回 `config.ack`
 7. 启动心跳和读循环
-8. 等待 `stream.*` / `udp.*`
+8. 等待后续 `config.push`、`stream.*` / `udp.*`
 9. 断线后指数退避重连
 
 ## 7. 当前验证

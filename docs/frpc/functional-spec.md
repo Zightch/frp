@@ -25,26 +25,26 @@
 当前命令：
 
 ```text
-frpc --server 1.2.3.4:7000 --token <token>
+frpc --server 1.2.3.4:7000 --key <key>
 ```
 
 当前要求：
 
 - `server` 必填
-- `token` 必填
+- `key` 必填
 - `server` 必须能被 `net.SplitHostPort` 解析
-- `token` 必须是 `96` 位小写 hex
+- `key` 必须是 `96` 位小写 hex
 
 ## 3. 登录功能
 
 当前登录过程：
 
-1. 从 token 里截取 `token_id` 和 `token_secret`
+1. 从 `key` 里截取 `client_id` 和 `client_secret`
 2. 发送 `auth.begin`
 3. 接收 `auth.challenge`
 4. 本地计算：
-   - `token_hash = sha256(token_secret)`
-   - `response = sha256(token_hash + nonce)`
+   - `client_secret_hash = sha256(client_secret)`
+   - `response = sha256(client_secret_hash + nonce)`
 5. 发送 `auth.finish`
 6. 接收 `server.hello`
 7. 接收首次 `config.push`
@@ -69,7 +69,7 @@ frpc --server 1.2.3.4:7000 --token <token>
 - 返回 `config.ack` 前，先关闭当前全部活跃 TCP stream 和 UDP session
 - 本地资源清理完成后再替换运行态快照，并更新 `lastAckedConfigVersion`
 - 同一控制连接后续仍可能再次收到新的整组 `config.push`
-- 当前不接收 ACL、限速、抓包等服务端本地策略
+- 当前不接收 ACL、限速、抓包等仅在 `frps` 生效的运行时策略
 
 ## 5. TCP 转发功能
 
@@ -143,6 +143,6 @@ localPort = localStart + offset
 - 本地限速
 - 本地抓包
 - 本地规则系统
-- 配置变更的主动热更新协商
+- 增量配置协议
 
 这些能力如果后续开始实现，必须先更新本文档。

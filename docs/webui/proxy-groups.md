@@ -1,8 +1,8 @@
 # 分组配置页面 UI 规范
 
-更新时间：2026-04-20
+更新时间：2026-04-24
 
-本文档描述当前已经落地的“分组配置”页面。页面旧称“接入管理”，但当前 UI、路由名和组件签名都已经切换到“分组配置”语义。第 9 节补充已经确认但待落地的“生效 IP”扩展契约，避免和当前已实现状态混淆。
+本文档描述当前已经落地的“分组配置”页面。页面旧称“接入管理”，但当前 UI、路由名和组件签名都已经切换到“分组配置”语义。
 
 ## 1. 路由与命名
 
@@ -11,7 +11,7 @@
 | 页面标题 | `分组配置` | 导航文案、页面标题统一使用该名称 |
 | 路由名 | `GroupConfig` | 前端内部路由标识 |
 | 路由路径 | `/proxy-groups` | 为兼容现有入口继续保留旧路径 |
-| 视图组件 | `GroupConfigView.vue` | 原 `ProxyGroupsView.vue` 已更名 |
+| 视图组件 | `GroupConfigView.vue` | 当前主管理页组件 |
 
 兼容边界：
 
@@ -23,15 +23,16 @@
 
 参考当前实际界面，页面结构如下：
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │  分组配置                                           [刷新]   │
 ├──────────────────────────────────────────────────────────────┤
-│  已选中: production | Token ID: 9d9c... [重置Token][编辑][删除] │
+│  已选中: production | 状态: 启用 | Client ID: 9d9c...       │
+│  生效 IP: 0.0.0.0                    [重制密钥][编辑][删除] │
 ├────────────────────────┬────────────────────────────────────┤
 │  分组列表    [新建分组] │  隧道列表（production） [新建隧道] │
 │  ┌───────────────────┐ │ ┌────────────────────────────────┐ │
-│  │ 名称  Token 状态  │ │ │ 名称 协议 远端 本地 状态 操作 │ │
+│  │ 名称 Client ID 状态│ │ │ 名称 协议 远端 本地 状态 操作 │ │
 │  │ production ...    │ │ │ web  tcp 8080 127.0.0.1:80   │ │
 │  │ staging    ...    │ │ │ ssh  tcp 2222 127.0.0.1:22   │ │
 │  └───────────────────┘ │ └────────────────────────────────┘ │
@@ -54,8 +55,8 @@
 | 列名 | 说明 |
 |------|------|
 | 名称 | 分组名称，点击整行即可选中 |
-| Token ID | 分组标识，用于客户端配置 |
-| 状态 | 启用/禁用 Tag |
+| Client ID | 分组稳定公开标识 |
+| 状态 | `启用 / 禁用 / 异常` Tag，异常时可悬停查看原因 |
 
 当前实现中，分组表格没有单独“操作”列。
 
@@ -64,16 +65,17 @@
 - 新建分组：左侧面板头部按钮，使用 `el-dialog`
 - 编辑分组：基于当前选中分组，在顶部操作栏中触发
 - 删除分组：基于当前选中分组，在顶部操作栏中触发
-- 重置 Token：基于当前选中分组，在顶部操作栏中触发
+- 重制密钥：基于当前选中分组，在顶部操作栏中触发
 
 删除分组时：
 
 - 若该分组下存在隧道，确认文案会明确提示“关联隧道会一并删除”。
 
-重置 Token 时：
+重制密钥时：
 
 - 成功后弹出一次性展示窗口。
-- 新 Token 仅显示一次，支持复制到剪贴板。
+- 新登录 `Key` 仅显示一次，支持复制到剪贴板。
+- 确认文案会明确提示旧 `-key` 会立即失效。
 
 ## 4. 隧道管理
 
@@ -85,7 +87,7 @@
 | 协议 | `TCP` / `UDP` |
 | 远端 | 单端口或端口范围 |
 | 本地 | `local_host:local_port` 或范围 |
-| 状态 | 启用/禁用 Tag |
+| 状态 | `启用 / 禁用 / 冲突 / 异常` Tag，冲突/异常时可悬停查看原因 |
 | 操作 | 编辑、删除 |
 
 ### 4.2 隧道操作
@@ -102,7 +104,7 @@
 
 - 点击分组表格行后，左侧表格行高亮。
 - 右侧隧道列表立即切换为当前分组的数据。
-- 顶部操作栏同步显示当前选中分组名称和 `Token ID`。
+- 顶部操作栏同步显示当前选中分组名称、状态、`client_id` 和 `effective_ip`。
 
 ### 5.2 认证与跳转
 
@@ -121,7 +123,7 @@
 
 - 成功：`ElMessage.success`
 - 失败：`ElMessage.error`
-- 删除/重置等不可逆或影响较大的动作：`ElMessageBox.confirm`
+- 删除/重制等不可逆或影响较大的动作：`ElMessageBox.confirm`
 
 ## 6. 表单设计
 
@@ -130,11 +132,15 @@
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | 名称 | `el-input` | 是 | 分组名称 |
+| 生效 IP | `el-select` | 是 | 该分组下全部代理统一绑定的本机监听 IP |
 | 启用 | `el-switch` | 否 | 是否启用 |
 
 当前校验：
 
 - 名称必填。
+- `effective_ip` 必选。
+- 下拉选项只来自服务端当前本机 IPv4、服务端当前本机 IPv6，以及特殊值 `0.0.0.0`、`::`。
+- 编辑已有分组时，如果数据库中的 `effective_ip` 当前已失效，表单会以“已失效”选项回显原值。
 
 ### 6.2 新建/编辑隧道
 
@@ -159,7 +165,17 @@
 - 切换远端类型或修改端口值时，会立即联动重验相关字段。
 - 提交前会对 `name` 和 `local_host` 做 `trim` 后再下发请求。
 
-## 7. 组件选用
+## 7. 登录 Key 展示弹窗
+
+创建分组或重制密钥成功后，页面会弹出一次性 `Key` 展示窗口：
+
+- 标题固定为“客户端登录 Key 已生成”
+- 正文提示“请保存以下登录 Key，并通过 `-key` 提供给客户端”
+- 只展示整串 `key`，不拆成 `client_id` / `client_secret` 两段复制
+- 提供复制按钮
+- 明确提示“此 Key 仅显示一次，关闭后将无法再次查看”
+
+## 8. 组件选用
 
 | 场景 | Element Plus 组件 |
 |------|-------------------|
@@ -175,7 +191,7 @@
 | 消息提示 | `ElMessage` |
 | 确认弹窗 | `ElMessageBox.confirm` |
 
-## 8. API 对齐
+## 9. API 对齐
 
 前端仍与后端 `frps/internal/api/management.go` 对齐：
 
@@ -185,10 +201,23 @@
 interface ProxyGroup {
   id: number
   name: string
-  token_id: string
+  client_id: string
+  effective_ip: string
   enabled: boolean
+  status: string
+  status_reason?: string
   created_at: string
   updated_at: string
+}
+```
+
+### LocalIP
+
+```typescript
+interface LocalIP {
+  addr: string
+  family: string
+  standard: string
 }
 ```
 
@@ -208,6 +237,8 @@ interface Tunnel {
   local_start: number
   local_end: number
   enabled: boolean
+  status: string
+  status_reason?: string
   created_at: string
   updated_at: string
 }
@@ -218,57 +249,19 @@ interface Tunnel {
 | 接口 | 返回 |
 |------|------|
 | `/proxy-groups` GET | `{items: ProxyGroup[]}` |
-| `/proxy-groups` POST | `{item: ProxyGroup, token: string}` |
+| `/proxy-groups` POST | `{item: ProxyGroup, key: string}` |
 | `/proxy-groups/{id}` PATCH | `{item: ProxyGroup}` |
-| `/proxy-groups/{id}/token` POST | `{item: ProxyGroup, token: string}` |
+| `/proxy-groups/{id}/key` POST | `{item: ProxyGroup, key: string}` |
+| `/local-ips` GET | `{items: LocalIP[]}` |
 | `/tunnels` GET | `{items: Tunnel[]}` |
 | `/tunnels` POST | `{item: Tunnel}` |
 | `/tunnels/{id}` PATCH | `{item: Tunnel}` |
 
-## 9. 已确认待落地的生效 IP 扩展
-
-下面这些规则已经确认，但当前还未进入实际页面实现。
-
-### 9.1 分组表单扩展
-
-新建/编辑分组弹窗后续要新增一个字段：
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| 生效 IP | `el-select` | 是 | 该分组下全部代理统一绑定的本机监听 IP，UI 标签固定为“生效 IP” |
-
-固定交互边界：
-
-- 该字段只能使用下拉选择，不允许自由输入。
-- 下拉选项只来自服务端当前本机 IPv4、服务端当前本机 IPv6，以及特殊值 `0.0.0.0`、`::`。
-- 不允许在表单中输入 hostname、CIDR、端口或其他文本变体。
-- 生效 IP 是分组级字段，放在分组弹窗中管理，不下沉到隧道抽屉。
-
-### 9.2 前端类型与接口对齐
-
-`ProxyGroup` 返回模型后续要扩成：
-
-```typescript
-interface ProxyGroup {
-  id: number
-  name: string
-  token_id: string
-  effective_ip: string
-  enabled: boolean
-  status: '启用' | '禁用' | '异常'
-  status_reason?: string
-  created_at: string
-  updated_at: string
-}
-```
-
-分组相关接口的 `item` / `items` 返回模型都要带 `effective_ip`、`status` 和可选 `status_reason`，分组新建/编辑请求体也都要提交 `effective_ip`。
-
-### 9.3 异常态展示边界
+## 10. 当前状态展示边界
 
 - 后端接口当前已经返回一个分组状态字段，供页面直接展示“启用 / 禁用 / 异常”三态，不再额外拆出第二个“IP 可用性状态”字段。
 - `enabled = false` 时显示“禁用”。
 - `enabled = true` 且 `effective_ip` 当前有效并可绑定时显示“启用”。
 - 其他情况显示“异常”；如果数据库中已有 `effective_ip` 当前已不在本机地址列表中，就属于这一类。
-- 表单和列表在异常态下仍需保留并回显数据库中的原值，避免用户进入编辑态后丢失上下文。
-- 这类“异常”是运行态展示，不代表前端自动改写数据库值。
+- 表单和列表在异常态下仍会保留并回显数据库中的原值，避免用户进入编辑态后丢失上下文。
+- 隧道列表当前固定展示 `启用 / 禁用 / 冲突 / 异常` 四态，并在 `冲突` 或 `异常` 时显示 `status_reason`。

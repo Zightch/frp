@@ -36,7 +36,7 @@ frpc/
 ```powershell
 cd frpc
 go build -o ./frpc.exe ./cmd/frpc
-.\frpc.exe --server 127.0.0.1:7000 --token <token>
+.\frpc.exe --server 127.0.0.1:7000 --key <key>
 ```
 
 日志级别：
@@ -47,7 +47,7 @@ $env:FRPC_LOG_LEVEL="debug"
 
 ## 5. 当前主要修改落点
 
-### 5.1 参数和 token 解析
+### 5.1 参数和 key 解析
 
 涉及文件：
 
@@ -55,7 +55,7 @@ $env:FRPC_LOG_LEVEL="debug"
 
 需要同步关注：
 
-- token 长度
+- key 长度
 - 小写 hex 规则
 - `server` 地址校验
 

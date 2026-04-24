@@ -138,7 +138,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 当前配置明确分成两层：
 
 - 持久化配置：管理面写入数据库中的 `proxy_groups`、`tunnels`。
-- 运行时配置：`internal/control/repository.go` 在 `frpc` 登录时把持久化配置投影成 `GroupRuntime` 和 `ConfigSnapshot`；`frps` listener 和 `frpc sessionState.snapshot` 后续都只消费这份运行时快照。
+- 运行时配置：`internal/control/repository.go` 在 `frpc` 登录或在线热重载时把持久化配置投影成 `GroupRuntime` 和 `ConfigSnapshot`；`frps` listener 和 `frpc sessionState.snapshot` 后续都只消费这份运行时快照。
 - 抓包相关控制当前未实现；如果后续引入，只能进入运行时配置层，不能再设计成 `tunnels` 表字段。
 
 ### 4.1 `proxy_groups`
@@ -147,8 +147,8 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 
 - `id`
 - `name`
-- `token_id`
-- `token_hash`
+- `client_id`
+- `client_secret_hash`
 - `effective_ip`
 - `enabled`
 - `rate_limit`
@@ -162,7 +162,7 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `id`
 - `name`
 - `effective_ip`
-- `token_hash`
+- `client_secret_hash`
 - `enabled`
 - `updated_at`
 
@@ -230,19 +230,19 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `effective_ip`
 - `enabled`
 
-创建或重置 token 时：
+创建或轮转登录 `key` 时：
 
-- 返回完整明文 token
-- 数据库只保存 `token_id + token_hash`
+- 返回完整明文 `key`
+- 数据库只保存 `client_id + client_secret_hash`
 
 当前 `effective_ip` 校验规则：
 
 - 只允许单个 IP 字面量，不接受 hostname、CIDR、端口或空字符串。
 - 只允许服务端当前本机 IPv4、服务端当前本机 IPv6，以及特殊值 `0.0.0.0`、`::`。
-- 当前管理 API 已要求显式提交 `effective_ip`；WebUI 适配留在后续步骤单独完成。
+- 当前管理 API 与 WebUI 都已要求显式提交 `effective_ip`。
 - `PATCH /api/v1/proxy-groups/{id}` 当前按局部更新处理：未提交字段保持数据库现值，只有显式提交的字段才重新校验并写回。
 - 空 `PATCH` 对象会直接返回 `400`，要求至少提交 `name`、`effective_ip`、`enabled` 之一。
-- 当前分组返回模型还会附带运行态派生字段 `status` 和可选 `status_reason`，供后续 WebUI 直接展示状态标签和异常原因。
+- 当前分组返回模型还会附带运行态派生字段 `status` 和可选 `status_reason`，当前 WebUI 已直接展示状态标签和异常原因。
 
 ### 5.3 隧道接口
 
@@ -356,7 +356,7 @@ frps -> start listeners
 登录过程中当前会执行：
 
 1. 读取 `auth.begin`
-2. 按 `token_id` 读取 `GroupRuntime`
+2. 按 `client_id` 读取 `GroupRuntime`
 3. 校验分组是否启用
 4. 签发 challenge
 5. 用 `protocol.ChallengeResponse` 计算期望值
@@ -438,7 +438,7 @@ frps -> start listeners
 - 同一分组同一时刻只允许一个 in-flight 配置更新。
 - 如果刷新时前一版 `config.push` 仍未确认，`frps` 直接关闭该分组控制连接，不做排队热重载。
 - 如果 `config.ack` 超时、返回 `error`，或配置更新期间控制连接断开，`frps` 直接关闭该分组控制连接，交给 `frpc` 现有自动重连和首次全量登录流程收口。
-- token 重置和分组删除不走热重载，继续直接断开当前控制连接。
+- 登录 `key` 轮转和分组删除不走热重载，继续直接断开当前控制连接。
 
 截至 2026-04-21，当前代码已经落地到下面这一步：
 
@@ -529,13 +529,13 @@ localPort = localStart + offset
 
 - 反向代理应新增独立运行态，而不是塞回现有正向代理结构。
 - 连接注册表、速率统计、抓包、限速应建立在当前 TCP/UDP bridge 之上。
-- 在线热更新需要补 listener diff、配置推送和 ack 状态管理，不能误写成“仅写库”。
+- 在线热重载当前已经收口在现有 `config.push / config.ack` 边界上；后续如果继续优化 listener diff 或连接保留策略，也不能退回成“仅写库”模型。
 - `proxy_groups.rate_limit` 只有进入真实执行链路后，文档才允许改口为“已实现”。
 - 抓包控制如果后续落地，必须先定义运行时控制面和生效边界，不能再回填为 `tunnels` 持久化字段。
 
-## 9. 分组生效 IP 的剩余待落地边界
+## 9. 分组生效 IP 当前边界
 
-下面这些边界已经确认，其中字段持久化、管理 API CRUD、本机地址快照校验、listener 绑定和分组状态字段已经进入真实代码链路；本节只保留剩余未完成部分。
+下面这些边界已经确认，其中字段持久化、管理 API CRUD、本机地址快照校验、listener 绑定和分组状态字段都已经进入真实代码链路。
 
 ### 9.1 运行态异常派生
 
@@ -545,8 +545,8 @@ localPort = localStart + offset
 - “分组异常”是运行态派生状态，不新增持久化异常字段。
 - 数据库值不自动改写，控制面也不得静默切换到其他地址。
 
-### 9.2 WebUI 适配
+### 9.2 WebUI 展示边界
 
-- WebUI 分组列表和编辑弹窗仍需消费后端已返回的 `status` / `status_reason`，展示“启用 / 禁用 / 异常”三态与异常原因。
-- 分组弹窗仍需补“生效 IP”下拉，选项来源只允许当前本机地址与特殊值 `0.0.0.0`、`::`。
+- WebUI 分组列表和编辑弹窗当前已消费后端返回的 `status` / `status_reason`，展示“启用 / 禁用 / 异常”三态与异常原因。
+- 分组弹窗当前已接入“生效 IP”下拉，选项来源只允许当前本机地址与特殊值 `0.0.0.0`、`::`。
 - 如果数据库已有值当前失效，表单仍需以异常态回显原值，避免用户丢失上下文。

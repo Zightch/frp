@@ -12,7 +12,7 @@
 
 ### 2.1 `cmd/frpc`
 
-- 读取 `--server`、`--token`、`--version`
+- 读取 `--server`、`--key`、`--version`
 - 校验配置
 - 初始化日志
 - 处理 `Ctrl+C`
@@ -22,12 +22,12 @@
 负责：
 
 - 校验 `server`
-- 校验 token 长度和字符集
-- 把 token 解析为：
-  - `ID [16]byte`
-  - `Secret [32]byte`
+- 校验 `key` 长度和字符集
+- 把 `key` 解析为：
+  - `ClientID [16]byte`
+  - `ClientSecret [32]byte`
 
-当前 token 解析规则固定为：
+当前 `key` 解析规则固定为：
 
 - 总长度必须是 `96` 个 hex 字符
 - 必须全为小写
@@ -68,9 +68,9 @@
 
 ```text
 connect
--> auth.begin(token_id, runtime info)
+-> auth.begin(client_id, runtime info)
 -> auth.challenge
--> auth.finish(sha256(token_hash + nonce))
+-> auth.finish(sha256(client_secret_hash + nonce))
 -> server.hello
 -> config.push
 -> config.ack
@@ -78,7 +78,7 @@ connect
 
 当前关键点：
 
-- `token_hash = sha256(token_secret)`
+- `client_secret_hash = sha256(client_secret)`
 - challenge 响应通过 `protocol.ChallengeResponse` 计算
 - 登录成功后立刻应用首次配置
 

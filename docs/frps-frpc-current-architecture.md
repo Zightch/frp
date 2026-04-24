@@ -1,6 +1,6 @@
 # frps / frpc 当前代码架构图
 
-本文根据当前代码实现绘制，不包含尚未落地的设计目标。代码现状以 `2026-04-20` 的工作区为准。
+本文根据当前代码实现绘制，不包含尚未落地的设计目标。代码现状以 `2026-04-24` 的工作区为准。
 
 ## 1. 总体运行拓扑
 
@@ -34,7 +34,7 @@ flowchart LR
 
 - `frps` 同进程内同时运行管理面 HTTP 服务和 `frpc` 控制连接服务。
 - `frps` 的公网隧道监听器由控制会话在收到 `config.ack` 后启动。
-- `frpc` 只通过 `--server` 和 `--token` 启动，不保存复杂隧道配置。
+- `frpc` 只通过 `--server` 和 `--key` 启动，不保存复杂隧道配置。
 - 当前数据面把多个 stream 复用在同一条 `frpc <-> frps` 控制 TCP 连接上，没有单独工作连接池。
 - UDP 当前已经具备 `frps` 公网 listener、控制帧桥接、`frpc` 本地 UDP 转发、`frps` 侧空闲 `30s` cleanup，以及 Python happy path / idle cleanup e2e。
 
@@ -80,8 +80,8 @@ flowchart TB
 
 - `cmd/frps/main.go`：零参数启动，固定读取当前工作目录下的 `data/config.json`，加载配置和日志，启动 `app.App`。
 - `internal/app`：打开数据库，执行当前必需表建表 / 校验，并并发启动管理面和控制面。
-- `internal/api`：提供内嵌 WebUI、健康检查、分组 CRUD、隧道 CRUD、token 重置。
-- `internal/control`：处理 `frpc` 登录、challenge/response、单分组单客户端槽位、配置下发、心跳、TCP 单端口/范围 stream 转发，以及 `frps` 侧 UDP listener/session 管理；当前稳定 ownership 已收口到 `auth.go`、`config.go`、`connections.go`、`session.go`、`listeners.go`、`tcp_bridge.go`、`udp.go`、`sockaddr.go`。
+- `internal/api`：提供内嵌 WebUI、健康检查、分组 CRUD、隧道 CRUD、登录 `key` 轮转。
+- `internal/control`：处理 `frpc` 登录、challenge/response、单分组单客户端槽位、首次配置下发、在线整组热重载、心跳、TCP 单端口/范围 stream 转发，以及 `frps` 侧 UDP listener/session 管理；当前稳定 ownership 已收口到 `auth.go`、`config.go`、`refresh.go`、`connections.go`、`session.go`、`listeners.go`、`tcp_bridge.go`、`udp.go`、`repository.go`、`observe.go` 与 `runtime_*` 管理面。
 - `internal/storage`：包装已打开的 `*sql.DB` / `*sql.Tx`，提供统一查询、执行、事务接口。
 - `pkg/protocol`：定义业务帧、消息类型、错误码、隧道结构和编解码，并承接当前唯一新增的跨端共享纯规则 `ChallengeResponse`。
 - `pkg/transport`：定义 4 字节长度前缀帧读写、超时和最大帧限制。
@@ -90,9 +90,9 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    Main[cmd/frpc/main.go] --> Flags[--server / --token]
+    Main[cmd/frpc/main.go] --> Flags[--server / --key]
     Main --> Config[internal/config Config.Validate]
-    Config --> Token[ParseToken token_id + token_secret]
+    Config --> Key[ParseKey client_id + client_secret]
     Main --> Client[internal/client Client.Run]
 
     Client --> Reconnect[runOnce retry with backoff]
@@ -122,8 +122,8 @@ flowchart TB
 
 主要职责：
 
-- `cmd/frpc/main.go`：只接收 `--server` 和 `--token`，日志级别通过 `FRPC_LOG_LEVEL` 控制。
-- `internal/config`：校验 server 地址，按固定长度解析 token 为 `token_id` 和 `token_secret`。
+- `cmd/frpc/main.go`：只接收 `--server` 和 `--key`，日志级别通过 `FRPC_LOG_LEVEL` 控制。
+- `internal/config`：校验 server 地址，按固定长度解析 `key` 为 `client_id` 和 `client_secret`。
 - `internal/client.Client`：连接 `frps`、登录、断线退避重连、启动读循环和心跳循环。
 - `sessionState`：保存配置快照、活跃 stream、活跃 UDP session、心跳间隔、已确认配置版本和写锁。
 - `targets.go`：统一 tunnel 查找、本地 target 解析和 range 端口换算。
@@ -139,14 +139,14 @@ sequenceDiagram
     participant R as SQLRepository
     participant D as Database
 
-    C->>S: auth.begin(token_id, client metadata)
-    S->>R: LoadGroupRuntime(token_id)
+    C->>S: auth.begin(client_id, client metadata)
+    S->>R: LoadGroupRuntimeByClientID(client_id)
     R->>D: SELECT proxy_groups
     R->>D: SELECT tunnels
     S->>S: validate enabled
     S->>C: auth.challenge(challenge_id, nonce)
-    C->>C: token_hash = sha256(token_secret)
-    C->>C: response = sha256(token_hash + nonce)
+    C->>C: client_secret_hash = sha256(client_secret)
+    C->>C: response = sha256(client_secret_hash + nonce)
     C->>S: auth.finish(challenge_id, response)
     S->>S: consumeChallenge
     S->>S: reserveGroupSlot(group_id, session_id)
@@ -159,11 +159,11 @@ sequenceDiagram
 
 实际代码约束：
 
-- 数据库保存的是 `token_id` 和 `token_hash`，不会保存 token 原文。
-- `frpc` 使用 token 原文中的 `token_secret` 计算响应，`frps` 使用数据库中的 `token_hash` 验证响应。
-- `sha256(token_hash + nonce)` 这条跨端共享纯规则当前已固定收口到 `frps/pkg/protocol.ChallengeResponse`；本轮没有继续新增其他共享 helper。
+- 数据库保存的是 `client_id` 和 `client_secret_hash`，不会保存 `key` 原文。
+- `frpc` 使用 `key` 中的 `client_secret` 计算响应，`frps` 使用数据库中的 `client_secret_hash` 验证响应。
+- `sha256(client_secret_hash + nonce)` 这条跨端共享纯规则当前已固定收口到 `frps/pkg/protocol.ChallengeResponse`；本轮没有继续新增其他共享 helper。
 - `frps` 内存中的 `groupSlots` 固定表示每个分组只有一个已登录客户端槽位。
-- 当前配置快照在登录时加载并下发；管理面修改数据库后，当前代码没有把变更主动推送给已在线 `frpc` 的热更新通道。
+- 当前配置快照在首次登录和后续在线热重载阶段都会加载并下发；管理面命中运行态字段且分组在线时，会复用现有 `config.push / config.ack` 主动推进整组热重载。
 - 数据库当前只承担持久化配置层；`LoadGroupRuntime` 会在登录时把 `proxy_groups` / `tunnels` 投影成 `GroupRuntime` / `ConfigSnapshot`，之后 `frps` / `frpc` 只消费内存快照。
 - 抓包相关控制当前未实现；如果后续引入，应属于运行时配置，不应再作为 `tunnels` 表列。
 
@@ -220,8 +220,9 @@ erDiagram
     proxy_groups {
         integer id
         text name
-        text token_id
-        text token_hash
+        text client_id
+        text client_secret_hash
+        text effective_ip
         integer enabled
         integer rate_limit
         text created_at

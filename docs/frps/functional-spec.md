@@ -5,9 +5,9 @@
 当前 `frps` 只定义已经进入真实代码和测试链路的功能：
 
 - 管理密钥初始化、challenge 登录和会话管理
-- 分组最小 CRUD 与 token 重置
+- 分组最小 CRUD 与登录 `key` 轮转
 - 隧道最小 CRUD
-- `frpc` token challenge/response 登录
+- `frpc` `key` challenge/response 登录
 - TCP/UDP 单端口与连续范围转发
 - `frps` 侧 UDP idle cleanup
 
@@ -63,9 +63,11 @@
 已实现功能：
 - 管理密钥初始化
 - challenge 登录与会话状态检查
-- 分组列表、新建、编辑、删除、重置 token（el-dialog 弹窗）
+- 分组列表、新建、编辑、删除、重制登录 `Key`（el-dialog 弹窗）
 - 隧道列表、新建、编辑、删除（el-drawer 抽屉）
-- 创建/重置分组时 token 明文单次展示
+- 分组表单中的 `effective_ip` 选择与异常值回显
+- 分组/隧道状态展示与原因提示
+- 创建/重制分组时登录 `Key` 明文单次展示
 - 基础加载态、空态、表单校验
 
 UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/webui/proxy-groups.md`。
@@ -82,21 +84,21 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 创建分组时：
 
-- 自动生成完整 token
-- 返回完整明文 token 一次
-- 数据库只保存 `token_id` 和 `token_hash`
-- WebUI 列表页只展示 `token_id`，不会历史回显明文 token
+- 自动生成完整 `key`
+- 返回完整明文 `key` 一次
+- 数据库只保存 `client_id` 和 `client_secret_hash`
+- WebUI 列表页只展示 `client_id`，不会历史回显明文 `key`
 
-当前 WebUI 仍只暴露 `name` / `enabled`，`effective_ip` 的表单适配放在后续步骤单独完成。
-分组查询返回当前还会附带运行态派生字段 `status` 和可选 `status_reason`，供后续 WebUI 展示“启用 / 禁用 / 异常”三态。
+当前 WebUI 已暴露 `name` / `effective_ip` / `enabled` 三个分组字段，并接入异常值回显。
+分组查询返回当前还会附带运行态派生字段 `status` 和可选 `status_reason`，当前 WebUI 已展示“启用 / 禁用 / 异常”三态。
 分组更新接口 `PATCH /api/v1/proxy-groups/{id}` 当前按局部更新处理，未提交字段保持原值；空对象会被拒绝，要求至少提交 `name`、`effective_ip`、`enabled` 之一。
 
 ### 3.2 当前业务规则
 
 - 分组名全局唯一
-- `token = token_id + token_secret`
-- `token_id` 固定为 `32` 位小写 hex
-- `token_secret` 固定为 `64` 位小写 hex
+- `key = client_id + client_secret`
+- `client_id` 固定为 `32` 位小写 hex
+- `client_secret` 固定为 `64` 位小写 hex
 - `effective_ip` 必须是服务端当前本机 IPv4、服务端当前本机 IPv6，或特殊值 `0.0.0.0`、`::`
 - `effective_ip` 是分组级绑定 IP，约束该分组下全部公网 listener 的监听地址
 - 一个分组固定只允许 `1` 个在线 `frpc`
@@ -194,7 +196,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 `frpc` 登录时，`frps` 当前会检查：
 
-- `token_id` 是否存在
+- `client_id` 是否存在
 - 分组是否启用
 - challenge 是否有效且未重放
 - challenge 响应是否匹配
@@ -305,7 +307,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 当前已验证的失败路径：
 
-- 错误 token
+- 错误 key
 - 禁用分组
 - 禁用隧道
 - 本地目标不可达
@@ -333,7 +335,6 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 - 反向代理管理
 - 证书管理
-- 在线热更新代码实现
 - WebSocket 实时态
 - 连接列表和强制断开
 - 限速执行
@@ -343,13 +344,13 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 这些内容如果后续开始实现，必须先同步更新本文档。
 
-## 9. 分组生效 IP 的剩余待实现规则
+## 9. 分组生效 IP 当前边界
 
-下面这些规则已经确认，其中管理接口状态字段已进入真实代码链路；本节只保留仍未全部完成的剩余部分。
+下面这些规则已经确认，并已进入当前后端与 WebUI 链路：
 
 - 如果数据库中配置的 `effective_ip` 后续不再存在于本机，后续运行态需要把分组标成异常；数据库值不自动改写，也不静默切换到其他地址。
 - 管理接口现在会返回单一分组状态字段 `status`，取值固定为“启用 / 禁用 / 异常”；异常时可附带 `status_reason`。
 - 这个分组状态字段是运行态派生值，不再额外拆出第二个“当前 IP 是否可用”的状态字段。
 - 当前固定判定规则为：`enabled=false` 时显示“禁用”；`enabled=true` 且 `effective_ip` 位于当前可用 IP 列表时显示“启用”；其他情况显示“异常”。
-- WebUI 后续还需要消费 `status` / `status_reason`，在分组列表和编辑弹窗中展示三态与异常原因。
-- WebUI 分组表单还需要把“生效 IP”做成只读选项下拉，并在异常值失效时保留原值回显。
+- WebUI 当前已经消费 `status` / `status_reason`，在分组列表和编辑弹窗中展示三态与异常原因。
+- WebUI 分组表单当前已经把“生效 IP”做成选项下拉，并在异常值失效时保留原值回显。

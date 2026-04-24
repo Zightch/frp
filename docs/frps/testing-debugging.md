@@ -36,7 +36,7 @@ go test ./...
   - 认证接口
   - 管理接口
 - `internal/control`
-  - token challenge/response
+  - key challenge/response
   - group slot
   - `config.push` / `config.ack`
   - listener 行为
@@ -125,7 +125,7 @@ Test-NetConnection 127.0.0.1 -Port 7000
 优先检查：
 
 - 分组是否启用
-- token 是否正确
+- key 是否正确
 - 同分组是否已有在线客户端占用槽位
 
 ### 3.4 公网端口不可用

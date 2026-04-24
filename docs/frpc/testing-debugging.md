@@ -21,7 +21,7 @@ go test ./...
 当前重点覆盖：
 
 - 参数校验
-- token 解析
+- key 解析
 - 登录逻辑
 - target 解析
 - 范围端口换算
@@ -58,15 +58,15 @@ python test/e2e_udp_range.py
 优先排查：
 
 - `server` 是否为空
-- `token` 是否为空
-- token 是否为 `96` 位小写 hex
+- `key` 是否为空
+- `key` 是否为 `96` 位小写 hex
 
 ### 3.2 无法登录
 
 优先排查：
 
 - `server:7000` 是否可达
-- token 是否正确
+- key 是否正确
 - 分组是否启用
 - 同分组是否已有在线客户端
 
@@ -98,7 +98,7 @@ Test-NetConnection 127.0.0.1 -Port 8080
 
 ```powershell
 $env:FRPC_LOG_LEVEL="debug"
-.\frpc.exe --server 127.0.0.1:7000 --token <token>
+.\frpc.exe --server 127.0.0.1:7000 --key <key>
 ```
 
 ## 5. 常见故障

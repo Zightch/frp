@@ -8,15 +8,16 @@
 - 打开 SQLite/MySQL，自动建当前必需表并校验表结构。
 - 托管 WebUI 静态资源和管理 API。
 - 管理本地 `auth.json`，提供初始化、challenge 登录、会话校验和删除后的自动复位。
-- 接收 `frpc` 控制连接，完成 token challenge/response 登录。
+- 接收 `frpc` 控制连接，完成基于 `client_id` 的 challenge/response 登录。
 - 为每个分组维护单客户端槽位。
 - 在 `config.ack` 后按隧道配置启动 TCP/UDP 公网 listener。
 - 把公网 TCP/UDP 流量桥接到在线 `frpc`。
+- 在分组在线且运行态配置变更时，触发整组 `config.push / config.ack` 热重载。
 - 统一裁决 UDP session 生命周期和空闲清理。
 
 ## 2. 当前已交付范围
 
-截至 2026-04-20，`frps` 已经具备：
+截至 2026-04-24，`frps` 已经具备：
 
 - 健康检查：
   - `GET /healthz`
@@ -34,21 +35,23 @@
   - `POST /api/v1/proxy-groups`
   - `PATCH /api/v1/proxy-groups/{id}`
   - `DELETE /api/v1/proxy-groups/{id}`
-  - `POST /api/v1/proxy-groups/{id}/token`
+  - `POST /api/v1/proxy-groups/{id}/key`
+  - `GET /api/v1/local-ips`
 - 隧道管理：
   - `GET /api/v1/tunnels`
   - `POST /api/v1/tunnels`
   - `PATCH /api/v1/tunnels/{id}`
   - `DELETE /api/v1/tunnels/{id}`
 - 管理 WebUI 与静态托管：
-  - `frps` 继续按 `webui.dist_dir` 托管 `frps/webui/dist/`
+  - `frps` 按 `webui.dist_dir` 托管 `frps/webui/dist/`
   - 技术栈：`Node.js + Vue 3 + Element Plus`
-  - 页面路由：`/init`（初始化）、`/login`（登录）、`/proxy-groups`（主管理页）、`/` 重定向到 `/proxy-groups`
-  - 已实现：管理密钥初始化、challenge 登录、分组 CRUD、token 重置、隧道 CRUD
+  - 页面路由：`/init`、`/login`、`/proxy-groups`、`/` 重定向到 `/proxy-groups`
+  - 已实现：管理密钥初始化、challenge 登录、分组 CRUD、登录 `key` 轮转、隧道 CRUD、`effective_ip` 下拉与状态展示
 - 控制面：
-  - token challenge/response 登录
+  - `client_id` challenge/response 登录
   - 心跳
   - 首次 `config.push` / `config.ack`
+  - 在线整组热重载
   - 单分组单客户端槽位
 - 数据面：
   - TCP 单端口转发
@@ -63,7 +66,6 @@
 
 - 反向代理。
 - 隧道入口 ACL 执行。
-- 在线配置变更后主动推送给已在线 `frpc`。
 - WebSocket、连接管理、实时速率统计、日志中心。
 - 限速执行、抓包执行。
 - 多客户端分组。
@@ -71,7 +73,7 @@
 当前配置明确分成两层：
 
 - 持久化配置：管理 API / WebUI 写入 `proxy_groups`、`tunnels` 表。
-- 运行时配置：`internal/control/repository.go` 在 `frpc` 登录时读取持久化配置，构造 `GroupRuntime` / `ConfigSnapshot`，后续 listener 启停和数据转发都只消费这份内存快照。
+- 运行时配置：`internal/control/repository.go` 在 `frpc` 登录或在线热重载时读取持久化配置，构造 `GroupRuntime` / `ConfigSnapshot`，后续 listener 启停和数据转发都只消费这份内存快照。
 
 当前 schema 中仍保留的扩展持久化字段只有 `proxy_groups.rate_limit`；其语义已收口为分组下所有隧道共享总限速，但运行时仍未消费。抓包相关控制当前未实现；如果后续引入，只应属于运行时配置，不应再持久化到 `tunnels` 表。
 
@@ -89,7 +91,7 @@ frps/
 ├── internal/storage/    # SQL 包装与驱动注册
 ├── pkg/protocol/        # 业务协议
 ├── pkg/transport/       # 长度前缀传输层
-└── webui/               # WebUI 前端目录（Node.js + Vue 3 + Element Plus 重建基线）
+└── webui/               # WebUI 前端目录（Node.js + Vue 3 + Element Plus）
 ```
 
 ## 5. 当前外部接口
@@ -109,8 +111,9 @@ frps/
 
 ### 5.3 控制面
 
-- `frpc` 登录第一步只发送 `token_id`。
-- `frps` 在数据库中按 `token_id` 定位分组，读取 `token_hash` 做 challenge 校验。
+- `frpc` 登录第一步只发送 `client_id`。
+- `frps` 在数据库中按 `client_id` 定位分组，读取 `client_secret_hash` 做 challenge 校验。
+- 管理面运行态字段写库成功且分组在线时，会触发 `RefreshGroup()`，复用现有 `config.push / config.ack` 推进整组热重载。
 
 ## 6. 当前核心数据
 
@@ -121,6 +124,7 @@ frps/
 
 其中：
 
+- `proxy_groups` 当前核心认证列为 `client_id`、`client_secret_hash`、`effective_ip`、`enabled`。
 - `tunnels` 当前只支持 `tcp` / `udp` 正向代理。
 
 ## 7. 启动与关闭

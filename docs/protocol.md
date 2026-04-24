@@ -236,7 +236,7 @@ CPU 架构：
 
 用途：
 
-- `frpc` 发起登录第一步，只发送公开定位段 `tokenId` 与基础环境信息。
+- `frpc` 发起登录第一步，只发送公开定位段 `clientId` 与基础环境信息。
 
 头字段要求：
 
@@ -247,7 +247,7 @@ body：
 
 | 顺序 | 字段 | 类型 | 说明 |
 | --- | --- | --- | --- |
-| 1 | `tokenId` | `bytes16` | token 公开定位段的原始 16 字节，不传 32 位 hex 文本 |
+| 1 | `clientId` | `bytes16` | `client_id` 的原始 16 字节，不传 32 位 hex 文本 |
 | 2 | `clientVersion` | `shortstr` | 客户端构建标识，仅用于日志和排查 |
 | 3 | `hostname` | `shortstr` | 客户端主机名 |
 | 4 | `os` | `u8` | 操作系统枚举 |
@@ -289,7 +289,7 @@ body：
 | 顺序 | 字段 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | 1 | `challengeId` | `u32` | 对应 `auth.challenge.challengeId` |
-| 2 | `response` | `bytes32` | `sha256(token_hash + challenge_nonce)` 的原始 32 字节 |
+| 2 | `response` | `bytes32` | `sha256(client_secret_hash + challenge_nonce)` 的原始 32 字节 |
 
 ## 6.4 `server.hello`
 
@@ -449,13 +449,13 @@ body：
 
 ### 8.3.1 在线整组热重载约定
 
-下面这些规则已确认，作为后续在线热重载的协议侧约束：
+下面这些规则已确认，作为当前在线热重载的协议侧约束：
 
 - 分组离线时，配置变更只写数据库，不产生协议流量。
 - 分组在线且发生运行态配置变更时，`frps` 首版按“整组冻结 + 整组全量重建”处理。
 - `frps` 下发新快照前，可以先停止该分组公网 listener，并关闭该分组当前活动 TCP/UDP 运行态。
 - `frps` 只有在收到对应 `config.ack(status=ok)` 后，才重新按新快照开放 listener。
-- token 重置和分组删除不属于热重载路径，继续直接关闭控制连接。
+- 登录 `key` 轮转和分组删除不属于热重载路径，继续直接关闭控制连接。
 
 ## 8.4 端口范围执行约定
 
@@ -725,7 +725,7 @@ body：
 | `1003` | `protocol_invalid_version` |
 | `1004` | `protocol_invalid_flags` |
 | `1005` | `protocol_bad_body` |
-| `1101` | `auth_invalid_token` |
+| `1101` | `auth_invalid_client` |
 | `1102` | `auth_denied_by_ip` |
 | `1103` | `auth_group_disabled` |
 | `1104` | `auth_challenge_expired` |
