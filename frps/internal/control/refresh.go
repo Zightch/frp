@@ -42,16 +42,6 @@ func (s *Server) RefreshGroup(groupID int64) {
 		return
 	}
 
-	if target.group.ClientSecretHash != group.ClientSecretHash {
-		s.logger.Info("closing active session after proxy group credential rotation", "group_id", groupID, "session_id", target.id.SessionID)
-		_ = s.runtimeAdminCoordinator().executeLocked(
-			s.logger.With("session_id", target.id.SessionID, "group_id", groupID, "group_name", group.Name),
-			lockedTarget,
-			runtimeAdminActionPlan{action: runtimeAdminActionCloseSession, targetID: target.id},
-		)
-		return
-	}
-
 	coordinator := s.runtimeAdminCoordinator()
 	logger := s.logger.With(
 		"session_id", target.id.SessionID,

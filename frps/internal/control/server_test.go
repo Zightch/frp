@@ -3502,7 +3502,7 @@ func TestServerFreezeGroupRuntimeDropsBufferedUDPData(t *testing.T) {
 	}
 }
 
-func TestServerRefreshGroupClosesSessionAfterTokenReset(t *testing.T) {
+func TestServerRefreshGroupKeepsSessionAliveAfterKeyResetUntilNextLogin(t *testing.T) {
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
 
@@ -3551,18 +3551,44 @@ func TestServerRefreshGroupClosesSessionAfterTokenReset(t *testing.T) {
 
 	var rotatedSecret [32]byte
 	copy(rotatedSecret[:], []byte("fedcba9876543210fedcba9876543210"))
-	repo.group.ClientSecretHash = sha256.Sum256(rotatedSecret[:])
+	rotatedHash := sha256.Sum256(rotatedSecret[:])
+	repo.group.ClientSecretHash = rotatedHash
 
 	server.RefreshGroup(repo.group.ID)
 
-	if _, err := readMessageWithin(clientConn, time.Second); err == nil {
-		t.Fatal("expected refreshed session to close after token reset")
+	if _, err := readMessageWithin(clientConn, 200*time.Millisecond); err == nil {
+		t.Fatal("expected no control frame when only the login key changes")
+	} else if !isTimeoutError(err) {
+		t.Fatalf("expected active session to stay idle after key reset, got %v", err)
+	}
+	assertSessionHeartbeatStillWorks(t, clientConn)
+
+	activeGroup := active.session.currentGroup()
+	if activeGroup.ClientSecretHash != rotatedHash {
+		t.Fatal("expected active session runtime to refresh to the rotated client secret hash")
 	}
 
+	_ = clientConn.Close()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("server connection did not exit")
+	}
+
+	errorBody := authenticateServerSessionExpectError(t, server, tokenID, tokenHash)
+	if errorBody.ErrorCode != protocol.ErrorCodeAuthInvalidClient {
+		t.Fatalf("unexpected login error code with stale key: %d", errorBody.ErrorCode)
+	}
+	if !strings.Contains(errorBody.Message, "challenge response mismatch") {
+		t.Fatalf("unexpected login error message with stale key: %q", errorBody.Message)
+	}
+
+	replacementConn, replacementDone, _ := authenticateServerSession(t, server, tokenID, rotatedHash)
+	_ = replacementConn.Close()
+	select {
+	case <-replacementDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement server connection did not exit")
 	}
 }
 
@@ -4083,6 +4109,105 @@ func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, t
 	}
 
 	return clientConn, done, configFrame
+}
+
+func authenticateServerSessionExpectError(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) protocol.ErrorBody {
+	t.Helper()
+
+	clientRaw, serverRaw := net.Pipe()
+	clientConn := &connWithRemoteAddr{
+		Conn:   clientRaw,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 10001},
+	}
+	serverConn := &connWithRemoteAddr{
+		Conn:   serverRaw,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20001},
+	}
+
+	done := make(chan struct{})
+	server.registerConn(serverConn)
+	server.connWG.Add(1)
+	go func() {
+		defer close(done)
+		server.handleConnection(serverConn)
+	}()
+
+	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
+		ClientID:      tokenID,
+		ClientVersion: "test-client",
+		Hostname:      "node-1",
+		OS:            protocol.OSLinux,
+		Arch:          protocol.ArchAMD64,
+	})
+	if err != nil {
+		t.Fatalf("marshal auth.begin: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeAuthBegin,
+		RequestID: 1,
+		Body:      authBeginBody,
+	})
+
+	challengeFrame := readMessage(t, clientConn)
+	if challengeFrame.Type != protocol.TypeAuthChallenge {
+		t.Fatalf("expected auth.challenge, got %s", challengeFrame.Type.String())
+	}
+	challenge, err := protocol.UnmarshalAuthChallenge(challengeFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal auth.challenge: %v", err)
+	}
+
+	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
+		ChallengeID: challenge.ChallengeID,
+		Response:    protocol.ChallengeResponse(tokenHash, challenge.Nonce),
+	})
+	if err != nil {
+		t.Fatalf("marshal auth.finish: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeAuthFinish,
+		RequestID: 2,
+		Body:      authFinishBody,
+	})
+
+	errorFrame := readMessage(t, clientConn)
+	if errorFrame.Type != protocol.TypeError {
+		t.Fatalf("expected error frame, got %s", errorFrame.Type.String())
+	}
+	errorBody, err := protocol.UnmarshalErrorBody(errorFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal error frame: %v", err)
+	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+
+	return errorBody
+}
+
+func assertSessionHeartbeatStillWorks(t *testing.T, clientConn net.Conn) {
+	t.Helper()
+
+	pingBody, err := protocol.MarshalHeartbeatPing(protocol.HeartbeatPing{
+		ClientUnixMs: uint64(time.Now().UTC().UnixMilli()),
+	})
+	if err != nil {
+		t.Fatalf("marshal heartbeat.ping: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeHeartbeatPing,
+		RequestID: 3,
+		Body:      pingBody,
+	})
+
+	pongFrame := readMessage(t, clientConn)
+	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 3 {
+		t.Fatalf("unexpected heartbeat.pong: %#v", pongFrame)
+	}
 }
 
 func writeConfigAck(t *testing.T, conn net.Conn, requestID uint32, version uint64) {
