@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zightch/frp/frps/internal/certassets"
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/control"
+	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
@@ -100,6 +102,141 @@ func TestAppRunDelaysManagementAPIUntilInitialRuntimeScanCompletes(t *testing.T)
 	if conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(managementPort)), 100*time.Millisecond); err == nil {
 		_ = conn.Close()
 		t.Fatal("expected management api to remain closed until initial runtime scan completes")
+	}
+
+	close(repo.allowLoadAll)
+
+	waitForListeningPort(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(managementPort)))
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("app run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("app run did not exit")
+	}
+}
+
+func TestAppRunDelaysInitialRuntimeScanUntilCertificatePreparationCompletes(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	controlPort := freeTCPPort(t)
+	managementPort := freeTCPPortExcept(t, controlPort)
+	remotePort := freeTCPPortExcept(t, controlPort, managementPort)
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	tokenHash := sha256.Sum256([]byte("startup-cert-token"))
+	repo := &blockingControlRepository{
+		group: control.GroupRuntime{
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      system.AnyIPv4,
+			ClientSecretHash: tokenHash,
+			Snapshot: control.ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 1,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: uint16(remotePort),
+						RemoteEnd:   uint16(remotePort),
+						LocalHost:   host,
+						LocalStart:  22,
+						LocalEnd:    22,
+					},
+				},
+			},
+		},
+		loadAllStarted: make(chan struct{}, 1),
+		allowLoadAll:   make(chan struct{}),
+	}
+
+	prepareStarted := make(chan struct{}, 1)
+	allowPrepare := make(chan struct{})
+
+	originalPrepare := prepareCertificateAssetRuntime
+	prepareCertificateAssetRuntime = func(ctx context.Context, store *storage.SQL) (*certassets.Runtime, error) {
+		select {
+		case prepareStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-allowPrepare:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &certassets.Runtime{}, nil
+	}
+	defer func() {
+		prepareCertificateAssetRuntime = originalPrepare
+	}()
+
+	originalNewControlServer := newControlServer
+	newControlServer = func(options control.Options, logger *slog.Logger, version string) *control.Server {
+		options.Repository = repo
+		options.Store = nil
+		options.RuntimeScanPoll = time.Hour
+		return control.NewServer(options, logger, version)
+	}
+	defer func() {
+		newControlServer = originalNewControlServer
+	}()
+
+	application := New(config.Config{
+		ControlListenAddr:    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		ManagementListenAddr: net.JoinHostPort("127.0.0.1", strconv.Itoa(managementPort)),
+		ReadHeaderTimeout:    "1s",
+		ShutdownTimeout:      "1s",
+		Database: config.DatabaseConfig{
+			Type: "sqlite",
+			Path: filepath.Join(t.TempDir(), "frps.sqlite"),
+		},
+		WebUI: config.WebUIConfig{
+			DistDir: filepath.Join(t.TempDir(), "missing-webui"),
+		},
+	}, logger, "test-server")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- application.Run(ctx)
+	}()
+
+	select {
+	case <-prepareStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("certificate asset preparation did not start")
+	}
+
+	select {
+	case <-repo.loadAllStarted:
+		t.Fatal("initial runtime scan must not start before certificate preparation completes")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	if conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(managementPort)), 100*time.Millisecond); err == nil {
+		_ = conn.Close()
+		t.Fatal("expected management api to remain closed while certificate preparation is blocked")
+	}
+
+	close(allowPrepare)
+
+	select {
+	case <-repo.loadAllStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial runtime scan did not start after certificate preparation completed")
 	}
 
 	close(repo.allowLoadAll)

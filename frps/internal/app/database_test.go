@@ -77,6 +77,7 @@ func TestAppInitDatabaseInjectsStore(t *testing.T) {
 	for _, tableName := range []string{
 		"proxy_groups",
 		"tunnels",
+		"certificate_assets",
 	} {
 		if _, err := application.store.QueryOne(
 			"select name from sqlite_master where type = 'table' and name = ?",
@@ -91,6 +92,19 @@ func TestAppInitDatabaseInjectsStore(t *testing.T) {
 		"schema_migrations",
 	); err == nil {
 		t.Fatal("did not expect schema_migrations table to exist")
+	}
+
+	for _, indexName := range []string{
+		"idx_certificate_assets_crt_hash",
+		"idx_certificate_assets_issuer_asset_id",
+		"uk_certificate_assets_name",
+	} {
+		if _, err := application.store.QueryOne(
+			"select name from sqlite_master where type = 'index' and name = ?",
+			indexName,
+		); err != nil {
+			t.Fatalf("expected index %s to exist: %v", indexName, err)
+		}
 	}
 }
 
@@ -167,4 +181,88 @@ func TestAppInitDatabaseIgnoresUnrelatedSQLiteTables(t *testing.T) {
 		t.Fatalf("expected unrelated table to be ignored: %v", err)
 	}
 	defer application.closeDatabase()
+}
+
+func TestAppInitDatabaseBackfillsMissingCertificateAssetIndexes(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "frps.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite database: %v", err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE proxy_groups (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL UNIQUE,
+	client_id TEXT NOT NULL UNIQUE,
+	client_secret_hash TEXT NOT NULL,
+	effective_ip TEXT NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	rate_limit INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE tunnels (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	group_id INTEGER NOT NULL,
+	name TEXT NOT NULL,
+	protocol TEXT NOT NULL,
+	remote_type TEXT NOT NULL,
+	remote_start INTEGER NOT NULL,
+	remote_end INTEGER NOT NULL,
+	local_host TEXT NOT NULL,
+	local_start INTEGER NOT NULL,
+	local_end INTEGER NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE(group_id, name)
+);
+CREATE TABLE certificate_assets (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	remark TEXT NOT NULL,
+	source TEXT NOT NULL,
+	asset_type TEXT NOT NULL,
+	format_type TEXT NOT NULL,
+	crt TEXT NOT NULL,
+	crt_hash TEXT NOT NULL,
+	key TEXT NOT NULL,
+	issuer_asset_id INTEGER,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX uk_certificate_assets_name ON certificate_assets (name);
+`)
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatalf("close sqlite database: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("create partial certificate_assets schema: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	application := New(config.Config{
+		Database: config.DatabaseConfig{
+			Type: "sqlite",
+			Path: dbPath,
+		},
+	}, logger, "test")
+
+	if err := application.initDatabase(context.Background()); err != nil {
+		t.Fatalf("expected missing certificate asset indexes to be backfilled: %v", err)
+	}
+	defer application.closeDatabase()
+
+	for _, indexName := range []string{
+		"idx_certificate_assets_crt_hash",
+		"idx_certificate_assets_issuer_asset_id",
+		"uk_certificate_assets_name",
+	} {
+		if _, err := application.store.QueryOne(
+			"select name from sqlite_master where type = 'index' and name = ?",
+			indexName,
+		); err != nil {
+			t.Fatalf("expected certificate asset index %s to be backfilled: %v", indexName, err)
+		}
+	}
 }

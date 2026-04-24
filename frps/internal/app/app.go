@@ -8,6 +8,7 @@ import (
 
 	"github.com/zightch/frp/frps/internal/api"
 	"github.com/zightch/frp/frps/internal/auth"
+	"github.com/zightch/frp/frps/internal/certassets"
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/control"
 	"github.com/zightch/frp/frps/internal/storage"
@@ -23,6 +24,7 @@ type App struct {
 	control *control.Server
 	network *system.NetworkSnapshotService
 	store   *storage.SQL
+	certs   *certassets.Runtime
 }
 
 var newControlServer = control.NewServer
@@ -47,7 +49,13 @@ func (a *App) Run(parent context.Context) error {
 		a.closeAuth()
 		return err
 	}
+	if err := a.initCertificateAssets(ctx); err != nil {
+		a.closeDatabase()
+		a.closeAuth()
+		return err
+	}
 	if err := a.initLocalNetwork(ctx); err != nil {
+		a.closeCertificateAssets()
 		a.closeDatabase()
 		a.closeAuth()
 		return err
@@ -65,6 +73,7 @@ func (a *App) Run(parent context.Context) error {
 	)
 	if err := a.control.EnsureInitialRuntimeScan(ctx); err != nil {
 		_ = a.closeLocalNetwork(context.Background())
+		a.closeCertificateAssets()
 		a.closeDatabase()
 		a.closeAuth()
 		return fmt.Errorf("init control runtime scan: %w", err)
@@ -87,6 +96,7 @@ func (a *App) Run(parent context.Context) error {
 	)
 	if err != nil {
 		_ = a.closeLocalNetwork(context.Background())
+		a.closeCertificateAssets()
 		a.closeDatabase()
 		a.closeAuth()
 		return fmt.Errorf("init management api: %w", err)
@@ -152,6 +162,7 @@ func (a *App) shutdown() error {
 		errs = append(errs, fmt.Errorf("shutdown local network snapshot: %w", err))
 	}
 
+	a.closeCertificateAssets()
 	a.closeDatabase()
 	a.closeAuth()
 

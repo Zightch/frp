@@ -18,6 +18,7 @@ type schemaDefinition struct {
 type tableSpec struct {
 	name          string
 	columns       []columnSpec
+	indexes       [][]string
 	uniqueIndexes [][]string
 }
 
@@ -31,6 +32,7 @@ type columnSpec struct {
 
 type tableState struct {
 	columns       map[string]columnState
+	indexes       [][]string
 	uniqueIndexes [][]string
 }
 
@@ -73,6 +75,24 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	updated_at TEXT NOT NULL,
 	UNIQUE(group_id, name)
 )`,
+			`
+CREATE TABLE IF NOT EXISTS certificate_assets (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	remark TEXT NOT NULL,
+	source TEXT NOT NULL,
+	asset_type TEXT NOT NULL,
+	format_type TEXT NOT NULL,
+	crt TEXT NOT NULL,
+	crt_hash TEXT NOT NULL,
+	key TEXT NOT NULL,
+	issuer_asset_id INTEGER,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS uk_certificate_assets_name ON certificate_assets (name)`,
+			`CREATE INDEX IF NOT EXISTS idx_certificate_assets_crt_hash ON certificate_assets (crt_hash)`,
+			`CREATE INDEX IF NOT EXISTS idx_certificate_assets_issuer_asset_id ON certificate_assets (issuer_asset_id)`,
 		},
 		tables: []tableSpec{
 			{
@@ -114,6 +134,30 @@ CREATE TABLE IF NOT EXISTS tunnels (
 					{"group_id", "name"},
 				},
 			},
+			{
+				name: "certificate_assets",
+				columns: []columnSpec{
+					{name: "id", columnType: "integer", nullable: false, primaryKey: true},
+					{name: "name", columnType: "text", nullable: false},
+					{name: "remark", columnType: "text", nullable: false},
+					{name: "source", columnType: "text", nullable: false},
+					{name: "asset_type", columnType: "text", nullable: false},
+					{name: "format_type", columnType: "text", nullable: false},
+					{name: "crt", columnType: "text", nullable: false},
+					{name: "crt_hash", columnType: "text", nullable: false},
+					{name: "key", columnType: "text", nullable: false},
+					{name: "issuer_asset_id", columnType: "integer", nullable: true},
+					{name: "created_at", columnType: "text", nullable: false},
+					{name: "updated_at", columnType: "text", nullable: false},
+				},
+				indexes: [][]string{
+					{"crt_hash"},
+					{"issuer_asset_id"},
+				},
+				uniqueIndexes: [][]string{
+					{"name"},
+				},
+			},
 		},
 	},
 	"mysql": {
@@ -150,6 +194,25 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	updated_at DATETIME(6) NOT NULL,
 	PRIMARY KEY (id),
 	UNIQUE KEY uk_tunnels_group_name (group_id, name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`
+CREATE TABLE IF NOT EXISTS certificate_assets (
+	id BIGINT NOT NULL AUTO_INCREMENT,
+	name VARCHAR(128) NOT NULL,
+	remark TEXT NOT NULL,
+	source VARCHAR(16) NOT NULL,
+	asset_type VARCHAR(16) NOT NULL,
+	format_type VARCHAR(16) NOT NULL,
+	crt MEDIUMTEXT NOT NULL,
+	crt_hash CHAR(64) NOT NULL,
+	` + "`key`" + ` MEDIUMTEXT NOT NULL,
+	issuer_asset_id BIGINT NULL,
+	created_at DATETIME(6) NOT NULL,
+	updated_at DATETIME(6) NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE KEY uk_certificate_assets_name (name),
+	KEY idx_certificate_assets_crt_hash (crt_hash),
+	KEY idx_certificate_assets_issuer_asset_id (issuer_asset_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		},
 		tables: []tableSpec{
@@ -190,6 +253,30 @@ CREATE TABLE IF NOT EXISTS tunnels (
 				},
 				uniqueIndexes: [][]string{
 					{"group_id", "name"},
+				},
+			},
+			{
+				name: "certificate_assets",
+				columns: []columnSpec{
+					{name: "id", columnType: "bigint", nullable: false, primaryKey: true, autoIncrement: true},
+					{name: "name", columnType: "varchar(128)", nullable: false},
+					{name: "remark", columnType: "text", nullable: false},
+					{name: "source", columnType: "varchar(16)", nullable: false},
+					{name: "asset_type", columnType: "varchar(16)", nullable: false},
+					{name: "format_type", columnType: "varchar(16)", nullable: false},
+					{name: "crt", columnType: "mediumtext", nullable: false},
+					{name: "crt_hash", columnType: "char(64)", nullable: false},
+					{name: "key", columnType: "mediumtext", nullable: false},
+					{name: "issuer_asset_id", columnType: "bigint", nullable: true},
+					{name: "created_at", columnType: "datetime(6)", nullable: false},
+					{name: "updated_at", columnType: "datetime(6)", nullable: false},
+				},
+				indexes: [][]string{
+					{"crt_hash"},
+					{"issuer_asset_id"},
+				},
+				uniqueIndexes: [][]string{
+					{"name"},
 				},
 			},
 		},
@@ -286,14 +373,29 @@ func validateTable(expected tableSpec, actual tableState) error {
 	}
 	slices.Sort(expectedUnique)
 
+	expectedIndexes := make([]string, 0, len(expected.indexes))
+	for _, columns := range expected.indexes {
+		expectedIndexes = append(expectedIndexes, uniqueIndexSignature(columns))
+	}
+	slices.Sort(expectedIndexes)
+
 	actualUnique := make([]string, 0, len(actual.uniqueIndexes))
 	for _, columns := range actual.uniqueIndexes {
 		actualUnique = append(actualUnique, uniqueIndexSignature(columns))
 	}
 	slices.Sort(actualUnique)
 
+	actualIndexes := make([]string, 0, len(actual.indexes))
+	for _, columns := range actual.indexes {
+		actualIndexes = append(actualIndexes, uniqueIndexSignature(columns))
+	}
+	slices.Sort(actualIndexes)
+
 	if !slices.Equal(actualUnique, expectedUnique) {
 		return fmt.Errorf("unique index mismatch: got %v want %v", actualUnique, expectedUnique)
+	}
+	if !slices.Equal(actualIndexes, expectedIndexes) {
+		return fmt.Errorf("index mismatch: got %v want %v", actualIndexes, expectedIndexes)
 	}
 
 	return nil
@@ -357,7 +459,7 @@ func loadSQLiteTableState(ctx context.Context, store *storage.SQL, tableName str
 
 	for _, row := range indexes.Rows {
 		unique, err := rowBool(row, "unique")
-		if err != nil || !unique {
+		if err != nil {
 			continue
 		}
 
@@ -380,7 +482,11 @@ func loadSQLiteTableState(ctx context.Context, store *storage.SQL, tableName str
 		}
 
 		if len(columns) > 0 {
-			state.uniqueIndexes = append(state.uniqueIndexes, columns)
+			if unique {
+				state.uniqueIndexes = append(state.uniqueIndexes, columns)
+			} else {
+				state.indexes = append(state.indexes, columns)
+			}
 		}
 	}
 
@@ -445,13 +551,14 @@ ORDER BY INDEX_NAME, SEQ_IN_INDEX
 	}
 
 	indexMap := make(map[string][]string)
+	indexUnique := make(map[string]bool)
 	for _, row := range indexes.Rows {
 		if strings.EqualFold(rowString(row, "INDEX_NAME"), "PRIMARY") {
 			continue
 		}
 
 		nonUnique, err := rowBool(row, "NON_UNIQUE")
-		if err != nil || nonUnique {
+		if err != nil {
 			continue
 		}
 
@@ -460,6 +567,7 @@ ORDER BY INDEX_NAME, SEQ_IN_INDEX
 			indexMap[indexName],
 			strings.ToLower(strings.TrimSpace(rowString(row, "COLUMN_NAME"))),
 		)
+		indexUnique[indexName] = !nonUnique
 	}
 
 	indexNames := make([]string, 0, len(indexMap))
@@ -469,7 +577,11 @@ ORDER BY INDEX_NAME, SEQ_IN_INDEX
 	slices.Sort(indexNames)
 
 	for _, indexName := range indexNames {
-		state.uniqueIndexes = append(state.uniqueIndexes, indexMap[indexName])
+		if indexUnique[indexName] {
+			state.uniqueIndexes = append(state.uniqueIndexes, indexMap[indexName])
+		} else {
+			state.indexes = append(state.indexes, indexMap[indexName])
+		}
 	}
 
 	return state, nil
