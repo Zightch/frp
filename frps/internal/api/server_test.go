@@ -2143,6 +2143,23 @@ CREATE TABLE tunnels (
 	updated_at TEXT NOT NULL,
 	UNIQUE(group_id, name)
 )`,
+		`
+CREATE TABLE certificate_assets (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL UNIQUE,
+	remark TEXT NOT NULL DEFAULT '',
+	source TEXT NOT NULL,
+	asset_type TEXT NOT NULL,
+	format_type TEXT NOT NULL,
+	crt TEXT NOT NULL,
+	crt_hash TEXT NOT NULL,
+	` + "`key`" + ` TEXT NOT NULL DEFAULT '',
+	issuer_asset_id INTEGER NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+		`CREATE INDEX idx_certificate_assets_crt_hash ON certificate_assets (crt_hash)`,
+		`CREATE INDEX idx_certificate_assets_issuer_asset_id ON certificate_assets (issuer_asset_id)`,
 	} {
 		if _, err := store.Exec(statement); err != nil {
 			t.Fatalf("bootstrap api test schema: %v", err)

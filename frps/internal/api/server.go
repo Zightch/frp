@@ -96,6 +96,11 @@ func NewServer(options Options, logger *slog.Logger, version string) (*Server, e
 	apiMux.HandleFunc("/api/v1/tunnels", srv.handleTunnels)
 	apiMux.HandleFunc("/api/v1/tunnels/", srv.handleTunnelResource)
 	apiMux.HandleFunc("/api/v1/local-ips", srv.handleLocalIPs)
+	apiMux.HandleFunc("/api/v1/certificate-assets", srv.handleCertificateAssets)
+	apiMux.HandleFunc("/api/v1/certificate-assets/upload", srv.handleCertificateAssetUpload)
+	apiMux.HandleFunc("/api/v1/certificate-assets/paste", srv.handleCertificateAssetPaste)
+	apiMux.HandleFunc("/api/v1/certificate-assets/generate", srv.handleCertificateAssetGenerate)
+	apiMux.HandleFunc("/api/v1/certificate-assets/", srv.handleCertificateAssetResource)
 
 	srv.server = &http.Server{
 		Addr:              options.Addr,
@@ -179,9 +184,15 @@ func isManagementAPIPath(path string) bool {
 		path == "/api/v1/auth/logout",
 		path == "/api/v1/proxy-groups",
 		path == "/api/v1/tunnels",
-		path == "/api/v1/local-ips":
+		path == "/api/v1/local-ips",
+		path == "/api/v1/certificate-assets",
+		path == "/api/v1/certificate-assets/upload",
+		path == "/api/v1/certificate-assets/paste",
+		path == "/api/v1/certificate-assets/generate":
 		return true
-	case strings.HasPrefix(path, "/api/v1/proxy-groups/"), strings.HasPrefix(path, "/api/v1/tunnels/"):
+	case strings.HasPrefix(path, "/api/v1/proxy-groups/"),
+		strings.HasPrefix(path, "/api/v1/tunnels/"),
+		strings.HasPrefix(path, "/api/v1/certificate-assets/"):
 		return true
 	default:
 		return false

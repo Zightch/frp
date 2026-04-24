@@ -41,30 +41,12 @@ func PrepareRuntimeWithOptions(ctx context.Context, repo Repository, options Pre
 		return nil, fmt.Errorf("certificate assets repository is nil")
 	}
 
-	now := options.Now.UTC()
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-
-	loadSystemCertPool := options.LoadSystemCertPool
-	if loadSystemCertPool == nil {
-		loadSystemCertPool = x509.SystemCertPool
-	}
-
-	systemCAPool, err := loadSystemCertPool()
-	if err != nil {
-		return nil, fmt.Errorf("load system ca pool: %w", err)
-	}
-	if systemCAPool == nil {
-		systemCAPool = x509.NewCertPool()
-	}
-
 	assets, err := repo.ListAssets(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	prepared, err := prepareAssets(assets, systemCAPool, now)
+	prepared, systemCAPool, err := PrepareAssetsWithOptions(assets, options)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +62,32 @@ func PrepareRuntimeWithOptions(ctx context.Context, repo Repository, options Pre
 		runtime.assetsByID[asset.Asset.ID] = asset
 	}
 	return runtime, nil
+}
+
+func PrepareAssetsWithOptions(assets []Asset, options PrepareOptions) ([]PreparedAsset, *x509.CertPool, error) {
+	now := options.Now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	loadSystemCertPool := options.LoadSystemCertPool
+	if loadSystemCertPool == nil {
+		loadSystemCertPool = x509.SystemCertPool
+	}
+
+	systemCAPool, err := loadSystemCertPool()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load system ca pool: %w", err)
+	}
+	if systemCAPool == nil {
+		systemCAPool = x509.NewCertPool()
+	}
+
+	prepared, err := prepareAssets(assets, systemCAPool, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	return prepared, systemCAPool, nil
 }
 
 func (r *Runtime) SystemCACount() int {

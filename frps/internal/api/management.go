@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zightch/frp/frps/internal/certassets"
 	"github.com/zightch/frp/frps/internal/ports"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
@@ -43,6 +44,7 @@ type managementService struct {
 	network   system.SnapshotReader
 	refresher GroupRuntimeRefresher
 	runtime   TunnelRuntimeStatusReader
+	certs     *certassets.Service
 }
 
 type proxyGroupView struct {
@@ -107,6 +109,8 @@ type tunnelRequest struct {
 type apiError struct {
 	Status  int
 	Message string
+	Code    string
+	Details any
 }
 
 type normalizedProxyGroup struct {
@@ -139,7 +143,13 @@ func newManagementService(store *storage.SQL, network system.SnapshotReader, ref
 	if store == nil {
 		return nil
 	}
-	return &managementService{store: store, network: network, refresher: refresher, runtime: runtime}
+	return &managementService{
+		store:     store,
+		network:   network,
+		refresher: refresher,
+		runtime:   runtime,
+		certs:     certassets.NewService(store, certassets.ServiceOptions{}),
+	}
 }
 
 func (s *Server) handleProxyGroups(writer http.ResponseWriter, request *http.Request) {
@@ -1382,7 +1392,14 @@ func writeJSON(writer http.ResponseWriter, status int, payload any) {
 func writeError(writer http.ResponseWriter, err error) {
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
-		writeJSON(writer, apiErr.Status, map[string]any{"error": apiErr.Message})
+		payload := map[string]any{"error": apiErr.Message}
+		if strings.TrimSpace(apiErr.Code) != "" {
+			payload["error_code"] = apiErr.Code
+		}
+		if apiErr.Details != nil {
+			payload["details"] = apiErr.Details
+		}
+		writeJSON(writer, apiErr.Status, payload)
 		return
 	}
 	writeJSON(writer, http.StatusInternalServerError, map[string]any{"error": err.Error()})

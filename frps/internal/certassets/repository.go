@@ -2,6 +2,7 @@ package certassets
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -29,25 +30,17 @@ func (r *SQLRepository) ListAssets(ctx context.Context) ([]Asset, error) {
 		return nil, fmt.Errorf("repository store is nil")
 	}
 
-	result, err := r.store.QueryContext(
+	return ListAssetsWithConn(ctx, r.store)
+}
+
+func ListAssetsWithConn(ctx context.Context, conn storage.Conn) ([]Asset, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("asset connection is nil")
+	}
+
+	result, err := conn.QueryContext(
 		ctx,
-		`
-SELECT
-	id,
-	name,
-	remark,
-	source,
-	asset_type,
-	format_type,
-	crt,
-	crt_hash,
-	`+"`key`"+`,
-	issuer_asset_id,
-	created_at,
-	updated_at
-FROM certificate_assets
-ORDER BY id
-`,
+		buildAssetSelectQuery("ORDER BY id"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list certificate assets: %w", err)
@@ -62,6 +55,157 @@ ORDER BY id
 		assets = append(assets, asset)
 	}
 	return assets, nil
+}
+
+func LoadAssetByID(ctx context.Context, conn storage.Conn, id int64) (Asset, error) {
+	if conn == nil {
+		return Asset{}, fmt.Errorf("asset connection is nil")
+	}
+
+	row, err := conn.QueryOneContext(ctx, buildAssetSelectQuery("WHERE id = ?"), id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Asset{}, err
+		}
+		return Asset{}, fmt.Errorf("load certificate asset: %w", err)
+	}
+
+	asset, err := decodeAssetRow(row)
+	if err != nil {
+		return Asset{}, fmt.Errorf("decode certificate asset: %w", err)
+	}
+	return asset, nil
+}
+
+func ListAssetsByCRTHash(ctx context.Context, conn storage.Conn, crtHash string) ([]Asset, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("asset connection is nil")
+	}
+
+	crtHash = strings.ToLower(strings.TrimSpace(crtHash))
+	if crtHash == "" {
+		return nil, nil
+	}
+
+	result, err := conn.QueryContext(
+		ctx,
+		buildAssetSelectQuery("WHERE crt_hash = ? ORDER BY id"),
+		crtHash,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list certificate assets by crt_hash: %w", err)
+	}
+
+	assets := make([]Asset, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		asset, err := decodeAssetRow(row)
+		if err != nil {
+			return nil, fmt.Errorf("decode certificate asset: %w", err)
+		}
+		assets = append(assets, asset)
+	}
+	return assets, nil
+}
+
+func InsertAsset(ctx context.Context, conn storage.Conn, asset Asset) (int64, error) {
+	if conn == nil {
+		return 0, fmt.Errorf("asset connection is nil")
+	}
+
+	result, err := conn.ExecContext(
+		ctx,
+		`
+INSERT INTO certificate_assets (
+	name,
+	remark,
+	source,
+	asset_type,
+	format_type,
+	crt,
+	crt_hash,
+	`+"`key`"+`,
+	issuer_asset_id,
+	created_at,
+	updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`,
+		asset.Name,
+		asset.Remark,
+		string(asset.Source),
+		string(asset.AssetType),
+		string(asset.FormatType),
+		asset.CRT,
+		asset.CRTHash,
+		asset.Key,
+		nullableInt64(asset.IssuerAssetID),
+		formatTimestamp(asset.CreatedAt),
+		formatTimestamp(asset.UpdatedAt),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert certificate asset: %w", err)
+	}
+	return result.LastInsertID, nil
+}
+
+func DeleteAssetsByID(ctx context.Context, conn storage.Conn, ids []int64) error {
+	if conn == nil {
+		return fmt.Errorf("asset connection is nil")
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, 0, len(ids))
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+
+	if _, err := conn.ExecContext(
+		ctx,
+		fmt.Sprintf("DELETE FROM certificate_assets WHERE id IN (%s)", strings.Join(placeholders, ", ")),
+		args...,
+	); err != nil {
+		return fmt.Errorf("delete certificate assets: %w", err)
+	}
+	return nil
+}
+
+func buildAssetSelectQuery(suffix string) string {
+	suffix = strings.TrimSpace(suffix)
+	if suffix != "" {
+		suffix = "\n" + suffix
+	}
+	return `
+SELECT
+	id,
+	name,
+	remark,
+	source,
+	asset_type,
+	format_type,
+	crt,
+	crt_hash,
+	` + "`key`" + `,
+	issuer_asset_id,
+	created_at,
+	updated_at
+FROM certificate_assets` + suffix
+}
+
+func nullableInt64(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func formatTimestamp(value time.Time) string {
+	if value.IsZero() {
+		value = time.Now().UTC()
+	}
+	return value.UTC().Format(schemaTimestampLayout)
 }
 
 func decodeAssetRow(row storage.Row) (Asset, error) {
