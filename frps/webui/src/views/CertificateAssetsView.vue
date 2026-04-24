@@ -475,12 +475,12 @@ async function handleDelete(asset: CertificateAsset) {
     </el-result>
 
     <template v-else-if="authenticated">
-      <el-header height="auto" class="page-header">
+      <div class="page-header">
         <el-row justify="space-between" align="middle">
           <h1>证书资产</h1>
           <el-button @click="loadData" :loading="loading">刷新</el-button>
         </el-row>
-      </el-header>
+      </div>
 
       <el-main class="content-main">
         <el-card class="filter-card">
