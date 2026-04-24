@@ -575,10 +575,10 @@ async function handleDeleteTunnel(tunnel: Tunnel) {
 async function handleRotateKey(group: ProxyGroup) {
   try {
     await ElMessageBox.confirm(
-      `确定重制分组"${group.name}"的登录 Key 吗？重制后旧 -key 将立即失效。`,
-      '重制登录 Key',
+      `确定重置分组"${group.name}"的登录 Key 吗？重置后旧 -key 将立即失效。`,
+      '重置登录 Key',
       {
-        confirmButtonText: '重制',
+        confirmButtonText: '重置',
         cancelButtonText: '取消',
         type: 'warning'
       }
@@ -593,7 +593,7 @@ async function handleRotateKey(group: ProxyGroup) {
     return
   }
 
-  ElMessage.success('登录 Key 已重制')
+  ElMessage.success('登录 Key 已重置')
   if (result.data?.key) {
     newKeyValue.value = result.data.key
     newKeyVisible.value = true
@@ -615,154 +615,170 @@ function copyKey(value: string) {
 </script>
 
 <template>
-  <div v-if="checking" style="display: flex; align-items: center; justify-content: center; height: 100%">
-    <span>检查认证状态...</span>
-  </div>
+  <el-container
+    v-loading="checking"
+    element-loading-text="检查认证状态..."
+    direction="vertical"
+    class="group-config-view"
+  >
+    <el-result v-if="error" icon="error" :title="error">
+      <template #extra>
+        <el-button type="primary" @click="loadData">重试</el-button>
+      </template>
+    </el-result>
 
-  <div v-else-if="error" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100; gap: 12px">
-    <span style="color: var(--el-color-danger)">{{ error }}</span>
-    <el-button size="small" @click="loadData">重试</el-button>
-  </div>
+    <template v-else-if="authenticated">
+      <el-header height="auto" class="page-header">
+        <el-row justify="space-between" align="middle">
+          <h1>分组配置</h1>
+          <el-button @click="loadData" :loading="loading">刷新</el-button>
+        </el-row>
+      </el-header>
 
-  <template v-else-if="authenticated">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px">
-      <h1 style="font-size: 20px; font-weight: 600; margin: 0">分组配置</h1>
-      <el-button @click="loadData" :loading="loading">刷新</el-button>
-    </div>
-
-    <el-card v-if="selectedGroup" style="margin-bottom: 20px" :body-style="{ padding: '12px 20px' }">
-      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px">
-        <el-descriptions :column="4">
-          <el-descriptions-item label="已选中">{{ selectedGroup.name }}</el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <el-tooltip
-              v-if="selectedGroup.status === '异常' && selectedGroup.status_reason"
-              :content="selectedGroup.status_reason"
-              placement="top"
-            >
-              <el-tag type="danger" size="small">{{ selectedGroup.status }}</el-tag>
-            </el-tooltip>
-            <el-tag
-              v-else
-              :type="selectedGroup.status === '启用' ? 'success' : selectedGroup.status === '禁用' ? 'info' : 'danger'"
-              size="small"
-            >
-              {{ selectedGroup.status }}
-            </el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="Client ID">
-            <code style="font-family: monospace">{{ selectedGroup.client_id }}</code>
-          </el-descriptions-item>
-          <el-descriptions-item label="生效 IP">{{ selectedGroup.effective_ip }}</el-descriptions-item>
-        </el-descriptions>
-        <div style="display: flex; gap: 8px">
-          <el-button size="small" @click="handleRotateKey(selectedGroup)">重制密钥</el-button>
-          <el-button size="small" @click="openEditGroupDialog(selectedGroup)">编辑</el-button>
-          <el-button size="small" type="danger" @click="handleDeleteGroup(selectedGroup)">删除</el-button>
-        </div>
-      </div>
-    </el-card>
-
-    <div style="display: grid; grid-template-columns: minmax(320px, 1fr) minmax(560px, 2fr); gap: 20px; height: calc(100vh - 200px)">
-      <el-card style="display: flex; flex-direction: column">
-        <template #header>
-          <div style="display: flex; justify-content: space-between; align-items: center">
-            <span style="font-weight: 600">分组列表</span>
-            <el-button type="primary" size="small" @click="openCreateGroupDialog">新建分组</el-button>
-          </div>
-        </template>
-        <el-empty v-if="groups.length === 0" description="暂无分组，请新建" />
-        <el-table
-          v-else
-          :data="groups"
-          height="100%"
-          @row-click="handleGroupRowClick"
-          :row-class-name="getGroupRowClass"
-          highlight-current-row
-          v-loading="loading"
-        >
-          <el-table-column prop="name" label="名称" />
-          <el-table-column prop="client_id" label="Client ID" width="200" />
-          <el-table-column label="状态" width="100" align="center">
-            <template #default="{ row }">
+      <el-card
+        v-if="selectedGroup"
+        class="selected-group-card"
+        :body-style="{ padding: '12px 20px' }"
+      >
+        <el-row justify="space-between" align="middle">
+          <el-descriptions :column="4">
+            <el-descriptions-item label="已选中">{{ selectedGroup.name }}</el-descriptions-item>
+            <el-descriptions-item label="状态">
               <el-tooltip
-                v-if="row.status === '异常' && row.status_reason"
-                :content="row.status_reason"
+                v-if="selectedGroup.status === '异常' && selectedGroup.status_reason"
+                :content="selectedGroup.status_reason"
                 placement="top"
               >
-                <el-tag type="danger" size="small">{{ row.status }}</el-tag>
+                <el-tag type="danger" size="small">{{ selectedGroup.status }}</el-tag>
               </el-tooltip>
               <el-tag
                 v-else
-                :type="row.status === '启用' ? 'success' : row.status === '禁用' ? 'info' : 'danger'"
+                :type="selectedGroup.status === '启用' ? 'success' : selectedGroup.status === '禁用' ? 'info' : 'danger'"
                 size="small"
               >
-                {{ row.status }}
+                {{ selectedGroup.status }}
               </el-tag>
-            </template>
-          </el-table-column>
-        </el-table>
+            </el-descriptions-item>
+            <el-descriptions-item label="Client ID">
+              <code>{{ selectedGroup.client_id }}</code>
+            </el-descriptions-item>
+            <el-descriptions-item label="生效 IP">{{ selectedGroup.effective_ip }}</el-descriptions-item>
+          </el-descriptions>
+          <el-space>
+            <el-button size="small" @click="handleRotateKey(selectedGroup)">重置密钥</el-button>
+            <el-button size="small" @click="openEditGroupDialog(selectedGroup)">编辑</el-button>
+            <el-button size="small" type="danger" @click="handleDeleteGroup(selectedGroup)">删除</el-button>
+          </el-space>
+        </el-row>
       </el-card>
 
-      <el-card style="display: flex; flex-direction: column">
-        <template #header>
-          <div style="display: flex; justify-content: space-between; align-items: center">
-            <span style="font-weight: 600">
-              隧道列表
-              <span v-if="selectedGroup" style="font-weight: 400; color: var(--el-text-color-secondary)">（{{ selectedGroup.name }}）</span>
-            </span>
-            <el-button v-if="selectedGroupId" type="primary" size="small" @click="openCreateTunnelDrawer">新建隧道</el-button>
-          </div>
-        </template>
-        <el-empty v-if="!selectedGroupId" description="请选择分组查看隧道" />
-        <el-empty v-else-if="filteredTunnels.length === 0" description="该分组暂无隧道" />
-        <el-table v-else :data="filteredTunnels" height="100%">
-          <el-table-column prop="name" label="名称" />
-          <el-table-column prop="protocol" label="协议" width="70" align="center">
-            <template #default="{ row }">
-              <el-tag size="small">{{ row.protocol.toUpperCase() }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="远端" width="120">
-            <template #default="{ row }">
-              {{ formatRemotePort(row) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="本地">
-            <template #default="{ row }">
-              {{ formatLocalAddr(row) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="80" align="center">
-            <template #default="{ row }">
-              <el-tooltip
-                v-if="(row.status === '冲突' || row.status === '异常') && row.status_reason"
-                :content="row.status_reason"
-                placement="top"
-              >
-                <el-tag type="danger" size="small">{{ row.status }}</el-tag>
-              </el-tooltip>
-              <el-tag
+      <el-main class="content-main">
+        <el-row :gutter="16" class="content-row">
+          <el-col :xs="24" :md="10" :lg="8" class="list-col">
+            <el-card class="list-card">
+              <template #header>
+                <el-row justify="space-between" align="middle">
+                  <span class="list-title">分组列表</span>
+                  <el-button type="primary" size="small" @click="openCreateGroupDialog">新建分组</el-button>
+                </el-row>
+              </template>
+              <el-empty v-if="groups.length === 0" description="暂无分组，请新建" />
+              <el-table
                 v-else
-                :type="row.status === '启用' ? 'success' : row.status === '禁用' ? 'info' : 'danger'"
-                size="small"
+                :data="groups"
+                height="100%"
+                stripe
+                @row-click="handleGroupRowClick"
+                :row-class-name="getGroupRowClass"
+                highlight-current-row
+                v-loading="loading"
               >
-                {{ row.status }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="120" align="center">
-            <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="openEditTunnelDrawer(row)">编辑</el-button>
-              <el-button link type="danger" size="small" @click="handleDeleteTunnel(row)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-card>
-    </div>
-  </template>
+                <el-table-column prop="name" label="名称" />
+                <el-table-column prop="client_id" label="Client ID" width="200" />
+                <el-table-column label="状态" width="100" align="center">
+                  <template #default="{ row }">
+                    <el-tooltip
+                      v-if="row.status === '异常' && row.status_reason"
+                      :content="row.status_reason"
+                      placement="top"
+                    >
+                      <el-tag type="danger" size="small">{{ row.status }}</el-tag>
+                    </el-tooltip>
+                    <el-tag
+                      v-else
+                      :type="row.status === '启用' ? 'success' : row.status === '禁用' ? 'info' : 'danger'"
+                      size="small"
+                    >
+                      {{ row.status }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-card>
+          </el-col>
 
-  <!-- Group create/edit dialog -->
+          <el-col :xs="24" :md="14" :lg="16" class="list-col tunnel-list-col">
+            <el-card class="list-card">
+              <template #header>
+                <el-row justify="space-between" align="middle">
+                  <span class="list-title">
+                    隧道列表
+                    <span v-if="selectedGroup" class="tunnel-list-subtitle">（{{ selectedGroup.name }}）</span>
+                  </span>
+                  <el-button v-if="selectedGroupId" type="primary" size="small" @click="openCreateTunnelDrawer">新建隧道</el-button>
+                </el-row>
+              </template>
+              <el-empty v-if="!selectedGroupId" description="请选择分组查看隧道" />
+              <el-empty v-else-if="filteredTunnels.length === 0" description="该分组暂无隧道" />
+              <el-table v-else :data="filteredTunnels" height="100%" stripe>
+                <el-table-column prop="name" label="名称" />
+                <el-table-column prop="protocol" label="协议" width="70" align="center">
+                  <template #default="{ row }">
+                    <el-tag size="small">{{ row.protocol.toUpperCase() }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="远端" width="120">
+                  <template #default="{ row }">
+                    {{ formatRemotePort(row) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="本地">
+                  <template #default="{ row }">
+                    {{ formatLocalAddr(row) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="80" align="center">
+                  <template #default="{ row }">
+                    <el-tooltip
+                      v-if="(row.status === '冲突' || row.status === '异常') && row.status_reason"
+                      :content="row.status_reason"
+                      placement="top"
+                    >
+                      <el-tag type="danger" size="small">{{ row.status }}</el-tag>
+                    </el-tooltip>
+                    <el-tag
+                      v-else
+                      :type="row.status === '启用' ? 'success' : row.status === '禁用' ? 'info' : 'danger'"
+                      size="small"
+                    >
+                      {{ row.status }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="120" align="center">
+                  <template #default="{ row }">
+                    <el-button link type="primary" size="small" @click="openEditTunnelDrawer(row)">编辑</el-button>
+                    <el-button link type="danger" size="small" @click="handleDeleteTunnel(row)">删除</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-card>
+          </el-col>
+        </el-row>
+      </el-main>
+    </template>
+
+    <!-- Group create/edit dialog -->
     <el-dialog
       v-model="groupDialogVisible"
       :title="groupDialogMode === 'create' ? '新建分组' : '编辑分组'"
@@ -774,7 +790,7 @@ function copyKey(value: string) {
         type="error"
         :closable="false"
         show-icon
-        style="margin-bottom: 12px"
+        class="dialog-alert"
       >
         <template #title>当前状态：异常</template>
         {{ editingGroupStatusReason }}
@@ -792,7 +808,7 @@ function copyKey(value: string) {
           <el-select
             v-model="groupForm.effective_ip"
             placeholder="请选择生效 IP"
-            style="width: 100%"
+            class="full-width"
             :loading="localIPsLoading"
           >
             <el-option
@@ -823,16 +839,17 @@ function copyKey(value: string) {
       width="500px"
       :close-on-click-modal="false"
     >
-      <div style="text-align: center">
-        <p style="margin-bottom: 12px; color: var(--el-text-color-primary)">请保存以下登录 Key，并通过 <code>-key</code> 提供给客户端：</p>
-        <div style="display: grid; gap: 12px; padding: 16px; background: var(--el-fill-color); border-radius: 8px; margin-bottom: 12px">
-          <div style="display: flex; align-items: center; gap: 8px">
-            <code style="flex: 1; font-family: monospace; word-break: break-all; text-align: left">{{ newKeyValue }}</code>
-            <el-button type="primary" size="small" @click="copyKey(newKeyValue)">复制</el-button>
-          </div>
-        </div>
-        <p style="color: var(--el-color-warning); font-size: 12px">此 Key 仅显示一次，关闭后将无法再次查看。</p>
-      </div>
+      <p class="key-dialog-text">
+        请保存以下登录 Key，并通过 <code>-key</code> 提供给客户端：
+      </p>
+      <el-input :model-value="newKeyValue" readonly>
+        <template #append>
+          <el-button @click="copyKey(newKeyValue)">复制</el-button>
+        </template>
+      </el-input>
+      <el-alert type="warning" :closable="false" show-icon class="key-warning">
+        <template #title>此 Key 仅显示一次，关闭后将无法再次查看。</template>
+      </el-alert>
       <template #footer>
         <el-button type="primary" @click="newKeyVisible = false">我已保存</el-button>
       </template>
@@ -855,7 +872,7 @@ function copyKey(value: string) {
           <el-input v-model="tunnelForm.name" placeholder="请输入隧道名称" />
         </el-form-item>
         <el-form-item label="协议" prop="protocol">
-          <el-select v-model="tunnelForm.protocol" style="width: 100%">
+          <el-select v-model="tunnelForm.protocol" class="full-width">
             <el-option label="TCP" value="tcp" />
             <el-option label="UDP" value="udp" />
           </el-select>
@@ -863,7 +880,7 @@ function copyKey(value: string) {
         <el-form-item label="远端类型" prop="remote_type">
           <el-select
             v-model="tunnelForm.remote_type"
-            style="width: 100%"
+            class="full-width"
             @change="validateTunnelPortFields"
           >
             <el-option label="单端口" value="single" />
@@ -876,7 +893,7 @@ function copyKey(value: string) {
             :min="1"
             :max="65535"
             :controls="false"
-            style="width: 100%"
+            class="full-width"
             placeholder="端口号"
             @change="validateTunnelPortFields"
           />
@@ -887,7 +904,7 @@ function copyKey(value: string) {
             :min="1"
             :max="65535"
             :controls="false"
-            style="width: 100%"
+            class="full-width"
             placeholder="结束端口"
             @change="validateTunnelPortFields"
           />
@@ -901,7 +918,7 @@ function copyKey(value: string) {
             :min="1"
             :max="65535"
             :controls="false"
-            style="width: 100%"
+            class="full-width"
             placeholder="端口号"
             @change="validateTunnelPortFields"
           />
@@ -912,7 +929,7 @@ function copyKey(value: string) {
             :min="1"
             :max="65535"
             :controls="false"
-            style="width: 100%"
+            class="full-width"
             placeholder="结束端口"
             @change="validateTunnelPortFields"
           />
@@ -928,4 +945,88 @@ function copyKey(value: string) {
         </el-button>
       </template>
     </el-drawer>
-  </template>
+  </el-container>
+</template>
+
+<style scoped>
+.group-config-view {
+  height: 100%;
+}
+
+.page-header {
+  padding: 0;
+}
+
+.selected-group-card {
+  margin-top: var(--spacing-base);
+}
+
+.content-main {
+  padding: var(--spacing-base) 0 0 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.content-row {
+  height: 100%;
+}
+
+.list-col {
+  height: 100%;
+  display: flex;
+}
+
+.tunnel-list-col {
+  margin-top: 0;
+}
+
+.list-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.list-title {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.tunnel-list-subtitle {
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+
+/* Table row styles */
+:deep(.selectable-row) {
+  cursor: pointer;
+}
+
+:deep(.selected-row) {
+  background-color: var(--color-primary-light-9);
+}
+
+/* Dialog styles */
+.dialog-alert {
+  margin-bottom: var(--spacing-md);
+}
+
+.key-dialog-text {
+  color: var(--color-text-primary);
+  margin: 0 0 var(--spacing-md) 0;
+}
+
+.key-warning {
+  margin-top: var(--spacing-md);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .list-col {
+    height: auto;
+  }
+
+  .tunnel-list-col {
+    margin-top: var(--spacing-base);
+  }
+}
+</style>

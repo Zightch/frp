@@ -51,15 +51,12 @@ async function handleInit() {
 </script>
 
 <template>
-  <el-card v-if="checking" style="text-align: center; color: var(--el-text-color-secondary); padding: 20px 0">
-    检查初始化状态...
-  </el-card>
-  <el-card v-else>
+  <el-card v-loading="checking" element-loading-text="检查初始化状态..." class="init-card">
     <template #header>
-      <span style="font-size: 20px; font-weight: 600">初始化管理密钥</span>
+      <span class="card-title">初始化管理密钥</span>
     </template>
-    <p style="color: var(--el-text-color-secondary); margin-bottom: 20px">首次使用需设置管理密钥，此操作仅可执行一次</p>
-    <el-form @submit.prevent="handleInit">
+    <p class="init-description">首次使用需设置管理密钥，此操作仅可执行一次</p>
+    <el-form @submit.prevent="handleInit" class="init-form">
       <el-form-item>
         <el-input
           v-model="secret"
@@ -73,7 +70,7 @@ async function handleInit() {
         <el-button
           type="primary"
           :loading="loading"
-          style="width: 100%"
+          class="full-width"
           @click="handleInit"
         >
           初始化
@@ -82,3 +79,29 @@ async function handleInit() {
     </el-form>
   </el-card>
 </template>
+
+<style scoped>
+.init-card {
+  border-radius: var(--radius-base);
+  border: 1px solid var(--color-border);
+}
+
+.card-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.init-description {
+  color: var(--color-text-secondary);
+  margin: 0 0 var(--spacing-base) 0;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.init-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-base);
+}
+</style>

@@ -3,9 +3,30 @@ import { RouterView } from 'vue-router'
 </script>
 
 <template>
-  <div style="min-height: 100vh; display: flex; justify-content: center; align-items: center; background: var(--el-bg-color-page)">
-    <div style="width: 100%; max-width: 400px">
-      <RouterView />
-    </div>
-  </div>
+  <el-container class="blank-layout">
+    <el-main class="blank-main">
+      <div class="center-wrapper">
+        <RouterView />
+      </div>
+    </el-main>
+  </el-container>
 </template>
+
+<style scoped>
+.blank-layout {
+  min-height: 100vh;
+  background-color: var(--color-bg-page);
+}
+
+.blank-main {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: var(--spacing-xl);
+}
+
+.center-wrapper {
+  width: 100%;
+  max-width: var(--login-card-max-width);
+}
+</style>

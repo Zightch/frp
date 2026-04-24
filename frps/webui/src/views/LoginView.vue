@@ -64,14 +64,11 @@ async function handleLogin() {
 </script>
 
 <template>
-  <el-card v-if="checking" style="text-align: center; color: var(--el-text-color-secondary); padding: 20px 0">
-    检查登录状态...
-  </el-card>
-  <el-card v-else>
+  <el-card v-loading="checking" element-loading-text="检查登录状态..." class="login-card">
     <template #header>
-      <span style="font-size: 20px; font-weight: 600">管理登录</span>
+      <span class="card-title">管理登录</span>
     </template>
-    <el-form @submit.prevent="handleLogin">
+    <el-form @submit.prevent="handleLogin" class="login-form">
       <el-form-item>
         <el-input
           v-model="secret"
@@ -85,7 +82,7 @@ async function handleLogin() {
         <el-button
           type="primary"
           :loading="loading"
-          style="width: 100%"
+          class="full-width"
           @click="handleLogin"
         >
           登录
@@ -94,3 +91,22 @@ async function handleLogin() {
     </el-form>
   </el-card>
 </template>
+
+<style scoped>
+.login-card {
+  border-radius: var(--radius-base);
+  border: 1px solid var(--color-border);
+}
+
+.card-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-base);
+}
+</style>

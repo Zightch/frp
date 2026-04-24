@@ -1,14 +1,269 @@
-/* Global resets */
+/* ============================================
+   frps WebUI Global Styles
+   Based on style-guide.md specifications
+   ============================================ */
+
+/* ============================================
+   CSS Custom Properties (Design Tokens)
+   ============================================ */
+:root {
+  /* Brand Colors */
+  --color-primary: #409EFF;
+  --color-primary-light-3: #79BBFF;
+  --color-primary-light-5: #A0CFFF;
+  --color-primary-light-7: #C6E2FF;
+  --color-primary-light-8: #D9ECFF;
+  --color-primary-light-9: #ECF5FF;
+  --color-primary-dark-2: #337ECC;
+
+  /* Functional Colors */
+  --color-success: #67C23A;
+  --color-success-light-3: #95D475;
+  --color-success-light-9: #E1F3D8;
+  --color-warning: #E6A23C;
+  --color-warning-light-3: #EEBE77;
+  --color-warning-light-9: #FAECD8;
+  --color-danger: #F56C6C;
+  --color-danger-light-3: #F89898;
+  --color-danger-light-9: #FDE2E2;
+  --color-info: #909399;
+  --color-info-light-9: #E9E9EB;
+
+  /* Neutral Colors - Text */
+  --color-text-primary: #303133;
+  --color-text-regular: #606266;
+  --color-text-secondary: #909399;
+  --color-text-placeholder: #C0C4CC;
+
+  /* Neutral Colors - Border */
+  --color-border: #DCDFE6;
+  --color-border-light: #E4E7ED;
+  --color-border-lighter: #EBEEF5;
+  --color-border-extra-light: #F2F6FC;
+
+  /* Neutral Colors - Background */
+  --color-bg-white: #FFFFFF;
+  --color-bg-page: #F5F7FA;
+  --color-bg-fill: #F0F2F5;
+  --color-bg-fill-light: #F5F7FA;
+  --color-bg-fill-lighter: #FAFAFA;
+  --color-mask: rgba(0, 0, 0, 0.5);
+
+  /* Spacing (4px base grid) */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-base: 16px;
+  --spacing-lg: 20px;
+  --spacing-xl: 24px;
+  --spacing-2xl: 32px;
+
+  /* Border Radius */
+  --radius-small: 4px;
+  --radius-base: 8px;
+  --radius-large: 12px;
+
+  /* Layout */
+  --header-height: 56px;
+  --aside-width: 200px;
+  --login-card-max-width: 400px;
+  --min-content-width: 920px;
+
+  /* Typography */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, 'Noto Sans SC', sans-serif;
+}
+
+/* ============================================
+   Base Reset & Typography
+   ============================================ */
 *,
 *::before,
 *::after {
-  margin: 0;
-  padding: 0;
   box-sizing: border-box;
 }
 
+html,
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-family);
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-page);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  margin: 0;
+}
+
+h2 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  margin: 0;
+}
+
+h3 {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+  margin: 0;
+}
+
+code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  background-color: var(--color-bg-fill);
+  border-radius: var(--radius-small);
+}
+
+/* ============================================
+   Element Plus Component Overrides
+   ============================================ */
+
+/* Header */
+.el-header {
+  height: var(--header-height);
+  background-color: var(--color-bg-white);
+  border-bottom: 1px solid var(--color-border-light);
+  padding: 0 var(--spacing-lg);
+}
+
+/* Aside */
+.el-aside {
+  width: var(--aside-width);
+  background-color: var(--color-bg-white);
+  border-right: 1px solid var(--color-border-light);
+}
+
+/* Main */
+.el-main {
+  background-color: var(--color-bg-page);
+  padding: var(--spacing-xl);
+}
+
+/* Card */
+.el-card {
+  border-radius: var(--radius-base);
+  border: 1px solid var(--color-border);
+  background-color: var(--color-bg-white);
+}
+
+.el-card__header {
+  padding: var(--spacing-base) var(--spacing-lg);
+  border-bottom: 1px solid var(--color-border-lighter);
+}
+
+.el-card__body {
+  padding: var(--spacing-lg);
+}
+
+/* Table */
+.el-table {
+  --el-table-header-bg-color: var(--color-bg-fill);
+  --el-table-header-text-color: var(--color-text-regular);
+  --el-table-row-hover-bg-color: var(--color-bg-fill-lighter);
+  --el-table-border-color: var(--color-border-lighter);
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.el-table__row {
+  height: 48px;
+}
+
+.el-table__row--striped td.el-table__cell {
+  background-color: var(--color-bg-fill-lighter);
+}
+
+/* Dialog */
+.el-dialog {
+  border-radius: var(--radius-base);
+}
+
+.el-dialog__header {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.el-dialog__footer {
+  text-align: right;
+}
+
+/* Drawer */
+.el-drawer__header {
+  margin-bottom: 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.el-drawer__body {
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+/* Menu */
+.el-menu {
+  border-right: none;
+}
+
+/* Tag */
+.el-tag {
+  border-radius: var(--radius-small);
+  font-size: 12px;
+  height: 22px;
+  line-height: 20px;
+}
+
+/* Button */
+.el-button--default {
+  height: 32px;
+}
+
+.el-button--small {
+  height: 24px;
+}
+
+/* Input */
+.el-input__wrapper {
+  border-radius: var(--radius-small);
+}
+
+/* Form Item Label */
+.el-form-item__label {
+  color: var(--color-text-regular);
+  font-size: 14px;
+}
+
+/* ============================================
+   Utility Classes
+   ============================================ */
+.full-width {
+  width: 100%;
+}
+
+/* ============================================
+   Mobile Breakpoint (768px)
+   ============================================ */
+@media (max-width: 768px) {
+  :root {
+    --aside-width: 0px;
+  }
+
+  .el-main {
+    padding: var(--spacing-base);
+  }
+
+  .el-header {
+    padding: 0 var(--spacing-base);
+  }
 }

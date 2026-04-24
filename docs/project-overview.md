@@ -29,7 +29,7 @@
   - `frps` 按 `webui.dist_dir` 托管静态目录
   - 支持按 `webui.path_prefix` 挂到子路径，并同步提供同前缀下的健康检查与管理 API 别名
   - 前端技术栈收口为 `Node.js + Vue 3 + Element Plus`
-  - 已实现管理密钥初始化、challenge 登录、分组管理、登录 `key` 轮转和隧道管理
+  - 已实现管理密钥初始化、challenge 登录、分组管理、登录 `key` 重置和隧道管理
   - 当前主管理页已经接入 `effective_ip` 下拉、分组/隧道状态展示和一次性 `key` 展示弹窗
 - 存储层已支持 SQLite 和 MySQL 两种数据库。
 - 启动时会自动建当前必需表，并对现有表结构做严格校验；不做 schema 迁移兼容。

@@ -80,7 +80,7 @@ flowchart TB
 
 - `cmd/frps/main.go`：零参数启动，固定读取当前工作目录下的 `data/config.json`，加载配置和日志，启动 `app.App`。
 - `internal/app`：打开数据库，执行当前必需表建表 / 校验，并并发启动管理面和控制面。
-- `internal/api`：提供内嵌 WebUI、健康检查、分组 CRUD、隧道 CRUD、登录 `key` 轮转。
+- `internal/api`：提供内嵌 WebUI、健康检查、分组 CRUD、隧道 CRUD、登录 `key` 重置。
 - `internal/control`：处理 `frpc` 登录、challenge/response、单分组单客户端槽位、首次配置下发、在线整组热重载、心跳、TCP 单端口/范围 stream 转发，以及 `frps` 侧 UDP listener/session 管理；当前稳定 ownership 已收口到 `auth.go`、`config.go`、`refresh.go`、`connections.go`、`session.go`、`listeners.go`、`tcp_bridge.go`、`udp.go`、`repository.go`、`observe.go` 与 `runtime_*` 管理面。
 - `internal/storage`：包装已打开的 `*sql.DB` / `*sql.Tx`，提供统一查询、执行、事务接口。
 - `pkg/protocol`：定义业务帧、消息类型、错误码、隧道结构和编解码，并承接当前唯一新增的跨端共享纯规则 `ChallengeResponse`。

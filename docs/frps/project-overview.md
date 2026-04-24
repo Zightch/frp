@@ -47,7 +47,7 @@
   - 支持按 `webui.path_prefix` 把 WebUI 整体挂到子路径；同前缀下同时提供 `/healthz`、`/readyz` 和 `/api/v1/*` 别名
   - 技术栈：`Node.js + Vue 3 + Element Plus`
   - 页面路由相对 WebUI 基址固定为 `/init`、`/login`、`/proxy-groups`，基址内 `/` 重定向到 `/proxy-groups`
-  - 已实现：管理密钥初始化、challenge 登录、分组 CRUD、登录 `key` 轮转、隧道 CRUD、`effective_ip` 下拉与状态展示
+  - 已实现：管理密钥初始化、challenge 登录、分组 CRUD、登录 `key` 重置、隧道 CRUD、`effective_ip` 下拉与状态展示
 - 控制面：
   - `client_id` challenge/response 登录
   - 心跳
