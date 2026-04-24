@@ -42,6 +42,11 @@ const routes: RouteRecordRaw[] = [
         path: 'proxy-groups',
         name: 'GroupConfig',
         component: () => import('@/views/GroupConfigView.vue')
+      },
+      {
+        path: 'certificate-assets',
+        name: 'CertificateAssets',
+        component: () => import('@/views/CertificateAssetsView.vue')
       }
     ]
   }

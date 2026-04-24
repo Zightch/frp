@@ -61,15 +61,19 @@ interface ApiResponse<T = unknown> {
 
 async function request<T>(
   path: string,
-  options?: RequestInit
+  options?: RequestInit & { rawBody?: boolean }
 ): Promise<ApiResponse<T>> {
   try {
+    const { rawBody, ...fetchOptions } = options || {}
+    const headers: Record<string, string> = {}
+    if (!rawBody) {
+      headers['Content-Type'] = 'application/json'
+    }
+
     const response = await fetch(`${API_BASE}${path}`, {
       credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      ...options
+      headers,
+      ...fetchOptions
     })
 
     if (!response.ok) {
@@ -158,4 +162,90 @@ export const tunnelsApi = {
   }),
 
   delete: (id: number) => request(`/tunnels/${id}`, { method: 'DELETE' })
+}
+
+// --- Certificate Assets API ---
+
+export interface CertificateAsset {
+  id: number
+  name: string
+  remark: string
+  source: 'upload' | 'generated'
+  asset_type: 'certificate' | 'ca'
+  format_type: 'pem'
+  issuer_asset_id?: number
+  issuer_name?: string
+  common_name?: string
+  subject?: string
+  issuer?: string
+  serial_number?: string
+  not_before?: string
+  not_after?: string
+  dns_names?: string[]
+  ip_addresses?: string[]
+  key_present: boolean
+  can_issue: boolean
+  is_self_signed: boolean
+  chain_length: number
+  created_at: string
+  updated_at: string
+}
+
+export interface CertificateAssetDeleteImpact {
+  target: CertificateAsset
+  affected_items: Array<{
+    item: CertificateAsset
+    depth: number
+  }>
+  requires_confirmation: boolean
+  warning_message?: string
+}
+
+export interface CertificateAssetPastePayload {
+  name: string
+  remark?: string
+  asset_type: 'certificate' | 'ca'
+  crt: string
+  key?: string
+  issuer_asset_id?: number
+}
+
+export interface CertificateAssetGeneratePayload {
+  name: string
+  remark?: string
+  asset_type: 'certificate' | 'ca'
+  issuer_asset_id?: number
+  common_name: string
+  validity_days: number
+  dns_names?: string[]
+  ip_addresses?: string[]
+}
+
+export const certificateAssetsApi = {
+  list: () => request<{ items: CertificateAsset[] }>('/certificate-assets'),
+
+  upload: (formData: FormData) => request<{ item: CertificateAsset }>('/certificate-assets/upload', {
+    method: 'POST',
+    body: formData,
+    rawBody: true
+  }),
+
+  paste: (data: CertificateAssetPastePayload) => request<{ item: CertificateAsset }>('/certificate-assets/paste', {
+    method: 'POST',
+    body: JSON.stringify(data)
+  }),
+
+  generate: (data: CertificateAssetGeneratePayload) => request<{ item: CertificateAsset }>('/certificate-assets/generate', {
+    method: 'POST',
+    body: JSON.stringify(data)
+  }),
+
+  getDeleteImpact: (id: number) => request<CertificateAssetDeleteImpact>(`/certificate-assets/${id}/delete-impact`),
+
+  delete: (id: number, cascade: boolean = false) => {
+    const query = cascade ? '?cascade=true' : ''
+    return request<{ deleted: boolean; deleted_ids: number[] }>(`/certificate-assets/${id}${query}`, {
+      method: 'DELETE'
+    })
+  }
 }

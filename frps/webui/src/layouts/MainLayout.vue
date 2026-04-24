@@ -48,6 +48,10 @@ function handleMenuSelect() {
             <el-icon><Connection /></el-icon>
             <span>分组配置</span>
           </el-menu-item>
+          <el-menu-item :index="{ name: 'CertificateAssets' }">
+            <el-icon><Key /></el-icon>
+            <span>证书资产</span>
+          </el-menu-item>
         </el-menu>
       </el-aside>
 
@@ -66,6 +70,10 @@ function handleMenuSelect() {
           <el-menu-item :index="{ name: 'GroupConfig' }">
             <el-icon><Connection /></el-icon>
             <span>分组配置</span>
+          </el-menu-item>
+          <el-menu-item :index="{ name: 'CertificateAssets' }">
+            <el-icon><Key /></el-icon>
+            <span>证书资产</span>
           </el-menu-item>
         </el-menu>
         <template #footer>
