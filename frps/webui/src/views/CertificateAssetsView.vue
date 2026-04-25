@@ -919,7 +919,7 @@ async function handleDelete(asset: CertificateAsset) {
               </el-select>
               <div class="form-hint">选择上游 CA 将生成中间 CA，留空则生成自签根 CA</div>
             </el-form-item>
-            <el-form-item label="Common Name" prop="common_name">
+            <el-form-item label="CN" prop="common_name">
               <el-input v-model="generateCaForm.common_name" placeholder="CA 的 CN 字段" />
             </el-form-item>
             <el-form-item label="密钥算法" prop="key_algorithm">
@@ -985,7 +985,7 @@ async function handleDelete(asset: CertificateAsset) {
                 />
               </el-select>
             </el-form-item>
-            <el-form-item label="Common Name" prop="common_name">
+            <el-form-item label="CN" prop="common_name">
               <el-input v-model="generateCertForm.common_name" placeholder="证书的 CN 字段" />
             </el-form-item>
             <el-form-item label="密钥算法" prop="key_algorithm">
