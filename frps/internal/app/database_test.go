@@ -78,6 +78,7 @@ func TestAppInitDatabaseInjectsStore(t *testing.T) {
 		"proxy_groups",
 		"tunnels",
 		"certificate_assets",
+		"certificate_asset_relations",
 	} {
 		if _, err := application.store.QueryOne(
 			"select name from sqlite_master where type = 'table' and name = ?",
@@ -96,8 +97,9 @@ func TestAppInitDatabaseInjectsStore(t *testing.T) {
 
 	for _, indexName := range []string{
 		"idx_certificate_assets_crt_hash",
-		"idx_certificate_assets_issuer_asset_id",
 		"uk_certificate_assets_name",
+		"idx_certificate_asset_relations_parent_asset_id",
+		"uk_certificate_asset_relations_child_asset_id",
 	} {
 		if _, err := application.store.QueryOne(
 			"select name from sqlite_master where type = 'index' and name = ?",
@@ -227,11 +229,18 @@ CREATE TABLE certificate_assets (
 	crt TEXT NOT NULL,
 	crt_hash TEXT NOT NULL,
 	key TEXT NOT NULL,
-	issuer_asset_id INTEGER,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX uk_certificate_assets_name ON certificate_assets (name);
+CREATE TABLE certificate_asset_relations (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	child_asset_id INTEGER NOT NULL,
+	parent_asset_id INTEGER NOT NULL,
+	relation_type TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
 `)
 	if closeErr := db.Close(); closeErr != nil {
 		t.Fatalf("close sqlite database: %v", closeErr)
@@ -255,8 +264,9 @@ CREATE UNIQUE INDEX uk_certificate_assets_name ON certificate_assets (name);
 
 	for _, indexName := range []string{
 		"idx_certificate_assets_crt_hash",
-		"idx_certificate_assets_issuer_asset_id",
 		"uk_certificate_assets_name",
+		"idx_certificate_asset_relations_parent_asset_id",
+		"uk_certificate_asset_relations_child_asset_id",
 	} {
 		if _, err := application.store.QueryOne(
 			"select name from sqlite_master where type = 'index' and name = ?",

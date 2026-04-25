@@ -69,6 +69,29 @@ type certificateAssetDeleteItemView struct {
 	Depth int                  `json:"depth"`
 }
 
+type certificateAssetDownloadOptionsView struct {
+	Target     certificateAssetView                `json:"target"`
+	Modes      []certificateAssetDownloadModeView  `json:"modes"`
+	ChainItems []certificateAssetDownloadChainView `json:"chain_items,omitempty"`
+	TreeItems  []certificateAssetDownloadTreeView  `json:"tree_items,omitempty"`
+}
+
+type certificateAssetDownloadModeView struct {
+	Mode    string `json:"mode"`
+	Default bool   `json:"default"`
+}
+
+type certificateAssetDownloadChainView struct {
+	Item  certificateAssetView `json:"item"`
+	Depth int                  `json:"depth"`
+}
+
+type certificateAssetDownloadTreeView struct {
+	Item          certificateAssetView `json:"item"`
+	ParentAssetID *int64               `json:"parent_asset_id,omitempty"`
+	Depth         int                  `json:"depth"`
+}
+
 func (s *Server) handleCertificateAssets(writer http.ResponseWriter, request *http.Request) {
 	if !s.requireManagementSession(writer, request) {
 		return
@@ -197,6 +220,13 @@ func (s *Server) handleCertificateAssetResource(writer http.ResponseWriter, requ
 			return
 		}
 		writeJSON(writer, http.StatusOK, impact)
+	case suffix == "download-options" && request.Method == http.MethodGet:
+		options, err := manager.getCertificateAssetDownloadOptions(request.Context(), id)
+		if err != nil {
+			writeError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, options)
 	case suffix == "" && request.Method == http.MethodDelete:
 		cascade := parseBoolQueryValue(request.URL.Query().Get("cascade"))
 		result, err := manager.deleteCertificateAsset(request.Context(), id, cascade)
@@ -312,6 +342,18 @@ func (m *managementService) deleteCertificateAsset(ctx context.Context, id int64
 		return certassets.DeleteResult{}, mapCertificateAssetError(err)
 	}
 	return result, nil
+}
+
+func (m *managementService) getCertificateAssetDownloadOptions(ctx context.Context, id int64) (certificateAssetDownloadOptionsView, error) {
+	if m == nil || m.certs == nil {
+		return certificateAssetDownloadOptionsView{}, &apiError{Status: http.StatusServiceUnavailable, Message: "certificate asset service is unavailable"}
+	}
+
+	options, err := m.certs.DownloadOptions(ctx, id)
+	if err != nil {
+		return certificateAssetDownloadOptionsView{}, mapCertificateAssetError(err)
+	}
+	return mapCertificateAssetDownloadOptionsView(options), nil
 }
 
 func mapCertificateAssetError(err error) error {
@@ -439,6 +481,40 @@ func mapCertificateAssetDeleteImpactView(impact certassets.DeleteImpact) certifi
 		view.WarningMessage = "删除该证书所影响到的子证书"
 	}
 	return view
+}
+
+func mapCertificateAssetDownloadOptionsView(options certassets.DownloadOptions) certificateAssetDownloadOptionsView {
+	modes := make([]certificateAssetDownloadModeView, 0, len(options.Modes))
+	for _, item := range options.Modes {
+		modes = append(modes, certificateAssetDownloadModeView{
+			Mode:    string(item.Mode),
+			Default: item.Default,
+		})
+	}
+
+	chainItems := make([]certificateAssetDownloadChainView, 0, len(options.ChainItems))
+	for _, item := range options.ChainItems {
+		chainItems = append(chainItems, certificateAssetDownloadChainView{
+			Item:  mapCertificateAssetView(item.Item),
+			Depth: item.Depth,
+		})
+	}
+
+	treeItems := make([]certificateAssetDownloadTreeView, 0, len(options.TreeItems))
+	for _, item := range options.TreeItems {
+		treeItems = append(treeItems, certificateAssetDownloadTreeView{
+			Item:          mapCertificateAssetView(item.Item),
+			ParentAssetID: item.ParentAssetID,
+			Depth:         item.Depth,
+		})
+	}
+
+	return certificateAssetDownloadOptionsView{
+		Target:     mapCertificateAssetView(options.Target),
+		Modes:      modes,
+		ChainItems: chainItems,
+		TreeItems:  treeItems,
+	}
 }
 
 func readUploadedFormFile(request *http.Request, field string) string {

@@ -86,13 +86,22 @@ CREATE TABLE IF NOT EXISTS certificate_assets (
 	crt TEXT NOT NULL,
 	crt_hash TEXT NOT NULL,
 	key TEXT NOT NULL,
-	issuer_asset_id INTEGER,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 )`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS uk_certificate_assets_name ON certificate_assets (name)`,
 			`CREATE INDEX IF NOT EXISTS idx_certificate_assets_crt_hash ON certificate_assets (crt_hash)`,
-			`CREATE INDEX IF NOT EXISTS idx_certificate_assets_issuer_asset_id ON certificate_assets (issuer_asset_id)`,
+			`
+CREATE TABLE IF NOT EXISTS certificate_asset_relations (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	child_asset_id INTEGER NOT NULL,
+	parent_asset_id INTEGER NOT NULL,
+	relation_type TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS uk_certificate_asset_relations_child_asset_id ON certificate_asset_relations (child_asset_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_certificate_asset_relations_parent_asset_id ON certificate_asset_relations (parent_asset_id)`,
 		},
 		tables: []tableSpec{
 			{
@@ -146,16 +155,31 @@ CREATE TABLE IF NOT EXISTS certificate_assets (
 					{name: "crt", columnType: "text", nullable: false},
 					{name: "crt_hash", columnType: "text", nullable: false},
 					{name: "key", columnType: "text", nullable: false},
-					{name: "issuer_asset_id", columnType: "integer", nullable: true},
 					{name: "created_at", columnType: "text", nullable: false},
 					{name: "updated_at", columnType: "text", nullable: false},
 				},
 				indexes: [][]string{
 					{"crt_hash"},
-					{"issuer_asset_id"},
 				},
 				uniqueIndexes: [][]string{
 					{"name"},
+				},
+			},
+			{
+				name: "certificate_asset_relations",
+				columns: []columnSpec{
+					{name: "id", columnType: "integer", nullable: false, primaryKey: true},
+					{name: "child_asset_id", columnType: "integer", nullable: false},
+					{name: "parent_asset_id", columnType: "integer", nullable: false},
+					{name: "relation_type", columnType: "text", nullable: false},
+					{name: "created_at", columnType: "text", nullable: false},
+					{name: "updated_at", columnType: "text", nullable: false},
+				},
+				indexes: [][]string{
+					{"parent_asset_id"},
+				},
+				uniqueIndexes: [][]string{
+					{"child_asset_id"},
 				},
 			},
 		},
@@ -206,13 +230,23 @@ CREATE TABLE IF NOT EXISTS certificate_assets (
 	crt MEDIUMTEXT NOT NULL,
 	crt_hash CHAR(64) NOT NULL,
 	` + "`key`" + ` MEDIUMTEXT NOT NULL,
-	issuer_asset_id BIGINT NULL,
 	created_at DATETIME(6) NOT NULL,
 	updated_at DATETIME(6) NOT NULL,
 	PRIMARY KEY (id),
 	UNIQUE KEY uk_certificate_assets_name (name),
-	KEY idx_certificate_assets_crt_hash (crt_hash),
-	KEY idx_certificate_assets_issuer_asset_id (issuer_asset_id)
+	KEY idx_certificate_assets_crt_hash (crt_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`
+CREATE TABLE IF NOT EXISTS certificate_asset_relations (
+	id BIGINT NOT NULL AUTO_INCREMENT,
+	child_asset_id BIGINT NOT NULL,
+	parent_asset_id BIGINT NOT NULL,
+	relation_type VARCHAR(16) NOT NULL,
+	created_at DATETIME(6) NOT NULL,
+	updated_at DATETIME(6) NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE KEY uk_certificate_asset_relations_child_asset_id (child_asset_id),
+	KEY idx_certificate_asset_relations_parent_asset_id (parent_asset_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		},
 		tables: []tableSpec{
@@ -267,16 +301,31 @@ CREATE TABLE IF NOT EXISTS certificate_assets (
 					{name: "crt", columnType: "mediumtext", nullable: false},
 					{name: "crt_hash", columnType: "char(64)", nullable: false},
 					{name: "key", columnType: "mediumtext", nullable: false},
-					{name: "issuer_asset_id", columnType: "bigint", nullable: true},
 					{name: "created_at", columnType: "datetime(6)", nullable: false},
 					{name: "updated_at", columnType: "datetime(6)", nullable: false},
 				},
 				indexes: [][]string{
 					{"crt_hash"},
-					{"issuer_asset_id"},
 				},
 				uniqueIndexes: [][]string{
 					{"name"},
+				},
+			},
+			{
+				name: "certificate_asset_relations",
+				columns: []columnSpec{
+					{name: "id", columnType: "bigint", nullable: false, primaryKey: true, autoIncrement: true},
+					{name: "child_asset_id", columnType: "bigint", nullable: false},
+					{name: "parent_asset_id", columnType: "bigint", nullable: false},
+					{name: "relation_type", columnType: "varchar(16)", nullable: false},
+					{name: "created_at", columnType: "datetime(6)", nullable: false},
+					{name: "updated_at", columnType: "datetime(6)", nullable: false},
+				},
+				indexes: [][]string{
+					{"parent_asset_id"},
+				},
+				uniqueIndexes: [][]string{
+					{"child_asset_id"},
 				},
 			},
 		},

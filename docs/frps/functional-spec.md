@@ -369,7 +369,15 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `crt`
 - `crt_hash`
 - `key`
-- `issuer_asset_id`
+- `created_at`
+- `updated_at`
+
+当前还需要一张树状关系表 `certificate_asset_relations`：
+
+- `id`
+- `child_asset_id`
+- `parent_asset_id`
+- `relation_type`
 - `created_at`
 - `updated_at`
 
@@ -380,9 +388,13 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `format_type` 当前固定为 `pem`
 - `crt_hash` 由服务端在写库前计算，作为快速去重和快速比对字段
 - `key` 可为空
-- `issuer_asset_id` 指向直接上游资产；根 CA 为空
+- `source=generated` 时，`crt` 只保存当前节点这一张证书
+- `source=upload` 时，`crt` 允许保留上传时的多证书 PEM 原结构
+- `relation_type` 当前固定为 `issued_by`
+- `child_asset_id` 在关系表中唯一，保证当前只支持单父树
+- `parent_asset_id` 只允许引用 `source=generated` 且 `asset_type=ca` 的资产
 
-当前多级 CA 链固定按“单直接上游”表达：
+当前多级 CA 树固定按“关系表里的单直接上游”表达：
 
 - 叶子证书可以指向中间 CA
 - 中间 CA 可以继续指向上游 CA
@@ -397,9 +409,24 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 - `asset_type=certificate` 时，运行时如果要作为客户端证书使用，必须有 `key`
 - `asset_type=ca` 时，`key` 可以为空
-- 只有 `asset_type=ca` 且 `key` 非空的资产，后续才能用于签发证书
+- 只有 `source=generated` 且 `asset_type=ca` 且 `key` 非空的资产，后续才能用于签发证书
 - 文件上传和手动粘贴统一记为 `source=upload`
 - 管理面生成的 CA 和证书统一记为 `source=generated`
+
+上传与生成的边界当前固定为：
+
+- 生成资产必须是原子节点；一个资产只存一张证书
+- 上传资产允许保存管理员提供的完整 PEM 结构；可以是一张证书，也可以是单条证书链
+- 上传资产继续沿用当前校验逻辑：必须能通过“资产内嵌链、数据库根 CA、系统 CA”三类来源完成有效链验证
+- 上传资产不写入 `certificate_asset_relations`，不作为树节点参与后续链路重组
+- 上传资产只支持按原结构下载
+
+生成资产的下载语义当前固定为：
+
+- 默认只下载当前节点
+- 可以选择“当前节点到某个祖先”的一条单链，输出为一个多证书 PEM
+- 可以选择某个 CA 节点的部分子树或整棵树，输出为多文件打包结果
+- 所有 `crt` 聚合和归档打包都在 `frps` 内存完成，不落盘，不调用外部工具
 
 当前同时已确认 CA 池回退到隧道级：
 

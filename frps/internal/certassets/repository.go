@@ -40,7 +40,7 @@ func ListAssetsWithConn(ctx context.Context, conn storage.Conn) ([]Asset, error)
 
 	result, err := conn.QueryContext(
 		ctx,
-		buildAssetSelectQuery("ORDER BY id"),
+		buildAssetSelectQuery("ORDER BY a.id"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list certificate assets: %w", err)
@@ -62,7 +62,7 @@ func LoadAssetByID(ctx context.Context, conn storage.Conn, id int64) (Asset, err
 		return Asset{}, fmt.Errorf("asset connection is nil")
 	}
 
-	row, err := conn.QueryOneContext(ctx, buildAssetSelectQuery("WHERE id = ?"), id)
+	row, err := conn.QueryOneContext(ctx, buildAssetSelectQuery("WHERE a.id = ?"), id)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return Asset{}, err
@@ -89,7 +89,7 @@ func ListAssetsByCRTHash(ctx context.Context, conn storage.Conn, crtHash string)
 
 	result, err := conn.QueryContext(
 		ctx,
-		buildAssetSelectQuery("WHERE crt_hash = ? ORDER BY id"),
+		buildAssetSelectQuery("WHERE a.crt_hash = ? ORDER BY a.id"),
 		crtHash,
 	)
 	if err != nil {
@@ -124,10 +124,9 @@ INSERT INTO certificate_assets (
 	crt,
 	crt_hash,
 	`+"`key`"+`,
-	issuer_asset_id,
 	created_at,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		asset.Name,
 		asset.Remark,
@@ -137,7 +136,6 @@ INSERT INTO certificate_assets (
 		asset.CRT,
 		asset.CRTHash,
 		asset.Key,
-		nullableInt64(asset.IssuerAssetID),
 		formatTimestamp(asset.CreatedAt),
 		formatTimestamp(asset.UpdatedAt),
 	)
@@ -164,6 +162,18 @@ func DeleteAssetsByID(ctx context.Context, conn storage.Conn, ids []int64) error
 
 	if _, err := conn.ExecContext(
 		ctx,
+		fmt.Sprintf(
+			"DELETE FROM certificate_asset_relations WHERE child_asset_id IN (%s) OR parent_asset_id IN (%s)",
+			strings.Join(placeholders, ", "),
+			strings.Join(placeholders, ", "),
+		),
+		append(args, args...)...,
+	); err != nil {
+		return fmt.Errorf("delete certificate asset relations: %w", err)
+	}
+
+	if _, err := conn.ExecContext(
+		ctx,
 		fmt.Sprintf("DELETE FROM certificate_assets WHERE id IN (%s)", strings.Join(placeholders, ", ")),
 		args...,
 	); err != nil {
@@ -179,19 +189,22 @@ func buildAssetSelectQuery(suffix string) string {
 	}
 	return `
 SELECT
-	id,
-	name,
-	remark,
-	source,
-	asset_type,
-	format_type,
-	crt,
-	crt_hash,
-	` + "`key`" + `,
-	issuer_asset_id,
-	created_at,
-	updated_at
-FROM certificate_assets` + suffix
+	a.id,
+	a.name,
+	a.remark,
+	a.source,
+	a.asset_type,
+	a.format_type,
+	a.crt,
+	a.crt_hash,
+	a.` + "`key`" + `,
+	r.parent_asset_id AS issuer_asset_id,
+	a.created_at,
+	a.updated_at
+FROM certificate_assets a
+LEFT JOIN certificate_asset_relations r
+	ON r.child_asset_id = a.id
+	AND r.relation_type = '` + string(RelationTypeIssuedBy) + `'` + suffix
 }
 
 func nullableInt64(value *int64) any {
@@ -199,6 +212,34 @@ func nullableInt64(value *int64) any {
 		return nil
 	}
 	return *value
+}
+
+func InsertRelation(ctx context.Context, conn storage.Conn, relation Relation) (int64, error) {
+	if conn == nil {
+		return 0, fmt.Errorf("relation connection is nil")
+	}
+
+	result, err := conn.ExecContext(
+		ctx,
+		`
+INSERT INTO certificate_asset_relations (
+	child_asset_id,
+	parent_asset_id,
+	relation_type,
+	created_at,
+	updated_at
+) VALUES (?, ?, ?, ?, ?)
+`,
+		relation.ChildAssetID,
+		relation.ParentAssetID,
+		string(relation.RelationType),
+		formatTimestamp(relation.CreatedAt),
+		formatTimestamp(relation.UpdatedAt),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("insert certificate asset relation: %w", err)
+	}
+	return result.LastInsertID, nil
 }
 
 func formatTimestamp(value time.Time) string {

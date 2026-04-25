@@ -162,7 +162,7 @@ func (s *Service) List(ctx context.Context) ([]DescribedAsset, error) {
 func (s *Service) Import(ctx context.Context, input CreateInput) (DescribedAsset, error) {
 	var created DescribedAsset
 	err := s.withTx(ctx, func(tx *storage.Tx, existing []Asset, preparedExisting []PreparedAsset, now time.Time) error {
-		candidate, err := buildImportedAsset(existing, preparedExisting, input)
+		candidate, err := buildImportedAsset(existing, input)
 		if err != nil {
 			return err
 		}
@@ -274,7 +274,7 @@ func (s *Service) prepareOptionsAt(now time.Time) PrepareOptions {
 	return options
 }
 
-func buildImportedAsset(existing []Asset, preparedExisting []PreparedAsset, input CreateInput) (Asset, error) {
+func buildImportedAsset(existing []Asset, input CreateInput) (Asset, error) {
 	name := strings.TrimSpace(input.Name)
 	remark := strings.TrimSpace(input.Remark)
 	if name == "" {
@@ -320,7 +320,6 @@ func buildImportedAsset(existing []Asset, preparedExisting []PreparedAsset, inpu
 	}
 
 	assetType := inferImportedAssetType(certs[0])
-	issuerAssetID := inferImportedIssuerAssetID(preparedExisting, certs)
 
 	source := input.Source
 	if source == "" {
@@ -335,16 +334,15 @@ func buildImportedAsset(existing []Asset, preparedExisting []PreparedAsset, inpu
 	}
 
 	candidate := Asset{
-		ID:            nextCandidateID(existing),
-		Name:          name,
-		Remark:        remark,
-		Source:        source,
-		AssetType:     assetType,
-		FormatType:    FormatTypePEM,
-		CRT:           crt,
-		CRTHash:       crtHash,
-		Key:           normalizePEMText(input.Key),
-		IssuerAssetID: issuerAssetID,
+		ID:         nextCandidateID(existing),
+		Name:       name,
+		Remark:     remark,
+		Source:     source,
+		AssetType:  assetType,
+		FormatType: FormatTypePEM,
+		CRT:        crt,
+		CRTHash:    crtHash,
+		Key:        normalizePEMText(input.Key),
 	}
 	return candidate, nil
 }
@@ -490,6 +488,13 @@ func buildGeneratedAsset(existing []Asset, preparedExisting []PreparedAsset, inp
 				Field:   "issuer_asset_id",
 				Code:    "issuer_not_ca",
 				Message: "issuer_asset_id must reference a ca asset",
+			})
+		}
+		if item.Asset.Source != SourceGenerated {
+			return Asset{}, validationError("issuer_asset_id must reference a generated ca asset", ValidationIssue{
+				Field:   "issuer_asset_id",
+				Code:    "issuer_not_generated",
+				Message: "issuer_asset_id must reference a generated ca asset",
 			})
 		}
 		if !item.Asset.HasKey() {
@@ -665,6 +670,17 @@ func insertAndDescribeAsset(ctx context.Context, tx *storage.Tx, candidate Asset
 	insertID, err := InsertAsset(ctx, tx, candidate)
 	if err != nil {
 		return DescribedAsset{}, err
+	}
+	if candidate.HasIssuer() {
+		if _, err := InsertRelation(ctx, tx, Relation{
+			ChildAssetID:  insertID,
+			ParentAssetID: *candidate.IssuerAssetID,
+			RelationType:  RelationTypeIssuedBy,
+			CreatedAt:     candidate.CreatedAt,
+			UpdatedAt:     candidate.UpdatedAt,
+		}); err != nil {
+			return DescribedAsset{}, err
+		}
 	}
 
 	preparedCandidate, ok := FindPreparedAssetByID(preparedAll, candidate.ID)

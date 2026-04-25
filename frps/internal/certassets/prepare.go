@@ -183,10 +183,16 @@ func parseAsset(asset Asset, now time.Time) (PreparedAsset, error) {
 		return PreparedAsset{}, fmt.Errorf("crt_hash mismatch")
 	}
 
+	if err := validateAssetSourceStructure(asset, certs); err != nil {
+		return PreparedAsset{}, err
+	}
 	if err := validatePrivateKey(asset, now); err != nil {
 		return PreparedAsset{}, err
 	}
 	if err := validateCertificateUsage(asset, certs[0]); err != nil {
+		return PreparedAsset{}, err
+	}
+	if err := validateAssetTopology(asset, certs[0]); err != nil {
 		return PreparedAsset{}, err
 	}
 	if err := validateCertificateTimes(certs, now); err != nil {
@@ -232,6 +238,17 @@ func validateStaticAssetFields(asset Asset) error {
 	return nil
 }
 
+func validateAssetSourceStructure(asset Asset, certs []*x509.Certificate) error {
+	switch asset.Source {
+	case SourceGenerated:
+		if len(certs) != 1 {
+			return fmt.Errorf("generated asset must contain exactly one certificate")
+		}
+	case SourceUpload:
+	}
+	return nil
+}
+
 func validatePrivateKey(asset Asset, _ time.Time) error {
 	hasKey := strings.TrimSpace(asset.Key) != ""
 	if asset.AssetType == AssetTypeCertificate && !hasKey {
@@ -244,6 +261,29 @@ func validatePrivateKey(asset Asset, _ time.Time) error {
 		return fmt.Errorf("parse key or certificate pair: %w", err)
 	}
 	return nil
+}
+
+func validateAssetTopology(asset Asset, leaf *x509.Certificate) error {
+	if asset.Source == SourceUpload {
+		if asset.HasIssuer() {
+			return fmt.Errorf("uploaded asset cannot have issuer relation")
+		}
+		return nil
+	}
+
+	if asset.Source != SourceGenerated {
+		return nil
+	}
+	if asset.HasIssuer() {
+		return nil
+	}
+	if asset.AssetType == AssetTypeCA && isSelfSigned(leaf) {
+		return nil
+	}
+	if asset.AssetType == AssetTypeCertificate {
+		return fmt.Errorf("generated certificate requires issuer relation")
+	}
+	return fmt.Errorf("generated ca requires issuer relation unless self-signed")
 }
 
 func validateCertificateUsage(asset Asset, leaf *x509.Certificate) error {
@@ -284,6 +324,10 @@ func validateIssuerRelation(asset PreparedAsset, assetsByID map[int64]PreparedAs
 		return nil
 	}
 
+	if asset.Asset.Source != SourceGenerated {
+		return fmt.Errorf("uploaded asset cannot have issuer relation")
+	}
+
 	issuerAssetID := *asset.Asset.IssuerAssetID
 	if issuerAssetID == asset.Asset.ID {
 		return fmt.Errorf("issuer_asset_id cannot reference itself")
@@ -292,6 +336,9 @@ func validateIssuerRelation(asset PreparedAsset, assetsByID map[int64]PreparedAs
 	issuer, ok := assetsByID[issuerAssetID]
 	if !ok {
 		return fmt.Errorf("issuer asset %d does not exist", issuerAssetID)
+	}
+	if issuer.Asset.Source != SourceGenerated {
+		return fmt.Errorf("issuer asset %d must be a generated ca asset", issuerAssetID)
 	}
 	if issuer.Asset.AssetType != AssetTypeCA {
 		return fmt.Errorf("issuer asset %d must be a ca asset", issuerAssetID)
@@ -344,6 +391,16 @@ func validateAssetChain(asset PreparedAsset, assetsByID map[int64]PreparedAsset,
 		roots = systemCAPool.Clone()
 	}
 	intermediates := x509.NewCertPool()
+
+	for _, candidate := range assetsByID {
+		if candidate.Asset.ID == asset.Asset.ID || candidate.Asset.AssetType != AssetTypeCA {
+			continue
+		}
+		addCertificateToPools(candidate.Leaf, roots, intermediates)
+		for _, cert := range candidate.Certificates[1:] {
+			addCertificateToPools(cert, roots, intermediates)
+		}
+	}
 
 	for _, cert := range asset.Certificates[1:] {
 		addCertificateToPools(cert, roots, intermediates)

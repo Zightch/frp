@@ -96,6 +96,24 @@ func TestCertificateAssetsLifecycle(t *testing.T) {
 		t.Fatalf("unexpected asset count: %#v", list.JSON)
 	}
 
+	downloadOptions := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(rootID, 10)+"/download-options",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	modes := downloadOptions.JSON["modes"].([]any)
+	if len(modes) != 3 {
+		t.Fatalf("unexpected generated ca download modes: %#v", downloadOptions.JSON)
+	}
+	treeItems := downloadOptions.JSON["tree_items"].([]any)
+	if len(treeItems) != 2 {
+		t.Fatalf("unexpected generated ca tree items: %#v", downloadOptions.JSON)
+	}
+
 	impact := performRequest(
 		t,
 		server.Handler(),
@@ -241,7 +259,6 @@ func TestCertificateAssetsPasteAutoDetectsTypeAndIssuer(t *testing.T) {
 		sessionCookie,
 	)
 	rootItem := rootResponse.JSON["item"].(map[string]any)
-	rootID := int64(rootItem["id"].(float64))
 	if rootItem["asset_type"] != "ca" {
 		t.Fatalf("expected root import to be detected as ca: %#v", rootItem)
 	}
@@ -269,8 +286,8 @@ func TestCertificateAssetsPasteAutoDetectsTypeAndIssuer(t *testing.T) {
 	if leafItem["asset_type"] != "certificate" {
 		t.Fatalf("expected leaf import to be detected as certificate: %#v", leafItem)
 	}
-	if int64(leafItem["issuer_asset_id"].(float64)) != rootID {
-		t.Fatalf("expected leaf issuer_asset_id to match imported root: %#v", leafItem)
+	if _, exists := leafItem["issuer_asset_id"]; exists {
+		t.Fatalf("expected uploaded leaf to omit issuer_asset_id: %#v", leafItem)
 	}
 
 	intermediate := issueAPITestCertificate(t, apiTestCertificateSpec{
@@ -297,8 +314,8 @@ func TestCertificateAssetsPasteAutoDetectsTypeAndIssuer(t *testing.T) {
 	if intermediateItem["asset_type"] != "ca" {
 		t.Fatalf("expected intermediate import to be detected as ca: %#v", intermediateItem)
 	}
-	if int64(intermediateItem["issuer_asset_id"].(float64)) != rootID {
-		t.Fatalf("expected intermediate issuer_asset_id to match imported root: %#v", intermediateItem)
+	if _, exists := intermediateItem["issuer_asset_id"]; exists {
+		t.Fatalf("expected uploaded intermediate to omit issuer_asset_id: %#v", intermediateItem)
 	}
 }
 
@@ -370,6 +387,123 @@ func TestCertificateAssetsUploadRejectsDuplicateContent(t *testing.T) {
 	duplicates := details["duplicates"].([]any)
 	if len(duplicates) != 1 {
 		t.Fatalf("unexpected duplicate details: %#v", duplicate.JSON)
+	}
+}
+
+func TestCertificateAssetDownloadOptionsDifferentiateGeneratedAndUploadedAssets(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	rootResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":          "generated-root",
+			"asset_type":    "ca",
+			"common_name":   "Generated Root",
+			"validity_days": 365,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	rootID := int64(rootResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	leafResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":            "generated-leaf",
+			"asset_type":      "certificate",
+			"issuer_asset_id": rootID,
+			"common_name":     "generated.example.com",
+			"validity_days":   30,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	leafID := int64(leafResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	uploadedRoot := issueAPITestCertificate(t, apiTestCertificateSpec{
+		CommonName: "uploaded-root-for-download",
+		IsCA:       true,
+		NotBefore:  time.Now().UTC().Add(-time.Hour),
+		NotAfter:   time.Now().UTC().Add(24 * time.Hour),
+	})
+	uploadResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/paste",
+		map[string]any{
+			"name": "uploaded-root",
+			"crt":  uploadedRoot.CertPEM,
+			"key":  uploadedRoot.KeyPEM,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	uploadID := int64(uploadResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	generatedLeafOptions := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(leafID, 10)+"/download-options",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	generatedLeafModes := generatedLeafOptions.JSON["modes"].([]any)
+	if len(generatedLeafModes) != 2 {
+		t.Fatalf("unexpected generated leaf download modes: %#v", generatedLeafOptions.JSON)
+	}
+	generatedLeafChain := generatedLeafOptions.JSON["chain_items"].([]any)
+	if len(generatedLeafChain) != 2 {
+		t.Fatalf("unexpected generated leaf chain: %#v", generatedLeafOptions.JSON)
+	}
+	if _, exists := generatedLeafOptions.JSON["tree_items"]; exists {
+		t.Fatalf("did not expect generated leaf tree items: %#v", generatedLeafOptions.JSON)
+	}
+
+	uploadedOptions := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(uploadID, 10)+"/download-options",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	uploadedModes := uploadedOptions.JSON["modes"].([]any)
+	if len(uploadedModes) != 1 {
+		t.Fatalf("unexpected uploaded asset download modes: %#v", uploadedOptions.JSON)
+	}
+	firstMode := uploadedModes[0].(map[string]any)
+	if firstMode["mode"] != "original" {
+		t.Fatalf("unexpected uploaded asset default mode: %#v", uploadedOptions.JSON)
+	}
+	if _, exists := uploadedOptions.JSON["chain_items"]; exists {
+		t.Fatalf("did not expect uploaded asset chain items: %#v", uploadedOptions.JSON)
 	}
 }
 

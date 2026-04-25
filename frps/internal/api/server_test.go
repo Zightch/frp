@@ -2154,12 +2154,21 @@ CREATE TABLE certificate_assets (
 	crt TEXT NOT NULL,
 	crt_hash TEXT NOT NULL,
 	` + "`key`" + ` TEXT NOT NULL DEFAULT '',
-	issuer_asset_id INTEGER NULL,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 )`,
 		`CREATE INDEX idx_certificate_assets_crt_hash ON certificate_assets (crt_hash)`,
-		`CREATE INDEX idx_certificate_assets_issuer_asset_id ON certificate_assets (issuer_asset_id)`,
+		`
+CREATE TABLE certificate_asset_relations (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	child_asset_id INTEGER NOT NULL,
+	parent_asset_id INTEGER NOT NULL,
+	relation_type TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+		`CREATE UNIQUE INDEX uk_certificate_asset_relations_child_asset_id ON certificate_asset_relations (child_asset_id)`,
+		`CREATE INDEX idx_certificate_asset_relations_parent_asset_id ON certificate_asset_relations (parent_asset_id)`,
 	} {
 		if _, err := store.Exec(statement); err != nil {
 			t.Fatalf("bootstrap api test schema: %v", err)

@@ -48,7 +48,7 @@ func describePreparedAsset(item PreparedAsset, issuerNames map[int64]string) Des
 	described := DescribedAsset{
 		Asset:        item.Asset,
 		KeyPresent:   item.Asset.HasKey(),
-		CanIssue:     item.Asset.AssetType == AssetTypeCA && item.Asset.HasKey(),
+		CanIssue:     item.Asset.Source == SourceGenerated && item.Asset.AssetType == AssetTypeCA && item.Asset.HasKey(),
 		IsSelfSigned: isSelfSigned(leaf),
 		ChainLength:  len(item.Certificates),
 	}

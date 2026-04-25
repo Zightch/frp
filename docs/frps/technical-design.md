@@ -202,7 +202,18 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 
 本节只描述已经确认的设计边界；当前代码和 schema 里还没有落地这套证书管理模型。
 
-当前已确认的资产模型是一张统一资产表，建议名为 `certificate_assets`，同时承载普通证书和 CA：
+当前已确认的证书资产模型由两部分组成：
+
+- 一张统一资产表 `certificate_assets`
+- 一张树状关系表 `certificate_asset_relations`
+
+其中：
+
+- `certificate_assets` 负责保存管理员上传或生成的证书原文与私钥材料
+- `certificate_asset_relations` 只负责表达“生成资产”之间的单父树关系
+- 当前设计刻意不支持多父、交叉签名或 AIA 自动补链入库
+
+`certificate_assets` 当前字段固定为：
 
 - `id`
 - `name`
@@ -213,27 +224,44 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 - `crt`
 - `crt_hash`
 - `key`
-- `issuer_asset_id`
 - `created_at`
 - `updated_at`
 
-字段语义固定为：
+`certificate_asset_relations` 当前字段固定为：
+
+- `id`
+- `child_asset_id`
+- `parent_asset_id`
+- `relation_type`
+- `created_at`
+- `updated_at`
+
+资产字段语义固定为：
 
 - `source` 当前取值固定为 `upload` 或 `generated`
 - `asset_type` 取值固定为 `certificate` 或 `ca`
 - `format_type` 当前固定为 `pem`
-- `crt` 存 PEM 内容；允许只存当前证书，也允许直接存完整 `fullchain`
+- `crt` 存 PEM 内容
 - `crt_hash` 存证书内容的稳定哈希，作为快速去重和快速比对字段；建议基于解析后的证书内容计算并建索引，命中相同哈希后仍做精确内容比对
 - `key` 存对应 PEM 私钥内容，可为空
-- `issuer_asset_id` 指向“直接上游”资产，只允许单父引用；根 CA 的 `issuer_asset_id` 为空
+- `source=generated` 时，`crt` 必须只保存当前节点这一张证书
+- `source=upload` 时，`crt` 允许保留管理员上传的原始 PEM 结构，可包含一张或多张证书
 
-多级 CA 链通过 `issuer_asset_id` 递归表达，例如：
+关系字段语义固定为：
+
+- `relation_type` 当前固定为 `issued_by`
+- `child_asset_id` 在关系表内必须唯一，保证一条生成资产只有一个直接上游
+- `parent_asset_id` 只允许引用 `asset_type=ca` 且 `source=generated` 的资产
+- 根 CA 没有上游关系记录
+- 上传资产不进入这张关系表，不作为树节点参与后续重组下载
+
+多级 CA 树当前按“生成资产单父树”表达，例如：
 
 - 叶子证书 `certificate -> intermediate ca -> root ca`
 - 中间 CA `ca -> parent ca`
 - 根 CA `ca -> nil`
 
-当前设计只支持“单直接上游”链路，不支持：
+当前设计只支持“单直接上游”树，不支持：
 
 - 交叉签名
 - 多父引用
@@ -243,15 +271,17 @@ MySQL 只接受驱动标准 DSN，不再兼容地址简写。
 
 - `asset_type=certificate` 时，运行时如果要拿来做客户端证书，必须有 `key`
 - `asset_type=ca` 时，`key` 可以为空
-- 只有 `asset_type=ca` 且 `key` 非空的资产，后续才能作为签发 CA 使用
+- 只有 `source=generated` 且 `asset_type=ca` 且 `key` 非空的资产，后续才能作为签发 CA 使用
 - 上传的外部 CA 通常表现为 `asset_type=ca` 且 `key` 为空
 - 自建 / 自签 CA 表现为 `asset_type=ca` 且 `key` 非空
 
-即使 `crt` 已经直接保存了 `fullchain`，`issuer_asset_id` 也仍然保留，用于：
+生成与上传的边界当前固定为：
 
-- 管理面展示上游链
-- 删除保护
-- 后续签发关系追踪
+- 生成资产必须是原子节点：一个资产只对应一张证书
+- 上传资产允许保留原始 `fullchain` 或其他多证书 PEM 结构
+- 上传资产继续复用当前链校验规则：必须能通过“资产自带链 + 数据库根 CA + 系统 CA”完成有效链验证
+- 上传资产当前只作为“原样保管与原样下载”的资产，不参与树状重组下载
+- 只有 `source=generated` 且 `asset_type=ca` 且 `key` 非空的资产，才能被选为后续签发 CA
 
 当前刻意不把这些派生信息持久化进表：
 
@@ -289,7 +319,7 @@ CA 引用层当前已收口为“隧道级 CA 池”，不再保留分组级 CA 
 - `asset_id` 只允许引用 `asset_type=ca` 的资产
 - 同一个 CA 资产可以被多个 tunnel 复用
 
-这张关系表只表达“信任池引用”，不表达签发关系；签发关系仍由 `certificate_assets.issuer_asset_id` 负责。
+这张关系表只表达“信任池引用”，不表达签发关系；签发关系当前统一由 `certificate_asset_relations` 负责。
 
 ## 5. 管理 API 设计
 
@@ -441,9 +471,11 @@ CA 引用层当前已收口为“隧道级 CA 池”，不再保留分组级 CA 
 
 后续签发逻辑固定为：
 
-- 只有 `asset_type=ca` 且 `key` 非空的资产，才能被选为签发 CA
+- 只有 `source=generated` 且 `asset_type=ca` 且 `key` 非空的资产，才能被选为签发 CA
 - 生成 CA 后，可以只生成 CA 自身，也可以继续用该 CA 签发新的证书资产
-- 生成的新证书资产应写入 `issuer_asset_id`，指向签发它的直接上游 CA
+- 生成的新证书资产本身必须只包含一张证书
+- 生成的新证书资产应在 `certificate_asset_relations` 写入一条 `child -> parent` 关系，指向签发它的直接上游 CA
+- 自签根 CA 只写资产表，不写上游关系
 
 写入资产时必须做的校验固定为：
 
@@ -453,10 +485,21 @@ CA 引用层当前已收口为“隧道级 CA 池”，不再保留分组级 CA 
 - 写库前必须先计算 `crt_hash`，并用它做快速候选去重；命中相同 `crt_hash` 后仍需做精确内容比对，避免把哈希字段直接当成唯一真实性判断
 - `asset_type=certificate` 且 `key` 非空时，`key` 必须与叶子证书匹配
 - `asset_type=ca` 时，`crt` 必须能解析出 CA 证书
+- `source=generated` 时，`crt` 必须且只能包含一张证书
+- `source=upload` 时，`crt` 可以包含多张证书，但必须保留原始 PEM 顺序
+- 上传资产的有效链校验规则保持不变：必须能沿“资产内嵌链、数据库根 CA、系统 CA”完成验证
+
+下载语义当前固定为：
+
+- 生成资产默认只下载当前节点
+- 生成资产允许按单父树关系做“当前节点到某个祖先”的单条链下载；输出为一个聚合后的多证书 PEM
+- 生成资产允许按树关系下载某个 CA 节点的部分子树或整棵树；输出为内存打包后的多文件归档，每个节点各自保存 `crt`，有私钥的节点额外带自己的 `key`
+- 上传资产只允许下载当前资产原始结构；不支持补数据库上游、不支持裁剪链、不支持树状选择
+- 打包和 `crt` 聚合统一在 `frps` 内存完成，不落盘，不调用外部工具
 
 删除保护规则当前也已确认：
 
-- 如果某资产被其他资产通过 `issuer_asset_id` 作为直接上游引用，则禁止删除
+- 如果某生成资产在 `certificate_asset_relations` 中被其他生成资产作为直接上游引用，则禁止删除
 - 如果某 CA 资产被 `tunnel_ca_assets` 引用，则禁止删除
 
 ### 5.6 已确认待实现的系统 CA 与下发规则
@@ -483,7 +526,7 @@ CA 引用层当前已收口为“隧道级 CA 池”，不再保留分组级 CA 
 
 - 只下发当前 tunnel 实际引用到的 CA 资产
 - 不下发 `frps` 本机系统 CA
-- `issuer_asset_id` 用于管理关系和删除保护，不等价于自动把整条上游链都加入 tunnel 信任池；是否信任某条 CA，仍以 `tunnel_ca_assets` 的显式引用为准
+- `certificate_asset_relations` 只用于生成资产管理和下载重组，不等价于自动把整条上游链都加入 tunnel 信任池；是否信任某条 CA，仍以 `tunnel_ca_assets` 的显式引用为准
 
 ## 6. 控制面设计
 
