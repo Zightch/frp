@@ -353,6 +353,149 @@ func TestCertificateAssetsGenerateRejectsInvalidKeyBits(t *testing.T) {
 	}
 }
 
+func TestCertificateAssetsUpdateMetadata(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	created := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":          "editable-ca",
+			"remark":        "before",
+			"asset_type":    "ca",
+			"common_name":   "Editable CA",
+			"validity_days": 365,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	assetID := int64(created.JSON["item"].(map[string]any)["id"].(float64))
+
+	updated := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(assetID, 10),
+		map[string]any{
+			"name":   "editable-ca-renamed",
+			"remark": "after",
+		},
+		http.StatusOK,
+		sessionCookie,
+	)
+	updatedItem := updated.JSON["item"].(map[string]any)
+	if updatedItem["name"] != "editable-ca-renamed" {
+		t.Fatalf("unexpected updated name: %#v", updated.JSON)
+	}
+	if updatedItem["remark"] != "after" {
+		t.Fatalf("unexpected updated remark: %#v", updated.JSON)
+	}
+
+	list := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	items := list.JSON["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("unexpected asset list after update: %#v", list.JSON)
+	}
+	item := items[0].(map[string]any)
+	if item["name"] != "editable-ca-renamed" || item["remark"] != "after" {
+		t.Fatalf("unexpected listed item after update: %#v", item)
+	}
+}
+
+func TestCertificateAssetsUpdateMetadataRejectsNameConflict(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	first := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":          "first-ca",
+			"asset_type":    "ca",
+			"common_name":   "First CA",
+			"validity_days": 365,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	second := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":          "second-ca",
+			"asset_type":    "ca",
+			"common_name":   "Second CA",
+			"validity_days": 365,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	secondID := int64(second.JSON["item"].(map[string]any)["id"].(float64))
+
+	conflict := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(secondID, 10),
+		map[string]any{
+			"name":   first.JSON["item"].(map[string]any)["name"],
+			"remark": "conflict",
+		},
+		http.StatusConflict,
+		sessionCookie,
+	)
+	if conflict.JSON["error_code"] != "certificate_asset_name_conflict" {
+		t.Fatalf("unexpected update conflict payload: %#v", conflict.JSON)
+	}
+}
+
 func TestCertificateAssetsPasteRejectsInvalidContent(t *testing.T) {
 	store := newTestStore(t)
 	manager := newTestAuthManager(t, true)

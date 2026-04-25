@@ -93,6 +93,19 @@ const importFormRules: FormRules = {
 const uploadCrtFile = ref<File | null>(null)
 const uploadKeyFile = ref<File | null>(null)
 
+// Edit dialog
+const editDialogVisible = ref(false)
+const editFormRef = ref<FormInstance>()
+const editSubmitting = ref(false)
+const editingAssetId = ref<number | null>(null)
+const editForm = ref({
+  name: '',
+  remark: ''
+})
+const editFormRules: FormRules = {
+  name: [{ required: true, message: '请输入名称', trigger: 'blur' }]
+}
+
 // Generate dialog
 const generateDialogVisible = ref(false)
 const generateActiveTab = ref('ca')
@@ -239,6 +252,10 @@ function clearImportValidation() {
   importPasteFormRef.value?.clearValidate()
 }
 
+function clearEditValidation() {
+  editFormRef.value?.clearValidate()
+}
+
 function getActiveGenerateForm(): FormInstance | undefined {
   return generateActiveTab.value === 'ca'
     ? generateCaFormRef.value
@@ -300,6 +317,15 @@ async function loadData() {
   }
 
   assets.value = result.data?.items || []
+  if (detailAsset.value) {
+    const refreshed = assets.value.find(item => item.id === detailAsset.value?.id) || null
+    if (refreshed) {
+      detailAsset.value = refreshed
+    } else {
+      detailAsset.value = null
+      detailDrawerVisible.value = false
+    }
+  }
 }
 
 // Format helpers
@@ -384,16 +410,21 @@ function handleImportTabChange() {
   nextTick(() => clearImportValidation())
 }
 
-const handleCrtUpload: UploadProps['beforeUpload'] = (file) => {
-  uploadCrtFile.value = file
-  importForm.value.crt = file.name
-  return false
+const handleCrtUploadChange: UploadProps['onChange'] = (file) => {
+  if (!file.raw) {
+    return
+  }
+  uploadCrtFile.value = file.raw
+  importForm.value.crt = file.raw.name
+  importUploadFormRef.value?.clearValidate(['crt'])
 }
 
-const handleKeyUpload: UploadProps['beforeUpload'] = (file) => {
-  uploadKeyFile.value = file
-  importForm.value.key = file.name
-  return false
+const handleKeyUploadChange: UploadProps['onChange'] = (file) => {
+  if (!file.raw) {
+    return
+  }
+  uploadKeyFile.value = file.raw
+  importForm.value.key = file.raw.name
 }
 
 async function submitImport() {
@@ -443,6 +474,41 @@ async function submitImport() {
     await loadData()
   } finally {
     importSubmitting.value = false
+  }
+}
+
+// Edit dialog
+function openEditDialog(asset: CertificateAsset) {
+  editingAssetId.value = asset.id
+  editForm.value = {
+    name: asset.name,
+    remark: asset.remark || ''
+  }
+  editDialogVisible.value = true
+  nextTick(() => clearEditValidation())
+}
+
+async function submitEdit() {
+  const valid = await editFormRef.value?.validate().catch(() => false)
+  if (!valid || !editingAssetId.value) return
+
+  editSubmitting.value = true
+
+  try {
+    const result = await certificateAssetsApi.update(editingAssetId.value, {
+      name: editForm.value.name,
+      remark: editForm.value.remark || undefined
+    })
+    if (result.error) {
+      ElMessage.error(result.error)
+      return
+    }
+
+    ElMessage.success('资产更新成功')
+    editDialogVisible.value = false
+    await loadData()
+  } finally {
+    editSubmitting.value = false
   }
 }
 
@@ -747,6 +813,11 @@ async function handleDelete(asset: CertificateAsset) {
           </el-empty>
           <el-table v-else :data="filteredAssets" stripe v-loading="loading">
             <el-table-column prop="name" label="名称" min-width="150" />
+            <el-table-column label="备注" min-width="160">
+              <template #default="{ row }">
+                {{ row.remark || '-' }}
+              </template>
+            </el-table-column>
             <el-table-column label="类型" width="80" align="center">
               <template #default="{ row }">
                 <el-tag size="small" :type="row.asset_type === 'ca' ? 'warning' : ''">
@@ -776,9 +847,10 @@ async function handleDelete(asset: CertificateAsset) {
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="140" align="center" fixed="right">
+            <el-table-column label="操作" width="190" align="center" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" @click="openDetailDrawer(row)">查看</el-button>
+                <el-button link type="primary" size="small" @click="openEditDialog(row)">编辑</el-button>
                 <el-button link type="danger" size="small" @click="handleDelete(row)">删除</el-button>
               </template>
             </el-table-column>
@@ -814,7 +886,7 @@ async function handleDelete(asset: CertificateAsset) {
                 :auto-upload="false"
                 :show-file-list="false"
                 accept=".crt,.pem,.cer"
-                :before-upload="handleCrtUpload"
+                :on-change="handleCrtUploadChange"
               >
                 <el-button>
                   <el-icon><Upload /></el-icon>
@@ -830,7 +902,7 @@ async function handleDelete(asset: CertificateAsset) {
                 :auto-upload="false"
                 :show-file-list="false"
                 accept=".key,.pem"
-                :before-upload="handleKeyUpload"
+                :on-change="handleKeyUploadChange"
               >
                 <el-button>
                   <el-icon><Upload /></el-icon>
@@ -878,6 +950,34 @@ async function handleDelete(asset: CertificateAsset) {
       <template #footer>
         <el-button @click="importDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="importSubmitting" @click="submitImport">导入</el-button>
+      </template>
+    </component>
+
+    <!-- Edit dialog -->
+    <component
+      :is="modalLayerComponent"
+      v-model="editDialogVisible"
+      title="编辑资产"
+      :close-on-click-modal="false"
+      v-bind="modalLayerProps"
+    >
+      <el-form
+        ref="editFormRef"
+        :model="editForm"
+        :rules="editFormRules"
+        label-width="80px"
+      >
+        <el-form-item label="名称" prop="name">
+          <el-input v-model="editForm.name" placeholder="请输入名称" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="editForm.remark" placeholder="可选备注" />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="editDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editSubmitting" @click="submitEdit">保存</el-button>
       </template>
     </component>
 
@@ -1109,6 +1209,7 @@ async function handleDelete(asset: CertificateAsset) {
         </el-descriptions>
 
         <div class="drawer-footer">
+          <el-button @click="openEditDialog(detailAsset)">编辑</el-button>
           <el-button type="primary" @click="openDownloadDialog(detailAsset)">下载</el-button>
           <el-button type="danger" @click="handleDelete(detailAsset)">删除资产</el-button>
         </div>

@@ -145,6 +145,32 @@ INSERT INTO certificate_assets (
 	return result.LastInsertID, nil
 }
 
+func UpdateAssetMetadata(ctx context.Context, conn storage.Conn, id int64, name string, remark string, updatedAt time.Time) error {
+	if conn == nil {
+		return fmt.Errorf("asset connection is nil")
+	}
+
+	result, err := conn.ExecContext(
+		ctx,
+		`
+UPDATE certificate_assets
+SET name = ?, remark = ?, updated_at = ?
+WHERE id = ?
+`,
+		name,
+		remark,
+		formatTimestamp(updatedAt),
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("update certificate asset metadata: %w", err)
+	}
+	if result.RowsAffected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func DeleteAssetsByID(ctx context.Context, conn storage.Conn, ids []int64) error {
 	if conn == nil {
 		return fmt.Errorf("asset connection is nil")

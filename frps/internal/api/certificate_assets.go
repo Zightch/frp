@@ -61,6 +61,11 @@ type certificateAssetGenerateRequest struct {
 	KeyBits       int      `json:"key_bits"`
 }
 
+type certificateAssetPatchRequest struct {
+	Name   string `json:"name"`
+	Remark string `json:"remark"`
+}
+
 type certificateAssetDeleteImpactView struct {
 	Target               certificateAssetView             `json:"target"`
 	AffectedItems        []certificateAssetDeleteItemView `json:"affected_items"`
@@ -244,6 +249,19 @@ func (s *Server) handleCertificateAssetResource(writer http.ResponseWriter, requ
 			return
 		}
 		writeCertificateAssetDownload(writer, artifact)
+	case suffix == "" && request.Method == http.MethodPatch:
+		var payload certificateAssetPatchRequest
+		if err := decodeJSONBody(request, &payload); err != nil {
+			writeError(writer, err)
+			return
+		}
+
+		item, err := manager.updateCertificateAsset(request.Context(), id, payload)
+		if err != nil {
+			writeError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]any{"item": item})
 	case suffix == "" && request.Method == http.MethodDelete:
 		cascade := parseBoolQueryValue(request.URL.Query().Get("cascade"))
 		result, err := manager.deleteCertificateAsset(request.Context(), id, cascade)
@@ -332,6 +350,21 @@ func (m *managementService) generateCertificateAsset(ctx context.Context, payloa
 		IPAddresses:   payload.IPAddresses,
 		KeyAlgorithm:  certassets.GenerateKeyAlgorithm(payload.KeyAlgorithm),
 		KeyBits:       payload.KeyBits,
+	})
+	if err != nil {
+		return certificateAssetView{}, mapCertificateAssetError(err)
+	}
+	return mapCertificateAssetView(item), nil
+}
+
+func (m *managementService) updateCertificateAsset(ctx context.Context, id int64, payload certificateAssetPatchRequest) (certificateAssetView, error) {
+	if m == nil || m.certs == nil {
+		return certificateAssetView{}, &apiError{Status: http.StatusServiceUnavailable, Message: "certificate asset service is unavailable"}
+	}
+
+	item, err := m.certs.UpdateMetadata(ctx, id, certassets.UpdateMetadataInput{
+		Name:   payload.Name,
+		Remark: payload.Remark,
 	})
 	if err != nil {
 		return certificateAssetView{}, mapCertificateAssetError(err)

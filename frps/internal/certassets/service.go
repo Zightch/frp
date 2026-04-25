@@ -51,6 +51,11 @@ type GenerateInput struct {
 	KeyBits       int
 }
 
+type UpdateMetadataInput struct {
+	Name   string
+	Remark string
+}
+
 type ValidationIssue struct {
 	Field   string `json:"field"`
 	Code    string `json:"code"`
@@ -208,6 +213,62 @@ func (s *Service) Generate(ctx context.Context, input GenerateInput) (DescribedA
 		return err
 	})
 	return created, err
+}
+
+func (s *Service) UpdateMetadata(ctx context.Context, id int64, input UpdateMetadataInput) (DescribedAsset, error) {
+	var updated DescribedAsset
+	err := s.withTx(ctx, func(tx *storage.Tx, existing []Asset, _ []PreparedAsset, now time.Time) error {
+		current, ok := findAssetByID(existing, id)
+		if !ok {
+			return sql.ErrNoRows
+		}
+
+		name := strings.TrimSpace(input.Name)
+		if name == "" {
+			return validationError("name is required", ValidationIssue{
+				Field:   "name",
+				Code:    "required",
+				Message: "name is required",
+			})
+		}
+
+		if err := ensureNameAvailableForUpdate(existing, id, name); err != nil {
+			return err
+		}
+
+		if err := UpdateAssetMetadata(ctx, tx, id, name, strings.TrimSpace(input.Remark), now.UTC()); err != nil {
+			if err == sql.ErrNoRows {
+				return err
+			}
+			return err
+		}
+
+		updatedAssets := cloneAssets(existing)
+		for index := range updatedAssets {
+			if updatedAssets[index].ID != id {
+				continue
+			}
+			updatedAssets[index].Name = name
+			updatedAssets[index].Remark = strings.TrimSpace(input.Remark)
+			updatedAssets[index].UpdatedAt = now.UTC()
+			break
+		}
+
+		preparedAll, _, err := PrepareAssetsWithOptions(updatedAssets, s.prepareOptionsAt(now))
+		if err != nil {
+			return validationErrorFromPrepare(current, err)
+		}
+
+		described := DescribePreparedAssets(preparedAll)
+		for _, item := range described {
+			if item.ID == id {
+				updated = item
+				return nil
+			}
+		}
+		return fmt.Errorf("updated certificate asset %d not found after describe", id)
+	})
+	return updated, err
 }
 
 func (s *Service) DeleteImpact(ctx context.Context, id int64) (DeleteImpact, error) {
@@ -717,6 +778,18 @@ func ensureNameAvailable(existing []Asset, name string) error {
 	return nil
 }
 
+func ensureNameAvailableForUpdate(existing []Asset, currentID int64, name string) error {
+	for _, asset := range existing {
+		if asset.ID == currentID {
+			continue
+		}
+		if asset.Name == name {
+			return &NameConflictError{Name: name}
+		}
+	}
+	return nil
+}
+
 func ensureNoDuplicateContent(ctx context.Context, conn storage.Conn, candidate Asset) error {
 	items, err := ListAssetsByCRTHash(ctx, conn, candidate.CRTHash)
 	if err != nil {
@@ -1031,4 +1104,13 @@ func cloneAssets(items []Asset) []Asset {
 	cloned := make([]Asset, len(items))
 	copy(cloned, items)
 	return cloned
+}
+
+func findAssetByID(items []Asset, id int64) (Asset, bool) {
+	for _, item := range items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return Asset{}, false
 }

@@ -302,6 +302,12 @@ export interface CertificateAssetGeneratePayload {
 export const certificateAssetsApi = {
   list: () => request<{ items: CertificateAsset[] }>('/certificate-assets'),
 
+  update: (id: number, data: { name: string; remark?: string }) =>
+    request<{ item: CertificateAsset }>(`/certificate-assets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    }),
+
   upload: (formData: FormData) => request<{ item: CertificateAsset }>('/certificate-assets/upload', {
     method: 'POST',
     body: formData,

@@ -26,6 +26,7 @@
 当前使用的接口：
 
 - `GET /api/v1/certificate-assets`
+- `PATCH /api/v1/certificate-assets/{id}`
 - `POST /api/v1/certificate-assets/upload`
 - `POST /api/v1/certificate-assets/paste`
 - `POST /api/v1/certificate-assets/generate`
@@ -70,12 +71,13 @@
 | 列名 | 来源 | 说明 |
 |------|------|------|
 | 名称 | `name` | 资产名称 |
+| 备注 | `remark` | 无备注时显示 `-` |
 | 类型 | `asset_type` | `CA` / `证书` |
 | 来源 | `source` | `上传` / `生成` |
 | 颁发者 | `issuer_name` / `issuer` / `is_self_signed` | 自签显示“(自签)” |
 | 有效期 | `not_after` | 页面按 `YYYY-MM-DD` 显示 |
 | 状态 | `not_before` + `not_after` | `有效 / 即将过期 / 已过期 / 未生效 / 未知` |
-| 操作 | - | `查看`、`删除` |
+| 操作 | - | `查看`、`编辑`、`删除` |
 
 ### 4.2 详情抽屉
 
@@ -85,8 +87,9 @@
 - 证书信息：CN、Subject、Issuer、序列号、有效期、状态、SAN、自签标记、链长度
 - 私钥信息：是否存储、是否可签发
 
-当前详情操作只有两个：
+当前详情操作有三个：
 
+- `编辑`
 - `下载`
 - `删除资产`
 
@@ -95,6 +98,26 @@
 - 复制证书
 - 复制私钥
 - 在线编辑 PEM
+
+### 4.3 编辑资产
+
+当前只允许编辑两个字段：
+
+- `name`
+- `remark`
+
+不允许编辑：
+
+- 证书 / 私钥内容
+- 资产类型
+- 来源
+- 上游关系
+- 生成参数
+
+编辑入口当前有两处：
+
+- 列表行操作中的 `编辑`
+- 详情抽屉底部的 `编辑`
 
 ## 5. 导入
 
