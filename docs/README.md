@@ -60,7 +60,7 @@
 - `progress/README.md` 负责说明进度归档目录和索引；`progress/*.md` 负责记录跨轮历史进度、当前停止线和已收口内容。
 - `tmp/todo.md` 只负责当前轮未完成执行项，必须明确当前总目标、实现该目标的子步骤、当前轮边界和当前唯一下一步；不能混放前几轮信息，也不记录已完成内容；需要追溯历史时只引用 `progress/README.md` 和对应日期归档。
 - 协议文档负责定义 `frps/frpc` 之间的传输层分包格式和业务消息语义。
-- `frps` 文档现在按 `design/`、`features/`、`technical/`、`development/` 四类组织；根目录旧文件名只保留兼容跳转。
+- `frps` 文档现在按 `design/`、`features/`、`technical/`、`development/` 四类组织，统一从 `docs/frps/README.md` 进入。
 - `docs/webui/` 目录负责固定 `frps` WebUI 的设计文档，包括最小基线、视觉风格、各页面设计规范。
 - `frpc` 文档负责定义客户端连接、配置领取、工作流量转发与重连机制。
 - 具体代码实现时，如果设计有变化，应优先同步更新对应子项目文档，而不是只修改总体概览。
