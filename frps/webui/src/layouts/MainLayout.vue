@@ -27,7 +27,7 @@ function handleMenuSelect() {
 </script>
 
 <template>
-  <el-container class="main-layout">
+  <el-container :class="['main-layout', { 'main-layout-mobile': isMobile }]">
     <el-header class="main-header">
       <span class="header-title">frps</span>
 
@@ -84,7 +84,7 @@ function handleMenuSelect() {
         </template>
       </el-drawer>
 
-      <el-main class="main-content">
+      <el-main :class="['main-content', { 'main-content-mobile': isMobile }]">
         <RouterView />
       </el-main>
     </el-container>
@@ -93,8 +93,12 @@ function handleMenuSelect() {
 
 <style scoped>
 .main-layout {
-  height: 100vh;
+  min-height: 100vh;
   min-width: var(--min-content-width);
+}
+
+.main-layout-mobile {
+  min-width: auto;
 }
 
 .main-header {
@@ -106,7 +110,7 @@ function handleMenuSelect() {
 .header-title {
   font-size: 16px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--el-text-color-primary);
 }
 
 .menu-toggle {
@@ -114,7 +118,8 @@ function handleMenuSelect() {
 }
 
 .main-body {
-  height: calc(100vh - var(--header-height));
+  flex: 1;
+  min-height: 0;
 }
 
 .main-aside {
@@ -124,26 +129,24 @@ function handleMenuSelect() {
 
 .main-content {
   overflow: auto;
+  min-width: 0;
+}
+
+.main-content-mobile {
+  padding: var(--spacing-base);
 }
 
 /* Mobile Drawer Styles */
 .drawer-title {
   font-size: 16px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--el-text-color-primary);
 }
 
 .drawer-logout {
   width: 100%;
   justify-content: flex-start;
   gap: var(--spacing-xs);
-  color: var(--color-text-regular);
-}
-
-/* Responsive */
-@media (max-width: 768px) {
-  .main-layout {
-    min-width: auto;
-  }
+  color: var(--el-text-color-regular);
 }
 </style>

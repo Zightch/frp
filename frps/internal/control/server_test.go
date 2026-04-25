@@ -87,6 +87,8 @@ func TestServerAuthenticateAndHeartbeat(t *testing.T) {
 		server.handleConnection(serverConn)
 	}()
 
+	performTransportHello(t, clientConn, tokenID)
+
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
 		ClientID:      tokenID,
 		ClientVersion: "test-client",
@@ -99,7 +101,7 @@ func TestServerAuthenticateAndHeartbeat(t *testing.T) {
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
-		RequestID: 1,
+		RequestID: 2,
 		Body:      authBeginBody,
 	})
 
@@ -122,12 +124,12 @@ func TestServerAuthenticateAndHeartbeat(t *testing.T) {
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
-		RequestID: 2,
+		RequestID: 3,
 		Body:      authFinishBody,
 	})
 
 	helloFrame := readMessage(t, clientConn)
-	if helloFrame.Type != protocol.TypeServerHello || helloFrame.RequestID != 2 {
+	if helloFrame.Type != protocol.TypeServerHello || helloFrame.RequestID != 3 {
 		t.Fatalf("unexpected server.hello frame: %#v", helloFrame)
 	}
 
@@ -168,12 +170,12 @@ func TestServerAuthenticateAndHeartbeat(t *testing.T) {
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeHeartbeatPing,
-		RequestID: 3,
+		RequestID: 4,
 		Body:      heartbeatBody,
 	})
 
 	pongFrame := readMessage(t, clientConn)
-	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 3 {
+	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 4 {
 		t.Fatalf("unexpected heartbeat.pong frame: %#v", pongFrame)
 	}
 
@@ -254,6 +256,8 @@ func TestServerForwardsTCPStream(t *testing.T) {
 		server.handleConnection(serverConn)
 	}()
 
+	performTransportHello(t, clientConn, tokenID)
+
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
 		ClientID:      tokenID,
 		ClientVersion: "test-client",
@@ -266,7 +270,7 @@ func TestServerForwardsTCPStream(t *testing.T) {
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
-		RequestID: 1,
+		RequestID: 2,
 		Body:      authBeginBody,
 	})
 
@@ -285,7 +289,7 @@ func TestServerForwardsTCPStream(t *testing.T) {
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
-		RequestID: 2,
+		RequestID: 3,
 		Body:      authFinishBody,
 	})
 
@@ -1418,15 +1422,17 @@ func TestServerRejectsInvalidToken(t *testing.T) {
 
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
-
-	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{ClientID: tokenID})
+	helloBody, err := protocol.MarshalTransportClientHello(protocol.TransportClientHello{
+		ClientID:               tokenID,
+		SupportedSecurityModes: protocol.TransportSecurityModePlain | protocol.TransportSecurityModeTLS,
+	})
 	if err != nil {
-		t.Fatalf("marshal auth.begin: %v", err)
+		t.Fatalf("marshal transport.client_hello: %v", err)
 	}
 	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeAuthBegin,
+		Type:      protocol.TypeTransportClientHello,
 		RequestID: 1,
-		Body:      authBeginBody,
+		Body:      helloBody,
 	})
 
 	errorFrame := readMessage(t, clientConn)
@@ -1518,6 +1524,8 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 		server.handleConnection(secondServerConn)
 	}()
 
+	performTransportHello(t, secondClientConn, tokenID)
+
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
 		ClientID:      tokenID,
 		ClientVersion: "test-client-2",
@@ -1530,7 +1538,7 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 	}
 	writeMessage(t, secondClientConn, protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
-		RequestID: 1,
+		RequestID: 2,
 		Body:      authBeginBody,
 	})
 
@@ -1552,7 +1560,7 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 	}
 	writeMessage(t, secondClientConn, protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
-		RequestID: 2,
+		RequestID: 3,
 		Body:      authFinishBody,
 	})
 
@@ -1997,6 +2005,8 @@ func TestServerRefreshGroupBlocksReplacementSessionUntilRefreshCompletes(t *test
 		server.handleConnection(replacementServerConn)
 	}()
 
+	performTransportHello(t, replacementClientConn, tokenID)
+
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
 		ClientID:      tokenID,
 		ClientVersion: "test-client",
@@ -2009,7 +2019,7 @@ func TestServerRefreshGroupBlocksReplacementSessionUntilRefreshCompletes(t *test
 	}
 	writeMessage(t, replacementClientConn, protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
-		RequestID: 1,
+		RequestID: 2,
 		Body:      authBeginBody,
 	})
 
@@ -2031,7 +2041,7 @@ func TestServerRefreshGroupBlocksReplacementSessionUntilRefreshCompletes(t *test
 	}
 	writeMessage(t, replacementClientConn, protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
-		RequestID: 2,
+		RequestID: 3,
 		Body:      authFinishBody,
 	})
 
@@ -4039,6 +4049,35 @@ func waitForIdleConfig(t *testing.T, session *sessionState) {
 	}
 }
 
+func performTransportHello(t *testing.T, clientConn net.Conn, tokenID [16]byte) {
+	t.Helper()
+
+	helloBody, err := protocol.MarshalTransportClientHello(protocol.TransportClientHello{
+		ClientID:               tokenID,
+		SupportedSecurityModes: protocol.TransportSecurityModePlain | protocol.TransportSecurityModeTLS,
+	})
+	if err != nil {
+		t.Fatalf("marshal transport.client_hello: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeTransportClientHello,
+		RequestID: 1,
+		Body:      helloBody,
+	})
+
+	serverHelloFrame := readMessage(t, clientConn)
+	if serverHelloFrame.Type != protocol.TypeTransportServerHello {
+		t.Fatalf("expected transport.server_hello, got %s", serverHelloFrame.Type.String())
+	}
+	serverHello, err := protocol.UnmarshalTransportServerHello(serverHelloFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal transport.server_hello: %v", err)
+	}
+	if serverHello.SelectedSecurityMode != protocol.TransportSecurityModePlain {
+		t.Fatalf("unexpected transport security mode: %d", serverHello.SelectedSecurityMode)
+	}
+}
+
 func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.Frame) {
 	t.Helper()
 
@@ -4060,6 +4099,8 @@ func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, t
 		server.handleConnection(serverConn)
 	}()
 
+	performTransportHello(t, clientConn, tokenID)
+
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
 		ClientID:      tokenID,
 		ClientVersion: "test-client",
@@ -4072,7 +4113,7 @@ func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, t
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
-		RequestID: 1,
+		RequestID: 2,
 		Body:      authBeginBody,
 	})
 
@@ -4094,7 +4135,7 @@ func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, t
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
-		RequestID: 2,
+		RequestID: 3,
 		Body:      authFinishBody,
 	})
 
@@ -4132,6 +4173,8 @@ func authenticateServerSessionExpectError(t *testing.T, server *Server, tokenID 
 		server.handleConnection(serverConn)
 	}()
 
+	performTransportHello(t, clientConn, tokenID)
+
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
 		ClientID:      tokenID,
 		ClientVersion: "test-client",
@@ -4144,7 +4187,7 @@ func authenticateServerSessionExpectError(t *testing.T, server *Server, tokenID 
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
-		RequestID: 1,
+		RequestID: 2,
 		Body:      authBeginBody,
 	})
 
@@ -4166,7 +4209,7 @@ func authenticateServerSessionExpectError(t *testing.T, server *Server, tokenID 
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
-		RequestID: 2,
+		RequestID: 3,
 		Body:      authFinishBody,
 	})
 

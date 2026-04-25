@@ -35,6 +35,9 @@
 - `DELETE /api/v1/certificate-assets/{id}?cascade=true`
 - `GET /api/v1/certificate-assets/{id}/download-options`
 - `GET /api/v1/certificate-assets/{id}/download`
+- `GET /api/v1/certificate-usages`
+- `PUT /api/v1/certificate-usages/{usage_type}`
+- `DELETE /api/v1/certificate-usages/{usage_type}`
 
 当前列表项字段以 `src/api/index.ts` 中的 `CertificateAsset` 为准，包含：
 
@@ -45,11 +48,25 @@
 
 ## 3. 页面结构
 
-当前页面结构固定为三段：
+当前页面结构固定为四段：
 
 1. 页面标题和刷新按钮
-2. 筛选栏
-3. 资产列表表格
+2. 入口证书绑定卡片
+3. 筛选栏
+4. 资产列表表格
+
+入口证书绑定卡片当前固定两张：
+
+- `WebUI HTTPS`
+- `frpc 登录 TLS`
+
+每张卡片当前都会展示：
+
+- 当前状态
+- 当前绑定证书
+- 解析链长度
+- 绑定说明
+- `绑定证书 / 更换证书 / 解绑` 操作
 
 筛选栏包含：
 
@@ -238,6 +255,22 @@
 |------|----------|------|
 | `original` | 上传资产 | 原样下载当前资产保存的 PEM 结构 |
 | `single` | 生成资产 | 下载当前节点 |
+
+## 8. 入口证书绑定
+
+### 8.1 当前使用点
+
+| 使用点 | 说明 |
+|--------|------|
+| `webui_https` | 管理监听器 HTTPS 服务端证书 |
+| `control_listener_tls` | `frpc` 登录监听口在 TLS 模式下使用的全局服务端证书 |
+
+### 8.2 当前交互
+
+- 只允许选择 `asset_type=certificate` 且 `key_present=true` 的资产
+- 绑定 `webui_https` 成功后，页面会自动跳转到同地址的 `https://`
+- 解绑 `webui_https` 时，页面会自动回跳 `http://`
+- `control_listener_tls` 的绑定不会主动跳转页面
 | `chain` | 生成资产 | 下载“当前节点到某个祖先”的单条证书链 |
 | `tree` | 生成 CA | 下载该 CA 节点的部分子树或整棵树 |
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zightch/frp/frps/internal/proxygroups"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -31,12 +32,13 @@ type SQLRepository struct {
 }
 
 type GroupRuntime struct {
-	ID               int64
-	Name             string
-	Enabled          bool
-	EffectiveIP      string
-	ClientSecretHash [32]byte
-	Snapshot         ConfigSnapshot
+	ID                       int64
+	Name                     string
+	Enabled                  bool
+	EffectiveIP              string
+	ControlTransportSecurity proxygroups.ControlTransportSecurity
+	ClientSecretHash         [32]byte
+	Snapshot                 ConfigSnapshot
 }
 
 type ConfigSnapshot struct {
@@ -59,6 +61,7 @@ SELECT
 	client_secret_hash,
 	effective_ip,
 	enabled,
+	control_transport_security,
 	updated_at
 FROM proxy_groups
 WHERE client_id = ?
@@ -77,6 +80,7 @@ SELECT
 	client_secret_hash,
 	effective_ip,
 	enabled,
+	control_transport_security,
 	updated_at
 FROM proxy_groups
 WHERE id = ?
@@ -99,6 +103,7 @@ SELECT
 	client_secret_hash,
 	effective_ip,
 	enabled,
+	control_transport_security,
 	updated_at
 FROM proxy_groups
 ORDER BY id
@@ -153,6 +158,10 @@ func (r *SQLRepository) decodeGroupRuntimeRow(ctx context.Context, row storage.R
 		return GroupRuntime{}, fmt.Errorf("decode group enabled: %w", err)
 	}
 	group.EffectiveIP = decodeStoredEffectiveIP(rowString(row, "effective_ip"))
+	group.ControlTransportSecurity = proxygroups.NormalizeControlTransportSecurity(rowString(row, "control_transport_security"))
+	if group.ControlTransportSecurity == "" {
+		group.ControlTransportSecurity = proxygroups.DefaultControlTransportSecurity()
+	}
 	if group.ClientSecretHash, err = decodeHex32(rowString(row, "client_secret_hash")); err != nil {
 		return GroupRuntime{}, fmt.Errorf("decode group client secret hash: %w", err)
 	}

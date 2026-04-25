@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net"
@@ -76,6 +77,9 @@ type Server struct {
 
 	nextChallengeID atomic.Uint32
 	nextSessionID   atomic.Uint64
+
+	controlTLSMu          sync.RWMutex
+	controlTLSCertificate *tls.Certificate
 }
 
 type activeSession struct {
@@ -273,7 +277,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	session, err := s.authenticate(conn)
+	conn, clientID, err := s.negotiateTransport(conn)
+	if err != nil {
+		level, reason := connectionErrorDetails(err)
+		logConnection(logger, level, "frpc control transport negotiation failed", err)
+		logger.Info("frpc control connection closed", "reason", reason)
+		return
+	}
+
+	session, err := s.authenticate(conn, clientID)
 	if err != nil {
 		level, reason := connectionErrorDetails(err)
 		logConnection(logger, level, "frpc control login failed", err)

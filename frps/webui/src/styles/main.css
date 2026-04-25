@@ -7,48 +7,6 @@
    CSS Custom Properties (Design Tokens)
    ============================================ */
 :root {
-  /* Brand Colors */
-  --color-primary: #409EFF;
-  --color-primary-light-3: #79BBFF;
-  --color-primary-light-5: #A0CFFF;
-  --color-primary-light-7: #C6E2FF;
-  --color-primary-light-8: #D9ECFF;
-  --color-primary-light-9: #ECF5FF;
-  --color-primary-dark-2: #337ECC;
-
-  /* Functional Colors */
-  --color-success: #67C23A;
-  --color-success-light-3: #95D475;
-  --color-success-light-9: #E1F3D8;
-  --color-warning: #E6A23C;
-  --color-warning-light-3: #EEBE77;
-  --color-warning-light-9: #FAECD8;
-  --color-danger: #F56C6C;
-  --color-danger-light-3: #F89898;
-  --color-danger-light-9: #FDE2E2;
-  --color-info: #909399;
-  --color-info-light-9: #E9E9EB;
-
-  /* Neutral Colors - Text */
-  --color-text-primary: #303133;
-  --color-text-regular: #606266;
-  --color-text-secondary: #909399;
-  --color-text-placeholder: #C0C4CC;
-
-  /* Neutral Colors - Border */
-  --color-border: #DCDFE6;
-  --color-border-light: #E4E7ED;
-  --color-border-lighter: #EBEEF5;
-  --color-border-extra-light: #F2F6FC;
-
-  /* Neutral Colors - Background */
-  --color-bg-white: #FFFFFF;
-  --color-bg-page: #F5F7FA;
-  --color-bg-fill: #F0F2F5;
-  --color-bg-fill-light: #F5F7FA;
-  --color-bg-fill-lighter: #FAFAFA;
-  --color-mask: rgba(0, 0, 0, 0.5);
-
   /* Spacing (4px base grid) */
   --spacing-xs: 4px;
   --spacing-sm: 8px;
@@ -90,8 +48,8 @@ body {
   font-family: var(--font-family);
   font-size: 14px;
   line-height: 22px;
-  color: var(--color-text-primary);
-  background-color: var(--color-bg-page);
+  color: var(--el-text-color-primary);
+  background-color: var(--el-bg-color-page);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -121,7 +79,7 @@ code {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 12px;
   padding: 2px 6px;
-  background-color: var(--color-bg-fill);
+  background-color: var(--el-fill-color-light);
   border-radius: var(--radius-small);
 }
 
@@ -132,34 +90,34 @@ code {
 /* Header */
 .el-header {
   height: var(--header-height);
-  background-color: var(--color-bg-white);
-  border-bottom: 1px solid var(--color-border-light);
+  background-color: var(--el-bg-color-overlay);
+  border-bottom: 1px solid var(--el-border-color-light);
   padding: 0 var(--spacing-lg);
 }
 
 /* Aside */
 .el-aside {
   width: var(--aside-width);
-  background-color: var(--color-bg-white);
-  border-right: 1px solid var(--color-border-light);
+  background-color: var(--el-bg-color-overlay);
+  border-right: 1px solid var(--el-border-color-light);
 }
 
 /* Main */
 .el-main {
-  background-color: var(--color-bg-page);
+  background-color: var(--el-bg-color-page);
   padding: var(--spacing-xl);
 }
 
 /* Card */
 .el-card {
   border-radius: var(--radius-base);
-  border: 1px solid var(--color-border);
-  background-color: var(--color-bg-white);
+  border: 1px solid var(--el-border-color);
+  background-color: var(--el-bg-color-overlay);
 }
 
 .el-card__header {
   padding: var(--spacing-base) var(--spacing-lg);
-  border-bottom: 1px solid var(--color-border-lighter);
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
 .el-card__body {
@@ -168,10 +126,10 @@ code {
 
 /* Table */
 .el-table {
-  --el-table-header-bg-color: var(--color-bg-fill);
-  --el-table-header-text-color: var(--color-text-regular);
-  --el-table-row-hover-bg-color: var(--color-bg-fill-lighter);
-  --el-table-border-color: var(--color-border-lighter);
+  --el-table-header-bg-color: var(--el-fill-color-light);
+  --el-table-header-text-color: var(--el-text-color-regular);
+  --el-table-row-hover-bg-color: var(--el-fill-color-lighter);
+  --el-table-border-color: var(--el-border-color-lighter);
 }
 
 .el-table th.el-table__cell {
@@ -184,7 +142,7 @@ code {
 }
 
 .el-table__row--striped td.el-table__cell {
-  background-color: var(--color-bg-fill-lighter);
+  background-color: var(--el-fill-color-lighter);
 }
 
 /* Dialog */
@@ -240,7 +198,7 @@ code {
 
 /* Form Item Label */
 .el-form-item__label {
-  color: var(--color-text-regular);
+  color: var(--el-text-color-regular);
   font-size: 14px;
 }
 
@@ -249,21 +207,4 @@ code {
    ============================================ */
 .full-width {
   width: 100%;
-}
-
-/* ============================================
-   Mobile Breakpoint (768px)
-   ============================================ */
-@media (max-width: 768px) {
-  :root {
-    --aside-width: 0px;
-  }
-
-  .el-main {
-    padding: var(--spacing-base);
-  }
-
-  .el-header {
-    padding: 0 var(--spacing-base);
-  }
 }

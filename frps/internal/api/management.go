@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/certassets"
+	"github.com/zightch/frp/frps/internal/certusages"
 	"github.com/zightch/frp/frps/internal/ports"
+	"github.com/zightch/frp/frps/internal/proxygroups"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -45,18 +47,21 @@ type managementService struct {
 	refresher GroupRuntimeRefresher
 	runtime   TunnelRuntimeStatusReader
 	certs     *certassets.Service
+	usages    *certusages.Service
+	server    *Server
 }
 
 type proxyGroupView struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	ClientID     string `json:"client_id"`
-	EffectiveIP  string `json:"effective_ip"`
-	Enabled      bool   `json:"enabled"`
-	Status       string `json:"status"`
-	StatusReason string `json:"status_reason,omitempty"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID                       int64  `json:"id"`
+	Name                     string `json:"name"`
+	ClientID                 string `json:"client_id"`
+	EffectiveIP              string `json:"effective_ip"`
+	Enabled                  bool   `json:"enabled"`
+	ControlTransportSecurity string `json:"control_transport_security"`
+	Status                   string `json:"status"`
+	StatusReason             string `json:"status_reason,omitempty"`
+	CreatedAt                string `json:"created_at"`
+	UpdatedAt                string `json:"updated_at"`
 }
 
 type tunnelView struct {
@@ -82,15 +87,17 @@ type tunnelView struct {
 }
 
 type proxyGroupCreateRequest struct {
-	Name        string `json:"name"`
-	EffectiveIP string `json:"effective_ip"`
-	Enabled     *bool  `json:"enabled"`
+	Name                     string `json:"name"`
+	EffectiveIP              string `json:"effective_ip"`
+	Enabled                  *bool  `json:"enabled"`
+	ControlTransportSecurity string `json:"control_transport_security"`
 }
 
 type proxyGroupPatchRequest struct {
-	Name        *string `json:"name"`
-	EffectiveIP *string `json:"effective_ip"`
-	Enabled     *bool   `json:"enabled"`
+	Name                     *string `json:"name"`
+	EffectiveIP              *string `json:"effective_ip"`
+	Enabled                  *bool   `json:"enabled"`
+	ControlTransportSecurity *string `json:"control_transport_security"`
 }
 
 type tunnelRequest struct {
@@ -114,9 +121,10 @@ type apiError struct {
 }
 
 type normalizedProxyGroup struct {
-	Name        string
-	EffectiveIP string
-	Enabled     bool
+	Name                     string
+	EffectiveIP              string
+	Enabled                  bool
+	ControlTransportSecurity proxygroups.ControlTransportSecurity
 }
 
 type normalizedTunnel struct {
@@ -149,6 +157,7 @@ func newManagementService(store *storage.SQL, network system.SnapshotReader, ref
 		refresher: refresher,
 		runtime:   runtime,
 		certs:     certassets.NewService(store, certassets.ServiceOptions{}),
+		usages:    certusages.NewService(store, certusages.ServiceOptions{}),
 	}
 }
 
@@ -364,6 +373,7 @@ SELECT
 	client_id,
 	effective_ip,
 	enabled,
+	control_transport_security,
 	created_at,
 	updated_at
 FROM proxy_groups
@@ -390,6 +400,9 @@ func (m *managementService) createProxyGroup(ctx context.Context, payload proxyG
 	if err != nil {
 		return proxyGroupView{}, "", err
 	}
+	if err := m.validateControlTransportSecurity(ctx, normalized.ControlTransportSecurity); err != nil {
+		return proxyGroupView{}, "", err
+	}
 
 	var (
 		item proxyGroupView
@@ -412,16 +425,18 @@ INSERT INTO proxy_groups (
 	client_secret_hash,
 	effective_ip,
 	enabled,
+	control_transport_security,
 	rate_limit,
 	created_at,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
 `,
 			normalized.Name,
 			clientID,
 			clientSecretHash,
 			normalized.EffectiveIP,
 			boolToInt(normalized.Enabled),
+			string(normalized.ControlTransportSecurity),
 			now,
 			now,
 		)
@@ -455,6 +470,9 @@ func (m *managementService) updateProxyGroup(ctx context.Context, id int64, payl
 		if err != nil {
 			return err
 		}
+		if err := m.validateControlTransportSecurity(ctx, normalized.ControlTransportSecurity); err != nil {
+			return err
+		}
 		if err := m.ensureConflictFreeForGroupUpdate(ctx, tx, id, current, normalized); err != nil {
 			return err
 		}
@@ -463,12 +481,13 @@ func (m *managementService) updateProxyGroup(ctx context.Context, id int64, payl
 			ctx,
 			`
 UPDATE proxy_groups
-SET name = ?, effective_ip = ?, enabled = ?, updated_at = ?
+SET name = ?, effective_ip = ?, enabled = ?, control_transport_security = ?, updated_at = ?
 WHERE id = ?
 `,
 			normalized.Name,
 			normalized.EffectiveIP,
 			boolToInt(normalized.Enabled),
+			string(normalized.ControlTransportSecurity),
 			schemaTimestamp(),
 			id,
 		)
@@ -821,6 +840,7 @@ SELECT
 	client_id,
 	effective_ip,
 	enabled,
+	control_transport_security,
 	created_at,
 	updated_at
 FROM proxy_groups
@@ -840,6 +860,21 @@ WHERE id = ?
 		return proxyGroupView{}, fmt.Errorf("decode proxy group: %w", err)
 	}
 	return m.withProxyGroupStatus(item), nil
+}
+
+func (m *managementService) countTLSRequiredProxyGroups(ctx context.Context) (int64, error) {
+	if m == nil || m.store == nil {
+		return 0, fmt.Errorf("management store is unavailable")
+	}
+	row, err := m.store.QueryOneContext(
+		ctx,
+		`SELECT COUNT(1) AS count FROM proxy_groups WHERE control_transport_security = ?`,
+		string(proxygroups.ControlTransportSecurityTLSRequired),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("count tls required proxy groups: %w", err)
+	}
+	return rowInt64(row, "count")
 }
 
 func (m *managementService) loadTunnelByIDWithStatus(ctx context.Context, id int64) (tunnelView, error) {
@@ -1054,14 +1089,21 @@ func conflictErrorForTargets(items []tunnelView, targetIDs map[int64]struct{}) e
 
 func (m *managementService) normalizeCreateProxyGroup(payload proxyGroupCreateRequest) (normalizedProxyGroup, error) {
 	item := normalizedProxyGroup{
-		Name:    strings.TrimSpace(payload.Name),
-		Enabled: true,
+		Name:                     strings.TrimSpace(payload.Name),
+		Enabled:                  true,
+		ControlTransportSecurity: proxygroups.DefaultControlTransportSecurity(),
 	}
 	if payload.Enabled != nil {
 		item.Enabled = *payload.Enabled
 	}
+	if strings.TrimSpace(payload.ControlTransportSecurity) != "" {
+		item.ControlTransportSecurity = proxygroups.NormalizeControlTransportSecurity(payload.ControlTransportSecurity)
+	}
 	if item.Name == "" {
 		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "name is required"}
+	}
+	if item.ControlTransportSecurity == "" {
+		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "control_transport_security must be plain or tls_required"}
 	}
 
 	normalizedIP, err := m.normalizeSubmittedEffectiveIP(payload.EffectiveIP)
@@ -1075,9 +1117,13 @@ func (m *managementService) normalizeCreateProxyGroup(payload proxyGroupCreateRe
 
 func (m *managementService) normalizeProxyGroupPatch(current proxyGroupView, payload proxyGroupPatchRequest) (normalizedProxyGroup, error) {
 	item := normalizedProxyGroup{
-		Name:        current.Name,
-		EffectiveIP: current.EffectiveIP,
-		Enabled:     current.Enabled,
+		Name:                     current.Name,
+		EffectiveIP:              current.EffectiveIP,
+		Enabled:                  current.Enabled,
+		ControlTransportSecurity: proxygroups.NormalizeControlTransportSecurity(current.ControlTransportSecurity),
+	}
+	if item.ControlTransportSecurity == "" {
+		item.ControlTransportSecurity = proxygroups.DefaultControlTransportSecurity()
 	}
 	hasChange := false
 
@@ -1097,12 +1143,19 @@ func (m *managementService) normalizeProxyGroupPatch(current proxyGroupView, pay
 		item.Enabled = *payload.Enabled
 		hasChange = true
 	}
+	if payload.ControlTransportSecurity != nil {
+		item.ControlTransportSecurity = proxygroups.NormalizeControlTransportSecurity(*payload.ControlTransportSecurity)
+		hasChange = true
+	}
 
 	if !hasChange {
-		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "at least one of name, effective_ip, enabled is required"}
+		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "at least one of name, effective_ip, enabled, control_transport_security is required"}
 	}
 	if item.Name == "" {
 		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "name is required"}
+	}
+	if item.ControlTransportSecurity == "" {
+		return normalizedProxyGroup{}, &apiError{Status: http.StatusBadRequest, Message: "control_transport_security must be plain or tls_required"}
 	}
 
 	return item, nil
@@ -1123,6 +1176,28 @@ func (m *managementService) normalizeSubmittedEffectiveIP(raw string) (string, e
 		return "", &apiError{Status: http.StatusBadRequest, Message: "effective_ip must be a current local IP"}
 	}
 	return normalizedIP, nil
+}
+
+func (m *managementService) validateControlTransportSecurity(ctx context.Context, security proxygroups.ControlTransportSecurity) error {
+	if security != proxygroups.ControlTransportSecurityTLSRequired {
+		return nil
+	}
+	if m == nil || m.usages == nil {
+		return &apiError{Status: http.StatusServiceUnavailable, Message: "certificate usage service is unavailable"}
+	}
+
+	enabled, err := m.usages.IsEnabled(ctx, certusages.UsageTypeControlListenerTLS)
+	if err != nil {
+		return fmt.Errorf("load control listener tls usage: %w", err)
+	}
+	if !enabled {
+		return &apiError{
+			Status:  http.StatusConflict,
+			Message: "frpc login tls certificate must be bound before proxy groups can require tls",
+			Code:    "control_listener_tls_required",
+		}
+	}
+	return nil
 }
 
 func normalizeTunnel(payload tunnelRequest) (normalizedTunnel, error) {
@@ -1190,6 +1265,10 @@ func decodeProxyGroupRow(row storage.Row) (proxyGroupView, error) {
 	}
 	item.Name = rowString(row, "name")
 	item.ClientID = rowString(row, "client_id")
+	item.ControlTransportSecurity = string(proxygroups.NormalizeControlTransportSecurity(rowString(row, "control_transport_security")))
+	if item.ControlTransportSecurity == "" {
+		item.ControlTransportSecurity = string(proxygroups.DefaultControlTransportSecurity())
+	}
 	item.CreatedAt = rowTimeString(row, "created_at")
 	item.UpdatedAt = rowTimeString(row, "updated_at")
 	return item, nil

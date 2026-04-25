@@ -4,7 +4,7 @@
 
 当前有效条目：
 
-- [证书绑定设计：WebUI HTTPS 与 7000 TLS](./certificate-binding.md)
+- [证书绑定设计：WebUI HTTPS 与 frpc 登录 TLS](./certificate-binding.md)
 
 约定：
 

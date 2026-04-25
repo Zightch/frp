@@ -17,7 +17,7 @@ type authChallenge struct {
 	Used             bool
 }
 
-func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
+func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte) (*sessionState, error) {
 	frame, err := s.readFrame(conn)
 	if err != nil {
 		return nil, s.replyProtocolError(conn, frame, err)
@@ -42,6 +42,9 @@ func (s *Server) authenticate(conn net.Conn) (*sessionState, error) {
 	begin, err := protocol.UnmarshalAuthBegin(frame.Body)
 	if err != nil {
 		return nil, s.replyProtocolError(conn, frame, err)
+	}
+	if begin.ClientID != expectedClientID {
+		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidClient, "auth.begin client_id does not match transport.client_hello")
 	}
 
 	group, err := s.loadGroupRuntimeByClientID(begin.ClientID)

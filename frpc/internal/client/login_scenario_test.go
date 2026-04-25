@@ -60,6 +60,8 @@ func TestClientRunSessionUsesLoginSnapshotForFirstStream(t *testing.T) {
 		defer close(serverDone)
 		defer serverConn.Close()
 
+		performPlainTransportHello(t, serverConn, credentials.ClientID)
+
 		frame := readFrame(t, serverConn)
 		if frame.Type != protocol.TypeAuthBegin {
 			t.Errorf("expected auth.begin, got %s", frame.Type.String())

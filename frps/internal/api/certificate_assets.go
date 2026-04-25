@@ -69,6 +69,7 @@ type certificateAssetPatchRequest struct {
 type certificateAssetDeleteImpactView struct {
 	Target               certificateAssetView             `json:"target"`
 	AffectedItems        []certificateAssetDeleteItemView `json:"affected_items"`
+	UsageItems           []certificateUsageView           `json:"usage_items,omitempty"`
 	RequiresConfirmation bool                             `json:"requires_confirmation"`
 	WarningMessage       string                           `json:"warning_message,omitempty"`
 }
@@ -381,12 +382,56 @@ func (m *managementService) getCertificateAssetDeleteImpact(ctx context.Context,
 	if err != nil {
 		return certificateAssetDeleteImpactView{}, mapCertificateAssetError(err)
 	}
-	return mapCertificateAssetDeleteImpactView(impact), nil
+	view := mapCertificateAssetDeleteImpactView(impact)
+
+	assetIDs := make([]int64, 0, 1+len(impact.Affected))
+	assetIDs = append(assetIDs, impact.Target.ID)
+	for _, item := range impact.Affected {
+		assetIDs = append(assetIDs, item.Item.ID)
+	}
+	usageItems, err := m.activeCertificateUsageConflicts(ctx, assetIDs)
+	if err != nil {
+		return certificateAssetDeleteImpactView{}, err
+	}
+	if len(usageItems) > 0 {
+		view.UsageItems = usageItems
+		view.RequiresConfirmation = true
+		if view.WarningMessage == "" {
+			view.WarningMessage = "删除该证书资产前需要先解绑入口证书使用关系"
+		} else {
+			view.WarningMessage += "；并且需要先解绑入口证书使用关系"
+		}
+	}
+	return view, nil
 }
 
 func (m *managementService) deleteCertificateAsset(ctx context.Context, id int64, cascade bool) (certassets.DeleteResult, error) {
 	if m == nil || m.certs == nil {
 		return certassets.DeleteResult{}, &apiError{Status: http.StatusServiceUnavailable, Message: "certificate asset service is unavailable"}
+	}
+
+	impact, err := m.certs.DeleteImpact(ctx, id)
+	if err != nil {
+		return certassets.DeleteResult{}, mapCertificateAssetError(err)
+	}
+	assetIDs := make([]int64, 0, 1+len(impact.Affected))
+	assetIDs = append(assetIDs, impact.Target.ID)
+	for _, item := range impact.Affected {
+		assetIDs = append(assetIDs, item.Item.ID)
+	}
+	usageItems, err := m.activeCertificateUsageConflicts(ctx, assetIDs)
+	if err != nil {
+		return certassets.DeleteResult{}, err
+	}
+	if len(usageItems) > 0 {
+		return certassets.DeleteResult{}, &apiError{
+			Status:  http.StatusConflict,
+			Message: "certificate asset is still bound to active entry usage",
+			Code:    "certificate_asset_in_use",
+			Details: map[string]any{
+				"usage_items": usageItems,
+			},
+		}
 	}
 
 	result, err := m.certs.Delete(ctx, id, cascade)

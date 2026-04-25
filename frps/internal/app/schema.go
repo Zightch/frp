@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS proxy_groups (
 	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
+	control_transport_security TEXT NOT NULL DEFAULT 'plain',
 	rate_limit INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
@@ -102,6 +103,18 @@ CREATE TABLE IF NOT EXISTS certificate_asset_relations (
 )`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS uk_certificate_asset_relations_child_asset_id ON certificate_asset_relations (child_asset_id)`,
 			`CREATE INDEX IF NOT EXISTS idx_certificate_asset_relations_parent_asset_id ON certificate_asset_relations (parent_asset_id)`,
+			`
+CREATE TABLE IF NOT EXISTS certificate_asset_usages (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	usage_type TEXT NOT NULL,
+	target_id INTEGER NOT NULL DEFAULT 0,
+	asset_id INTEGER NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS uk_certificate_asset_usages_usage_target ON certificate_asset_usages (usage_type, target_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_certificate_asset_usages_asset_id ON certificate_asset_usages (asset_id)`,
 		},
 		tables: []tableSpec{
 			{
@@ -113,6 +126,7 @@ CREATE TABLE IF NOT EXISTS certificate_asset_relations (
 					{name: "client_secret_hash", columnType: "text", nullable: false},
 					{name: "effective_ip", columnType: "text", nullable: false},
 					{name: "enabled", columnType: "integer", nullable: false},
+					{name: "control_transport_security", columnType: "text", nullable: false},
 					{name: "rate_limit", columnType: "integer", nullable: false},
 					{name: "created_at", columnType: "text", nullable: false},
 					{name: "updated_at", columnType: "text", nullable: false},
@@ -182,6 +196,24 @@ CREATE TABLE IF NOT EXISTS certificate_asset_relations (
 					{"child_asset_id"},
 				},
 			},
+			{
+				name: "certificate_asset_usages",
+				columns: []columnSpec{
+					{name: "id", columnType: "integer", nullable: false, primaryKey: true},
+					{name: "usage_type", columnType: "text", nullable: false},
+					{name: "target_id", columnType: "integer", nullable: false},
+					{name: "asset_id", columnType: "integer", nullable: false},
+					{name: "enabled", columnType: "integer", nullable: false},
+					{name: "created_at", columnType: "text", nullable: false},
+					{name: "updated_at", columnType: "text", nullable: false},
+				},
+				indexes: [][]string{
+					{"asset_id"},
+				},
+				uniqueIndexes: [][]string{
+					{"usage_type", "target_id"},
+				},
+			},
 		},
 	},
 	"mysql": {
@@ -194,6 +226,7 @@ CREATE TABLE IF NOT EXISTS proxy_groups (
 	client_secret_hash CHAR(64) NOT NULL,
 	effective_ip VARCHAR(45) NOT NULL,
 	enabled TINYINT(1) NOT NULL DEFAULT 1,
+	control_transport_security VARCHAR(32) NOT NULL DEFAULT 'plain',
 	rate_limit BIGINT NOT NULL DEFAULT 0,
 	created_at DATETIME(6) NOT NULL,
 	updated_at DATETIME(6) NOT NULL,
@@ -248,6 +281,19 @@ CREATE TABLE IF NOT EXISTS certificate_asset_relations (
 	UNIQUE KEY uk_certificate_asset_relations_child_asset_id (child_asset_id),
 	KEY idx_certificate_asset_relations_parent_asset_id (parent_asset_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`
+CREATE TABLE IF NOT EXISTS certificate_asset_usages (
+	id BIGINT NOT NULL AUTO_INCREMENT,
+	usage_type VARCHAR(64) NOT NULL,
+	target_id BIGINT NOT NULL DEFAULT 0,
+	asset_id BIGINT NOT NULL,
+	enabled TINYINT(1) NOT NULL DEFAULT 1,
+	created_at DATETIME(6) NOT NULL,
+	updated_at DATETIME(6) NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE KEY uk_certificate_asset_usages_usage_target (usage_type, target_id),
+	KEY idx_certificate_asset_usages_asset_id (asset_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		},
 		tables: []tableSpec{
 			{
@@ -259,6 +305,7 @@ CREATE TABLE IF NOT EXISTS certificate_asset_relations (
 					{name: "client_secret_hash", columnType: "char(64)", nullable: false},
 					{name: "effective_ip", columnType: "varchar(45)", nullable: false},
 					{name: "enabled", columnType: "tinyint(1)", nullable: false},
+					{name: "control_transport_security", columnType: "varchar(32)", nullable: false},
 					{name: "rate_limit", columnType: "bigint", nullable: false},
 					{name: "created_at", columnType: "datetime(6)", nullable: false},
 					{name: "updated_at", columnType: "datetime(6)", nullable: false},
@@ -326,6 +373,24 @@ CREATE TABLE IF NOT EXISTS certificate_asset_relations (
 				},
 				uniqueIndexes: [][]string{
 					{"child_asset_id"},
+				},
+			},
+			{
+				name: "certificate_asset_usages",
+				columns: []columnSpec{
+					{name: "id", columnType: "bigint", nullable: false, primaryKey: true, autoIncrement: true},
+					{name: "usage_type", columnType: "varchar(64)", nullable: false},
+					{name: "target_id", columnType: "bigint", nullable: false},
+					{name: "asset_id", columnType: "bigint", nullable: false},
+					{name: "enabled", columnType: "tinyint(1)", nullable: false},
+					{name: "created_at", columnType: "datetime(6)", nullable: false},
+					{name: "updated_at", columnType: "datetime(6)", nullable: false},
+				},
+				indexes: [][]string{
+					{"asset_id"},
+				},
+				uniqueIndexes: [][]string{
+					{"usage_type", "target_id"},
 				},
 			},
 		},

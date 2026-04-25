@@ -95,13 +95,13 @@ async function handleLogin() {
 <style scoped>
 .login-card {
   border-radius: var(--radius-base);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--el-border-color);
 }
 
 .card-title {
   font-size: 20px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--el-text-color-primary);
 }
 
 .login-form {

@@ -1042,6 +1042,8 @@ func authenticateScriptedServerSession(
 		server.handleConnection(serverConn)
 	}()
 
+	performTransportHello(t, clientConn, tokenID)
+
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
 		ClientID:      tokenID,
 		ClientVersion: "test-client",
@@ -1054,7 +1056,7 @@ func authenticateScriptedServerSession(
 	}
 	client.writeMessage(t, protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
-		RequestID: 1,
+		RequestID: 2,
 		Body:      authBeginBody,
 	})
 
@@ -1076,7 +1078,7 @@ func authenticateScriptedServerSession(
 	}
 	client.writeMessage(t, protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
-		RequestID: 2,
+		RequestID: 3,
 		Body:      authFinishBody,
 	})
 

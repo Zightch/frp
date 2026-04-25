@@ -796,6 +796,8 @@ func TestServerScenarioUsesFreshSnapshotWhenRepositoryChangesDuringLoginHandshak
 		server.handleConnection(serverConn)
 	}()
 
+	performTransportHello(t, clientConn, tokenID)
+
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
 		ClientID:      tokenID,
 		ClientVersion: "test-client",
@@ -808,7 +810,7 @@ func TestServerScenarioUsesFreshSnapshotWhenRepositoryChangesDuringLoginHandshak
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
-		RequestID: 1,
+		RequestID: 2,
 		Body:      authBeginBody,
 	})
 
@@ -847,7 +849,7 @@ func TestServerScenarioUsesFreshSnapshotWhenRepositoryChangesDuringLoginHandshak
 	}
 	writeMessage(t, clientConn, protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
-		RequestID: 2,
+		RequestID: 3,
 		Body:      authFinishBody,
 	})
 

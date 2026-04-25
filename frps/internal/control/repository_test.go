@@ -36,6 +36,7 @@ CREATE TABLE proxy_groups (
 	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL,
+	control_transport_security TEXT NOT NULL DEFAULT 'plain',
 	updated_at TEXT NOT NULL
 )`,
 		`
@@ -143,6 +144,7 @@ CREATE TABLE proxy_groups (
 	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL,
+	control_transport_security TEXT NOT NULL DEFAULT 'plain',
 	updated_at TEXT NOT NULL
 )`,
 		`

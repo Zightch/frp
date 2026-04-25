@@ -79,6 +79,7 @@ func TestAppInitDatabaseInjectsStore(t *testing.T) {
 		"tunnels",
 		"certificate_assets",
 		"certificate_asset_relations",
+		"certificate_asset_usages",
 	} {
 		if _, err := application.store.QueryOne(
 			"select name from sqlite_master where type = 'table' and name = ?",
@@ -100,6 +101,8 @@ func TestAppInitDatabaseInjectsStore(t *testing.T) {
 		"uk_certificate_assets_name",
 		"idx_certificate_asset_relations_parent_asset_id",
 		"uk_certificate_asset_relations_child_asset_id",
+		"idx_certificate_asset_usages_asset_id",
+		"uk_certificate_asset_usages_usage_target",
 	} {
 		if _, err := application.store.QueryOne(
 			"select name from sqlite_master where type = 'index' and name = ?",
@@ -124,6 +127,7 @@ CREATE TABLE proxy_groups (
 	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
+	control_transport_security TEXT NOT NULL DEFAULT 'plain',
 	rate_limit INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
@@ -199,6 +203,7 @@ CREATE TABLE proxy_groups (
 	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
+	control_transport_security TEXT NOT NULL DEFAULT 'plain',
 	rate_limit INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
@@ -241,6 +246,15 @@ CREATE TABLE certificate_asset_relations (
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
+CREATE TABLE certificate_asset_usages (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	usage_type TEXT NOT NULL,
+	target_id INTEGER NOT NULL DEFAULT 0,
+	asset_id INTEGER NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
 `)
 	if closeErr := db.Close(); closeErr != nil {
 		t.Fatalf("close sqlite database: %v", closeErr)
@@ -267,6 +281,8 @@ CREATE TABLE certificate_asset_relations (
 		"uk_certificate_assets_name",
 		"idx_certificate_asset_relations_parent_asset_id",
 		"uk_certificate_asset_relations_child_asset_id",
+		"idx_certificate_asset_usages_asset_id",
+		"uk_certificate_asset_usages_usage_target",
 	} {
 		if _, err := application.store.QueryOne(
 			"select name from sqlite_master where type = 'index' and name = ?",

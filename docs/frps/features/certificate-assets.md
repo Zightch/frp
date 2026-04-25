@@ -14,7 +14,7 @@
 当前尚未实现：
 
 - WebUI HTTPS 证书绑定
-- `7000` 登录口 TLS 证书绑定
+- `frpc` 登录口 TLS 证书绑定
 
 对应设计见 [../design/certificate-binding.md](../design/certificate-binding.md)。
 

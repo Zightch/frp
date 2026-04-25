@@ -15,7 +15,7 @@ import { RouterView } from 'vue-router'
 <style scoped>
 .blank-layout {
   min-height: 100vh;
-  background-color: var(--color-bg-page);
+  background-color: var(--el-bg-color-page);
 }
 
 .blank-main {

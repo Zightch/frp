@@ -27,6 +27,6 @@
 
 ## 当前重点设计项
 
-- [证书绑定设计：WebUI HTTPS 与 7000 TLS](./design/certificate-binding.md)
+- [证书绑定设计：WebUI HTTPS 与 frpc 登录 TLS](./design/certificate-binding.md)
 
 根目录不再保留旧版平铺文档；请直接从本索引进入。

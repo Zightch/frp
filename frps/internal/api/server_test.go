@@ -2122,6 +2122,7 @@ CREATE TABLE proxy_groups (
 	client_secret_hash TEXT NOT NULL,
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
+	control_transport_security TEXT NOT NULL DEFAULT 'plain',
 	rate_limit INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
@@ -2169,6 +2170,18 @@ CREATE TABLE certificate_asset_relations (
 )`,
 		`CREATE UNIQUE INDEX uk_certificate_asset_relations_child_asset_id ON certificate_asset_relations (child_asset_id)`,
 		`CREATE INDEX idx_certificate_asset_relations_parent_asset_id ON certificate_asset_relations (parent_asset_id)`,
+		`
+CREATE TABLE certificate_asset_usages (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	usage_type TEXT NOT NULL,
+	target_id INTEGER NOT NULL DEFAULT 0,
+	asset_id INTEGER NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+		`CREATE UNIQUE INDEX uk_certificate_asset_usages_usage_target ON certificate_asset_usages (usage_type, target_id)`,
+		`CREATE INDEX idx_certificate_asset_usages_asset_id ON certificate_asset_usages (asset_id)`,
 	} {
 		if _, err := store.Exec(statement); err != nil {
 			t.Fatalf("bootstrap api test schema: %v", err)

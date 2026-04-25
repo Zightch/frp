@@ -9,6 +9,7 @@ import (
 	"github.com/zightch/frp/frps/internal/api"
 	"github.com/zightch/frp/frps/internal/auth"
 	"github.com/zightch/frp/frps/internal/certassets"
+	"github.com/zightch/frp/frps/internal/certusages"
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/control"
 	"github.com/zightch/frp/frps/internal/storage"
@@ -90,6 +91,7 @@ func (a *App) Run(parent context.Context) error {
 			Auth:              a.auth,
 			WebUIDistDir:      a.config.WebUI.DistDir,
 			WebUIPathPrefix:   a.config.WebUI.PathPrefix,
+			ControlTLSRuntime: a.control,
 		},
 		a.logger.With("subsystem", "api"),
 		a.version,
@@ -102,6 +104,13 @@ func (a *App) Run(parent context.Context) error {
 		return fmt.Errorf("init management api: %w", err)
 	}
 	a.api = apiServer
+	if err := a.initCertificateUsages(ctx, certusages.NewService(a.store, certusages.ServiceOptions{})); err != nil {
+		_ = a.closeLocalNetwork(context.Background())
+		a.closeCertificateAssets()
+		a.closeDatabase()
+		a.closeAuth()
+		return fmt.Errorf("init certificate usages: %w", err)
+	}
 
 	errCh := make(chan error, 2)
 

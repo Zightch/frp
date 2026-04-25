@@ -1,11 +1,11 @@
-# 证书绑定设计：WebUI HTTPS 与 7000 TLS
+# 证书绑定设计：WebUI HTTPS 与 frpc 登录 TLS
 
 本文档描述“证书资产”之上的下一层能力：把已有证书绑定到 `frps` 的实际使用点。当前只覆盖两个入口：
 
 - 管理面 / WebUI
-- `7000` `frpc` 登录口
+- `frpc` 登录口（默认监听端口 `7000`）
 
-当前状态：未实现，属于已收口方案。
+当前状态：已实现首版，本文档继续作为该能力的设计与边界说明。
 
 ## 1. 目标
 
@@ -13,7 +13,8 @@
 - 新增一层“使用关系”，表达“哪个入口正在使用哪张证书”。
 - `frps` 运行时在内存完成证书链组装、`tls.Certificate` 构造和热切换。
 - WebUI 绑定证书后，管理面直接按 HTTPS 暴露。
-- `7000` 绑定证书后，先完成安全模式协商，再决定是否进入 TLS 握手，之后才进入现有登录流程。
+- `frpc` 登录口支持分组级安全策略：有的分组走明文，有的分组强制 TLS。
+- `frpc` 登录口的预协商阶段必须先带 `client_id`，`frps` 才能按分组决定后续是否 TLS。
 
 ## 2. 非目标
 
@@ -60,6 +61,24 @@
 - `certificate_assets` 继续只保存证书原文、私钥和最小元数据，不保存“谁在使用我”。
 - 删除资产时，`delete-impact` 必须把 usage 一起纳入计算；默认阻止删除正在被使用的资产。
 
+这张表只负责“入口用哪张证书”，不负责“哪个分组要求 TLS”。
+
+`frpc` 登录连接的分组级安全策略建议独立放在 `proxy_groups`，例如新增字段：
+
+- `control_transport_security`
+
+首版取值建议固定为：
+
+- `plain`
+- `tls_required`
+
+这样职责分层保持清楚：
+
+- `certificate_asset_usages.control_listener_tls`
+- 回答 `frpc` 登录监听器（默认端口 `7000`）在需要 TLS 时用哪张服务端证书
+- `proxy_groups.control_transport_security`
+- 回答某个分组连接 `frpc` 登录监听器时是走明文还是强制 TLS
+
 ## 4. 运行时加载
 
 运行时不直接保存 ZIP、临时文件或外部工具产物，只做内存对象：
@@ -100,18 +119,22 @@
 - 当前管理 session 的逻辑有效期不必重置，但底层 TCP 连接会被重建。
 - 解绑后，管理面再切回纯 HTTP。
 
-## 6. 7000 TLS
+## 6. frpc 登录 TLS
 
 ### 6.1 使用点
 
 - `usage_type = control_listener_tls`
 
+这里的 `control_listener_tls` 只表示 `frpc` 登录监听器（默认端口 `7000`）的全局服务端证书，不表示所有分组都必须走 TLS。
+
+分组是否强制 TLS 由 `proxy_groups.control_transport_security` 决定。
+
 ### 6.2 当前问题
 
-当前 `7000` 登录口还是裸 TCP，第一帧就是现有业务协议里的 `auth.begin`。如果直接把监听器改成纯 TLS：
+当前 `frpc` 登录口（默认端口 `7000`）还是裸 TCP，第一帧就是现有业务协议里的 `auth.begin`。如果直接把监听器改成纯 TLS：
 
 - 旧流程的第一包会变成 TLS ClientHello 与 `auth.begin` 冲突。
-- `frps` 无法在握手前知道对端是否准备走 TLS。
+- `frps` 无法在握手前知道对端属于哪个分组，也就无法知道该分组是否要求 TLS。
 
 所以必须先加一层“预协商”。
 
@@ -120,9 +143,9 @@
 首版建议所有新版本 `frpc` 都先走同一套预协商，再进入后续链路：
 
 ```text
-frpc -> transport.client_hello
-frps -> transport.server_hello
-if selected_security_mode == tls:
+frpc -> transport.client_hello(client_id, supported_security_modes)
+frps -> transport.server_hello(selected_security_mode)
+if selected_security_mode == tls_required:
     TLS handshake
 frpc -> auth.begin
 frps -> auth.challenge
@@ -138,8 +161,17 @@ frpc -> config.ack
 - 当前已有 `server.hello` 名称已被业务握手占用，因此预协商阶段应使用单独命名，例如：
   - `transport.client_hello`
   - `transport.server_hello`
+- `client_id` 必须前置到 `transport.client_hello`。
+- 现有 `auth.begin` 里的 `client_id` 首版可以继续保留，但服务端必须校验它与 `transport.client_hello.client_id` 一致。
 
 ### 6.4 协商结果
+
+`transport.client_hello` 至少应包含：
+
+- `client_id`
+- `supported_security_modes`
+  - `plain`
+  - `tls`
 
 `transport.server_hello` 至少返回：
 
@@ -147,6 +179,12 @@ frpc -> config.ack
   - `plain`
   - `tls_required`
 - `server_capability_bits`
+
+服务端决策规则固定为：
+
+1. 先按 `client_id` 查出目标分组。
+2. 再读取该分组的 `control_transport_security`。
+3. 根据分组策略和客户端声明的能力，返回 `plain` 或 `tls_required`。
 
 当 `selected_security_mode=tls_required` 时：
 
@@ -157,6 +195,13 @@ frpc -> config.ack
 
 - 直接沿现有业务协议继续登录。
 
+如果出现下面任一情况，应在预协商阶段直接拒绝：
+
+- `client_id` 不存在
+- 分组被禁用
+- 分组要求 `tls_required`，但 `frpc` 登录监听器没有已配置的服务端证书
+- 分组要求 `tls_required`，但客户端不支持 TLS
+
 ### 6.5 兼容策略
 
 当前仓库默认按“同仓同步升级”处理，不维护长期兼容层。
@@ -165,16 +210,17 @@ frpc -> config.ack
 
 - 新版 `frpc` 总是先发 `transport.client_hello`。
 - 新版 `frps` 总是先等预协商，而不是继续接受“首包直接 `auth.begin`”的旧模式。
-- 如果 `7000` 已绑定 TLS 证书而客户端不支持预协商，应直接拒绝连接。
+- 如果客户端不支持预协商，应直接拒绝连接。
 
 ### 6.6 热更新边界
 
-- `7000` 证书绑定变更只影响新建控制连接。
+- `frpc` 登录监听器证书绑定变更只影响新建控制连接。
 - 当前已在线的 plain/TLS session 不强制踢下线；后续是否增加“强制重连”管理动作，单独设计。
+- 分组的 `control_transport_security` 变更同样只影响新建控制连接；首版不强制中断现有 session。
 
 ### 6.7 frpc 侧配套要求
 
-`7000` 做 TLS 不能只做“加密”，还必须做服务端身份校验。否则只能防窃听，不能防中间人。
+`frpc` 登录 TLS 不能只做“加密”，还必须做服务端身份校验。否则只能防窃听，不能防中间人。
 
 因此配套需要：
 
@@ -187,7 +233,11 @@ frpc -> config.ack
 
 ## 7. 建议管理接口
 
-当前建议独立新增 usage 资源，不复用 `certificate-assets` 路径：
+当前建议拆成两类管理入口。
+
+### 7.1 证书使用接口
+
+独立新增 usage 资源，不复用 `certificate-assets` 路径：
 
 - `GET /api/v1/certificate-usages`
 - `PUT /api/v1/certificate-usages/{usage_type}`
@@ -209,15 +259,33 @@ frpc -> config.ack
 - `resolved_chain_length`
 - `updated_at`
 
+### 7.2 分组安全策略接口
+
+分组级 TLS 策略不走 `certificate-usages`，而是进入现有分组管理模型：
+
+- `POST /api/v1/proxy-groups`
+- `PATCH /api/v1/proxy-groups/{id}`
+
+建议新增字段：
+
+- `control_transport_security`
+
+首版行为约束：
+
+- 分组切到 `tls_required` 时，后端必须先校验 `control_listener_tls` 已配置有效服务端证书。
+- 如果已有分组正在使用 `tls_required`，则不允许解绑 `control_listener_tls`。
+
 ## 8. 与当前证书资产层的关系
 
 - 证书资产层继续负责“保存原子证书、私钥、树状关系、上传原结构和下载打包”。
 - 证书使用层只负责“哪个入口正在用哪张叶子证书”。
-- 两层不要混成一张表，也不要把 `usage_type`、监听地址或 TLS 选项塞回 `certificate_assets`。
+- 分组配置层只负责“该分组连接 `frpc` 登录监听器时是否强制 TLS”。
+- 不要把 `usage_type`、分组 TLS 策略、监听地址或 TLS 选项塞回 `certificate_assets`。
 
 ## 9. 落地顺序建议
 
-1. 先加 `certificate_asset_usages` 表和后端管理接口。
+1. 先加 `certificate_asset_usages` 表，并给 `proxy_groups` 补 `control_transport_security`。
 2. 先做 `webui_https`，因为只影响 `frps` 自身监听器。
-3. 再做 `7000` 预协商与 TLS。
-4. 最后再考虑是否扩展到 tunnel / 反向代理 / SNI 多证书。
+3. 再做 `frpc` 登录预协商，固定 `client_hello(client_id) -> server_hello(是否 TLS)`。
+4. 再做 `frpc` 登录 TLS 握手与后续登录链路衔接。
+5. 最后再考虑是否扩展到 tunnel / 反向代理 / SNI 多证书。

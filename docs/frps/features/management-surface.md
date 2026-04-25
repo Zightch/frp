@@ -60,6 +60,7 @@ WebUI 基址内的 `/` 会重定向到 `/proxy-groups`。
 - 分组列表、新建、编辑、删除、登录 `key` 重置
 - 隧道列表、新建、编辑、删除
 - 证书资产列表、导入、粘贴、生成、详情、编辑名称/备注、删除、下载
+- 入口证书绑定：`webui_https`、`control_listener_tls`
 
 WebUI 开发约束和 Element Plus 用法规范见：
 
@@ -69,7 +70,11 @@ WebUI 开发约束和 Element Plus 用法规范见：
 
 ## 当前 HTTPS 边界
 
-当前管理面监听器还是纯 HTTP。
+当前管理面已经支持通过证书绑定在同一监听地址上切换 HTTP / HTTPS。
 
-- WebUI 还没有内建“选中证书后直接升级为 HTTPS”的能力。
-- 这部分已收口为单独设计，见 [../design/certificate-binding.md](../design/certificate-binding.md)。
+- 绑定 `webui_https` 后，管理监听器会热切到 HTTPS。
+- WebUI 证书页绑定成功后会自动跳转到同地址的 `https://`。
+- 解绑 `webui_https` 后，管理监听器会切回 HTTP；当前页面也会自动回跳 `http://`。
+- 仅切换证书内容时，HTTPS 模式下复用同一监听器，依赖运行时证书回调完成替换。
+
+相关设计与实现边界见 [../design/certificate-binding.md](../design/certificate-binding.md)。

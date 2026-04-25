@@ -30,6 +30,8 @@ func TestClientRunSession(t *testing.T) {
 		defer close(serverDone)
 		defer serverConn.Close()
 
+		performPlainTransportHello(t, serverConn, credentials.ClientID)
+
 		frame := readFrame(t, serverConn)
 		if frame.Type != protocol.TypeAuthBegin {
 			t.Errorf("expected auth.begin, got %s", frame.Type.String())
@@ -900,6 +902,39 @@ func writeFrame(t *testing.T, conn net.Conn, frame protocol.Frame) {
 	if err := transport.WriteFrame(conn, frameBytes, time.Second); err != nil {
 		t.Fatalf("write frame: %v", err)
 	}
+}
+
+func performPlainTransportHello(t *testing.T, conn net.Conn, clientID [16]byte) {
+	t.Helper()
+
+	frame := readFrame(t, conn)
+	if frame.Type != protocol.TypeTransportClientHello {
+		t.Fatalf("expected transport.client_hello, got %s", frame.Type.String())
+	}
+
+	hello, err := protocol.UnmarshalTransportClientHello(frame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal transport.client_hello: %v", err)
+	}
+	if hello.ClientID != clientID {
+		t.Fatal("unexpected client id in transport.client_hello")
+	}
+	if hello.SupportedSecurityModes&protocol.TransportSecurityModePlain == 0 {
+		t.Fatal("expected client to support plain transport")
+	}
+
+	body, err := protocol.MarshalTransportServerHello(protocol.TransportServerHello{
+		SelectedSecurityMode: protocol.TransportSecurityModePlain,
+		CapabilityBits:       0,
+	})
+	if err != nil {
+		t.Fatalf("marshal transport.server_hello: %v", err)
+	}
+	writeFrame(t, conn, protocol.Frame{
+		Type:      protocol.TypeTransportServerHello,
+		RequestID: frame.RequestID,
+		Body:      body,
+	})
 }
 
 func readFrame(t *testing.T, conn net.Conn) protocol.Frame {

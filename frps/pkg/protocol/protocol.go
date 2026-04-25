@@ -19,23 +19,25 @@ const (
 type Type uint8
 
 const (
-	TypeAuthBegin     Type = 0x01
-	TypeAuthChallenge Type = 0x02
-	TypeAuthFinish    Type = 0x03
-	TypeServerHello   Type = 0x04
-	TypeHeartbeatPing Type = 0x05
-	TypeHeartbeatPong Type = 0x06
-	TypeConfigPush    Type = 0x10
-	TypeConfigAck     Type = 0x11
-	TypeStreamOpen    Type = 0x20
-	TypeStreamOpened  Type = 0x21
-	TypeStreamData    Type = 0x22
-	TypeStreamClose   Type = 0x23
-	TypeUDPOpen       Type = 0x30
-	TypeUDPData       Type = 0x31
-	TypeUDPClose      Type = 0x32
-	TypeEventReport   Type = 0x40
-	TypeError         Type = 0x41
+	TypeAuthBegin            Type = 0x01
+	TypeAuthChallenge        Type = 0x02
+	TypeAuthFinish           Type = 0x03
+	TypeServerHello          Type = 0x04
+	TypeHeartbeatPing        Type = 0x05
+	TypeHeartbeatPong        Type = 0x06
+	TypeConfigPush           Type = 0x10
+	TypeConfigAck            Type = 0x11
+	TypeStreamOpen           Type = 0x20
+	TypeStreamOpened         Type = 0x21
+	TypeStreamData           Type = 0x22
+	TypeStreamClose          Type = 0x23
+	TypeUDPOpen              Type = 0x30
+	TypeUDPData              Type = 0x31
+	TypeUDPClose             Type = 0x32
+	TypeEventReport          Type = 0x40
+	TypeError                Type = 0x41
+	TypeTransportClientHello Type = 0x50
+	TypeTransportServerHello Type = 0x51
 )
 
 const (
@@ -45,6 +47,11 @@ const (
 
 const (
 	MaxDataBodyLen = 64 * 1024
+)
+
+const (
+	TransportSecurityModePlain uint8 = 1
+	TransportSecurityModeTLS   uint8 = 2
 )
 
 const (
@@ -84,22 +91,24 @@ const (
 )
 
 const (
-	ErrorCodeProtocolInvalidLength  uint16 = 1001
-	ErrorCodeProtocolUnknownType    uint16 = 1002
-	ErrorCodeProtocolInvalidVersion uint16 = 1003
-	ErrorCodeProtocolInvalidFlags   uint16 = 1004
-	ErrorCodeProtocolBadBody        uint16 = 1005
-	ErrorCodeAuthInvalidClient      uint16 = 1101
-	ErrorCodeAuthDeniedByIP         uint16 = 1102
-	ErrorCodeAuthGroupDisabled      uint16 = 1103
-	ErrorCodeAuthChallengeExpired   uint16 = 1104
-	ErrorCodeAuthChallengeReplayed  uint16 = 1105
-	ErrorCodeAuthClientLimitReached uint16 = 1107
-	ErrorCodeConfigApplyFailed      uint16 = 1201
-	ErrorCodeStreamTunnelNotFound   uint16 = 1301
-	ErrorCodeStreamLocalDialFailed  uint16 = 1302
-	ErrorCodeStreamNotFound         uint16 = 1303
-	ErrorCodeUDPSessionNotFound     uint16 = 1401
+	ErrorCodeProtocolInvalidLength   uint16 = 1001
+	ErrorCodeProtocolUnknownType     uint16 = 1002
+	ErrorCodeProtocolInvalidVersion  uint16 = 1003
+	ErrorCodeProtocolInvalidFlags    uint16 = 1004
+	ErrorCodeProtocolBadBody         uint16 = 1005
+	ErrorCodeTransportTLSUnsupported uint16 = 1051
+	ErrorCodeTransportTLSUnavailable uint16 = 1052
+	ErrorCodeAuthInvalidClient       uint16 = 1101
+	ErrorCodeAuthDeniedByIP          uint16 = 1102
+	ErrorCodeAuthGroupDisabled       uint16 = 1103
+	ErrorCodeAuthChallengeExpired    uint16 = 1104
+	ErrorCodeAuthChallengeReplayed   uint16 = 1105
+	ErrorCodeAuthClientLimitReached  uint16 = 1107
+	ErrorCodeConfigApplyFailed       uint16 = 1201
+	ErrorCodeStreamTunnelNotFound    uint16 = 1301
+	ErrorCodeStreamLocalDialFailed   uint16 = 1302
+	ErrorCodeStreamNotFound          uint16 = 1303
+	ErrorCodeUDPSessionNotFound      uint16 = 1401
 )
 
 const (
@@ -236,7 +245,9 @@ func (t Type) Known() bool {
 		TypeUDPData,
 		TypeUDPClose,
 		TypeEventReport,
-		TypeError:
+		TypeError,
+		TypeTransportClientHello,
+		TypeTransportServerHello:
 		return true
 	default:
 		return false
@@ -279,6 +290,10 @@ func (t Type) String() string {
 		return "event.report"
 	case TypeError:
 		return "error"
+	case TypeTransportClientHello:
+		return "transport.client_hello"
+	case TypeTransportServerHello:
+		return "transport.server_hello"
 	default:
 		return fmt.Sprintf("unknown(0x%02x)", uint8(t))
 	}
@@ -291,6 +306,17 @@ type AuthBegin struct {
 	OS             uint8
 	Arch           uint8
 	CapabilityBits uint32
+}
+
+type TransportClientHello struct {
+	ClientID               [16]byte
+	SupportedSecurityModes uint8
+	CapabilityBits         uint32
+}
+
+type TransportServerHello struct {
+	SelectedSecurityMode uint8
+	CapabilityBits       uint32
 }
 
 type AuthChallenge struct {
@@ -433,6 +459,51 @@ func (h Host) String() string {
 	default:
 		return ""
 	}
+}
+
+func MarshalTransportClientHello(message TransportClientHello) ([]byte, error) {
+	var enc bodyEncoder
+	enc.bytes(message.ClientID[:])
+	enc.u8(message.SupportedSecurityModes)
+	enc.u32(message.CapabilityBits)
+	return enc.bytesValue(), nil
+}
+
+func UnmarshalTransportClientHello(data []byte) (TransportClientHello, error) {
+	var message TransportClientHello
+	dec := newBodyDecoder(data)
+	clientID, err := dec.fixedBytes(16)
+	if err != nil {
+		return message, err
+	}
+	copy(message.ClientID[:], clientID)
+	if message.SupportedSecurityModes, err = dec.u8(); err != nil {
+		return message, err
+	}
+	if message.CapabilityBits, err = dec.u32(); err != nil {
+		return message, err
+	}
+	return message, dec.done()
+}
+
+func MarshalTransportServerHello(message TransportServerHello) ([]byte, error) {
+	var enc bodyEncoder
+	enc.u8(message.SelectedSecurityMode)
+	enc.u32(message.CapabilityBits)
+	return enc.bytesValue(), nil
+}
+
+func UnmarshalTransportServerHello(data []byte) (TransportServerHello, error) {
+	var message TransportServerHello
+	dec := newBodyDecoder(data)
+	var err error
+	if message.SelectedSecurityMode, err = dec.u8(); err != nil {
+		return message, err
+	}
+	if message.CapabilityBits, err = dec.u32(); err != nil {
+		return message, err
+	}
+	return message, dec.done()
 }
 
 func MarshalAuthBegin(message AuthBegin) ([]byte, error) {

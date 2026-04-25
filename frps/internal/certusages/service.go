@@ -1,0 +1,326 @@
+package certusages
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/zightch/frp/frps/internal/certassets"
+	"github.com/zightch/frp/frps/internal/storage"
+)
+
+type ServiceOptions struct {
+	Prepare certassets.PrepareOptions
+	Now     func() time.Time
+}
+
+type Service struct {
+	store   *storage.SQL
+	prepare certassets.PrepareOptions
+	now     func() time.Time
+}
+
+func NewService(store *storage.SQL, options ServiceOptions) *Service {
+	nowFn := options.Now
+	if nowFn == nil {
+		nowFn = func() time.Time { return time.Now().UTC() }
+	}
+	return &Service{
+		store:   store,
+		prepare: options.Prepare,
+		now:     nowFn,
+	}
+}
+
+func (s *Service) List(ctx context.Context) ([]DescribedUsage, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("certificate usage service store is nil")
+	}
+
+	usageRows, err := ListUsagesWithConn(ctx, s.store)
+	if err != nil {
+		return nil, err
+	}
+	usageByType := make(map[UsageType]Usage, len(usageRows))
+	for _, item := range usageRows {
+		usageByType[item.UsageType] = item
+	}
+
+	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]DescribedUsage, 0, len(AllUsageTypes()))
+	for _, usageType := range AllUsageTypes() {
+		usage, ok := usageByType[usageType]
+		if !ok {
+			items = append(items, DescribedUsage{
+				UsageType: usageType,
+				Status:    "unbound",
+			})
+			continue
+		}
+		item := describeUsage(usage, describedByID)
+		if usage.Enabled {
+			resolved, err := s.resolveBindingFromState(usageType, usage.AssetID, assets, prepared, describedByID)
+			if err != nil {
+				item.Status = "error"
+				item.StatusReason = err.Error()
+			} else {
+				item.Status = "enabled"
+				item.ResolvedChainLength = resolved.ResolvedChainLength
+			}
+		} else {
+			item.Status = "disabled"
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *Service) Describe(ctx context.Context, usageType UsageType) (DescribedUsage, error) {
+	if s == nil || s.store == nil {
+		return DescribedUsage{}, fmt.Errorf("certificate usage service store is nil")
+	}
+
+	usage, err := LoadUsageByType(ctx, s.store, usageType)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return DescribedUsage{
+				UsageType: usageType,
+				Status:    "unbound",
+			}, nil
+		}
+		return DescribedUsage{}, err
+	}
+
+	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
+	if err != nil {
+		return DescribedUsage{}, err
+	}
+	item := describeUsage(usage, describedByID)
+	if usage.Enabled {
+		resolved, resolveErr := s.resolveBindingFromState(usageType, usage.AssetID, assets, prepared, describedByID)
+		if resolveErr != nil {
+			item.Status = "error"
+			item.StatusReason = resolveErr.Error()
+		} else {
+			item.Status = "enabled"
+			item.ResolvedChainLength = resolved.ResolvedChainLength
+		}
+	} else {
+		item.Status = "disabled"
+	}
+	return item, nil
+}
+
+func (s *Service) Resolve(ctx context.Context, usageType UsageType, assetID int64) (ResolvedBinding, error) {
+	if s == nil || s.store == nil {
+		return ResolvedBinding{}, fmt.Errorf("certificate usage service store is nil")
+	}
+	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
+	if err != nil {
+		return ResolvedBinding{}, err
+	}
+	return s.resolveBindingFromState(usageType, assetID, assets, prepared, describedByID)
+}
+
+func (s *Service) LoadUsage(ctx context.Context, usageType UsageType) (Usage, bool, error) {
+	if s == nil || s.store == nil {
+		return Usage{}, false, fmt.Errorf("certificate usage service store is nil")
+	}
+	item, err := LoadUsageByType(ctx, s.store, usageType)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Usage{}, false, nil
+		}
+		return Usage{}, false, err
+	}
+	return item, true, nil
+}
+
+func (s *Service) SaveUsage(ctx context.Context, usageType UsageType, assetID int64, enabled bool) (Usage, error) {
+	if s == nil || s.store == nil {
+		return Usage{}, fmt.Errorf("certificate usage service store is nil")
+	}
+	return UpsertUsage(ctx, s.store, usageType, assetID, enabled, s.now())
+}
+
+func (s *Service) RestoreUsage(ctx context.Context, usage Usage) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("certificate usage service store is nil")
+	}
+	if usage.ID == 0 {
+		return DeleteUsageByType(ctx, s.store, usage.UsageType)
+	}
+	_, err := UpsertUsage(ctx, s.store, usage.UsageType, usage.AssetID, usage.Enabled, usage.UpdatedAt)
+	return err
+}
+
+func (s *Service) DeleteUsage(ctx context.Context, usageType UsageType) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("certificate usage service store is nil")
+	}
+	return DeleteUsageByType(ctx, s.store, usageType)
+}
+
+func (s *Service) IsEnabled(ctx context.Context, usageType UsageType) (bool, error) {
+	item, ok, err := s.LoadUsage(ctx, usageType)
+	if err != nil || !ok {
+		return false, err
+	}
+	return item.Enabled, nil
+}
+
+func describeUsage(usage Usage, describedByID map[int64]certassets.DescribedAsset) DescribedUsage {
+	item := DescribedUsage{
+		UsageType: usage.UsageType,
+		Enabled:   usage.Enabled,
+		UpdatedAt: usage.UpdatedAt,
+	}
+	assetID := usage.AssetID
+	item.AssetID = &assetID
+	if asset, ok := describedByID[usage.AssetID]; ok {
+		assetCopy := asset
+		item.AssetName = asset.Name
+		item.Asset = &assetCopy
+		item.ResolvedChainLength = asset.ChainLength
+	}
+	return item
+}
+
+func (s *Service) loadPreparedState(ctx context.Context) ([]certassets.Asset, []certassets.PreparedAsset, map[int64]certassets.DescribedAsset, error) {
+	assets, err := certassets.ListAssetsWithConn(ctx, s.store)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	options := s.prepare
+	options.Now = s.now().UTC()
+	prepared, _, err := certassets.PrepareAssetsWithOptions(assets, options)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	described := certassets.DescribePreparedAssets(prepared)
+	describedByID := make(map[int64]certassets.DescribedAsset, len(described))
+	for _, item := range described {
+		describedByID[item.ID] = item
+	}
+	return assets, prepared, describedByID, nil
+}
+
+func (s *Service) resolveBindingFromState(usageType UsageType, assetID int64, _ []certassets.Asset, prepared []certassets.PreparedAsset, describedByID map[int64]certassets.DescribedAsset) (ResolvedBinding, error) {
+	if !isKnownUsageType(usageType) {
+		return ResolvedBinding{}, fmt.Errorf("unsupported certificate usage type %q", usageType)
+	}
+	if assetID <= 0 {
+		return ResolvedBinding{}, fmt.Errorf("asset_id must be greater than zero")
+	}
+
+	target, ok := certassets.FindPreparedAssetByID(prepared, assetID)
+	if !ok {
+		return ResolvedBinding{}, sql.ErrNoRows
+	}
+	if target.Asset.AssetType != certassets.AssetTypeCertificate {
+		return ResolvedBinding{}, fmt.Errorf("bound asset must be a certificate")
+	}
+	if !target.Asset.HasKey() {
+		return ResolvedBinding{}, fmt.Errorf("bound asset must include a private key")
+	}
+
+	certificatePEM, chainLength, err := buildCertificatePEM(target, prepared)
+	if err != nil {
+		return ResolvedBinding{}, err
+	}
+	pair, err := tls.X509KeyPair([]byte(certificatePEM), []byte(target.Asset.Key))
+	if err != nil {
+		return ResolvedBinding{}, fmt.Errorf("build tls certificate: %w", err)
+	}
+
+	asset, ok := describedByID[assetID]
+	if !ok {
+		return ResolvedBinding{}, fmt.Errorf("described asset %d not found", assetID)
+	}
+	return ResolvedBinding{
+		UsageType:           usageType,
+		Asset:               asset,
+		CertificatePEM:      certificatePEM,
+		KeyPEM:              target.Asset.Key,
+		TLSCertificate:      pair,
+		ResolvedChainLength: chainLength,
+	}, nil
+}
+
+func buildCertificatePEM(target certassets.PreparedAsset, prepared []certassets.PreparedAsset) (string, int, error) {
+	if target.Asset.Source == certassets.SourceUpload {
+		return normalizePEMText(target.Asset.CRT), len(target.Certificates), nil
+	}
+
+	preparedByID := make(map[int64]certassets.PreparedAsset, len(prepared))
+	for _, item := range prepared {
+		preparedByID[item.Asset.ID] = item
+	}
+
+	var builder strings.Builder
+	builder.WriteString(target.Asset.CRT)
+	chainLength := len(target.Certificates)
+	visited := map[int64]struct{}{
+		target.Asset.ID: {},
+	}
+	current := target
+	for current.Asset.HasIssuer() {
+		issuerID := *current.Asset.IssuerAssetID
+		if _, ok := visited[issuerID]; ok {
+			return "", 0, fmt.Errorf("issuer chain contains a cycle")
+		}
+		visited[issuerID] = struct{}{}
+
+		issuer, ok := preparedByID[issuerID]
+		if !ok {
+			return "", 0, fmt.Errorf("issuer asset %d not found", issuerID)
+		}
+		if isSelfSigned(issuer.Leaf) {
+			break
+		}
+
+		builder.WriteString(issuer.Asset.CRT)
+		chainLength += len(issuer.Certificates)
+		current = issuer
+	}
+
+	return normalizePEMText(builder.String()), chainLength, nil
+}
+
+func normalizePEMText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return value + "\n"
+}
+
+func isSelfSigned(cert *x509.Certificate) bool {
+	if cert == nil {
+		return false
+	}
+	if !bytes.Equal(cert.RawIssuer, cert.RawSubject) {
+		return false
+	}
+	return cert.CheckSignatureFrom(cert) == nil
+}
+
+func isKnownUsageType(value UsageType) bool {
+	switch value {
+	case UsageTypeWebUIHTTPS, UsageTypeControlListenerTLS:
+		return true
+	default:
+		return false
+	}
+}

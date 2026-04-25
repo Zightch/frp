@@ -8,6 +8,7 @@ export interface ProxyGroup {
   client_id: string
   effective_ip: string
   enabled: boolean
+  control_transport_security: 'plain' | 'tls_required'
   status: string
   status_reason?: string
   created_at: string
@@ -170,13 +171,23 @@ export const authApi = {
 export const proxyGroupsApi = {
   list: () => request<{ items: ProxyGroup[] }>('/proxy-groups'),
 
-  create: (data: { name: string; effective_ip: string; enabled?: boolean }) =>
+  create: (data: {
+    name: string
+    effective_ip: string
+    enabled?: boolean
+    control_transport_security?: 'plain' | 'tls_required'
+  }) =>
     request<{ item: ProxyGroup; key: string }>('/proxy-groups', {
       method: 'POST',
       body: JSON.stringify(data)
     }),
 
-  update: (id: number, data: { name?: string; effective_ip?: string; enabled?: boolean }) =>
+  update: (id: number, data: {
+    name?: string
+    effective_ip?: string
+    enabled?: boolean
+    control_transport_security?: 'plain' | 'tls_required'
+  }) =>
     request<{ item: ProxyGroup }>(`/proxy-groups/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data)
@@ -299,6 +310,20 @@ export interface CertificateAssetGeneratePayload {
   key_bits?: number
 }
 
+export type CertificateUsageType = 'webui_https' | 'control_listener_tls'
+
+export interface CertificateUsage {
+  usage_type: CertificateUsageType
+  asset_id?: number
+  asset_name?: string
+  enabled: boolean
+  status: 'enabled' | 'disabled' | 'unbound' | 'error'
+  status_reason?: string
+  resolved_chain_length: number
+  updated_at?: string
+  asset?: CertificateAsset
+}
+
 export const certificateAssetsApi = {
   list: () => request<{ items: CertificateAsset[] }>('/certificate-assets'),
 
@@ -379,4 +404,19 @@ export const certificateAssetsApi = {
       return { error: String(err) }
     }
   }
+}
+
+export const certificateUsagesApi = {
+  list: () => request<{ items: CertificateUsage[] }>('/certificate-usages'),
+
+  bind: (usageType: CertificateUsageType, assetID: number) =>
+    request<{ item: CertificateUsage }>(`/certificate-usages/${usageType}`, {
+      method: 'PUT',
+      body: JSON.stringify({ asset_id: assetID, enabled: true })
+    }),
+
+  unbind: (usageType: CertificateUsageType) =>
+    request<{ item: CertificateUsage }>(`/certificate-usages/${usageType}`, {
+      method: 'DELETE'
+    })
 }

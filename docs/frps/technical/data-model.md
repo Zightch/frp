@@ -20,6 +20,7 @@
 - `client_secret_hash`
 - `effective_ip`
 - `enabled`
+- `control_transport_security`
 - `rate_limit`
 - `created_at`
 - `updated_at`
@@ -31,6 +32,7 @@
 - `client_secret_hash`
 - `effective_ip`
 - `enabled`
+- `control_transport_security`
 - `updated_at`
 
 `rate_limit` 目前仍保留在 schema，但运行时不消费。
@@ -115,12 +117,26 @@
 - 交叉签名
 - AIA 自动补链入库
 
-## 当前未落地但已确认的下一层模型
+## `certificate_asset_usages`
 
-证书绑定不应再塞回 `certificate_assets`。
+当前用途是表达“哪个入口正在使用哪张叶子证书”。
 
-下一层建议新增：
+其中：
 
-- `certificate_asset_usages`
+- `webui_https`
+  - 管理面 HTTPS 服务端证书
+- `control_listener_tls`
+  - `frpc` 登录监听口在需要 TLS 时使用的全局服务端证书
 
-用途是表达“哪个入口正在使用哪张叶子证书”，详见 [../design/certificate-binding.md](../design/certificate-binding.md)。
+当前约束：
+
+- `usage_type + target_id` 唯一
+- 当前 `target_id` 固定为全局单例 `0`
+- 只允许绑定 `asset_type=certificate` 且带私钥的资产
+- 运行时解析链时：
+  - 生成资产按关系树向上拼 `leaf + intermediates`
+  - 上传资产直接复用原始 PEM 结构
+
+`frpc` 登录连接的“某个分组是否要求 TLS”不属于这张表，而是进入 `proxy_groups.control_transport_security = plain | tls_required`。
+
+详见 [../design/certificate-binding.md](../design/certificate-binding.md)。

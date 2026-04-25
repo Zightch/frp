@@ -2,8 +2,10 @@ package client
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"fmt"
 	"net"
+	"time"
 
 	appconfig "github.com/zightch/frp/frpc/internal/config"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -11,6 +13,11 @@ import (
 )
 
 func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessionState, error) {
+	conn, err := c.negotiateTransport(conn, credentials.ClientID)
+	if err != nil {
+		return nil, err
+	}
+
 	beginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
 		ClientID:      credentials.ClientID,
 		ClientVersion: c.version,
@@ -23,7 +30,7 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessi
 	}
 	if err := c.writeMessage(conn, nil, protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
-		RequestID: 1,
+		RequestID: 2,
 		Body:      beginBody,
 	}); err != nil {
 		return nil, err
@@ -33,7 +40,7 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessi
 	if err != nil {
 		return nil, err
 	}
-	if err := expectLoginReply(frame, protocol.TypeAuthChallenge, 1); err != nil {
+	if err := expectLoginReply(frame, protocol.TypeAuthChallenge, 2); err != nil {
 		return nil, err
 	}
 
@@ -53,7 +60,7 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessi
 	}
 	if err := c.writeMessage(conn, nil, protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
-		RequestID: 2,
+		RequestID: 3,
 		Body:      finishBody,
 	}); err != nil {
 		return nil, err
@@ -63,7 +70,7 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessi
 	if err != nil {
 		return nil, err
 	}
-	if err := expectLoginReply(frame, protocol.TypeServerHello, 2); err != nil {
+	if err := expectLoginReply(frame, protocol.TypeServerHello, 3); err != nil {
 		return nil, err
 	}
 
@@ -95,6 +102,67 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessi
 	)
 
 	return state, nil
+}
+
+func (c *Client) negotiateTransport(conn net.Conn, clientID [16]byte) (net.Conn, error) {
+	helloBody, err := protocol.MarshalTransportClientHello(protocol.TransportClientHello{
+		ClientID:               clientID,
+		SupportedSecurityModes: protocol.TransportSecurityModePlain | protocol.TransportSecurityModeTLS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := c.writeMessage(conn, nil, protocol.Frame{
+		Type:      protocol.TypeTransportClientHello,
+		RequestID: 1,
+		Body:      helloBody,
+	}); err != nil {
+		return nil, err
+	}
+
+	frame, err := c.readLoginFrame(conn)
+	if err != nil {
+		return nil, err
+	}
+	if err := expectLoginReply(frame, protocol.TypeTransportServerHello, 1); err != nil {
+		return nil, err
+	}
+
+	serverHello, err := protocol.UnmarshalTransportServerHello(frame.Body)
+	if err != nil {
+		return nil, err
+	}
+	switch serverHello.SelectedSecurityMode {
+	case protocol.TransportSecurityModePlain:
+		return conn, nil
+	case protocol.TransportSecurityModeTLS:
+		return c.upgradeConnToTLS(conn)
+	default:
+		return nil, fmt.Errorf("unsupported transport security mode %d", serverHello.SelectedSecurityMode)
+	}
+}
+
+func (c *Client) upgradeConnToTLS(conn net.Conn) (net.Conn, error) {
+	host, _, err := net.SplitHostPort(c.config.Server)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ServerName: host,
+	})
+	if err := conn.SetDeadline(time.Now().Add(c.readTimeout)); err != nil {
+		return nil, err
+	}
+	if err := tlsConn.Handshake(); err != nil {
+		_ = conn.SetDeadline(time.Time{})
+		return nil, err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return nil, err
+	}
+	return tlsConn, nil
 }
 
 func (c *Client) readLoginFrame(conn net.Conn) (protocol.Frame, error) {

@@ -5,14 +5,17 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
   authApi,
+  certificateUsagesApi,
   proxyGroupsApi as groupConfigApi,
   tunnelsApi,
   localIPsApi,
+  type CertificateUsage,
   type ProxyGroup,
   type Tunnel,
   type TunnelPayload,
   type LocalIP
 } from '@/api'
+import { useMobile } from '@/composables/useMobile'
 
 defineOptions({
   name: 'GroupConfigView'
@@ -30,10 +33,13 @@ type TunnelFormModel = {
   enabled: boolean
 }
 
+type ControlTransportSecurity = 'plain' | 'tls_required'
+
 const PORT_MIN = 1
 const PORT_MAX = 65535
 
 const router = useRouter()
+const { isMobile } = useMobile()
 
 // Auth state
 const checking = ref(true)
@@ -44,6 +50,7 @@ const authenticated = ref(false)
 const groups = ref<ProxyGroup[]>([])
 const tunnels = ref<Tunnel[]>([])
 const localIPs = ref<LocalIP[]>([])
+const certificateUsages = ref<CertificateUsage[]>([])
 const localIPsLoading = ref(false)
 const selectedGroupId = ref<number | null>(null)
 const loading = ref(false)
@@ -58,10 +65,21 @@ const editingGroupId = ref<number | null>(null)
 const editingGroupStatus = ref<string>('')
 const editingGroupStatusReason = ref<string>('')
 const editingGroupEffectiveIP = ref<string>('')
-const groupForm = ref({ name: '', effective_ip: '', enabled: true })
+const groupForm = ref<{
+  name: string
+  effective_ip: string
+  enabled: boolean
+  control_transport_security: ControlTransportSecurity
+}>({
+  name: '',
+  effective_ip: '',
+  enabled: true,
+  control_transport_security: 'plain'
+})
 const groupFormRules = {
   name: [{ required: true, message: '请输入分组名称', trigger: 'blur' }],
-  effective_ip: [{ required: true, message: '请选择生效 IP', trigger: 'change' }]
+  effective_ip: [{ required: true, message: '请选择生效 IP', trigger: 'change' }],
+  control_transport_security: [{ required: true, message: '请选择 frpc 登录传输策略', trigger: 'change' }]
 }
 
 // New login key display
@@ -101,6 +119,10 @@ const filteredTunnels = computed(() =>
     : []
 )
 
+const controlListenerTLSUsage = computed(() =>
+  certificateUsages.value.find(item => item.usage_type === 'control_listener_tls') || null
+)
+
 // Lifecycle
 onMounted(async () => {
   const authResult = await authApi.state()
@@ -127,17 +149,17 @@ onMounted(async () => {
   await loadData()
 })
 
-// Data loading
 async function loadData() {
   loading.value = true
   localIPsLoading.value = true
   error.value = ''
 
   try {
-    const [groupsResult, tunnelsResult, ipsResult] = await Promise.all([
+    const [groupsResult, tunnelsResult, ipsResult, certificateUsagesResult] = await Promise.all([
       groupConfigApi.list(),
       tunnelsApi.list(),
-      localIPsApi.list()
+      localIPsApi.list(),
+      certificateUsagesApi.list()
     ])
 
     if (groupsResult.error) {
@@ -155,9 +177,15 @@ async function loadData() {
       return
     }
 
+    if (certificateUsagesResult.error) {
+      error.value = certificateUsagesResult.error
+      return
+    }
+
     groups.value = groupsResult.data?.items || []
     tunnels.value = tunnelsResult.data?.items || []
     localIPs.value = ipsResult.data?.items || []
+    certificateUsages.value = certificateUsagesResult.data?.items || []
 
     if (!groups.value.some(group => group.id === selectedGroupId.value)) {
       selectedGroupId.value = groups.value[0]?.id ?? null
@@ -194,6 +222,14 @@ function formatRemotePort(tunnel: Tunnel): string {
     return `${tunnel.remote_start}-${tunnel.remote_end}`
   }
   return String(tunnel.remote_start)
+}
+
+function formatControlTransportSecurity(value: ControlTransportSecurity): string {
+  return value === 'tls_required' ? 'TLS 必需' : '明文'
+}
+
+function controlTransportSecurityTagType(value: ControlTransportSecurity): '' | 'warning' {
+  return value === 'tls_required' ? 'warning' : ''
 }
 
 function formatLocalAddr(tunnel: Tunnel): string {
@@ -372,7 +408,12 @@ function openCreateGroupDialog() {
   editingGroupStatusReason.value = ''
   editingGroupEffectiveIP.value = ''
   const defaultIP = localIPs.value.find(ip => ip.addr === '0.0.0.0')?.addr || localIPs.value[0]?.addr || ''
-  groupForm.value = { name: '', effective_ip: defaultIP, enabled: true }
+  groupForm.value = {
+    name: '',
+    effective_ip: defaultIP,
+    enabled: true,
+    control_transport_security: 'plain'
+  }
   groupDialogVisible.value = true
   nextTick(() => groupFormRef.value?.clearValidate())
 }
@@ -383,7 +424,12 @@ function openEditGroupDialog(group: ProxyGroup) {
   editingGroupStatus.value = group.status
   editingGroupStatusReason.value = group.status_reason || ''
   editingGroupEffectiveIP.value = group.effective_ip
-  groupForm.value = { name: group.name, effective_ip: group.effective_ip, enabled: group.enabled }
+  groupForm.value = {
+    name: group.name,
+    effective_ip: group.effective_ip,
+    enabled: group.enabled,
+    control_transport_security: group.control_transport_security
+  }
   groupDialogVisible.value = true
   nextTick(() => groupFormRef.value?.clearValidate())
 }
@@ -399,7 +445,8 @@ async function submitGroupForm() {
       const result = await groupConfigApi.create({
         name: groupForm.value.name,
         effective_ip: groupForm.value.effective_ip,
-        enabled: groupForm.value.enabled
+        enabled: groupForm.value.enabled,
+        control_transport_security: groupForm.value.control_transport_security
       })
       if (result.error) {
         ElMessage.error(result.error)
@@ -415,7 +462,8 @@ async function submitGroupForm() {
       const result = await groupConfigApi.update(editingGroupId.value, {
         name: groupForm.value.name,
         effective_ip: groupForm.value.effective_ip,
-        enabled: groupForm.value.enabled
+        enabled: groupForm.value.enabled,
+        control_transport_security: groupForm.value.control_transport_security
       })
       if (result.error) {
         ElMessage.error(result.error)
@@ -638,11 +686,15 @@ function copyKey(value: string) {
       <el-card
         v-if="selectedGroup"
         class="selected-group-card"
-        :body-style="{ padding: '12px 20px' }"
       >
         <el-row justify="space-between" align="middle" :gutter="12">
           <el-col :xs="24" :lg="16">
-            <el-space wrap alignment="center" size="small" class="group-info-bar">
+            <el-space
+              wrap
+              alignment="center"
+              size="small"
+              :class="['group-info-bar', { 'group-info-bar-mobile': isMobile }]"
+            >
               <span class="group-info-item">
                 <span class="group-info-label">分组</span>
                 <span class="group-info-value">{{ selectedGroup.name }}</span>
@@ -674,10 +726,25 @@ function copyKey(value: string) {
                 <span class="group-info-label">生效 IP</span>
                 <span class="group-info-value">{{ selectedGroup.effective_ip }}</span>
               </span>
+              <span class="group-info-item">
+                <span class="group-info-label">frpc 登录传输</span>
+                <span class="group-info-value">
+                  <el-tag
+                    size="small"
+                    :type="controlTransportSecurityTagType(selectedGroup.control_transport_security)"
+                  >
+                    {{ formatControlTransportSecurity(selectedGroup.control_transport_security) }}
+                  </el-tag>
+                </span>
+              </span>
             </el-space>
           </el-col>
           <el-col :xs="24" :lg="8">
-            <el-space class="group-actions" wrap alignment="center">
+            <el-space
+              wrap
+              alignment="center"
+              :class="['group-actions', { 'group-actions-mobile': isMobile }]"
+            >
               <el-button size="small" @click="handleRotateKey(selectedGroup)">重置密钥</el-button>
               <el-button size="small" @click="openEditGroupDialog(selectedGroup)">编辑</el-button>
               <el-button size="small" type="danger" @click="handleDeleteGroup(selectedGroup)">删除</el-button>
@@ -688,7 +755,7 @@ function copyKey(value: string) {
 
       <el-main class="content-main">
         <el-row :gutter="16" class="content-row">
-          <el-col :xs="24" :md="10" :lg="8" class="list-col">
+          <el-col :xs="24" :md="7" :lg="6" :class="['list-col', { 'list-col-mobile': isMobile }]">
             <el-card class="list-card">
               <template #header>
                 <el-row justify="space-between" align="middle">
@@ -708,7 +775,6 @@ function copyKey(value: string) {
                 v-loading="loading"
               >
                 <el-table-column prop="name" label="名称" />
-                <el-table-column prop="client_id" label="Client ID" width="200" />
                 <el-table-column label="状态" width="100" align="center">
                   <template #default="{ row }">
                     <el-tooltip
@@ -731,7 +797,16 @@ function copyKey(value: string) {
             </el-card>
           </el-col>
 
-          <el-col :xs="24" :md="14" :lg="16" class="list-col tunnel-list-col">
+          <el-col
+            :xs="24"
+            :md="17"
+            :lg="18"
+            :class="[
+              'list-col',
+              'tunnel-list-col',
+              { 'list-col-mobile': isMobile, 'tunnel-list-col-mobile': isMobile }
+            ]"
+          >
             <el-card class="list-card">
               <template #header>
                 <el-row justify="space-between" align="middle">
@@ -834,10 +909,30 @@ function copyKey(value: string) {
             />
           </el-select>
         </el-form-item>
+        <el-form-item label="frpc 登录传输" prop="control_transport_security">
+          <el-select
+            v-model="groupForm.control_transport_security"
+            placeholder="请选择 frpc 登录传输策略"
+            class="full-width"
+          >
+            <el-option label="明文" value="plain" />
+            <el-option label="TLS 必需" value="tls_required" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="groupForm.enabled" />
         </el-form-item>
       </el-form>
+      <el-alert
+        v-if="groupForm.control_transport_security === 'tls_required' && !controlListenerTLSUsage?.enabled"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="dialog-alert"
+      >
+        <template #title>当前还没有绑定 frpc 登录服务端证书</template>
+        请先到“证书资产”页绑定 `control_listener_tls`，否则保存会被后端拒绝。
+      </el-alert>
       <template #footer>
         <el-button @click="groupDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="groupSubmitting" @click="submitGroupForm">
@@ -975,6 +1070,10 @@ function copyKey(value: string) {
   margin-top: var(--spacing-base);
 }
 
+.selected-group-card :deep(.el-card__body) {
+  padding: var(--spacing-md) var(--spacing-lg);
+}
+
 .group-info-bar {
   width: 100%;
   row-gap: var(--spacing-sm);
@@ -1012,6 +1111,10 @@ function copyKey(value: string) {
   justify-content: flex-end;
 }
 
+.group-actions-mobile {
+  justify-content: flex-start;
+}
+
 .content-main {
   padding: var(--spacing-base) 0 0 0;
   flex: 1;
@@ -1039,12 +1142,12 @@ function copyKey(value: string) {
 
 .list-title {
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--el-text-color-primary);
 }
 
 .tunnel-list-subtitle {
   font-weight: 400;
-  color: var(--color-text-secondary);
+  color: var(--el-text-color-secondary);
 }
 
 /* Table row styles */
@@ -1053,7 +1156,7 @@ function copyKey(value: string) {
 }
 
 :deep(.selected-row) {
-  background-color: var(--color-primary-light-9);
+  background-color: var(--el-color-primary-light-9);
 }
 
 /* Dialog styles */
@@ -1062,7 +1165,7 @@ function copyKey(value: string) {
 }
 
 .key-dialog-text {
-  color: var(--color-text-primary);
+  color: var(--el-text-color-primary);
   margin: 0 0 var(--spacing-md) 0;
 }
 
@@ -1070,27 +1173,20 @@ function copyKey(value: string) {
   margin-top: var(--spacing-md);
 }
 
-/* Responsive */
-@media (max-width: 768px) {
-  .group-info-item {
-    padding-right: 0;
-  }
+.group-info-bar-mobile .group-info-item {
+  padding-right: 0;
+}
 
-  .group-info-item + .group-info-item {
-    padding-left: 0;
-    border-left: none;
-  }
+.group-info-bar-mobile .group-info-item + .group-info-item {
+  padding-left: 0;
+  border-left: none;
+}
 
-  .group-actions {
-    justify-content: flex-start;
-  }
+.list-col-mobile {
+  height: auto;
+}
 
-  .list-col {
-    height: auto;
-  }
-
-  .tunnel-list-col {
-    margin-top: var(--spacing-base);
-  }
+.tunnel-list-col-mobile {
+  margin-top: var(--spacing-base);
 }
 </style>

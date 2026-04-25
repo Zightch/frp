@@ -6,12 +6,15 @@ import type { FormInstance, FormRules, UploadProps } from 'element-plus'
 import {
   authApi,
   certificateAssetsApi,
+  certificateUsagesApi,
   type CertificateAsset,
   type CertificateAssetPastePayload,
   type CertificateAssetGeneratePayload,
   type CertificateAssetGenerateKeyAlgorithm,
   type CertificateAssetDownloadMode,
-  type CertificateAssetDownloadOptions
+  type CertificateAssetDownloadOptions,
+  type CertificateUsage,
+  type CertificateUsageType
 } from '@/api'
 import { useMobile } from '@/composables/useMobile'
 
@@ -65,6 +68,7 @@ const authenticated = ref(false)
 
 // Data
 const assets = ref<CertificateAsset[]>([])
+const certificateUsages = ref<CertificateUsage[]>([])
 const loading = ref(false)
 const error = ref('')
 
@@ -212,6 +216,18 @@ const downloadTreeProps = {
   label: 'name'
 }
 
+// Usage binding dialog
+const usageDialogVisible = ref(false)
+const usageFormRef = ref<FormInstance>()
+const usageSubmitting = ref(false)
+const usageForm = ref({
+  usage_type: 'webui_https' as CertificateUsageType,
+  asset_id: null as number | null
+})
+const usageFormRules: FormRules = {
+  asset_id: [{ required: true, message: '请选择证书', trigger: 'change' }]
+}
+
 // Computed
 const filteredAssets = computed(() => {
   return assets.value.filter(item => {
@@ -227,6 +243,17 @@ const filteredAssets = computed(() => {
 
 const canIssueCAs = computed(() => {
   return assets.value.filter(item => item.asset_type === 'ca' && item.can_issue)
+})
+
+const bindableCertificateAssets = computed(() => {
+  return assets.value.filter(item => item.asset_type === 'certificate' && item.key_present)
+})
+
+const usageCards = computed(() => {
+  return [
+    getCertificateUsage('webui_https'),
+    getCertificateUsage('control_listener_tls')
+  ]
 })
 
 const modalLayerComponent = computed(() => (isMobile.value ? 'el-drawer' : 'el-dialog'))
@@ -254,6 +281,10 @@ function clearImportValidation() {
 
 function clearEditValidation() {
   editFormRef.value?.clearValidate()
+}
+
+function clearUsageValidation() {
+  usageFormRef.value?.clearValidate()
 }
 
 function getActiveGenerateForm(): FormInstance | undefined {
@@ -308,15 +339,23 @@ async function loadData() {
   loading.value = true
   error.value = ''
 
-  const result = await certificateAssetsApi.list()
+  const [assetsResult, usagesResult] = await Promise.all([
+    certificateAssetsApi.list(),
+    certificateUsagesApi.list()
+  ])
   loading.value = false
 
-  if (result.error) {
-    error.value = result.error
+  if (assetsResult.error) {
+    error.value = assetsResult.error
+    return
+  }
+  if (usagesResult.error) {
+    error.value = usagesResult.error
     return
   }
 
-  assets.value = result.data?.items || []
+  assets.value = assetsResult.data?.items || []
+  certificateUsages.value = usagesResult.data?.items || []
   if (detailAsset.value) {
     const refreshed = assets.value.find(item => item.id === detailAsset.value?.id) || null
     if (refreshed) {
@@ -387,6 +426,80 @@ function formatDownloadMode(mode: CertificateAssetDownloadMode): string {
   }
 }
 
+function getCertificateUsage(usageType: CertificateUsageType): CertificateUsage {
+  return certificateUsages.value.find(item => item.usage_type === usageType) || {
+    usage_type: usageType,
+    enabled: false,
+    status: 'unbound',
+    resolved_chain_length: 0
+  }
+}
+
+function formatUsageType(usageType: CertificateUsageType): string {
+  return usageType === 'webui_https' ? 'WebUI HTTPS' : 'frpc 登录 TLS'
+}
+
+function formatUsageStatus(status: CertificateUsage['status']): string {
+  switch (status) {
+    case 'enabled':
+      return '已启用'
+    case 'disabled':
+      return '已禁用'
+    case 'error':
+      return '异常'
+    case 'unbound':
+    default:
+      return '未绑定'
+  }
+}
+
+function usageStatusTagType(status: CertificateUsage['status']): 'success' | 'info' | 'danger' {
+  switch (status) {
+    case 'enabled':
+      return 'success'
+    case 'error':
+      return 'danger'
+    default:
+      return 'info'
+  }
+}
+
+function buildUsageAssetOptionLabel(asset: CertificateAsset): string {
+  const commonName = asset.common_name?.trim()
+  if (commonName) {
+    return `${asset.name} (${commonName})`
+  }
+  return asset.name
+}
+
+function currentLocationProtocol(): 'http:' | 'https:' | '' {
+  if (typeof window === 'undefined') {
+    return ''
+  }
+  return window.location.protocol === 'https:' ? 'https:' : 'http:'
+}
+
+function scheduleWebUIProtocolRedirect(protocol: 'http:' | 'https:') {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const targetURL = new URL(window.location.href)
+  targetURL.protocol = protocol
+  window.setTimeout(() => {
+    window.location.replace(targetURL.toString())
+  }, 400)
+}
+
+function upsertCertificateUsage(item?: CertificateUsage) {
+  if (!item) {
+    return
+  }
+  const nextItems = certificateUsages.value.filter(existing => existing.usage_type !== item.usage_type)
+  nextItems.push(item)
+  certificateUsages.value = nextItems
+}
+
 // Import dialog
 function openImportDialog() {
   importActiveTab.value = 'upload'
@@ -408,6 +521,89 @@ function handleImportTabChange() {
   importForm.value.crt = ''
   importForm.value.key = ''
   nextTick(() => clearImportValidation())
+}
+
+function openUsageDialog(usageType: CertificateUsageType) {
+  if (bindableCertificateAssets.value.length === 0) {
+    ElMessage.error('暂无可绑定的证书，请先导入或生成带私钥的证书')
+    return
+  }
+
+  const current = getCertificateUsage(usageType)
+  usageForm.value = {
+    usage_type: usageType,
+    asset_id: current.asset_id || bindableCertificateAssets.value[0]?.id || null
+  }
+  usageDialogVisible.value = true
+  nextTick(() => clearUsageValidation())
+}
+
+async function submitUsageBinding() {
+  const valid = await usageFormRef.value?.validate().catch(() => false)
+  if (!valid || !usageForm.value.asset_id) {
+    return
+  }
+
+  usageSubmitting.value = true
+  try {
+    const result = await certificateUsagesApi.bind(usageForm.value.usage_type, usageForm.value.asset_id)
+    if (result.error) {
+      ElMessage.error(result.error)
+      return
+    }
+
+    upsertCertificateUsage(result.data?.item)
+    usageDialogVisible.value = false
+
+    if (usageForm.value.usage_type === 'webui_https' && currentLocationProtocol() !== 'https:') {
+      ElMessage.success('WebUI 将切换到 HTTPS')
+      scheduleWebUIProtocolRedirect('https:')
+      return
+    }
+
+    ElMessage.success('绑定成功')
+    await loadData()
+  } finally {
+    usageSubmitting.value = false
+  }
+}
+
+async function handleUnbindUsage(usageType: CertificateUsageType) {
+  try {
+    await ElMessageBox.confirm(
+      `确定解绑 ${formatUsageType(usageType)} 使用证书吗？`,
+      '解绑证书',
+      {
+        confirmButtonText: '解绑',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    return
+  }
+
+  usageSubmitting.value = true
+  try {
+    const result = await certificateUsagesApi.unbind(usageType)
+    if (result.error) {
+      ElMessage.error(result.error)
+      return
+    }
+
+    upsertCertificateUsage(result.data?.item)
+
+    if (usageType === 'webui_https' && currentLocationProtocol() === 'https:') {
+      ElMessage.success('WebUI 将切回 HTTP')
+      scheduleWebUIProtocolRedirect('http:')
+      return
+    }
+
+    ElMessage.success('解绑成功')
+    await loadData()
+  } finally {
+    usageSubmitting.value = false
+  }
 }
 
 const handleCrtUploadChange: UploadProps['onChange'] = (file) => {
@@ -777,6 +973,44 @@ async function handleDelete(asset: CertificateAsset) {
       </div>
 
       <el-main class="content-main">
+        <el-row :gutter="16" class="usage-row">
+          <el-col
+            v-for="usage in usageCards"
+            :key="usage.usage_type"
+            :xs="24"
+            :md="12"
+          >
+            <el-card class="usage-card">
+              <template #header>
+                <el-row justify="space-between" align="middle">
+                  <span class="usage-title">{{ formatUsageType(usage.usage_type) }}</span>
+                  <el-tag size="small" :type="usageStatusTagType(usage.status)">
+                    {{ formatUsageStatus(usage.status) }}
+                  </el-tag>
+                </el-row>
+              </template>
+
+              <el-descriptions :column="1" border size="small">
+                <el-descriptions-item label="当前证书">
+                  {{ usage.asset_name || '-' }}
+                </el-descriptions-item>
+              </el-descriptions>
+
+              <el-space wrap class="usage-actions">
+                <el-button type="primary" @click="openUsageDialog(usage.usage_type)">
+                  {{ usage.asset_id ? '更换证书' : '绑定证书' }}
+                </el-button>
+                <el-button
+                  :disabled="!usage.asset_id"
+                  @click="handleUnbindUsage(usage.usage_type)"
+                >
+                  解绑
+                </el-button>
+              </el-space>
+            </el-card>
+          </el-col>
+        </el-row>
+
         <el-card class="filter-card">
           <el-row :gutter="16" align="middle">
             <el-col :xs="24" :sm="12" :md="6">
@@ -862,6 +1096,54 @@ async function handleDelete(asset: CertificateAsset) {
     <!-- Import dialog -->
     <component
       :is="modalLayerComponent"
+      v-model="usageDialogVisible"
+      title="绑定入口证书"
+      :close-on-click-modal="false"
+      v-bind="modalLayerProps"
+    >
+      <el-form
+        ref="usageFormRef"
+        :model="usageForm"
+        :rules="usageFormRules"
+        label-width="88px"
+      >
+        <el-form-item label="使用点">
+          <el-input :model-value="formatUsageType(usageForm.usage_type)" readonly />
+        </el-form-item>
+        <el-form-item label="证书" prop="asset_id">
+          <el-select
+            v-model="usageForm.asset_id"
+            placeholder="请选择证书"
+            class="full-width"
+          >
+            <el-option
+              v-for="asset in bindableCertificateAssets"
+              :key="asset.id"
+              :label="buildUsageAssetOptionLabel(asset)"
+              :value="asset.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+
+      <el-alert
+        v-if="usageForm.usage_type === 'webui_https'"
+        type="info"
+        :closable="false"
+        show-icon
+      >
+        <template #title>绑定后会切到 HTTPS</template>
+        当前浏览器会自动跳转到同地址的 `https://`。
+      </el-alert>
+
+      <template #footer>
+        <el-button @click="usageDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="usageSubmitting" @click="submitUsageBinding">保存</el-button>
+      </template>
+    </component>
+
+    <component
+      :is="modalLayerComponent"
       v-model="importDialogVisible"
       title="导入证书/CA"
       :close-on-click-modal="false"
@@ -888,13 +1170,15 @@ async function handleDelete(asset: CertificateAsset) {
                 accept=".crt,.pem,.cer"
                 :on-change="handleCrtUploadChange"
               >
-                <el-button>
-                  <el-icon><Upload /></el-icon>
-                  选择证书
-                </el-button>
-                <template #tip v-if="importForm.crt">
-                  <span class="upload-tip">已选择: {{ uploadCrtFile?.name || '已粘贴内容' }}</span>
-                </template>
+                <el-space wrap size="small">
+                  <el-button>
+                    <el-icon><Upload /></el-icon>
+                    选择证书
+                  </el-button>
+                  <el-text v-if="importForm.crt" size="small" type="info">
+                    已选择: {{ uploadCrtFile?.name || '已粘贴内容' }}
+                  </el-text>
+                </el-space>
               </el-upload>
             </el-form-item>
             <el-form-item label="私钥文件">
@@ -904,13 +1188,15 @@ async function handleDelete(asset: CertificateAsset) {
                 accept=".key,.pem"
                 :on-change="handleKeyUploadChange"
               >
-                <el-button>
-                  <el-icon><Upload /></el-icon>
-                  选择私钥
-                </el-button>
-                <template #tip v-if="importForm.key">
-                  <span class="upload-tip">已选择: {{ uploadKeyFile?.name || '已粘贴内容' }}</span>
-                </template>
+                <el-space wrap size="small">
+                  <el-button>
+                    <el-icon><Upload /></el-icon>
+                    选择私钥
+                  </el-button>
+                  <el-text v-if="importForm.key" size="small" type="info">
+                    已选择: {{ uploadKeyFile?.name || '已粘贴内容' }}
+                  </el-text>
+                </el-space>
               </el-upload>
             </el-form-item>
           </el-form>
@@ -1004,20 +1290,24 @@ async function handleDelete(asset: CertificateAsset) {
               <el-input v-model="generateCaForm.remark" placeholder="可选备注" />
             </el-form-item>
             <el-form-item label="上游 CA">
-              <el-select
-                v-model="generateCaForm.issuer_asset_id"
-                placeholder="留空则生成自签根 CA"
-                class="full-width"
-                clearable
-              >
-                <el-option
-                  v-for="ca in canIssueCAs"
-                  :key="ca.id"
-                  :label="ca.name"
-                  :value="ca.id"
-                />
-              </el-select>
-              <div class="form-hint">选择上游 CA 将生成中间 CA，留空则生成自签根 CA</div>
+              <el-space direction="vertical" fill size="small" class="full-width">
+                <el-select
+                  v-model="generateCaForm.issuer_asset_id"
+                  placeholder="留空则生成自签根 CA"
+                  class="full-width"
+                  clearable
+                >
+                  <el-option
+                    v-for="ca in canIssueCAs"
+                    :key="ca.id"
+                    :label="ca.name"
+                    :value="ca.id"
+                  />
+                </el-select>
+                <el-text size="small" type="info">
+                  选择上游 CA 将生成中间 CA，留空则生成自签根 CA
+                </el-text>
+              </el-space>
             </el-form-item>
             <el-form-item label="CN" prop="common_name">
               <el-input v-model="generateCaForm.common_name" placeholder="CA 的 CN 字段" />
@@ -1037,25 +1327,31 @@ async function handleDelete(asset: CertificateAsset) {
               </el-select>
             </el-form-item>
             <el-form-item label="密钥长度" prop="key_bits">
-              <el-input-number
-                v-if="isCustomGenerateKeyBitsAlgorithm(generateCaForm.key_algorithm)"
-                v-model="generateCaForm.key_bits"
-                class="full-width"
-                :min="minimumRSAGenerateKeyBits"
-                :step="8"
-                :step-strictly="true"
-              />
-              <el-select v-else v-model="generateCaForm.key_bits" class="full-width">
-                <el-option
-                  v-for="option in getGenerateKeyBitsOptions(generateCaForm.key_algorithm)"
-                  :key="`${generateCaForm.key_algorithm}-${option.value}`"
-                  :label="option.label"
-                  :value="option.value"
+              <el-space direction="vertical" fill size="small" class="full-width">
+                <el-input-number
+                  v-if="isCustomGenerateKeyBitsAlgorithm(generateCaForm.key_algorithm)"
+                  v-model="generateCaForm.key_bits"
+                  class="full-width"
+                  :min="minimumRSAGenerateKeyBits"
+                  :step="8"
+                  :step-strictly="true"
                 />
-              </el-select>
-              <div v-if="isCustomGenerateKeyBitsAlgorithm(generateCaForm.key_algorithm)" class="form-hint">
-                RSA 密钥长度由管理员输入，必须是大于等于 {{ minimumRSAGenerateKeyBits }} 的 8 的倍数
-              </div>
+                <el-select v-else v-model="generateCaForm.key_bits" class="full-width">
+                  <el-option
+                    v-for="option in getGenerateKeyBitsOptions(generateCaForm.key_algorithm)"
+                    :key="`${generateCaForm.key_algorithm}-${option.value}`"
+                    :label="option.label"
+                    :value="option.value"
+                  />
+                </el-select>
+                <el-text
+                  v-if="isCustomGenerateKeyBitsAlgorithm(generateCaForm.key_algorithm)"
+                  size="small"
+                  type="info"
+                >
+                  RSA 密钥长度由管理员输入，必须是大于等于 {{ minimumRSAGenerateKeyBits }} 的 8 的倍数
+                </el-text>
+              </el-space>
             </el-form-item>
             <el-form-item label="有效期(天)" prop="validity_days">
               <el-input-number v-model="generateCaForm.validity_days" :min="1" :max="3650" />
@@ -1103,25 +1399,31 @@ async function handleDelete(asset: CertificateAsset) {
               </el-select>
             </el-form-item>
             <el-form-item label="密钥长度" prop="key_bits">
-              <el-input-number
-                v-if="isCustomGenerateKeyBitsAlgorithm(generateCertForm.key_algorithm)"
-                v-model="generateCertForm.key_bits"
-                class="full-width"
-                :min="minimumRSAGenerateKeyBits"
-                :step="8"
-                :step-strictly="true"
-              />
-              <el-select v-else v-model="generateCertForm.key_bits" class="full-width">
-                <el-option
-                  v-for="option in getGenerateKeyBitsOptions(generateCertForm.key_algorithm)"
-                  :key="`${generateCertForm.key_algorithm}-${option.value}`"
-                  :label="option.label"
-                  :value="option.value"
+              <el-space direction="vertical" fill size="small" class="full-width">
+                <el-input-number
+                  v-if="isCustomGenerateKeyBitsAlgorithm(generateCertForm.key_algorithm)"
+                  v-model="generateCertForm.key_bits"
+                  class="full-width"
+                  :min="minimumRSAGenerateKeyBits"
+                  :step="8"
+                  :step-strictly="true"
                 />
-              </el-select>
-              <div v-if="isCustomGenerateKeyBitsAlgorithm(generateCertForm.key_algorithm)" class="form-hint">
-                RSA 密钥长度由管理员输入，必须是大于等于 {{ minimumRSAGenerateKeyBits }} 的 8 的倍数
-              </div>
+                <el-select v-else v-model="generateCertForm.key_bits" class="full-width">
+                  <el-option
+                    v-for="option in getGenerateKeyBitsOptions(generateCertForm.key_algorithm)"
+                    :key="`${generateCertForm.key_algorithm}-${option.value}`"
+                    :label="option.label"
+                    :value="option.value"
+                  />
+                </el-select>
+                <el-text
+                  v-if="isCustomGenerateKeyBitsAlgorithm(generateCertForm.key_algorithm)"
+                  size="small"
+                  type="info"
+                >
+                  RSA 密钥长度由管理员输入，必须是大于等于 {{ minimumRSAGenerateKeyBits }} 的 8 的倍数
+                </el-text>
+              </el-space>
             </el-form-item>
             <el-form-item label="SAN 域名">
               <el-input v-model="generateCertForm.dns_names" placeholder="多个域名用逗号分隔" />
@@ -1238,27 +1540,35 @@ async function handleDelete(asset: CertificateAsset) {
         </el-form-item>
 
         <el-form-item v-if="downloadMode === 'chain' && downloadOptions?.chain_items" label="目标祖先">
-          <el-select v-model="downloadAncestorId" placeholder="选择要下载到哪个祖先" class="full-width">
-            <el-option
-              v-for="item in downloadOptions.chain_items"
-              :key="item.item.id"
-              :label="`${item.item.name} (depth: ${item.depth})`"
-              :value="item.item.id"
-            />
-          </el-select>
-          <div class="form-hint">选择祖先后，下载从当前资产到该祖先的完整证书链</div>
+          <el-space direction="vertical" fill size="small" class="full-width">
+            <el-select v-model="downloadAncestorId" placeholder="选择要下载到哪个祖先" class="full-width">
+              <el-option
+                v-for="item in downloadOptions.chain_items"
+                :key="item.item.id"
+                :label="`${item.item.name} (depth: ${item.depth})`"
+                :value="item.item.id"
+              />
+            </el-select>
+            <el-text size="small" type="info">
+              选择祖先后，下载从当前资产到该祖先的完整证书链
+            </el-text>
+          </el-space>
         </el-form-item>
 
         <el-form-item v-if="downloadMode === 'tree' && downloadOptions?.tree_items" label="选择资产">
-          <el-tree
-            :data="buildDownloadTreeData()"
-            :props="downloadTreeProps"
-            show-checkbox
-            node-key="id"
-            default-expand-all
-            @check="handleDownloadTreeCheck"
-          />
-          <div class="form-hint">勾选要下载的资产，将打包为 ZIP 文件</div>
+          <el-space direction="vertical" fill size="small" class="full-width">
+            <el-tree
+              :data="buildDownloadTreeData()"
+              :props="downloadTreeProps"
+              show-checkbox
+              node-key="id"
+              default-expand-all
+              @check="handleDownloadTreeCheck"
+            />
+            <el-text size="small" type="info">
+              勾选要下载的资产，将打包为 ZIP 文件
+            </el-text>
+          </el-space>
         </el-form-item>
       </el-form>
 
@@ -1288,6 +1598,28 @@ async function handleDelete(asset: CertificateAsset) {
   gap: var(--el-card-padding);
 }
 
+.usage-row {
+  flex-shrink: 0;
+}
+
+.usage-card {
+  height: 100%;
+}
+
+.usage-title {
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.usage-alert {
+  margin-top: var(--spacing-md);
+}
+
+.usage-actions {
+  width: 100%;
+  margin-top: var(--spacing-md);
+}
+
 .filter-card {
   flex-shrink: 0;
 }
@@ -1299,7 +1631,7 @@ async function handleDelete(asset: CertificateAsset) {
 .filter-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--spacing-sm);
   justify-content: flex-end;
 }
 
@@ -1326,26 +1658,14 @@ async function handleDelete(asset: CertificateAsset) {
   width: 100%;
 }
 
-.upload-tip {
-  margin-left: 8px;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.form-hint {
-  margin-left: 8px;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
 .mono-text {
   font-family: monospace;
   word-break: break-all;
 }
 
 .drawer-footer {
-  margin-top: 24px;
-  padding-top: 16px;
+  margin-top: var(--spacing-xl);
+  padding-top: var(--spacing-base);
   border-top: 1px solid var(--el-border-color-lighter);
 }
 </style>
