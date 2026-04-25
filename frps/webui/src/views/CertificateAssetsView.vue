@@ -12,12 +12,14 @@ import {
   type CertificateAssetDownloadMode,
   type CertificateAssetDownloadOptions
 } from '@/api'
+import { useMobile } from '@/composables/useMobile'
 
 defineOptions({
   name: 'CertificateAssetsView'
 })
 
 const router = useRouter()
+const { isMobile } = useMobile()
 
 // Auth state
 const checking = ref(true)
@@ -129,6 +131,18 @@ const filteredAssets = computed(() => {
 const canIssueCAs = computed(() => {
   return assets.value.filter(item => item.asset_type === 'ca' && item.can_issue)
 })
+
+const modalLayerComponent = computed(() => (isMobile.value ? 'el-drawer' : 'el-dialog'))
+
+const modalLayerProps = computed(() => (
+  isMobile.value
+    ? { direction: 'btt', size: '88%' }
+    : { width: '500px' }
+))
+
+const detailDrawerDirection = computed(() => (isMobile.value ? 'btt' : 'rtl'))
+
+const detailDrawerSize = computed(() => (isMobile.value ? '88%' : '500px'))
 
 function getActiveImportForm(): FormInstance | undefined {
   return importActiveTab.value === 'upload'
@@ -521,8 +535,11 @@ function buildDownloadTreeData(): Array<{ id: number; name: string; children?: A
   return roots
 }
 
-function handleDownloadTreeCheck(checkedKeys: (number | string)[]) {
-  downloadSelectedAssetIds.value = checkedKeys.map(Number)
+function handleDownloadTreeCheck(
+  _data: unknown,
+  checkedInfo: { checkedKeys: Array<number | string> }
+) {
+  downloadSelectedAssetIds.value = checkedInfo.checkedKeys.map(Number)
 }
 
 // Delete
@@ -594,21 +611,26 @@ async function handleDelete(asset: CertificateAsset) {
       <el-main class="content-main">
         <el-card class="filter-card">
           <el-row :gutter="16" align="middle">
-            <el-col :span="6">
+            <el-col :xs="24" :sm="12" :md="6">
               <el-select v-model="filterAssetType" placeholder="资产类型" clearable>
                 <el-option label="全部" value="all" />
                 <el-option label="证书" value="certificate" />
                 <el-option label="CA" value="ca" />
               </el-select>
             </el-col>
-            <el-col :span="6">
+            <el-col :xs="24" :sm="12" :md="6">
               <el-select v-model="filterSource" placeholder="来源" clearable>
                 <el-option label="全部" value="all" />
                 <el-option label="上传" value="upload" />
                 <el-option label="生成" value="generated" />
               </el-select>
             </el-col>
-            <el-col :span="12" class="filter-actions">
+            <el-col
+              :xs="24"
+              :sm="24"
+              :md="12"
+              :class="['filter-actions', { 'filter-actions-mobile': isMobile }]"
+            >
               <el-button type="primary" @click="openImportDialog">导入</el-button>
               <el-button type="primary" @click="openGenerateDialog">生成</el-button>
             </el-col>
@@ -664,11 +686,12 @@ async function handleDelete(asset: CertificateAsset) {
     </template>
 
     <!-- Import dialog -->
-    <el-dialog
+    <component
+      :is="modalLayerComponent"
       v-model="importDialogVisible"
       title="导入证书/CA"
-      width="500px"
       :close-on-click-modal="false"
+      v-bind="modalLayerProps"
     >
       <el-tabs v-model="importActiveTab" @tab-change="handleImportTabChange">
         <el-tab-pane label="上传文件" name="upload">
@@ -754,14 +777,15 @@ async function handleDelete(asset: CertificateAsset) {
         <el-button @click="importDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="importSubmitting" @click="submitImport">导入</el-button>
       </template>
-    </el-dialog>
+    </component>
 
     <!-- Generate dialog -->
-    <el-dialog
+    <component
+      :is="modalLayerComponent"
       v-model="generateDialogVisible"
       title="生成证书/CA"
-      width="500px"
       :close-on-click-modal="false"
+      v-bind="modalLayerProps"
     >
       <el-tabs v-model="generateActiveTab" @tab-change="handleGenerateTabChange">
         <el-tab-pane label="生成 CA" name="ca">
@@ -843,13 +867,14 @@ async function handleDelete(asset: CertificateAsset) {
         <el-button @click="generateDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="generateSubmitting" @click="submitGenerate">生成</el-button>
       </template>
-    </el-dialog>
+    </component>
 
     <!-- Detail drawer -->
     <el-drawer
       v-model="detailDrawerVisible"
       title="资产详情"
-      size="500px"
+      :direction="detailDrawerDirection"
+      :size="detailDrawerSize"
     >
       <template v-if="detailAsset">
         <el-descriptions :column="1" border>
@@ -919,11 +944,12 @@ async function handleDelete(asset: CertificateAsset) {
     </el-drawer>
 
     <!-- Download dialog -->
-    <el-dialog
+    <component
+      :is="modalLayerComponent"
       v-model="downloadDialogVisible"
       title="下载证书"
-      width="500px"
       :close-on-click-modal="false"
+      v-bind="modalLayerProps"
     >
       <el-form v-loading="downloadLoading" label-width="80px">
         <el-form-item label="下载模式">
@@ -967,7 +993,7 @@ async function handleDelete(asset: CertificateAsset) {
         <el-button @click="downloadDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="downloadLoading" @click="executeDownload">下载</el-button>
       </template>
-    </el-dialog>
+    </component>
   </el-container>
 </template>
 
@@ -999,8 +1025,13 @@ async function handleDelete(asset: CertificateAsset) {
 
 .filter-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.filter-actions-mobile {
+  justify-content: flex-start;
 }
 
 .table-card {

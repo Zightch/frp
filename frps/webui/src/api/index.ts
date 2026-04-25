@@ -117,6 +117,28 @@ async function request<T>(
   }
 }
 
+function parseContentDispositionFileName(contentDisposition: string | null): string | null {
+  if (!contentDisposition) {
+    return null
+  }
+
+  const encodedMatch = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i)
+  if (encodedMatch?.[1]) {
+    try {
+      return decodeURIComponent(encodedMatch[1])
+    } catch {
+      return encodedMatch[1]
+    }
+  }
+
+  const plainMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;]+)/i)
+  if (!plainMatch) {
+    return null
+  }
+
+  return plainMatch[1] || plainMatch[2]?.trim() || null
+}
+
 // --- Auth API ---
 
 export const authApi = {
@@ -308,17 +330,16 @@ export const certificateAssetsApi = {
     ancestor_id?: number
     asset_ids?: number[]
   }) => {
-    const queryParts = [`mode=${params.mode}`]
+    const query = new URLSearchParams({ mode: params.mode })
     if (params.ancestor_id) {
-      queryParts.push(`ancestor_id=${params.ancestor_id}`)
+      query.set('ancestor_id', String(params.ancestor_id))
     }
     if (params.asset_ids && params.asset_ids.length > 0) {
-      params.asset_ids.forEach(assetId => queryParts.push(`asset_ids=${assetId}`))
+      params.asset_ids.forEach(assetId => query.append('asset_ids', String(assetId)))
     }
-    const query = queryParts.join('&')
 
     try {
-      const response = await fetch(`${API_BASE}/certificate-assets/${id}/download?${query}`, {
+      const response = await fetch(`${API_BASE}/certificate-assets/${id}/download?${query.toString()}`, {
         credentials: 'include'
       })
 
@@ -332,8 +353,7 @@ export const certificateAssetsApi = {
       }
 
       const blob = await response.blob()
-      const fileName = response.headers.get('content-disposition')
-        ?.split('filename=')[1]?.replace(/"/g, '') || 'download'
+      const fileName = parseContentDispositionFileName(response.headers.get('content-disposition')) || 'download'
 
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
