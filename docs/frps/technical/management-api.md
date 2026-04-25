@@ -57,6 +57,17 @@
 - `name`
 - `remark`
 
+## 入口证书接口
+
+- `GET /api/v1/settings/entry-certificates`
+- `PUT /api/v1/settings/entry-certificates/{usage_type}`
+- `DELETE /api/v1/settings/entry-certificates/{usage_type}`
+
+`usage_type` 取值：
+
+- `webui_https`：WebUI HTTPS 服务端证书
+- `frpc_tls`：frpc 登录监听口 TLS 服务端证书
+
 ## 路径前缀
 
 `webui.path_prefix` 不只影响前端页面，也会给管理面额外提供同前缀别名：

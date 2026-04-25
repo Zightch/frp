@@ -932,7 +932,7 @@ function copyKey(value: string) {
         class="dialog-alert"
       >
         <template #title>当前还没有绑定 frpc TLS 服务端证书</template>
-        请先到“证书资产”页绑定 `frpc_tls`，否则无法启用 frpc TLS。
+        请先到“系统设置”中的“入口证书”绑定 `frpc_tls`，否则无法启用 frpc TLS。
       </el-alert>
       <template #footer>
         <el-button @click="groupDialogVisible = false">取消</el-button>

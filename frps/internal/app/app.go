@@ -9,9 +9,9 @@ import (
 	"github.com/zightch/frp/frps/internal/api"
 	"github.com/zightch/frp/frps/internal/auth"
 	"github.com/zightch/frp/frps/internal/certassets"
-	"github.com/zightch/frp/frps/internal/certusages"
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/control"
+	"github.com/zightch/frp/frps/internal/settings/entrycerts"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 )
@@ -104,12 +104,12 @@ func (a *App) Run(parent context.Context) error {
 		return fmt.Errorf("init management api: %w", err)
 	}
 	a.api = apiServer
-	if err := a.initCertificateUsages(ctx, certusages.NewService(a.store, certusages.ServiceOptions{})); err != nil {
+	if err := a.initEntryCertificates(ctx, entrycerts.NewService(a.store, entrycerts.ServiceOptions{})); err != nil {
 		_ = a.closeLocalNetwork(context.Background())
 		a.closeCertificateAssets()
 		a.closeDatabase()
 		a.closeAuth()
-		return fmt.Errorf("init certificate usages: %w", err)
+		return fmt.Errorf("init entry certificates: %w", err)
 	}
 
 	errCh := make(chan error, 2)

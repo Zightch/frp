@@ -1,4 +1,4 @@
-package certusages
+package entrycerts
 
 import (
 	"bytes"
@@ -39,7 +39,7 @@ func NewService(store *storage.SQL, options ServiceOptions) *Service {
 
 func (s *Service) List(ctx context.Context) ([]DescribedUsage, error) {
 	if s == nil || s.store == nil {
-		return nil, fmt.Errorf("certificate usage service store is nil")
+		return nil, fmt.Errorf("entry certificate service store is nil")
 	}
 
 	usageRows, err := ListUsagesWithConn(ctx, s.store)
@@ -86,7 +86,7 @@ func (s *Service) List(ctx context.Context) ([]DescribedUsage, error) {
 
 func (s *Service) Describe(ctx context.Context, usageType UsageType) (DescribedUsage, error) {
 	if s == nil || s.store == nil {
-		return DescribedUsage{}, fmt.Errorf("certificate usage service store is nil")
+		return DescribedUsage{}, fmt.Errorf("entry certificate service store is nil")
 	}
 
 	usage, err := LoadUsageByType(ctx, s.store, usageType)
@@ -122,7 +122,7 @@ func (s *Service) Describe(ctx context.Context, usageType UsageType) (DescribedU
 
 func (s *Service) Resolve(ctx context.Context, usageType UsageType, assetID int64) (ResolvedBinding, error) {
 	if s == nil || s.store == nil {
-		return ResolvedBinding{}, fmt.Errorf("certificate usage service store is nil")
+		return ResolvedBinding{}, fmt.Errorf("entry certificate service store is nil")
 	}
 	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
 	if err != nil {
@@ -133,7 +133,7 @@ func (s *Service) Resolve(ctx context.Context, usageType UsageType, assetID int6
 
 func (s *Service) LoadUsage(ctx context.Context, usageType UsageType) (Usage, bool, error) {
 	if s == nil || s.store == nil {
-		return Usage{}, false, fmt.Errorf("certificate usage service store is nil")
+		return Usage{}, false, fmt.Errorf("entry certificate service store is nil")
 	}
 	item, err := LoadUsageByType(ctx, s.store, usageType)
 	if err != nil {
@@ -147,14 +147,14 @@ func (s *Service) LoadUsage(ctx context.Context, usageType UsageType) (Usage, bo
 
 func (s *Service) SaveUsage(ctx context.Context, usageType UsageType, assetID int64, enabled bool) (Usage, error) {
 	if s == nil || s.store == nil {
-		return Usage{}, fmt.Errorf("certificate usage service store is nil")
+		return Usage{}, fmt.Errorf("entry certificate service store is nil")
 	}
 	return UpsertUsage(ctx, s.store, usageType, assetID, enabled, s.now())
 }
 
 func (s *Service) RestoreUsage(ctx context.Context, usage Usage) error {
 	if s == nil || s.store == nil {
-		return fmt.Errorf("certificate usage service store is nil")
+		return fmt.Errorf("entry certificate service store is nil")
 	}
 	if usage.ID == 0 {
 		return DeleteUsageByType(ctx, s.store, usage.UsageType)
@@ -165,7 +165,7 @@ func (s *Service) RestoreUsage(ctx context.Context, usage Usage) error {
 
 func (s *Service) DeleteUsage(ctx context.Context, usageType UsageType) error {
 	if s == nil || s.store == nil {
-		return fmt.Errorf("certificate usage service store is nil")
+		return fmt.Errorf("entry certificate service store is nil")
 	}
 	return DeleteUsageByType(ctx, s.store, usageType)
 }
@@ -218,7 +218,7 @@ func (s *Service) loadPreparedState(ctx context.Context) ([]certassets.Asset, []
 
 func (s *Service) resolveBindingFromState(usageType UsageType, assetID int64, _ []certassets.Asset, prepared []certassets.PreparedAsset, describedByID map[int64]certassets.DescribedAsset) (ResolvedBinding, error) {
 	if !isKnownUsageType(usageType) {
-		return ResolvedBinding{}, fmt.Errorf("unsupported certificate usage type %q", usageType)
+		return ResolvedBinding{}, fmt.Errorf("unsupported entry certificate type %q", usageType)
 	}
 	if assetID <= 0 {
 		return ResolvedBinding{}, fmt.Errorf("asset_id must be greater than zero")

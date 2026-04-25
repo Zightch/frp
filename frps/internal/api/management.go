@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/certassets"
-	"github.com/zightch/frp/frps/internal/certusages"
 	"github.com/zightch/frp/frps/internal/ports"
 	"github.com/zightch/frp/frps/internal/proxygroups"
+	"github.com/zightch/frp/frps/internal/settings/entrycerts"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -42,13 +42,13 @@ const (
 )
 
 type managementService struct {
-	store     *storage.SQL
-	network   system.SnapshotReader
-	refresher GroupRuntimeRefresher
-	runtime   TunnelRuntimeStatusReader
-	certs     *certassets.Service
-	usages    *certusages.Service
-	server    *Server
+	store      *storage.SQL
+	network    system.SnapshotReader
+	refresher  GroupRuntimeRefresher
+	runtime    TunnelRuntimeStatusReader
+	certs      *certassets.Service
+	entryCerts *entrycerts.Service
+	server     *Server
 }
 
 type proxyGroupView struct {
@@ -152,12 +152,12 @@ func newManagementService(store *storage.SQL, network system.SnapshotReader, ref
 		return nil
 	}
 	return &managementService{
-		store:     store,
-		network:   network,
-		refresher: refresher,
-		runtime:   runtime,
-		certs:     certassets.NewService(store, certassets.ServiceOptions{}),
-		usages:    certusages.NewService(store, certusages.ServiceOptions{}),
+		store:      store,
+		network:    network,
+		refresher:  refresher,
+		runtime:    runtime,
+		certs:      certassets.NewService(store, certassets.ServiceOptions{}),
+		entryCerts: entrycerts.NewService(store, entrycerts.ServiceOptions{}),
 	}
 }
 
@@ -1182,18 +1182,18 @@ func (m *managementService) validateControlTransportSecurity(ctx context.Context
 	if security != proxygroups.ControlTransportSecurityTLSRequired {
 		return nil
 	}
-	if m == nil || m.usages == nil {
-		return &apiError{Status: http.StatusServiceUnavailable, Message: "certificate usage service is unavailable"}
+	if m == nil || m.entryCerts == nil {
+		return &apiError{Status: http.StatusServiceUnavailable, Message: "entry certificate service is unavailable"}
 	}
 
-	enabled, err := m.usages.IsEnabled(ctx, certusages.UsageTypeFrpcTLS)
+	enabled, err := m.entryCerts.IsEnabled(ctx, entrycerts.UsageTypeFrpcTLS)
 	if err != nil {
-		return fmt.Errorf("load frpc tls usage: %w", err)
+		return fmt.Errorf("load frpc tls entry certificate: %w", err)
 	}
 	if !enabled {
 		return &apiError{
 			Status:  http.StatusConflict,
-			Message: "frpc tls certificate must be bound before frpc tls can be enabled",
+			Message: "frpc tls entry certificate must be bound before frpc tls can be enabled",
 			Code:    "frpc_tls_required",
 		}
 	}

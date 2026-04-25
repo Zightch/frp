@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/zightch/frp/frps/internal/certusages"
+	"github.com/zightch/frp/frps/internal/settings/entrycerts"
 )
 
-func (a *App) initCertificateUsages(ctx context.Context, service *certusages.Service) error {
+func (a *App) initEntryCertificates(ctx context.Context, service *entrycerts.Service) error {
 	if a == nil || service == nil {
 		return nil
 	}
@@ -28,14 +28,14 @@ func (a *App) initCertificateUsages(ctx context.Context, service *certusages.Ser
 		}
 
 		switch item.UsageType {
-		case certusages.UsageTypeWebUIHTTPS:
+		case entrycerts.UsageTypeWebUIHTTPS:
 			if a.api == nil {
 				return fmt.Errorf("management api server is unavailable")
 			}
 			if err := a.api.EnableWebUIHTTPS(&binding); err != nil {
 				return err
 			}
-		case certusages.UsageTypeFrpcTLS:
+		case entrycerts.UsageTypeFrpcTLS:
 			if a.control == nil {
 				return fmt.Errorf("control server is unavailable")
 			}

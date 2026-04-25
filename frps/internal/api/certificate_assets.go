@@ -69,7 +69,7 @@ type certificateAssetPatchRequest struct {
 type certificateAssetDeleteImpactView struct {
 	Target               certificateAssetView             `json:"target"`
 	AffectedItems        []certificateAssetDeleteItemView `json:"affected_items"`
-	UsageItems           []certificateUsageView           `json:"usage_items,omitempty"`
+	UsageItems           []entryCertificateView           `json:"usage_items,omitempty"`
 	RequiresConfirmation bool                             `json:"requires_confirmation"`
 	WarningMessage       string                           `json:"warning_message,omitempty"`
 }
@@ -389,17 +389,17 @@ func (m *managementService) getCertificateAssetDeleteImpact(ctx context.Context,
 	for _, item := range impact.Affected {
 		assetIDs = append(assetIDs, item.Item.ID)
 	}
-	usageItems, err := m.activeCertificateUsageConflicts(ctx, assetIDs)
+	entryItems, err := m.activeEntryCertificateConflicts(ctx, assetIDs)
 	if err != nil {
 		return certificateAssetDeleteImpactView{}, err
 	}
-	if len(usageItems) > 0 {
-		view.UsageItems = usageItems
+	if len(entryItems) > 0 {
+		view.UsageItems = entryItems
 		view.RequiresConfirmation = true
 		if view.WarningMessage == "" {
-			view.WarningMessage = "删除该证书资产前需要先解绑入口证书使用关系"
+			view.WarningMessage = "删除该证书资产前需要先到系统设置的入口证书中解绑"
 		} else {
-			view.WarningMessage += "；并且需要先解绑入口证书使用关系"
+			view.WarningMessage += "；并且需要先到系统设置的入口证书中解绑"
 		}
 	}
 	return view, nil
@@ -419,17 +419,17 @@ func (m *managementService) deleteCertificateAsset(ctx context.Context, id int64
 	for _, item := range impact.Affected {
 		assetIDs = append(assetIDs, item.Item.ID)
 	}
-	usageItems, err := m.activeCertificateUsageConflicts(ctx, assetIDs)
+	entryItems, err := m.activeEntryCertificateConflicts(ctx, assetIDs)
 	if err != nil {
 		return certassets.DeleteResult{}, err
 	}
-	if len(usageItems) > 0 {
+	if len(entryItems) > 0 {
 		return certassets.DeleteResult{}, &apiError{
 			Status:  http.StatusConflict,
-			Message: "certificate asset is still bound to active entry usage",
+			Message: "certificate asset is still bound to an active entry certificate",
 			Code:    "certificate_asset_in_use",
 			Details: map[string]any{
-				"usage_items": usageItems,
+				"usage_items": entryItems,
 			},
 		}
 	}

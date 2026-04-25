@@ -6,15 +6,12 @@ import type { FormInstance, FormRules, UploadProps } from 'element-plus'
 import {
   authApi,
   certificateAssetsApi,
-  certificateUsagesApi,
   type CertificateAsset,
   type CertificateAssetPastePayload,
   type CertificateAssetGeneratePayload,
   type CertificateAssetGenerateKeyAlgorithm,
   type CertificateAssetDownloadMode,
-  type CertificateAssetDownloadOptions,
-  type CertificateUsage,
-  type CertificateUsageType
+  type CertificateAssetDownloadOptions
 } from '@/api'
 import { useMobile } from '@/composables/useMobile'
 
@@ -68,7 +65,6 @@ const authenticated = ref(false)
 
 // Data
 const assets = ref<CertificateAsset[]>([])
-const certificateUsages = ref<CertificateUsage[]>([])
 const loading = ref(false)
 const error = ref('')
 
@@ -216,18 +212,6 @@ const downloadTreeProps = {
   label: 'name'
 }
 
-// Usage binding dialog
-const usageDialogVisible = ref(false)
-const usageFormRef = ref<FormInstance>()
-const usageSubmitting = ref(false)
-const usageForm = ref({
-  usage_type: 'webui_https' as CertificateUsageType,
-  asset_id: null as number | null
-})
-const usageFormRules: FormRules = {
-  asset_id: [{ required: true, message: '请选择证书', trigger: 'change' }]
-}
-
 // Computed
 const filteredAssets = computed(() => {
   return assets.value.filter(item => {
@@ -243,17 +227,6 @@ const filteredAssets = computed(() => {
 
 const canIssueCAs = computed(() => {
   return assets.value.filter(item => item.asset_type === 'ca' && item.can_issue)
-})
-
-const bindableCertificateAssets = computed(() => {
-  return assets.value.filter(item => item.asset_type === 'certificate' && item.key_present)
-})
-
-const usageCards = computed(() => {
-  return [
-    getCertificateUsage('webui_https'),
-    getCertificateUsage('frpc_tls')
-  ]
 })
 
 const modalLayerComponent = computed(() => (isMobile.value ? 'el-drawer' : 'el-dialog'))
@@ -281,10 +254,6 @@ function clearImportValidation() {
 
 function clearEditValidation() {
   editFormRef.value?.clearValidate()
-}
-
-function clearUsageValidation() {
-  usageFormRef.value?.clearValidate()
 }
 
 function getActiveGenerateForm(): FormInstance | undefined {
@@ -339,23 +308,15 @@ async function loadData() {
   loading.value = true
   error.value = ''
 
-  const [assetsResult, usagesResult] = await Promise.all([
-    certificateAssetsApi.list(),
-    certificateUsagesApi.list()
-  ])
+  const assetsResult = await certificateAssetsApi.list()
   loading.value = false
 
   if (assetsResult.error) {
     error.value = assetsResult.error
     return
   }
-  if (usagesResult.error) {
-    error.value = usagesResult.error
-    return
-  }
 
   assets.value = assetsResult.data?.items || []
-  certificateUsages.value = usagesResult.data?.items || []
   if (detailAsset.value) {
     const refreshed = assets.value.find(item => item.id === detailAsset.value?.id) || null
     if (refreshed) {
@@ -426,80 +387,6 @@ function formatDownloadMode(mode: CertificateAssetDownloadMode): string {
   }
 }
 
-function getCertificateUsage(usageType: CertificateUsageType): CertificateUsage {
-  return certificateUsages.value.find(item => item.usage_type === usageType) || {
-    usage_type: usageType,
-    enabled: false,
-    status: 'unbound',
-    resolved_chain_length: 0
-  }
-}
-
-function formatUsageType(usageType: CertificateUsageType): string {
-  return usageType === 'webui_https' ? 'WebUI HTTPS' : 'frpc TLS'
-}
-
-function formatUsageStatus(status: CertificateUsage['status']): string {
-  switch (status) {
-    case 'enabled':
-      return '已启用'
-    case 'disabled':
-      return '已禁用'
-    case 'error':
-      return '异常'
-    case 'unbound':
-    default:
-      return '未绑定'
-  }
-}
-
-function usageStatusTagType(status: CertificateUsage['status']): 'success' | 'info' | 'danger' {
-  switch (status) {
-    case 'enabled':
-      return 'success'
-    case 'error':
-      return 'danger'
-    default:
-      return 'info'
-  }
-}
-
-function buildUsageAssetOptionLabel(asset: CertificateAsset): string {
-  const commonName = asset.common_name?.trim()
-  if (commonName) {
-    return `${asset.name} (${commonName})`
-  }
-  return asset.name
-}
-
-function currentLocationProtocol(): 'http:' | 'https:' | '' {
-  if (typeof window === 'undefined') {
-    return ''
-  }
-  return window.location.protocol === 'https:' ? 'https:' : 'http:'
-}
-
-function scheduleWebUIProtocolRedirect(protocol: 'http:' | 'https:') {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  const targetURL = new URL(window.location.href)
-  targetURL.protocol = protocol
-  window.setTimeout(() => {
-    window.location.replace(targetURL.toString())
-  }, 400)
-}
-
-function upsertCertificateUsage(item?: CertificateUsage) {
-  if (!item) {
-    return
-  }
-  const nextItems = certificateUsages.value.filter(existing => existing.usage_type !== item.usage_type)
-  nextItems.push(item)
-  certificateUsages.value = nextItems
-}
-
 // Import dialog
 function openImportDialog() {
   importActiveTab.value = 'upload'
@@ -521,89 +408,6 @@ function handleImportTabChange() {
   importForm.value.crt = ''
   importForm.value.key = ''
   nextTick(() => clearImportValidation())
-}
-
-function openUsageDialog(usageType: CertificateUsageType) {
-  if (bindableCertificateAssets.value.length === 0) {
-    ElMessage.error('暂无可绑定的证书，请先导入或生成带私钥的证书')
-    return
-  }
-
-  const current = getCertificateUsage(usageType)
-  usageForm.value = {
-    usage_type: usageType,
-    asset_id: current.asset_id || bindableCertificateAssets.value[0]?.id || null
-  }
-  usageDialogVisible.value = true
-  nextTick(() => clearUsageValidation())
-}
-
-async function submitUsageBinding() {
-  const valid = await usageFormRef.value?.validate().catch(() => false)
-  if (!valid || !usageForm.value.asset_id) {
-    return
-  }
-
-  usageSubmitting.value = true
-  try {
-    const result = await certificateUsagesApi.bind(usageForm.value.usage_type, usageForm.value.asset_id)
-    if (result.error) {
-      ElMessage.error(result.error)
-      return
-    }
-
-    upsertCertificateUsage(result.data?.item)
-    usageDialogVisible.value = false
-
-    if (usageForm.value.usage_type === 'webui_https' && currentLocationProtocol() !== 'https:') {
-      ElMessage.success('WebUI 将切换到 HTTPS')
-      scheduleWebUIProtocolRedirect('https:')
-      return
-    }
-
-    ElMessage.success('绑定成功')
-    await loadData()
-  } finally {
-    usageSubmitting.value = false
-  }
-}
-
-async function handleUnbindUsage(usageType: CertificateUsageType) {
-  try {
-    await ElMessageBox.confirm(
-      `确定解绑 ${formatUsageType(usageType)} 使用证书吗？`,
-      '解绑证书',
-      {
-        confirmButtonText: '解绑',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-  } catch {
-    return
-  }
-
-  usageSubmitting.value = true
-  try {
-    const result = await certificateUsagesApi.unbind(usageType)
-    if (result.error) {
-      ElMessage.error(result.error)
-      return
-    }
-
-    upsertCertificateUsage(result.data?.item)
-
-    if (usageType === 'webui_https' && currentLocationProtocol() === 'https:') {
-      ElMessage.success('WebUI 将切回 HTTP')
-      scheduleWebUIProtocolRedirect('http:')
-      return
-    }
-
-    ElMessage.success('解绑成功')
-    await loadData()
-  } finally {
-    usageSubmitting.value = false
-  }
 }
 
 const handleCrtUploadChange: UploadProps['onChange'] = (file) => {
@@ -973,44 +777,6 @@ async function handleDelete(asset: CertificateAsset) {
       </div>
 
       <el-main class="content-main">
-        <el-row :gutter="16" class="usage-row">
-          <el-col
-            v-for="usage in usageCards"
-            :key="usage.usage_type"
-            :xs="24"
-            :md="12"
-          >
-            <el-card class="usage-card">
-              <template #header>
-                <el-row justify="space-between" align="middle">
-                  <span class="usage-title">{{ formatUsageType(usage.usage_type) }}</span>
-                  <el-tag size="small" :type="usageStatusTagType(usage.status)">
-                    {{ formatUsageStatus(usage.status) }}
-                  </el-tag>
-                </el-row>
-              </template>
-
-              <el-descriptions :column="1" border size="small">
-                <el-descriptions-item label="当前证书">
-                  {{ usage.asset_name || '-' }}
-                </el-descriptions-item>
-              </el-descriptions>
-
-              <el-space wrap class="usage-actions">
-                <el-button type="primary" @click="openUsageDialog(usage.usage_type)">
-                  {{ usage.asset_id ? '更换证书' : '绑定证书' }}
-                </el-button>
-                <el-button
-                  :disabled="!usage.asset_id"
-                  @click="handleUnbindUsage(usage.usage_type)"
-                >
-                  解绑
-                </el-button>
-              </el-space>
-            </el-card>
-          </el-col>
-        </el-row>
-
         <el-card class="filter-card">
           <el-row :gutter="16" align="middle">
             <el-col :xs="24" :sm="12" :md="6">
@@ -1094,54 +860,6 @@ async function handleDelete(asset: CertificateAsset) {
     </template>
 
     <!-- Import dialog -->
-    <component
-      :is="modalLayerComponent"
-      v-model="usageDialogVisible"
-      title="绑定入口证书"
-      :close-on-click-modal="false"
-      v-bind="modalLayerProps"
-    >
-      <el-form
-        ref="usageFormRef"
-        :model="usageForm"
-        :rules="usageFormRules"
-        label-width="88px"
-      >
-        <el-form-item label="使用点">
-          <el-input :model-value="formatUsageType(usageForm.usage_type)" readonly />
-        </el-form-item>
-        <el-form-item label="证书" prop="asset_id">
-          <el-select
-            v-model="usageForm.asset_id"
-            placeholder="请选择证书"
-            class="full-width"
-          >
-            <el-option
-              v-for="asset in bindableCertificateAssets"
-              :key="asset.id"
-              :label="buildUsageAssetOptionLabel(asset)"
-              :value="asset.id"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-
-      <el-alert
-        v-if="usageForm.usage_type === 'webui_https'"
-        type="info"
-        :closable="false"
-        show-icon
-      >
-        <template #title>绑定后会切到 HTTPS</template>
-        当前浏览器会自动跳转到同地址的 `https://`。
-      </el-alert>
-
-      <template #footer>
-        <el-button @click="usageDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="usageSubmitting" @click="submitUsageBinding">保存</el-button>
-      </template>
-    </component>
-
     <component
       :is="modalLayerComponent"
       v-model="importDialogVisible"
@@ -1596,28 +1314,6 @@ async function handleDelete(asset: CertificateAsset) {
   display: flex;
   flex-direction: column;
   gap: var(--el-card-padding);
-}
-
-.usage-row {
-  flex-shrink: 0;
-}
-
-.usage-card {
-  height: 100%;
-}
-
-.usage-title {
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-.usage-alert {
-  margin-top: var(--spacing-md);
-}
-
-.usage-actions {
-  width: 100%;
-  margin-top: var(--spacing-md);
 }
 
 .filter-card {

@@ -237,11 +237,11 @@ frpc -> config.ack
 
 ### 7.1 证书使用接口
 
-独立新增 usage 资源，不复用 `certificate-assets` 路径：
+独立新增入口证书 usage 资源，挂到 `settings` 下：
 
-- `GET /api/v1/certificate-usages`
-- `PUT /api/v1/certificate-usages/{usage_type}`
-- `DELETE /api/v1/certificate-usages/{usage_type}`
+- `GET /api/v1/settings/entry-certificates`
+- `PUT /api/v1/settings/entry-certificates/{usage_type}`
+- `DELETE /api/v1/settings/entry-certificates/{usage_type}`
 
 `PUT` 请求体建议至少包含：
 
@@ -261,7 +261,7 @@ frpc -> config.ack
 
 ### 7.2 分组安全策略接口
 
-分组级 TLS 策略不走 `certificate-usages`，而是进入现有分组管理模型：
+分组级 TLS 策略不走入口证书绑定接口，而是进入现有分组管理模型：
 
 - `POST /api/v1/proxy-groups`
 - `PATCH /api/v1/proxy-groups/{id}`

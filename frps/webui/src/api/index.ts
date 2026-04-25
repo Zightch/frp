@@ -140,6 +140,44 @@ function parseContentDispositionFileName(contentDisposition: string | null): str
   return plainMatch[1] || plainMatch[2]?.trim() || null
 }
 
+function normalizeCertificateUsageType(value: string): CertificateUsageType | '' {
+  switch (value) {
+    case 'webui_https':
+      return 'webui_https'
+    case 'frpc_tls':
+      return 'frpc_tls'
+    default:
+      return ''
+  }
+}
+
+function normalizeCertificateUsages(
+  items?: Array<Omit<CertificateUsage, 'usage_type'> & { usage_type: string }>
+): CertificateUsage[] {
+  if (!items?.length) {
+    return []
+  }
+
+  const normalizedByType = new Map<CertificateUsageType, CertificateUsage>()
+  for (const item of items) {
+    const usageType = normalizeCertificateUsageType(item.usage_type)
+    if (!usageType) {
+      continue
+    }
+
+    const normalizedItem: CertificateUsage = {
+      ...item,
+      usage_type: usageType
+    }
+    const existingItem = normalizedByType.get(usageType)
+    if (!existingItem || item.usage_type === usageType) {
+      normalizedByType.set(usageType, normalizedItem)
+    }
+  }
+
+  return Array.from(normalizedByType.values())
+}
+
 // --- Auth API ---
 
 export const authApi = {
@@ -407,16 +445,24 @@ export const certificateAssetsApi = {
 }
 
 export const certificateUsagesApi = {
-  list: () => request<{ items: CertificateUsage[] }>('/certificate-usages'),
+  list: async () => {
+    const result = await request<{ items: Array<Omit<CertificateUsage, 'usage_type'> & { usage_type: string }> }>('/settings/entry-certificates')
+    if (result.data) {
+      result.data = {
+        items: normalizeCertificateUsages(result.data.items)
+      }
+    }
+    return result as ApiResponse<{ items: CertificateUsage[] }>
+  },
 
   bind: (usageType: CertificateUsageType, assetID: number) =>
-    request<{ item: CertificateUsage }>(`/certificate-usages/${usageType}`, {
+    request<{ item: CertificateUsage }>(`/settings/entry-certificates/${usageType}`, {
       method: 'PUT',
       body: JSON.stringify({ asset_id: assetID, enabled: true })
     }),
 
   unbind: (usageType: CertificateUsageType) =>
-    request<{ item: CertificateUsage }>(`/certificate-usages/${usageType}`, {
+    request<{ item: CertificateUsage }>(`/settings/entry-certificates/${usageType}`, {
       method: 'DELETE'
     })
 }

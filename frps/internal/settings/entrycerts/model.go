@@ -1,4 +1,4 @@
-package certusages
+package entrycerts
 
 import (
 	"crypto/tls"
@@ -16,8 +16,6 @@ const (
 )
 
 const globalTargetID int64 = 0
-
-const legacyUsageTypeControlListenerTLS UsageType = "control_listener_tls"
 
 type Usage struct {
 	ID        int64
@@ -61,7 +59,7 @@ func NormalizeUsageType(value string) UsageType {
 	switch UsageType(strings.ToLower(strings.TrimSpace(value))) {
 	case UsageTypeWebUIHTTPS:
 		return UsageTypeWebUIHTTPS
-	case UsageTypeFrpcTLS, legacyUsageTypeControlListenerTLS:
+	case UsageTypeFrpcTLS:
 		return UsageTypeFrpcTLS
 	default:
 		return ""

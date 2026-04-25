@@ -47,6 +47,22 @@ const routes: RouteRecordRaw[] = [
         path: 'certificate-assets',
         name: 'CertificateAssets',
         component: () => import('@/views/CertificateAssetsView.vue')
+      },
+      {
+        path: 'settings',
+        component: () => import('@/views/SettingsView.vue'),
+        children: [
+          {
+            path: '',
+            name: 'Settings',
+            redirect: { name: 'SettingsEntryCertificates' }
+          },
+          {
+            path: 'entry-certificates',
+            name: 'SettingsEntryCertificates',
+            component: () => import('@/views/settings/EntryCertificates.vue')
+          }
+        ]
       }
     ]
   }

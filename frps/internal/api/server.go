@@ -14,8 +14,8 @@ import (
 	"time"
 
 	authn "github.com/zightch/frp/frps/internal/auth"
-	"github.com/zightch/frp/frps/internal/certusages"
 	"github.com/zightch/frp/frps/internal/config"
+	"github.com/zightch/frp/frps/internal/settings/entrycerts"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/internal/testhooks"
@@ -43,7 +43,7 @@ type TunnelRuntimeStatusReader interface {
 }
 
 type ControlTLSRuntime interface {
-	ConfigureControlTLS(binding *certusages.ResolvedBinding) error
+	ConfigureControlTLS(binding *entrycerts.ResolvedBinding) error
 	ClearControlTLS() error
 }
 
@@ -119,8 +119,8 @@ func NewServer(options Options, logger *slog.Logger, version string) (*Server, e
 	apiMux.HandleFunc("/api/v1/auth/login", srv.handleAuthLogin)
 	apiMux.HandleFunc("/api/v1/auth/session", srv.handleAuthSession)
 	apiMux.HandleFunc("/api/v1/auth/logout", srv.handleAuthLogout)
-	apiMux.HandleFunc("/api/v1/certificate-usages", srv.handleCertificateUsages)
-	apiMux.HandleFunc("/api/v1/certificate-usages/", srv.handleCertificateUsageResource)
+	apiMux.HandleFunc(entryCertificatesPathSettings, srv.handleEntryCertificates)
+	apiMux.HandleFunc(entryCertificatesPathSettings+"/", srv.handleEntryCertificateResource)
 	apiMux.HandleFunc("/api/v1/proxy-groups", srv.handleProxyGroups)
 	apiMux.HandleFunc("/api/v1/proxy-groups/", srv.handleProxyGroupResource)
 	apiMux.HandleFunc("/api/v1/tunnels", srv.handleTunnels)
@@ -211,7 +211,7 @@ func isManagementAPIPath(path string) bool {
 		path == "/api/v1/auth/login",
 		path == "/api/v1/auth/session",
 		path == "/api/v1/auth/logout",
-		path == "/api/v1/certificate-usages",
+		path == entryCertificatesPathSettings,
 		path == "/api/v1/proxy-groups",
 		path == "/api/v1/tunnels",
 		path == "/api/v1/local-ips",
@@ -221,9 +221,11 @@ func isManagementAPIPath(path string) bool {
 		path == "/api/v1/certificate-assets/generate":
 		return true
 	case strings.HasPrefix(path, "/api/v1/proxy-groups/"),
-		strings.HasPrefix(path, "/api/v1/certificate-usages/"),
+		strings.HasPrefix(path, entryCertificatesPathSettings+"/"),
 		strings.HasPrefix(path, "/api/v1/tunnels/"),
 		strings.HasPrefix(path, "/api/v1/certificate-assets/"):
+		return true
+	case strings.HasPrefix(path, "/api/"):
 		return true
 	default:
 		return false
@@ -319,7 +321,7 @@ func (s *Server) Visible() bool {
 	return s.visible
 }
 
-func (s *Server) ConfigureControlTLS(binding *certusages.ResolvedBinding) error {
+func (s *Server) ConfigureControlTLS(binding *entrycerts.ResolvedBinding) error {
 	if s == nil || s.controlTLS == nil {
 		return fmt.Errorf("control tls runtime is unavailable")
 	}
@@ -333,7 +335,7 @@ func (s *Server) ClearControlTLS() error {
 	return s.controlTLS.ClearControlTLS()
 }
 
-func (s *Server) EnableWebUIHTTPS(binding *certusages.ResolvedBinding) error {
+func (s *Server) EnableWebUIHTTPS(binding *entrycerts.ResolvedBinding) error {
 	if s == nil {
 		return fmt.Errorf("management api server is unavailable")
 	}

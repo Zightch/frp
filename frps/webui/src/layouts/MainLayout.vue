@@ -42,15 +42,19 @@ function handleMenuSelect() {
 
     <el-container class="main-body">
       <!-- Desktop Aside -->
-      <el-aside v-if="!isMobile" class="main-aside">
+      <el-aside v-if="!isMobile" width="var(--aside-width)" class="main-aside">
         <el-menu router :default-active="$route.path">
-          <el-menu-item :index="{ name: 'GroupConfig' }">
+          <el-menu-item index="/proxy-groups">
             <el-icon><Connection /></el-icon>
             <span>分组配置</span>
           </el-menu-item>
-          <el-menu-item :index="{ name: 'CertificateAssets' }">
+          <el-menu-item index="/certificate-assets">
             <el-icon><Key /></el-icon>
             <span>证书资产</span>
+          </el-menu-item>
+          <el-menu-item index="/settings/entry-certificates">
+            <el-icon><Setting /></el-icon>
+            <span>系统设置</span>
           </el-menu-item>
         </el-menu>
       </el-aside>
@@ -67,13 +71,17 @@ function handleMenuSelect() {
           <span class="drawer-title">frps</span>
         </template>
         <el-menu router :default-active="$route.path" @select="handleMenuSelect">
-          <el-menu-item :index="{ name: 'GroupConfig' }">
+          <el-menu-item index="/proxy-groups">
             <el-icon><Connection /></el-icon>
             <span>分组配置</span>
           </el-menu-item>
-          <el-menu-item :index="{ name: 'CertificateAssets' }">
+          <el-menu-item index="/certificate-assets">
             <el-icon><Key /></el-icon>
             <span>证书资产</span>
+          </el-menu-item>
+          <el-menu-item index="/settings/entry-certificates">
+            <el-icon><Setting /></el-icon>
+            <span>系统设置</span>
           </el-menu-item>
         </el-menu>
         <template #footer>
@@ -123,7 +131,6 @@ function handleMenuSelect() {
 }
 
 .main-aside {
-  width: var(--aside-width);
   overflow: hidden;
 }
 

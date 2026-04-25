@@ -6,10 +6,10 @@ import (
 	"net"
 	"time"
 
-	"github.com/zightch/frp/frps/internal/certusages"
+	"github.com/zightch/frp/frps/internal/settings/entrycerts"
 )
 
-func (s *Server) ConfigureControlTLS(binding *certusages.ResolvedBinding) error {
+func (s *Server) ConfigureControlTLS(binding *entrycerts.ResolvedBinding) error {
 	if s == nil {
 		return fmt.Errorf("control server is unavailable")
 	}
