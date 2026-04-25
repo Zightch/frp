@@ -9,6 +9,7 @@ import {
   type CertificateAsset,
   type CertificateAssetPastePayload,
   type CertificateAssetGeneratePayload,
+  type CertificateAssetGenerateKeyAlgorithm,
   type CertificateAssetDownloadMode,
   type CertificateAssetDownloadOptions
 } from '@/api'
@@ -20,6 +21,42 @@ defineOptions({
 
 const router = useRouter()
 const { isMobile } = useMobile()
+
+type GenerateKeyFormModel = {
+  key_algorithm: CertificateAssetGenerateKeyAlgorithm
+  key_bits: number
+}
+
+type GenerateKeyBitsOption = {
+  value: number
+  label: string
+}
+
+const generateKeyAlgorithmOptions: Array<{ value: CertificateAssetGenerateKeyAlgorithm; label: string }> = [
+  { value: 'ecdsa', label: 'ECDSA' },
+  { value: 'rsa', label: 'RSA' },
+  { value: 'ed25519', label: 'Ed25519' }
+]
+
+const generateKeyBitsOptionsByAlgorithm: Record<CertificateAssetGenerateKeyAlgorithm, GenerateKeyBitsOption[]> = {
+  ecdsa: [
+    { value: 256, label: '256 (P-256)' },
+    { value: 384, label: '384 (P-384)' },
+    { value: 521, label: '521 (P-521)' }
+  ],
+  rsa: [
+    { value: 2048, label: '2048' },
+    { value: 3072, label: '3072' },
+    { value: 4096, label: '4096' },
+    { value: 6144, label: '6144' },
+    { value: 8192, label: '8192' }
+  ],
+  ed25519: [
+    { value: 256, label: '256 (fixed)' }
+  ]
+}
+
+const minimumRSAGenerateKeyBits = 2048
 
 // Auth state
 const checking = ref(true)
@@ -67,7 +104,9 @@ const generateCaForm = ref({
   remark: '',
   issuer_asset_id: null as number | null,
   common_name: '',
-  validity_days: 3650
+  validity_days: 3650,
+  key_algorithm: 'ecdsa' as CertificateAssetGenerateKeyAlgorithm,
+  key_bits: 256
 })
 const generateCertForm = ref({
   name: '',
@@ -76,7 +115,9 @@ const generateCertForm = ref({
   common_name: '',
   validity_days: 365,
   dns_names: '',
-  ip_addresses: ''
+  ip_addresses: '',
+  key_algorithm: 'ecdsa' as CertificateAssetGenerateKeyAlgorithm,
+  key_bits: 256
 })
 function createValidityDaysValidator(maxDays: number) {
   return (_rule: unknown, value: number) => {
@@ -87,16 +128,59 @@ function createValidityDaysValidator(maxDays: number) {
   }
 }
 
+function getGenerateKeyBitsOptions(algorithm: CertificateAssetGenerateKeyAlgorithm): GenerateKeyBitsOption[] {
+  return generateKeyBitsOptionsByAlgorithm[algorithm] || generateKeyBitsOptionsByAlgorithm.ecdsa
+}
+
+function isCustomGenerateKeyBitsAlgorithm(algorithm: CertificateAssetGenerateKeyAlgorithm): boolean {
+  return algorithm === 'rsa'
+}
+
+function syncGenerateKeyBits(form: GenerateKeyFormModel) {
+  if (isCustomGenerateKeyBitsAlgorithm(form.key_algorithm)) {
+    if (!Number.isInteger(form.key_bits) || form.key_bits < minimumRSAGenerateKeyBits) {
+      form.key_bits = minimumRSAGenerateKeyBits
+    }
+    return
+  }
+
+  const options = getGenerateKeyBitsOptions(form.key_algorithm)
+  if (!options.some(option => option.value === form.key_bits)) {
+    form.key_bits = options[0].value
+  }
+}
+
+function createGenerateKeyBitsValidator(getForm: () => GenerateKeyFormModel) {
+  return (_rule: unknown, value: number) => {
+    if (getForm().key_algorithm === 'rsa') {
+      if (!Number.isInteger(value) || value < minimumRSAGenerateKeyBits || value % 8 !== 0) {
+        return Promise.reject(new Error(`RSA 密钥长度必须是大于等于 ${minimumRSAGenerateKeyBits} 的 8 的倍数`))
+      }
+      return Promise.resolve()
+    }
+
+    const allowed = getGenerateKeyBitsOptions(getForm().key_algorithm).map(option => option.value)
+    if (!allowed.includes(value)) {
+      return Promise.reject(new Error('请选择匹配当前算法的密钥长度'))
+    }
+    return Promise.resolve()
+  }
+}
+
 const generateCaFormRules: FormRules = {
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
   common_name: [{ required: true, message: '请输入 Common Name', trigger: 'blur' }],
-  validity_days: [{ asyncValidator: createValidityDaysValidator(3650), trigger: ['blur', 'change'] }]
+  validity_days: [{ asyncValidator: createValidityDaysValidator(3650), trigger: ['blur', 'change'] }],
+  key_algorithm: [{ required: true, message: '请选择密钥算法', trigger: 'change' }],
+  key_bits: [{ asyncValidator: createGenerateKeyBitsValidator(() => generateCaForm.value), trigger: ['blur', 'change'] }]
 }
 const generateCertFormRules: FormRules = {
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
   issuer_asset_id: [{ required: true, message: '请选择签发 CA', trigger: 'change' }],
   common_name: [{ required: true, message: '请输入 Common Name', trigger: 'blur' }],
-  validity_days: [{ asyncValidator: createValidityDaysValidator(3650), trigger: ['blur', 'change'] }]
+  validity_days: [{ asyncValidator: createValidityDaysValidator(3650), trigger: ['blur', 'change'] }],
+  key_algorithm: [{ required: true, message: '请选择密钥算法', trigger: 'change' }],
+  key_bits: [{ asyncValidator: createGenerateKeyBitsValidator(() => generateCertForm.value), trigger: ['blur', 'change'] }]
 }
 
 // Detail drawer
@@ -164,6 +248,16 @@ function getActiveGenerateForm(): FormInstance | undefined {
 function clearGenerateValidation() {
   generateCaFormRef.value?.clearValidate()
   generateCertFormRef.value?.clearValidate()
+}
+
+function handleGenerateCaKeyAlgorithmChange() {
+  syncGenerateKeyBits(generateCaForm.value)
+  generateCaFormRef.value?.clearValidate(['key_bits'])
+}
+
+function handleGenerateCertKeyAlgorithmChange() {
+  syncGenerateKeyBits(generateCertForm.value)
+  generateCertFormRef.value?.clearValidate(['key_bits'])
 }
 
 // Lifecycle
@@ -360,7 +454,9 @@ function openGenerateDialog() {
     remark: '',
     issuer_asset_id: null,
     common_name: '',
-    validity_days: 3650
+    validity_days: 3650,
+    key_algorithm: 'ecdsa',
+    key_bits: 256
   }
   generateCertForm.value = {
     name: '',
@@ -369,7 +465,9 @@ function openGenerateDialog() {
     common_name: '',
     validity_days: 365,
     dns_names: '',
-    ip_addresses: ''
+    ip_addresses: '',
+    key_algorithm: 'ecdsa',
+    key_bits: 256
   }
   generateDialogVisible.value = true
   nextTick(() => clearGenerateValidation())
@@ -393,7 +491,9 @@ async function submitGenerate() {
         asset_type: 'ca',
         issuer_asset_id: generateCaForm.value.issuer_asset_id || undefined,
         common_name: generateCaForm.value.common_name,
-        validity_days: generateCaForm.value.validity_days
+        validity_days: generateCaForm.value.validity_days,
+        key_algorithm: generateCaForm.value.key_algorithm,
+        key_bits: generateCaForm.value.key_bits
       }
 
       const result = await certificateAssetsApi.generate(payload)
@@ -423,7 +523,9 @@ async function submitGenerate() {
         common_name: generateCertForm.value.common_name,
         validity_days: generateCertForm.value.validity_days,
         dns_names: dnsNames,
-        ip_addresses: ipAddresses
+        ip_addresses: ipAddresses,
+        key_algorithm: generateCertForm.value.key_algorithm,
+        key_bits: generateCertForm.value.key_bits
       }
 
       const result = await certificateAssetsApi.generate(payload)
@@ -820,6 +922,41 @@ async function handleDelete(asset: CertificateAsset) {
             <el-form-item label="Common Name" prop="common_name">
               <el-input v-model="generateCaForm.common_name" placeholder="CA 的 CN 字段" />
             </el-form-item>
+            <el-form-item label="密钥算法" prop="key_algorithm">
+              <el-select
+                v-model="generateCaForm.key_algorithm"
+                class="full-width"
+                @change="handleGenerateCaKeyAlgorithmChange"
+              >
+                <el-option
+                  v-for="option in generateKeyAlgorithmOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="密钥长度" prop="key_bits">
+              <el-input-number
+                v-if="isCustomGenerateKeyBitsAlgorithm(generateCaForm.key_algorithm)"
+                v-model="generateCaForm.key_bits"
+                class="full-width"
+                :min="minimumRSAGenerateKeyBits"
+                :step="8"
+                :step-strictly="true"
+              />
+              <el-select v-else v-model="generateCaForm.key_bits" class="full-width">
+                <el-option
+                  v-for="option in getGenerateKeyBitsOptions(generateCaForm.key_algorithm)"
+                  :key="`${generateCaForm.key_algorithm}-${option.value}`"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <div v-if="isCustomGenerateKeyBitsAlgorithm(generateCaForm.key_algorithm)" class="form-hint">
+                RSA 密钥长度由管理员输入，必须是大于等于 {{ minimumRSAGenerateKeyBits }} 的 8 的倍数
+              </div>
+            </el-form-item>
             <el-form-item label="有效期(天)" prop="validity_days">
               <el-input-number v-model="generateCaForm.validity_days" :min="1" :max="3650" />
             </el-form-item>
@@ -850,6 +987,41 @@ async function handleDelete(asset: CertificateAsset) {
             </el-form-item>
             <el-form-item label="Common Name" prop="common_name">
               <el-input v-model="generateCertForm.common_name" placeholder="证书的 CN 字段" />
+            </el-form-item>
+            <el-form-item label="密钥算法" prop="key_algorithm">
+              <el-select
+                v-model="generateCertForm.key_algorithm"
+                class="full-width"
+                @change="handleGenerateCertKeyAlgorithmChange"
+              >
+                <el-option
+                  v-for="option in generateKeyAlgorithmOptions"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="密钥长度" prop="key_bits">
+              <el-input-number
+                v-if="isCustomGenerateKeyBitsAlgorithm(generateCertForm.key_algorithm)"
+                v-model="generateCertForm.key_bits"
+                class="full-width"
+                :min="minimumRSAGenerateKeyBits"
+                :step="8"
+                :step-strictly="true"
+              />
+              <el-select v-else v-model="generateCertForm.key_bits" class="full-width">
+                <el-option
+                  v-for="option in getGenerateKeyBitsOptions(generateCertForm.key_algorithm)"
+                  :key="`${generateCertForm.key_algorithm}-${option.value}`"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+              <div v-if="isCustomGenerateKeyBitsAlgorithm(generateCertForm.key_algorithm)" class="form-hint">
+                RSA 密钥长度由管理员输入，必须是大于等于 {{ minimumRSAGenerateKeyBits }} 的 8 的倍数
+              </div>
             </el-form-item>
             <el-form-item label="SAN 域名">
               <el-input v-model="generateCertForm.dns_names" placeholder="多个域名用逗号分隔" />

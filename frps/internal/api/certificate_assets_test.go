@@ -3,9 +3,12 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -20,6 +23,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zightch/frp/frps/internal/certassets"
 )
 
 func TestCertificateAssetsLifecycle(t *testing.T) {
@@ -170,6 +175,181 @@ func TestCertificateAssetsLifecycle(t *testing.T) {
 	)
 	if len(listAfterDelete.JSON["items"].([]any)) != 0 {
 		t.Fatalf("expected empty asset list after delete: %#v", listAfterDelete.JSON)
+	}
+}
+
+func TestCertificateAssetsGenerateSupportsCustomKeySpec(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	root := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":          "rsa-root-ca",
+			"asset_type":    "ca",
+			"common_name":   "RSA Root CA",
+			"validity_days": 365,
+			"key_algorithm": "rsa",
+			"key_bits":      3072,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	rootID := int64(root.JSON["item"].(map[string]any)["id"].(float64))
+
+	leaf := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":            "ecdsa-leaf-cert",
+			"asset_type":      "certificate",
+			"issuer_asset_id": rootID,
+			"common_name":     "leaf.example.com",
+			"validity_days":   30,
+			"key_algorithm":   "ecdsa",
+			"key_bits":        384,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	leafID := int64(leaf.JSON["item"].(map[string]any)["id"].(float64))
+
+	ed25519Leaf := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":            "ed25519-leaf-cert",
+			"asset_type":      "certificate",
+			"issuer_asset_id": rootID,
+			"common_name":     "ed25519.example.com",
+			"validity_days":   30,
+			"key_algorithm":   "ed25519",
+			"key_bits":        256,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	ed25519LeafID := int64(ed25519Leaf.JSON["item"].(map[string]any)["id"].(float64))
+
+	rootAsset, err := certassets.LoadAssetByID(context.Background(), store, rootID)
+	if err != nil {
+		t.Fatalf("load generated root asset: %v", err)
+	}
+	rootCert := parseSingleCertificatePEM(t, rootAsset.CRT)
+	if rootCert.PublicKeyAlgorithm != x509.RSA {
+		t.Fatalf("expected generated root certificate to use RSA, got %v", rootCert.PublicKeyAlgorithm)
+	}
+	rootKey, ok := parsePKCS8PrivateKeyPEM(t, rootAsset.Key).(*rsa.PrivateKey)
+	if !ok {
+		t.Fatalf("expected generated root key to be RSA")
+	}
+	if bits := rootKey.N.BitLen(); bits != 3072 {
+		t.Fatalf("expected generated root key bits 3072, got %d", bits)
+	}
+
+	leafAsset, err := certassets.LoadAssetByID(context.Background(), store, leafID)
+	if err != nil {
+		t.Fatalf("load generated leaf asset: %v", err)
+	}
+	leafCert := parseSingleCertificatePEM(t, leafAsset.CRT)
+	if leafCert.PublicKeyAlgorithm != x509.ECDSA {
+		t.Fatalf("expected generated leaf certificate to use ECDSA, got %v", leafCert.PublicKeyAlgorithm)
+	}
+	leafKey, ok := parsePKCS8PrivateKeyPEM(t, leafAsset.Key).(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("expected generated leaf key to be ECDSA")
+	}
+	if bits := leafKey.Curve.Params().BitSize; bits != 384 {
+		t.Fatalf("expected generated leaf key bits 384, got %d", bits)
+	}
+
+	ed25519Asset, err := certassets.LoadAssetByID(context.Background(), store, ed25519LeafID)
+	if err != nil {
+		t.Fatalf("load generated ed25519 leaf asset: %v", err)
+	}
+	ed25519Cert := parseSingleCertificatePEM(t, ed25519Asset.CRT)
+	if ed25519Cert.PublicKeyAlgorithm != x509.Ed25519 {
+		t.Fatalf("expected generated ed25519 certificate to use Ed25519, got %v", ed25519Cert.PublicKeyAlgorithm)
+	}
+	ed25519Key, ok := parsePKCS8PrivateKeyPEM(t, ed25519Asset.Key).(ed25519.PrivateKey)
+	if !ok {
+		t.Fatalf("expected generated ed25519 key to be Ed25519")
+	}
+	if seedSize := ed25519Key.Seed(); len(seedSize) != ed25519.SeedSize {
+		t.Fatalf("expected generated ed25519 seed size %d, got %d", ed25519.SeedSize, len(seedSize))
+	}
+}
+
+func TestCertificateAssetsGenerateRejectsInvalidKeyBits(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+	response := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":          "bad-rsa-ca",
+			"asset_type":    "ca",
+			"common_name":   "Bad RSA CA",
+			"validity_days": 365,
+			"key_algorithm": "rsa",
+			"key_bits":      256,
+		},
+		http.StatusUnprocessableEntity,
+		sessionCookie,
+	)
+	if response.JSON["error_code"] != "certificate_asset_validation_failed" {
+		t.Fatalf("unexpected error code: %#v", response.JSON)
+	}
+
+	details := response.JSON["details"].(map[string]any)
+	issues := details["issues"].([]any)
+	if len(issues) == 0 {
+		t.Fatalf("expected validation issues: %#v", response.JSON)
+	}
+	firstIssue := issues[0].(map[string]any)
+	if firstIssue["field"] != "key_bits" {
+		t.Fatalf("unexpected validation issue: %#v", firstIssue)
 	}
 }
 
@@ -989,6 +1169,46 @@ func sanitizeDownloadTestName(name string, id int64) string {
 		sanitized = "certificate"
 	}
 	return sanitized + "-" + strconv.FormatInt(id, 10)
+}
+
+func parseSingleCertificatePEM(t *testing.T, value string) *x509.Certificate {
+	t.Helper()
+
+	block, rest := pem.Decode([]byte(value))
+	if block == nil {
+		t.Fatalf("expected certificate pem block")
+	}
+	if block.Type != "CERTIFICATE" {
+		t.Fatalf("unexpected pem block type %q", block.Type)
+	}
+	if len(bytes.TrimSpace(rest)) > 0 {
+		t.Fatalf("expected a single certificate pem block")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse certificate pem: %v", err)
+	}
+	return cert
+}
+
+func parsePKCS8PrivateKeyPEM(t *testing.T, value string) any {
+	t.Helper()
+
+	block, rest := pem.Decode([]byte(value))
+	if block == nil {
+		t.Fatalf("expected private key pem block")
+	}
+	if block.Type != "PRIVATE KEY" {
+		t.Fatalf("unexpected private key pem block type %q", block.Type)
+	}
+	if len(bytes.TrimSpace(rest)) > 0 {
+		t.Fatalf("expected a single private key pem block")
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse private key pem: %v", err)
+	}
+	return key
 }
 
 type apiTestCertificateSpec struct {

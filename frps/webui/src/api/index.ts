@@ -284,6 +284,8 @@ export interface CertificateAssetPastePayload {
   key?: string
 }
 
+export type CertificateAssetGenerateKeyAlgorithm = 'ecdsa' | 'rsa' | 'ed25519'
+
 export interface CertificateAssetGeneratePayload {
   name: string
   remark?: string
@@ -293,6 +295,8 @@ export interface CertificateAssetGeneratePayload {
   validity_days: number
   dns_names?: string[]
   ip_addresses?: string[]
+  key_algorithm?: CertificateAssetGenerateKeyAlgorithm
+  key_bits?: number
 }
 
 export const certificateAssetsApi = {

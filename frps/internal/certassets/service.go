@@ -3,8 +3,6 @@ package certassets
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -48,6 +46,8 @@ type GenerateInput struct {
 	ValidityDays  int
 	DNSNames      []string
 	IPAddresses   []string
+	KeyAlgorithm  GenerateKeyAlgorithm
+	KeyBits       int
 }
 
 type ValidationIssue struct {
@@ -471,6 +471,11 @@ func buildGeneratedAsset(existing []Asset, preparedExisting []PreparedAsset, inp
 		})
 	}
 
+	keySpec, err := normalizeGenerateKeySpec(input.KeyAlgorithm, input.KeyBits)
+	if err != nil {
+		return Asset{}, err
+	}
+
 	issuerAssetID := normalizeIssuerAssetID(input.IssuerAssetID)
 	var issuer PreparedAsset
 	var hasIssuer bool
@@ -548,6 +553,7 @@ func buildGeneratedAsset(existing []Asset, preparedExisting []PreparedAsset, inp
 		ValidityDays: input.ValidityDays,
 		DNSNames:     dnsNames,
 		IPAddresses:  ipAddresses,
+		KeySpec:      keySpec,
 		Issuer:       issuer,
 		HasIssuer:    hasIssuer,
 		Now:          now.UTC(),
@@ -581,13 +587,14 @@ type generateMaterialInput struct {
 	ValidityDays int
 	DNSNames     []string
 	IPAddresses  []net.IP
+	KeySpec      GenerateKeySpec
 	Issuer       PreparedAsset
 	HasIssuer    bool
 	Now          time.Time
 }
 
 func generatePEMMaterial(input generateMaterialInput) (string, string, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := generatePrivateKey(input.KeySpec)
 	if err != nil {
 		return "", "", fmt.Errorf("generate private key: %w", err)
 	}

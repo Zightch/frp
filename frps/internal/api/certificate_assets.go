@@ -57,6 +57,8 @@ type certificateAssetGenerateRequest struct {
 	ValidityDays  int      `json:"validity_days"`
 	DNSNames      []string `json:"dns_names"`
 	IPAddresses   []string `json:"ip_addresses"`
+	KeyAlgorithm  string   `json:"key_algorithm"`
+	KeyBits       int      `json:"key_bits"`
 }
 
 type certificateAssetDeleteImpactView struct {
@@ -328,6 +330,8 @@ func (m *managementService) generateCertificateAsset(ctx context.Context, payloa
 		ValidityDays:  payload.ValidityDays,
 		DNSNames:      payload.DNSNames,
 		IPAddresses:   payload.IPAddresses,
+		KeyAlgorithm:  certassets.GenerateKeyAlgorithm(payload.KeyAlgorithm),
+		KeyBits:       payload.KeyBits,
 	})
 	if err != nil {
 		return certificateAssetView{}, mapCertificateAssetError(err)
