@@ -12,10 +12,10 @@ import (
 	"github.com/zightch/frp/frps/pkg/transport"
 )
 
-func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessionState, error) {
+func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (net.Conn, *sessionState, error) {
 	conn, err := c.negotiateTransport(conn, credentials.ClientID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	beginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
@@ -26,27 +26,27 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessi
 		Arch:          detectArch(),
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := c.writeMessage(conn, nil, protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
 		RequestID: 2,
 		Body:      beginBody,
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	frame, err := c.readLoginFrame(conn)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := expectLoginReply(frame, protocol.TypeAuthChallenge, 2); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	challenge, err := protocol.UnmarshalAuthChallenge(frame.Body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	secretHash := sha256.Sum256(credentials.ClientSecret[:])
@@ -56,40 +56,40 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessi
 		Response:    response,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := c.writeMessage(conn, nil, protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
 		RequestID: 3,
 		Body:      finishBody,
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	frame, err = c.readLoginFrame(conn)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := expectLoginReply(frame, protocol.TypeServerHello, 3); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	hello, err := protocol.UnmarshalServerHello(frame.Body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	state := newSessionState(hello.HeartbeatIntervalMs)
 	state.setIdentity(hello.SessionID, transport.ConnectionID(conn))
 
 	frame, err = c.readLoginFrame(conn)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if frame.Type != protocol.TypeConfigPush {
-		return nil, fmt.Errorf("expected config.push, got %s", frame.Type.String())
+		return nil, nil, fmt.Errorf("expected config.push, got %s", frame.Type.String())
 	}
 	if err := c.applyConfigPush(conn, state, frame); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	snapshot := state.snapshotValue()
@@ -101,7 +101,7 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (*sessi
 		"tunnel_count", len(snapshot.Tunnels),
 	)
 
-	return state, nil
+	return conn, state, nil
 }
 
 func (c *Client) negotiateTransport(conn net.Conn, clientID [16]byte) (net.Conn, error) {
@@ -148,10 +148,11 @@ func (c *Client) upgradeConnToTLS(conn net.Conn) (net.Conn, error) {
 		return nil, err
 	}
 
-	tlsConn := tls.Client(conn, &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		ServerName: host,
-	})
+	config, err := c.tlsConfigForHost(host)
+	if err != nil {
+		return nil, err
+	}
+	tlsConn := tls.Client(conn, config)
 	if err := conn.SetDeadline(time.Now().Add(c.readTimeout)); err != nil {
 		return nil, err
 	}
@@ -163,6 +164,16 @@ func (c *Client) upgradeConnToTLS(conn net.Conn) (net.Conn, error) {
 		return nil, err
 	}
 	return tlsConn, nil
+}
+
+func (c *Client) tlsConfigForHost(host string) (*tls.Config, error) {
+	if c != nil && c.buildTLSConfig != nil {
+		return c.buildTLSConfig(host)
+	}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ServerName: host,
+	}, nil
 }
 
 func (c *Client) readLoginFrame(conn net.Conn) (protocol.Frame, error) {

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,12 +27,13 @@ const (
 type dialFunc func(context.Context, string, string) (net.Conn, error)
 
 type Client struct {
-	config      appconfig.Config
-	logger      *slog.Logger
-	version     string
-	dialContext dialFunc
-	readTimeout time.Duration
-	frameIO     transport.FrameIO
+	config         appconfig.Config
+	logger         *slog.Logger
+	version        string
+	dialContext    dialFunc
+	readTimeout    time.Duration
+	frameIO        transport.FrameIO
+	buildTLSConfig func(string) (*tls.Config, error)
 
 	attempt atomic.Uint64
 
@@ -104,7 +106,7 @@ func (c *Client) runOnce(ctx context.Context, credentials appconfig.Credentials)
 }
 
 func (c *Client) runSession(ctx context.Context, conn net.Conn, credentials appconfig.Credentials) error {
-	state, err := c.login(conn, credentials)
+	conn, state, err := c.login(conn, credentials)
 	if err != nil {
 		return err
 	}
