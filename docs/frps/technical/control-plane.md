@@ -98,6 +98,6 @@ frps -> start listeners
 - `transport.client_hello` 必须前置携带 `client_id`
 - `frps` 先按分组的 `control_transport_security` 决定返回明文还是 TLS
 - 分组要求 TLS 时，TLS 成功后才进入现有 `auth.begin` 链路
-- 服务端证书来源于 `certificate_asset_usages.control_listener_tls`
+- 服务端证书来源于 `certificate_asset_usages.frpc_tls`
 
 相关设计见 [../design/certificate-binding.md](../design/certificate-binding.md)。

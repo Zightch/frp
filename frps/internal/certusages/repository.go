@@ -17,6 +17,9 @@ func ListUsagesWithConn(ctx context.Context, conn storage.Conn) ([]Usage, error)
 	if conn == nil {
 		return nil, fmt.Errorf("usage connection is nil")
 	}
+	if err := normalizeLegacyUsageTypesWithConn(ctx, conn); err != nil {
+		return nil, err
+	}
 
 	result, err := conn.QueryContext(
 		ctx,
@@ -51,6 +54,9 @@ ORDER BY usage_type
 func LoadUsageByType(ctx context.Context, conn storage.Conn, usageType UsageType) (Usage, error) {
 	if conn == nil {
 		return Usage{}, fmt.Errorf("usage connection is nil")
+	}
+	if err := normalizeLegacyUsageTypesWithConn(ctx, conn); err != nil {
+		return Usage{}, err
 	}
 
 	row, err := conn.QueryOneContext(
@@ -159,6 +165,16 @@ func DeleteUsageByType(ctx context.Context, conn storage.Conn, usageType UsageTy
 	); err != nil {
 		return fmt.Errorf("delete certificate usage: %w", err)
 	}
+	if usageType == UsageTypeFrpcTLS {
+		if _, err := conn.ExecContext(
+			ctx,
+			`DELETE FROM certificate_asset_usages WHERE usage_type = ? AND target_id = ?`,
+			string(legacyUsageTypeControlListenerTLS),
+			globalTargetID,
+		); err != nil {
+			return fmt.Errorf("delete legacy certificate usage: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -176,7 +192,7 @@ func decodeUsageRow(row storage.Row) (Usage, error) {
 	if item.ID, err = rowInt64(row, "id"); err != nil {
 		return Usage{}, fmt.Errorf("id: %w", err)
 	}
-	item.UsageType = UsageType(strings.ToLower(strings.TrimSpace(rowString(row, "usage_type"))))
+	item.UsageType = NormalizeUsageType(rowString(row, "usage_type"))
 	if item.TargetID, err = rowInt64(row, "target_id"); err != nil {
 		return Usage{}, fmt.Errorf("target_id: %w", err)
 	}
@@ -319,4 +335,74 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func normalizeLegacyUsageTypesWithConn(ctx context.Context, conn storage.Conn) error {
+	if conn == nil {
+		return fmt.Errorf("usage connection is nil")
+	}
+
+	rows, err := conn.QueryContext(
+		ctx,
+		`
+SELECT id, usage_type
+FROM certificate_asset_usages
+WHERE target_id = ? AND usage_type IN (?, ?)
+ORDER BY CASE WHEN usage_type = ? THEN 0 ELSE 1 END, id
+`,
+		globalTargetID,
+		string(UsageTypeFrpcTLS),
+		string(legacyUsageTypeControlListenerTLS),
+		string(UsageTypeFrpcTLS),
+	)
+	if err != nil {
+		return fmt.Errorf("load legacy certificate usage types: %w", err)
+	}
+	if len(rows.Rows) == 0 {
+		return nil
+	}
+
+	var canonicalID int64
+	legacyIDs := make([]int64, 0)
+	for _, row := range rows.Rows {
+		id, idErr := rowInt64(row, "id")
+		if idErr != nil {
+			return fmt.Errorf("decode certificate usage id: %w", idErr)
+		}
+		switch strings.ToLower(strings.TrimSpace(rowString(row, "usage_type"))) {
+		case string(UsageTypeFrpcTLS):
+			if canonicalID == 0 {
+				canonicalID = id
+			}
+		case string(legacyUsageTypeControlListenerTLS):
+			legacyIDs = append(legacyIDs, id)
+		}
+	}
+
+	if canonicalID != 0 {
+		for _, legacyID := range legacyIDs {
+			if _, execErr := conn.ExecContext(ctx, `DELETE FROM certificate_asset_usages WHERE id = ?`, legacyID); execErr != nil {
+				return fmt.Errorf("delete duplicate legacy certificate usage: %w", execErr)
+			}
+		}
+		return nil
+	}
+	if len(legacyIDs) == 0 {
+		return nil
+	}
+
+	if _, err := conn.ExecContext(
+		ctx,
+		`UPDATE certificate_asset_usages SET usage_type = ? WHERE id = ?`,
+		string(UsageTypeFrpcTLS),
+		legacyIDs[0],
+	); err != nil {
+		return fmt.Errorf("migrate certificate usage type to frpc_tls: %w", err)
+	}
+	for _, legacyID := range legacyIDs[1:] {
+		if _, execErr := conn.ExecContext(ctx, `DELETE FROM certificate_asset_usages WHERE id = ?`, legacyID); execErr != nil {
+			return fmt.Errorf("delete duplicate legacy certificate usage: %w", execErr)
+		}
+	}
+	return nil
 }

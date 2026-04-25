@@ -60,7 +60,7 @@ WebUI 基址内的 `/` 会重定向到 `/proxy-groups`。
 - 分组列表、新建、编辑、删除、登录 `key` 重置
 - 隧道列表、新建、编辑、删除
 - 证书资产列表、导入、粘贴、生成、详情、编辑名称/备注、删除、下载
-- 入口证书绑定：`webui_https`、`control_listener_tls`
+- 入口证书绑定：`webui_https`、`frpc_tls`
 
 WebUI 开发约束和 Element Plus 用法规范见：
 

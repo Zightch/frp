@@ -79,7 +79,7 @@ const groupForm = ref<{
 const groupFormRules = {
   name: [{ required: true, message: '请输入分组名称', trigger: 'blur' }],
   effective_ip: [{ required: true, message: '请选择生效 IP', trigger: 'change' }],
-  control_transport_security: [{ required: true, message: '请选择 frpc 登录传输策略', trigger: 'change' }]
+  control_transport_security: [{ required: true, message: '请选择 frpc TLS 状态', trigger: 'change' }]
 }
 
 // New login key display
@@ -119,8 +119,8 @@ const filteredTunnels = computed(() =>
     : []
 )
 
-const controlListenerTLSUsage = computed(() =>
-  certificateUsages.value.find(item => item.usage_type === 'control_listener_tls') || null
+const frpcTLSUsage = computed(() =>
+  certificateUsages.value.find(item => item.usage_type === 'frpc_tls') || null
 )
 
 // Lifecycle
@@ -225,11 +225,11 @@ function formatRemotePort(tunnel: Tunnel): string {
 }
 
 function formatControlTransportSecurity(value: ControlTransportSecurity): string {
-  return value === 'tls_required' ? 'TLS 必需' : '明文'
+  return value === 'tls_required' ? '启用' : '禁用'
 }
 
-function controlTransportSecurityTagType(value: ControlTransportSecurity): '' | 'warning' {
-  return value === 'tls_required' ? 'warning' : ''
+function controlTransportSecurityTagType(value: ControlTransportSecurity): 'success' | 'info' {
+  return value === 'tls_required' ? 'success' : 'info'
 }
 
 function formatLocalAddr(tunnel: Tunnel): string {
@@ -727,7 +727,7 @@ function copyKey(value: string) {
                 <span class="group-info-value">{{ selectedGroup.effective_ip }}</span>
               </span>
               <span class="group-info-item">
-                <span class="group-info-label">frpc 登录传输</span>
+                <span class="group-info-label">frpc TLS</span>
                 <span class="group-info-value">
                   <el-tag
                     size="small"
@@ -888,7 +888,8 @@ function copyKey(value: string) {
         ref="groupFormRef"
         :model="groupForm"
         :rules="groupFormRules"
-        label-width="80px"
+        label-width="108px"
+        class="group-form"
       >
         <el-form-item label="名称" prop="name">
           <el-input v-model="groupForm.name" placeholder="请输入分组名称" />
@@ -909,14 +910,14 @@ function copyKey(value: string) {
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="frpc 登录传输" prop="control_transport_security">
+        <el-form-item label="frpc TLS" prop="control_transport_security">
           <el-select
             v-model="groupForm.control_transport_security"
-            placeholder="请选择 frpc 登录传输策略"
+            placeholder="请选择 frpc TLS 状态"
             class="full-width"
           >
-            <el-option label="明文" value="plain" />
-            <el-option label="TLS 必需" value="tls_required" />
+            <el-option label="禁用" value="plain" />
+            <el-option label="启用" value="tls_required" />
           </el-select>
         </el-form-item>
         <el-form-item label="启用">
@@ -924,14 +925,14 @@ function copyKey(value: string) {
         </el-form-item>
       </el-form>
       <el-alert
-        v-if="groupForm.control_transport_security === 'tls_required' && !controlListenerTLSUsage?.enabled"
+        v-if="groupForm.control_transport_security === 'tls_required' && !frpcTLSUsage?.enabled"
         type="warning"
         :closable="false"
         show-icon
         class="dialog-alert"
       >
-        <template #title>当前还没有绑定 frpc 登录服务端证书</template>
-        请先到“证书资产”页绑定 `control_listener_tls`，否则保存会被后端拒绝。
+        <template #title>当前还没有绑定 frpc TLS 服务端证书</template>
+        请先到“证书资产”页绑定 `frpc_tls`，否则无法启用 frpc TLS。
       </el-alert>
       <template #footer>
         <el-button @click="groupDialogVisible = false">取消</el-button>
@@ -1162,6 +1163,10 @@ function copyKey(value: string) {
 /* Dialog styles */
 .dialog-alert {
   margin-bottom: var(--spacing-md);
+}
+
+.group-form :deep(.el-form-item__label) {
+  white-space: nowrap;
 }
 
 .key-dialog-text {

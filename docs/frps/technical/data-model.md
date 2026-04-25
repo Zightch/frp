@@ -125,7 +125,7 @@
 
 - `webui_https`
   - 管理面 HTTPS 服务端证书
-- `control_listener_tls`
+- `frpc_tls`
   - `frpc` 登录监听口在需要 TLS 时使用的全局服务端证书
 
 当前约束：

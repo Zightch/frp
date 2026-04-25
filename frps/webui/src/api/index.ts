@@ -310,7 +310,7 @@ export interface CertificateAssetGeneratePayload {
   key_bits?: number
 }
 
-export type CertificateUsageType = 'webui_https' | 'control_listener_tls'
+export type CertificateUsageType = 'webui_https' | 'frpc_tls'
 
 export interface CertificateUsage {
   usage_type: CertificateUsageType

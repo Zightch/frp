@@ -2,6 +2,7 @@ package certusages
 
 import (
 	"crypto/tls"
+	"strings"
 	"time"
 
 	"github.com/zightch/frp/frps/internal/certassets"
@@ -10,11 +11,13 @@ import (
 type UsageType string
 
 const (
-	UsageTypeWebUIHTTPS         UsageType = "webui_https"
-	UsageTypeControlListenerTLS UsageType = "control_listener_tls"
+	UsageTypeWebUIHTTPS UsageType = "webui_https"
+	UsageTypeFrpcTLS    UsageType = "frpc_tls"
 )
 
 const globalTargetID int64 = 0
+
+const legacyUsageTypeControlListenerTLS UsageType = "control_listener_tls"
 
 type Usage struct {
 	ID        int64
@@ -50,6 +53,17 @@ type ResolvedBinding struct {
 func AllUsageTypes() []UsageType {
 	return []UsageType{
 		UsageTypeWebUIHTTPS,
-		UsageTypeControlListenerTLS,
+		UsageTypeFrpcTLS,
+	}
+}
+
+func NormalizeUsageType(value string) UsageType {
+	switch UsageType(strings.ToLower(strings.TrimSpace(value))) {
+	case UsageTypeWebUIHTTPS:
+		return UsageTypeWebUIHTTPS
+	case UsageTypeFrpcTLS, legacyUsageTypeControlListenerTLS:
+		return UsageTypeFrpcTLS
+	default:
+		return ""
 	}
 }

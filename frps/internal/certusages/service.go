@@ -318,7 +318,7 @@ func isSelfSigned(cert *x509.Certificate) bool {
 
 func isKnownUsageType(value UsageType) bool {
 	switch value {
-	case UsageTypeWebUIHTTPS, UsageTypeControlListenerTLS:
+	case UsageTypeWebUIHTTPS, UsageTypeFrpcTLS:
 		return true
 	default:
 		return false

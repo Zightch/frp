@@ -252,7 +252,7 @@ const bindableCertificateAssets = computed(() => {
 const usageCards = computed(() => {
   return [
     getCertificateUsage('webui_https'),
-    getCertificateUsage('control_listener_tls')
+    getCertificateUsage('frpc_tls')
   ]
 })
 
@@ -436,7 +436,7 @@ function getCertificateUsage(usageType: CertificateUsageType): CertificateUsage 
 }
 
 function formatUsageType(usageType: CertificateUsageType): string {
-  return usageType === 'webui_https' ? 'WebUI HTTPS' : 'frpc 登录 TLS'
+  return usageType === 'webui_https' ? 'WebUI HTTPS' : 'frpc TLS'
 }
 
 function formatUsageStatus(status: CertificateUsage['status']): string {

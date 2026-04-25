@@ -1186,15 +1186,15 @@ func (m *managementService) validateControlTransportSecurity(ctx context.Context
 		return &apiError{Status: http.StatusServiceUnavailable, Message: "certificate usage service is unavailable"}
 	}
 
-	enabled, err := m.usages.IsEnabled(ctx, certusages.UsageTypeControlListenerTLS)
+	enabled, err := m.usages.IsEnabled(ctx, certusages.UsageTypeFrpcTLS)
 	if err != nil {
-		return fmt.Errorf("load control listener tls usage: %w", err)
+		return fmt.Errorf("load frpc tls usage: %w", err)
 	}
 	if !enabled {
 		return &apiError{
 			Status:  http.StatusConflict,
-			Message: "frpc login tls certificate must be bound before proxy groups can require tls",
-			Code:    "control_listener_tls_required",
+			Message: "frpc tls certificate must be bound before frpc tls can be enabled",
+			Code:    "frpc_tls_required",
 		}
 	}
 	return nil

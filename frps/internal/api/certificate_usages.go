@@ -11,14 +11,14 @@ import (
 )
 
 type certificateUsageView struct {
-	UsageType           string  `json:"usage_type"`
-	AssetID             *int64  `json:"asset_id,omitempty"`
-	AssetName           string  `json:"asset_name,omitempty"`
-	Enabled             bool    `json:"enabled"`
-	Status              string  `json:"status"`
-	StatusReason        string  `json:"status_reason,omitempty"`
-	ResolvedChainLength int     `json:"resolved_chain_length"`
-	UpdatedAt           string  `json:"updated_at,omitempty"`
+	UsageType           string                `json:"usage_type"`
+	AssetID             *int64                `json:"asset_id,omitempty"`
+	AssetName           string                `json:"asset_name,omitempty"`
+	Enabled             bool                  `json:"enabled"`
+	Status              string                `json:"status"`
+	StatusReason        string                `json:"status_reason,omitempty"`
+	ResolvedChainLength int                   `json:"resolved_chain_length"`
+	UpdatedAt           string                `json:"updated_at,omitempty"`
 	Asset               *certificateAssetView `json:"asset,omitempty"`
 }
 
@@ -102,9 +102,9 @@ func parseCertificateUsageTypeFromPath(path string) (certusages.UsageType, error
 	if strings.Contains(value, "/") || strings.TrimSpace(value) == "" {
 		return "", &apiError{Status: http.StatusNotFound, Message: "resource not found"}
 	}
-	usageType := certusages.UsageType(strings.ToLower(strings.TrimSpace(value)))
+	usageType := certusages.NormalizeUsageType(value)
 	switch usageType {
-	case certusages.UsageTypeWebUIHTTPS, certusages.UsageTypeControlListenerTLS:
+	case certusages.UsageTypeWebUIHTTPS, certusages.UsageTypeFrpcTLS:
 		return usageType, nil
 	default:
 		return "", &apiError{Status: http.StatusNotFound, Message: "resource not found"}
@@ -172,7 +172,7 @@ func (m *managementService) deleteCertificateUsage(ctx context.Context, usageTyp
 		return certificateUsageView{}, &apiError{Status: http.StatusServiceUnavailable, Message: "certificate usage service is unavailable"}
 	}
 
-	if usageType == certusages.UsageTypeControlListenerTLS {
+	if usageType == certusages.UsageTypeFrpcTLS {
 		count, err := m.countTLSRequiredProxyGroups(ctx)
 		if err != nil {
 			return certificateUsageView{}, err
@@ -180,8 +180,8 @@ func (m *managementService) deleteCertificateUsage(ctx context.Context, usageTyp
 		if count > 0 {
 			return certificateUsageView{}, &apiError{
 				Status:  http.StatusConflict,
-				Message: "frpc login tls certificate cannot be removed while proxy groups require tls",
-				Code:    "control_listener_tls_in_use",
+				Message: "frpc tls certificate cannot be removed while frpc tls is enabled for proxy groups",
+				Code:    "frpc_tls_in_use",
 			}
 		}
 	}
@@ -227,7 +227,7 @@ func (m *managementService) applyCertificateUsageBinding(usageType certusages.Us
 	switch usageType {
 	case certusages.UsageTypeWebUIHTTPS:
 		return m.server.EnableWebUIHTTPS(binding)
-	case certusages.UsageTypeControlListenerTLS:
+	case certusages.UsageTypeFrpcTLS:
 		return m.server.ConfigureControlTLS(binding)
 	default:
 		return errors.New("unsupported certificate usage type")
@@ -238,7 +238,7 @@ func (m *managementService) clearCertificateUsageBinding(usageType certusages.Us
 	switch usageType {
 	case certusages.UsageTypeWebUIHTTPS:
 		return m.server.DisableWebUIHTTPS()
-	case certusages.UsageTypeControlListenerTLS:
+	case certusages.UsageTypeFrpcTLS:
 		return m.server.ClearControlTLS()
 	default:
 		return errors.New("unsupported certificate usage type")

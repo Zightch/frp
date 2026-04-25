@@ -21,7 +21,7 @@
 - `effective_ip` 只能是本机当前可用 IPv4、IPv6，或 `0.0.0.0`、`::`
 - `effective_ip` 是分组级公网绑定地址
 - `control_transport_security = plain | tls_required`
-- 分组切到 `tls_required` 前，必须先绑定 `control_listener_tls`
+- 分组切到 `tls_required` 前，必须先绑定 `frpc_tls`
 - 一个分组固定只允许一个在线 `frpc`
 - 禁用分组后，新登录必须被拒绝
 

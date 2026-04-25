@@ -58,7 +58,7 @@
 入口证书绑定卡片当前固定两张：
 
 - `WebUI HTTPS`
-- `frpc 登录 TLS`
+- `frpc TLS`
 
 每张卡片当前都会展示：
 
@@ -263,14 +263,14 @@
 | 使用点 | 说明 |
 |--------|------|
 | `webui_https` | 管理监听器 HTTPS 服务端证书 |
-| `control_listener_tls` | `frpc` 登录监听口在 TLS 模式下使用的全局服务端证书 |
+| `frpc_tls` | `frpc` 登录监听口在 TLS 模式下使用的全局服务端证书 |
 
 ### 8.2 当前交互
 
 - 只允许选择 `asset_type=certificate` 且 `key_present=true` 的资产
 - 绑定 `webui_https` 成功后，页面会自动跳转到同地址的 `https://`
 - 解绑 `webui_https` 时，页面会自动回跳 `http://`
-- `control_listener_tls` 的绑定不会主动跳转页面
+- `frpc_tls` 的绑定不会主动跳转页面
 | `chain` | 生成资产 | 下载“当前节点到某个祖先”的单条证书链 |
 | `tree` | 生成 CA | 下载该 CA 节点的部分子树或整棵树 |
 

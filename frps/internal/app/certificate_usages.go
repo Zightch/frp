@@ -35,7 +35,7 @@ func (a *App) initCertificateUsages(ctx context.Context, service *certusages.Ser
 			if err := a.api.EnableWebUIHTTPS(&binding); err != nil {
 				return err
 			}
-		case certusages.UsageTypeControlListenerTLS:
+		case certusages.UsageTypeFrpcTLS:
 			if a.control == nil {
 				return fmt.Errorf("control server is unavailable")
 			}

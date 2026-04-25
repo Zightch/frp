@@ -1,4 +1,4 @@
-# 证书绑定设计：WebUI HTTPS 与 frpc 登录 TLS
+# 证书绑定设计：WebUI HTTPS 与 frpc TLS
 
 本文档描述“证书资产”之上的下一层能力：把已有证书绑定到 `frps` 的实际使用点。当前只覆盖两个入口：
 
@@ -42,7 +42,7 @@
 
 - `usage_type` 当前固定为：
   - `webui_https`
-  - `control_listener_tls`
+  - `frpc_tls`
 - `target_id` 当前允许为空；这两个使用点目前都是全局单例。
 - `asset_id` 指向被绑定的叶子证书资产。
 - `enabled` 表示该绑定是否生效。
@@ -74,7 +74,7 @@
 
 这样职责分层保持清楚：
 
-- `certificate_asset_usages.control_listener_tls`
+- `certificate_asset_usages.frpc_tls`
 - 回答 `frpc` 登录监听器（默认端口 `7000`）在需要 TLS 时用哪张服务端证书
 - `proxy_groups.control_transport_security`
 - 回答某个分组连接 `frpc` 登录监听器时是走明文还是强制 TLS
@@ -119,13 +119,13 @@
 - 当前管理 session 的逻辑有效期不必重置，但底层 TCP 连接会被重建。
 - 解绑后，管理面再切回纯 HTTP。
 
-## 6. frpc 登录 TLS
+## 6. frpc TLS
 
 ### 6.1 使用点
 
-- `usage_type = control_listener_tls`
+- `usage_type = frpc_tls`
 
-这里的 `control_listener_tls` 只表示 `frpc` 登录监听器（默认端口 `7000`）的全局服务端证书，不表示所有分组都必须走 TLS。
+这里的 `frpc_tls` 只表示 `frpc` 登录监听器（默认端口 `7000`）的全局服务端证书，不表示所有分组都必须走 TLS。
 
 分组是否强制 TLS 由 `proxy_groups.control_transport_security` 决定。
 
@@ -220,7 +220,7 @@ frpc -> config.ack
 
 ### 6.7 frpc 侧配套要求
 
-`frpc` 登录 TLS 不能只做“加密”，还必须做服务端身份校验。否则只能防窃听，不能防中间人。
+`frpc` TLS 不能只做“加密”，还必须做服务端身份校验。否则只能防窃听，不能防中间人。
 
 因此配套需要：
 
@@ -272,8 +272,8 @@ frpc -> config.ack
 
 首版行为约束：
 
-- 分组切到 `tls_required` 时，后端必须先校验 `control_listener_tls` 已配置有效服务端证书。
-- 如果已有分组正在使用 `tls_required`，则不允许解绑 `control_listener_tls`。
+- 分组切到 `tls_required` 时，后端必须先校验 `frpc_tls` 已配置有效服务端证书。
+- 如果已有分组正在使用 `tls_required`，则不允许解绑 `frpc_tls`。
 
 ## 8. 与当前证书资产层的关系
 
@@ -287,5 +287,5 @@ frpc -> config.ack
 1. 先加 `certificate_asset_usages` 表，并给 `proxy_groups` 补 `control_transport_security`。
 2. 先做 `webui_https`，因为只影响 `frps` 自身监听器。
 3. 再做 `frpc` 登录预协商，固定 `client_hello(client_id) -> server_hello(是否 TLS)`。
-4. 再做 `frpc` 登录 TLS 握手与后续登录链路衔接。
+4. 再做 `frpc TLS` 握手与后续登录链路衔接。
 5. 最后再考虑是否扩展到 tunnel / 反向代理 / SNI 多证书。
