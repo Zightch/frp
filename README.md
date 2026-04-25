@@ -11,5 +11,5 @@ WebUI 是 `frps` 的一部分，使用 Node.js + Element 构建，编译后由 `
 
 - [总体项目概述](docs/project-overview.md)
 - [文档索引](docs/README.md)
-- [frps 文档](docs/frps/project-overview.md)
+- [frps 文档](docs/frps/README.md)
 - [frpc 文档](docs/frpc/project-overview.md)

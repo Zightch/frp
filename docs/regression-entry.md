@@ -7,7 +7,7 @@
 边界固定如下：
 
 - 不新增自动化脚本。
-- 不替代 `docs/frps/testing-debugging.md` 与 `docs/frpc/testing-debugging.md` 的细节说明。
+- 不替代 `docs/frps/development/testing-debugging.md` 与 `docs/frpc/testing-debugging.md` 的细节说明。
 - 当前这一轮“初步框架重构”期间，优先以本文作为日常回归入口。
 
 ## 1. 使用约定

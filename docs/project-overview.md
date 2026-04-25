@@ -126,8 +126,8 @@ External clients
 
 - [frps/frpc 当前代码架构图](frps-frpc-current-architecture.md)
 - [frps/frpc 协议文档](protocol.md)
-- [frps 项目概览](frps/project-overview.md)
+- [frps 文档索引](frps/README.md)
 - [frps WebUI 最小基线](webui/overview.md)
-- [frps 技术设计](frps/technical-design.md)
+- [frps 架构与模块](frps/technical/architecture.md)
 - [frpc 项目概览](frpc/project-overview.md)
 - [frpc 技术设计](frpc/technical-design.md)
