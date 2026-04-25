@@ -1,6 +1,7 @@
 package api
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -507,6 +509,307 @@ func TestCertificateAssetDownloadOptionsDifferentiateGeneratedAndUploadedAssets(
 	}
 }
 
+func TestCertificateAssetDownloadGeneratedLeafSingleAndChain(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	rootResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":          "generated-root",
+			"asset_type":    "ca",
+			"common_name":   "Generated Root",
+			"validity_days": 365,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	rootID := int64(rootResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	leafResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":            "generated-leaf",
+			"asset_type":      "certificate",
+			"issuer_asset_id": rootID,
+			"common_name":     "generated.example.com",
+			"validity_days":   30,
+			"dns_names":       []string{"generated.example.com"},
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	leafID := int64(leafResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	singleDownload := performBinaryRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(leafID, 10)+"/download",
+		http.StatusOK,
+		sessionCookie,
+	)
+	if contentType := singleDownload.Headers.Get("Content-Type"); contentType != "application/zip" {
+		t.Fatalf("unexpected single download content type: %q", contentType)
+	}
+	if !strings.Contains(singleDownload.Headers.Get("Content-Disposition"), ".zip") {
+		t.Fatalf("expected zip content disposition, got: %q", singleDownload.Headers.Get("Content-Disposition"))
+	}
+
+	singleEntries := readZipEntries(t, singleDownload.Body)
+	if len(singleEntries) != 2 {
+		t.Fatalf("unexpected single download archive entries: %#v", singleEntries)
+	}
+	singleCRTName, singleCRT := findZipEntryBySuffix(t, singleEntries, ".crt")
+	if strings.Contains(singleCRTName, "-chain.crt") {
+		t.Fatalf("single download should not use chain crt name: %q", singleCRTName)
+	}
+	if countPEMCertificates(singleCRT) != 1 {
+		t.Fatalf("expected single download crt to contain one certificate, got %d", countPEMCertificates(singleCRT))
+	}
+	if _, keyContent := findZipEntryBySuffix(t, singleEntries, ".key"); !strings.Contains(keyContent, "BEGIN PRIVATE KEY") {
+		t.Fatalf("expected single download key file, got: %#v", singleEntries)
+	}
+
+	chainDownload := performBinaryRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(leafID, 10)+"/download?mode=chain&ancestor_id="+strconv.FormatInt(rootID, 10),
+		http.StatusOK,
+		sessionCookie,
+	)
+	chainEntries := readZipEntries(t, chainDownload.Body)
+	if len(chainEntries) != 2 {
+		t.Fatalf("unexpected chain download archive entries: %#v", chainEntries)
+	}
+	chainCRTName, chainCRT := findZipEntryBySuffix(t, chainEntries, ".crt")
+	if !strings.Contains(chainCRTName, "-chain.crt") {
+		t.Fatalf("expected chain crt name, got %q", chainCRTName)
+	}
+	if countPEMCertificates(chainCRT) != 2 {
+		t.Fatalf("expected chain download crt to contain two certificates, got %d", countPEMCertificates(chainCRT))
+	}
+	if !strings.HasPrefix(chainCRT, singleCRT) {
+		t.Fatalf("expected chain crt to start with leaf certificate")
+	}
+}
+
+func TestCertificateAssetDownloadGeneratedCATree(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	rootResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":          "tree-root",
+			"asset_type":    "ca",
+			"common_name":   "Tree Root",
+			"validity_days": 365,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	rootID := int64(rootResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	intermediateResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":            "tree-intermediate",
+			"asset_type":      "ca",
+			"issuer_asset_id": rootID,
+			"common_name":     "Tree Intermediate",
+			"validity_days":   180,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	intermediateID := int64(intermediateResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	leafResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/generate",
+		map[string]any{
+			"name":            "tree-leaf",
+			"asset_type":      "certificate",
+			"issuer_asset_id": intermediateID,
+			"common_name":     "tree.example.com",
+			"validity_days":   30,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	leafID := int64(leafResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	treeDownload := performBinaryRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(rootID, 10)+"/download?mode=tree",
+		http.StatusOK,
+		sessionCookie,
+	)
+	treeEntries := readZipEntries(t, treeDownload.Body)
+	if len(treeEntries) != 6 {
+		t.Fatalf("unexpected tree download archive entries: %#v", treeEntries)
+	}
+	if _, content := findZipEntryByName(t, treeEntries, expectedDownloadFileName("tree-root", rootID, ".crt")); countPEMCertificates(content) != 1 {
+		t.Fatalf("expected root crt in tree download")
+	}
+	if _, content := findZipEntryByName(t, treeEntries, expectedDownloadFileName("tree-intermediate", intermediateID, ".crt")); countPEMCertificates(content) != 1 {
+		t.Fatalf("expected intermediate crt in tree download")
+	}
+	if _, content := findZipEntryByName(t, treeEntries, expectedDownloadFileName("tree-leaf", leafID, ".crt")); countPEMCertificates(content) != 1 {
+		t.Fatalf("expected leaf crt in tree download")
+	}
+}
+
+func TestCertificateAssetDownloadUploadedAssetOriginalOnly(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+	now := time.Now().UTC()
+
+	root := issueAPITestCertificate(t, apiTestCertificateSpec{
+		CommonName: "uploaded-download-root",
+		IsCA:       true,
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+	})
+	rootResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/paste",
+		map[string]any{
+			"name": "uploaded-download-root",
+			"crt":  root.CertPEM,
+			"key":  root.KeyPEM,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	if rootResponse.JSON["item"].(map[string]any)["asset_type"] != "ca" {
+		t.Fatalf("expected uploaded root ca: %#v", rootResponse.JSON)
+	}
+
+	leaf := issueAPITestCertificate(t, apiTestCertificateSpec{
+		CommonName: "uploaded-download-leaf",
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+		Issuer:     &root,
+	})
+	originalCRT := leaf.CertPEM + root.CertPEM
+	leafResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/paste",
+		map[string]any{
+			"name": "uploaded-download-leaf",
+			"crt":  originalCRT,
+			"key":  leaf.KeyPEM,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	leafID := int64(leafResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	originalDownload := performBinaryRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(leafID, 10)+"/download",
+		http.StatusOK,
+		sessionCookie,
+	)
+	originalEntries := readZipEntries(t, originalDownload.Body)
+	if len(originalEntries) != 2 {
+		t.Fatalf("unexpected original download archive entries: %#v", originalEntries)
+	}
+	_, originalCRTContent := findZipEntryBySuffix(t, originalEntries, ".crt")
+	if originalCRTContent != originalCRT {
+		t.Fatalf("expected uploaded asset crt to preserve original structure")
+	}
+	if _, keyContent := findZipEntryBySuffix(t, originalEntries, ".key"); !strings.Contains(keyContent, "BEGIN PRIVATE KEY") {
+		t.Fatalf("expected uploaded asset key in archive: %#v", originalEntries)
+	}
+
+	rejected := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(leafID, 10)+"/download?mode=chain",
+		nil,
+		http.StatusUnprocessableEntity,
+		sessionCookie,
+	)
+	if rejected.JSON["error_code"] != "certificate_asset_validation_failed" {
+		t.Fatalf("unexpected invalid upload download response: %#v", rejected.JSON)
+	}
+}
+
 func performMultipartRequest(
 	t *testing.T,
 	handler http.Handler,
@@ -563,6 +866,129 @@ func performMultipartRequest(
 		t.Fatalf("decode multipart response: %v", err)
 	}
 	return response
+}
+
+type binaryTestResponse struct {
+	Body    []byte
+	Headers http.Header
+	Cookies []*http.Cookie
+}
+
+func performBinaryRequest(
+	t *testing.T,
+	handler http.Handler,
+	method string,
+	target string,
+	wantStatus int,
+	cookies ...*http.Cookie,
+) binaryTestResponse {
+	t.Helper()
+
+	request := httptest.NewRequest(method, target, nil)
+	for _, cookie := range cookies {
+		request.AddCookie(cookie)
+	}
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != wantStatus {
+		t.Fatalf("unexpected status for %s %s: got %d want %d body=%s", method, target, recorder.Code, wantStatus, recorder.Body.String())
+	}
+
+	return binaryTestResponse{
+		Body:    append([]byte(nil), recorder.Body.Bytes()...),
+		Headers: recorder.Result().Header.Clone(),
+		Cookies: recorder.Result().Cookies(),
+	}
+}
+
+func readZipEntries(t *testing.T, body []byte) map[string]string {
+	t.Helper()
+
+	reader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("open zip archive: %v", err)
+	}
+
+	items := make(map[string]string, len(reader.File))
+	for _, file := range reader.File {
+		stream, err := file.Open()
+		if err != nil {
+			t.Fatalf("open zip entry %q: %v", file.Name, err)
+		}
+		raw, err := io.ReadAll(stream)
+		_ = stream.Close()
+		if err != nil {
+			t.Fatalf("read zip entry %q: %v", file.Name, err)
+		}
+		items[file.Name] = string(raw)
+	}
+	return items
+}
+
+func findZipEntryBySuffix(t *testing.T, entries map[string]string, suffix string) (string, string) {
+	t.Helper()
+
+	for name, content := range entries {
+		if strings.HasSuffix(name, suffix) {
+			return name, content
+		}
+	}
+	t.Fatalf("missing zip entry with suffix %q in %#v", suffix, entries)
+	return "", ""
+}
+
+func findZipEntryByName(t *testing.T, entries map[string]string, name string) (string, string) {
+	t.Helper()
+
+	content, ok := entries[name]
+	if !ok {
+		t.Fatalf("missing zip entry %q in %#v", name, entries)
+	}
+	return name, content
+}
+
+func countPEMCertificates(value string) int {
+	return strings.Count(value, "BEGIN CERTIFICATE")
+}
+
+func expectedDownloadFileName(name string, id int64, extension string) string {
+	return sanitizeDownloadTestName(name, id) + extension
+}
+
+func sanitizeDownloadTestName(name string, id int64) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		name = "certificate"
+	}
+
+	var builder strings.Builder
+	lastDash := false
+	for _, char := range name {
+		switch {
+		case char >= 'a' && char <= 'z':
+			builder.WriteRune(char)
+			lastDash = false
+		case char >= '0' && char <= '9':
+			builder.WriteRune(char)
+			lastDash = false
+		case char == '-' || char == '_':
+			builder.WriteRune(char)
+			lastDash = false
+		default:
+			if !lastDash {
+				builder.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+
+	sanitized := strings.Trim(builder.String(), "-_.")
+	if sanitized == "" {
+		sanitized = "certificate"
+	}
+	return sanitized + "-" + strconv.FormatInt(id, 10)
 }
 
 type apiTestCertificateSpec struct {

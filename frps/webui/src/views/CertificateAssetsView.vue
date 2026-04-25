@@ -8,7 +8,9 @@ import {
   certificateAssetsApi,
   type CertificateAsset,
   type CertificateAssetPastePayload,
-  type CertificateAssetGeneratePayload
+  type CertificateAssetGeneratePayload,
+  type CertificateAssetDownloadMode,
+  type CertificateAssetDownloadOptions
 } from '@/api'
 
 defineOptions({
@@ -98,6 +100,18 @@ const generateCertFormRules: FormRules = {
 // Detail drawer
 const detailDrawerVisible = ref(false)
 const detailAsset = ref<CertificateAsset | null>(null)
+
+// Download dialog
+const downloadDialogVisible = ref(false)
+const downloadLoading = ref(false)
+const downloadOptions = ref<CertificateAssetDownloadOptions | null>(null)
+const downloadMode = ref<CertificateAssetDownloadMode>('single')
+const downloadAncestorId = ref<number | null>(null)
+const downloadSelectedAssetIds = ref<number[]>([])
+const downloadTreeProps = {
+  children: 'children',
+  label: 'name'
+}
 
 // Computed
 const filteredAssets = computed(() => {
@@ -226,6 +240,16 @@ function getStatusText(asset: CertificateAsset): string {
     case 'expired': return '已过期'
     case 'not_yet_valid': return '未生效'
     default: return '未知'
+  }
+}
+
+function formatDownloadMode(mode: CertificateAssetDownloadMode): string {
+  switch (mode) {
+    case 'original': return '原始'
+    case 'single': return '当前节点'
+    case 'chain': return '证书链'
+    case 'tree': return '子树'
+    default: return mode
   }
 }
 
@@ -414,6 +438,91 @@ function getIssuerDisplayName(asset: CertificateAsset): string {
   if (asset.issuer_name) return asset.issuer_name
   if (asset.issuer) return asset.issuer
   return '(无)'
+}
+
+// Download
+async function openDownloadDialog(asset: CertificateAsset) {
+  downloadLoading.value = true
+  downloadDialogVisible.value = true
+
+  const result = await certificateAssetsApi.getDownloadOptions(asset.id)
+  downloadLoading.value = false
+
+  if (result.error) {
+    ElMessage.error(result.error)
+    downloadDialogVisible.value = false
+    return
+  }
+
+  downloadOptions.value = result.data || null
+
+  // Reset to default mode
+  const defaultMode = downloadOptions.value?.modes.find(m => m.default)?.mode || downloadOptions.value?.modes[0]?.mode
+  downloadMode.value = defaultMode || 'single'
+  downloadAncestorId.value = null
+  downloadSelectedAssetIds.value = []
+}
+
+function handleDownloadModeChange() {
+  downloadAncestorId.value = null
+  downloadSelectedAssetIds.value = []
+}
+
+async function executeDownload() {
+  if (!downloadOptions.value) return
+
+  const targetId = downloadOptions.value.target.id
+  const params: {
+    mode: CertificateAssetDownloadMode
+    ancestor_id?: number
+    asset_ids?: number[]
+  } = { mode: downloadMode.value }
+
+  if (downloadMode.value === 'chain' && downloadAncestorId.value) {
+    params.ancestor_id = downloadAncestorId.value
+  }
+
+  if (downloadMode.value === 'tree' && downloadSelectedAssetIds.value.length > 0) {
+    params.asset_ids = downloadSelectedAssetIds.value
+  }
+
+  downloadLoading.value = true
+  const result = await certificateAssetsApi.download(targetId, params)
+  downloadLoading.value = false
+
+  if (result.error) {
+    ElMessage.error(result.error)
+    return
+  }
+
+  ElMessage.success('下载成功')
+  downloadDialogVisible.value = false
+}
+
+function buildDownloadTreeData(): Array<{ id: number; name: string; children?: Array<{ id: number; name: string }> }> {
+  if (!downloadOptions.value?.tree_items) return []
+
+  const itemMap = new Map<number, { id: number; name: string; children: Array<{ id: number; name: string }> }>()
+  downloadOptions.value.tree_items.forEach(item => {
+    itemMap.set(item.item.id, { id: item.item.id, name: `${item.item.name} (${formatAssetType(item.item.asset_type)})`, children: [] })
+  })
+
+  const roots: Array<{ id: number; name: string; children: Array<{ id: number; name: string }> }> = []
+  downloadOptions.value.tree_items.forEach(item => {
+    const node = itemMap.get(item.item.id)!
+    if (item.parent_asset_id) {
+      const parent = itemMap.get(item.parent_asset_id)
+      parent?.children.push(node)
+    } else {
+      roots.push(node)
+    }
+  })
+
+  return roots
+}
+
+function handleDownloadTreeCheck(checkedKeys: (number | string)[]) {
+  downloadSelectedAssetIds.value = checkedKeys.map(Number)
 }
 
 // Delete
@@ -803,10 +912,62 @@ async function handleDelete(asset: CertificateAsset) {
         </el-descriptions>
 
         <div class="drawer-footer">
+          <el-button type="primary" @click="openDownloadDialog(detailAsset)">下载</el-button>
           <el-button type="danger" @click="handleDelete(detailAsset)">删除资产</el-button>
         </div>
       </template>
     </el-drawer>
+
+    <!-- Download dialog -->
+    <el-dialog
+      v-model="downloadDialogVisible"
+      title="下载证书"
+      width="500px"
+      :close-on-click-modal="false"
+    >
+      <el-form v-loading="downloadLoading" label-width="80px">
+        <el-form-item label="下载模式">
+          <el-radio-group v-model="downloadMode" @change="handleDownloadModeChange">
+            <el-radio
+              v-for="mode in downloadOptions?.modes || []"
+              :key="mode.mode"
+              :value="mode.mode"
+            >
+              {{ formatDownloadMode(mode.mode) }}
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <el-form-item v-if="downloadMode === 'chain' && downloadOptions?.chain_items" label="目标祖先">
+          <el-select v-model="downloadAncestorId" placeholder="选择要下载到哪个祖先" class="full-width">
+            <el-option
+              v-for="item in downloadOptions.chain_items"
+              :key="item.item.id"
+              :label="`${item.item.name} (depth: ${item.depth})`"
+              :value="item.item.id"
+            />
+          </el-select>
+          <div class="form-hint">选择祖先后，下载从当前资产到该祖先的完整证书链</div>
+        </el-form-item>
+
+        <el-form-item v-if="downloadMode === 'tree' && downloadOptions?.tree_items" label="选择资产">
+          <el-tree
+            :data="buildDownloadTreeData()"
+            :props="downloadTreeProps"
+            show-checkbox
+            node-key="id"
+            default-expand-all
+            @check="handleDownloadTreeCheck"
+          />
+          <div class="form-hint">勾选要下载的资产，将打包为 ZIP 文件</div>
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="downloadDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="downloadLoading" @click="executeDownload">下载</el-button>
+      </template>
+    </el-dialog>
   </el-container>
 </template>
 

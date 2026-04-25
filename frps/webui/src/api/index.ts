@@ -230,6 +230,31 @@ export interface CertificateAssetDeleteImpact {
   warning_message?: string
 }
 
+export type CertificateAssetDownloadMode = 'original' | 'single' | 'chain' | 'tree'
+
+export interface CertificateAssetDownloadModeOption {
+  mode: CertificateAssetDownloadMode
+  default: boolean
+}
+
+export interface CertificateAssetDownloadChainItem {
+  item: CertificateAsset
+  depth: number
+}
+
+export interface CertificateAssetDownloadTreeItem {
+  item: CertificateAsset
+  parent_asset_id?: number
+  depth: number
+}
+
+export interface CertificateAssetDownloadOptions {
+  target: CertificateAsset
+  modes: CertificateAssetDownloadModeOption[]
+  chain_items?: CertificateAssetDownloadChainItem[]
+  tree_items?: CertificateAssetDownloadTreeItem[]
+}
+
 export interface CertificateAssetPastePayload {
   name: string
   remark?: string
@@ -274,5 +299,54 @@ export const certificateAssetsApi = {
     return request<{ deleted: boolean; deleted_ids: number[] }>(`/certificate-assets/${id}${query}`, {
       method: 'DELETE'
     })
+  },
+
+  getDownloadOptions: (id: number) => request<CertificateAssetDownloadOptions>(`/certificate-assets/${id}/download-options`),
+
+  download: async (id: number, params: {
+    mode: CertificateAssetDownloadMode
+    ancestor_id?: number
+    asset_ids?: number[]
+  }) => {
+    const queryParts = [`mode=${params.mode}`]
+    if (params.ancestor_id) {
+      queryParts.push(`ancestor_id=${params.ancestor_id}`)
+    }
+    if (params.asset_ids && params.asset_ids.length > 0) {
+      params.asset_ids.forEach(assetId => queryParts.push(`asset_ids=${assetId}`))
+    }
+    const query = queryParts.join('&')
+
+    try {
+      const response = await fetch(`${API_BASE}/certificate-assets/${id}/download?${query}`, {
+        credentials: 'include'
+      })
+
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') || ''
+        if (contentType.includes('application/json')) {
+          const payload = await response.json().catch(() => null) as { error?: string } | null
+          return { error: payload?.error || response.statusText || '下载失败' }
+        }
+        return { error: response.statusText || '下载失败' }
+      }
+
+      const blob = await response.blob()
+      const fileName = response.headers.get('content-disposition')
+        ?.split('filename=')[1]?.replace(/"/g, '') || 'download'
+
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+
+      return { data: true }
+    } catch (err) {
+      return { error: String(err) }
+    }
   }
 }
