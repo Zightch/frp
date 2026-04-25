@@ -660,7 +660,7 @@ async function handleDelete(asset: CertificateAsset) {
     const childList = impact.affected_items
       .map(item => `- ${item.item.name} (${formatAssetType(item.item.asset_type)})`)
       .join('\n')
-    message = `该资产被以下证书引用：\n${childList}\n\n删除将同时删除以上子证书，此操作不可恢复。\n确定继续删除吗？`
+    message = `删除该资产会同时影响以下证书资产：\n${childList}\n\n删除将同时删除以上资产，此操作不可恢复。\n确定继续删除吗？`
     cascade = true
   }
 

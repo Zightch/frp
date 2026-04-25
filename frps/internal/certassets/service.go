@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,7 +125,7 @@ func (e *DeleteRequiresConfirmationError) Error() string {
 	if e == nil {
 		return ""
 	}
-	return "deleting this certificate will affect child certificates"
+	return "deleting this certificate asset will affect dependent assets"
 }
 
 type DeleteResult struct {
@@ -213,21 +214,23 @@ func (s *Service) DeleteImpact(ctx context.Context, id int64) (DeleteImpact, err
 	if s == nil || s.store == nil {
 		return DeleteImpact{}, fmt.Errorf("certificate asset service store is nil")
 	}
+	now := s.now()
 	assets, err := ListAssetsWithConn(ctx, s.store)
 	if err != nil {
 		return DeleteImpact{}, err
 	}
-	prepared, _, err := PrepareAssetsWithOptions(assets, s.prepareOptionsAt(s.now()))
+	options := s.prepareOptionsAt(now)
+	prepared, _, err := PrepareAssetsWithOptions(assets, options)
 	if err != nil {
 		return DeleteImpact{}, err
 	}
-	return buildDeleteImpact(prepared, id)
+	return buildDeleteImpact(assets, prepared, id, options)
 }
 
 func (s *Service) Delete(ctx context.Context, id int64, cascade bool) (DeleteResult, error) {
 	var result DeleteResult
-	err := s.withTx(ctx, func(tx *storage.Tx, existing []Asset, preparedExisting []PreparedAsset, _ time.Time) error {
-		impact, err := buildDeleteImpact(preparedExisting, id)
+	err := s.withTx(ctx, func(tx *storage.Tx, existing []Asset, preparedExisting []PreparedAsset, now time.Time) error {
+		impact, err := buildDeleteImpact(existing, preparedExisting, id, s.prepareOptionsAt(now))
 		if err != nil {
 			return err
 		}
@@ -739,7 +742,7 @@ func ensureNoDuplicateContent(ctx context.Context, conn storage.Conn, candidate 
 	}
 }
 
-func buildDeleteImpact(prepared []PreparedAsset, id int64) (DeleteImpact, error) {
+func buildDeleteImpact(existing []Asset, prepared []PreparedAsset, id int64, options PrepareOptions) (DeleteImpact, error) {
 	target, ok := FindPreparedAssetByID(prepared, id)
 	if !ok {
 		return DeleteImpact{}, sql.ErrNoRows
@@ -765,23 +768,147 @@ func buildDeleteImpact(prepared []PreparedAsset, id int64) (DeleteImpact, error)
 		})
 	}
 
-	affected := make([]DeleteImpactItem, 0)
+	impact := DeleteImpact{
+		Target: describedByID[target.Asset.ID],
+	}
+	removedIDs := map[int64]struct{}{
+		target.Asset.ID: {},
+	}
+	nextDependencyDepth := 1
 	var walk func(parentID int64, depth int)
 	walk = func(parentID int64, depth int) {
 		for _, child := range childrenByID[parentID] {
-			affected = append(affected, DeleteImpactItem{
+			removedIDs[child.Asset.ID] = struct{}{}
+			impact.Affected = append(impact.Affected, DeleteImpactItem{
 				Item:  describedByID[child.Asset.ID],
 				Depth: depth,
 			})
+			if depth >= nextDependencyDepth {
+				nextDependencyDepth = depth + 1
+			}
 			walk(child.Asset.ID, depth+1)
 		}
 	}
 	walk(id, 1)
 
-	return DeleteImpact{
-		Target:   describedByID[target.Asset.ID],
-		Affected: affected,
-	}, nil
+	if err := appendDependentDeleteImpactItems(existing, describedByID, removedIDs, &impact, nextDependencyDepth, options); err != nil {
+		return DeleteImpact{}, err
+	}
+
+	sort.SliceStable(impact.Affected, func(left, right int) bool {
+		if impact.Affected[left].Depth != impact.Affected[right].Depth {
+			return impact.Affected[left].Depth < impact.Affected[right].Depth
+		}
+		return impact.Affected[left].Item.ID < impact.Affected[right].Item.ID
+	})
+
+	return impact, nil
+}
+
+func appendDependentDeleteImpactItems(existing []Asset, describedByID map[int64]DescribedAsset, removedIDs map[int64]struct{}, impact *DeleteImpact, depth int, options PrepareOptions) error {
+	if depth < 1 {
+		depth = 1
+	}
+
+	for {
+		remaining := filterAssetsExcludingIDs(existing, removedIDs)
+		if len(remaining) == 0 {
+			return nil
+		}
+
+		if _, _, err := PrepareAssetsWithOptions(remaining, options); err == nil {
+			return nil
+		} else {
+			invalidIDs := extractAssetIDsFromPrepareError(err)
+			if len(invalidIDs) == 0 {
+				return fmt.Errorf("resolve delete impact: %w", err)
+			}
+
+			added := false
+			for _, id := range invalidIDs {
+				if _, exists := removedIDs[id]; exists {
+					continue
+				}
+				item, ok := describedByID[id]
+				if !ok {
+					return fmt.Errorf("resolve delete impact: described asset %d not found", id)
+				}
+
+				removedIDs[id] = struct{}{}
+				impact.Affected = append(impact.Affected, DeleteImpactItem{
+					Item:  item,
+					Depth: depth,
+				})
+				added = true
+			}
+			if !added {
+				return fmt.Errorf("resolve delete impact: %w", err)
+			}
+		}
+
+		depth++
+	}
+}
+
+func filterAssetsExcludingIDs(items []Asset, excluded map[int64]struct{}) []Asset {
+	if len(items) == 0 {
+		return nil
+	}
+
+	filtered := make([]Asset, 0, len(items))
+	for _, item := range items {
+		if _, exists := excluded[item.ID]; exists {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+func extractAssetIDsFromPrepareError(err error) []int64 {
+	if err == nil {
+		return nil
+	}
+
+	lines := strings.Split(strings.TrimSpace(err.Error()), "\n")
+	seen := make(map[int64]struct{}, len(lines))
+	ids := make([]int64, 0, len(lines))
+	for _, line := range lines {
+		id, ok := parseAssetIDFromPrepareErrorLine(line)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(left, right int) bool {
+		return ids[left] < ids[right]
+	})
+	return ids
+}
+
+func parseAssetIDFromPrepareErrorLine(line string) (int64, bool) {
+	const prefix = "certificate asset "
+
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, prefix) {
+		return 0, false
+	}
+
+	remainder := strings.TrimPrefix(line, prefix)
+	end := strings.IndexAny(remainder, " (")
+	if end <= 0 {
+		return 0, false
+	}
+
+	id, err := strconv.ParseInt(strings.TrimSpace(remainder[:end]), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
 }
 
 func validationError(message string, issues ...ValidationIssue) error {

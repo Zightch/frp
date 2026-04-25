@@ -572,6 +572,163 @@ func TestCertificateAssetsUploadRejectsDuplicateContent(t *testing.T) {
 	}
 }
 
+func TestCertificateAssetsDeleteCascadeIncludesUploadedDependencyChain(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+	now := time.Now().UTC()
+
+	root := issueAPITestCertificate(t, apiTestCertificateSpec{
+		CommonName: "delete-upload-root",
+		IsCA:       true,
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+	})
+	rootResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/paste",
+		map[string]any{
+			"name": "delete-upload-root",
+			"crt":  root.CertPEM,
+			"key":  root.KeyPEM,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	rootID := int64(rootResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	intermediate := issueAPITestCertificate(t, apiTestCertificateSpec{
+		CommonName: "delete-upload-intermediate",
+		IsCA:       true,
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+		Issuer:     &root,
+	})
+	intermediateResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/paste",
+		map[string]any{
+			"name": "delete-upload-intermediate",
+			"crt":  intermediate.CertPEM,
+			"key":  intermediate.KeyPEM,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	intermediateID := int64(intermediateResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	leaf := issueAPITestCertificate(t, apiTestCertificateSpec{
+		CommonName: "delete-upload-leaf",
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+		Issuer:     &intermediate,
+	})
+	leafResponse := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/certificate-assets/paste",
+		map[string]any{
+			"name": "delete-upload-leaf",
+			"crt":  leaf.CertPEM,
+			"key":  leaf.KeyPEM,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	leafID := int64(leafResponse.JSON["item"].(map[string]any)["id"].(float64))
+
+	impact := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(rootID, 10)+"/delete-impact",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if impact.JSON["requires_confirmation"] != true {
+		t.Fatalf("expected delete impact confirmation: %#v", impact.JSON)
+	}
+
+	affectedItems := impact.JSON["affected_items"].([]any)
+	if len(affectedItems) != 2 {
+		t.Fatalf("unexpected affected items: %#v", impact.JSON)
+	}
+
+	affectedIDs := make(map[int64]struct{}, len(affectedItems))
+	for _, raw := range affectedItems {
+		item := raw.(map[string]any)
+		asset := item["item"].(map[string]any)
+		affectedIDs[int64(asset["id"].(float64))] = struct{}{}
+	}
+	if _, exists := affectedIDs[intermediateID]; !exists {
+		t.Fatalf("expected intermediate in delete impact: %#v", impact.JSON)
+	}
+	if _, exists := affectedIDs[leafID]; !exists {
+		t.Fatalf("expected leaf in delete impact: %#v", impact.JSON)
+	}
+
+	deleteBlocked := performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(rootID, 10),
+		nil,
+		http.StatusConflict,
+		sessionCookie,
+	)
+	if deleteBlocked.JSON["error_code"] != "certificate_asset_delete_requires_confirmation" {
+		t.Fatalf("unexpected delete blocked payload: %#v", deleteBlocked.JSON)
+	}
+
+	deleted := performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(rootID, 10)+"?cascade=true",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	deletedIDs := deleted.JSON["deleted_ids"].([]any)
+	if len(deletedIDs) != 3 {
+		t.Fatalf("expected root, intermediate and leaf to be deleted: %#v", deleted.JSON)
+	}
+
+	listAfterDelete := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if len(listAfterDelete.JSON["items"].([]any)) != 0 {
+		t.Fatalf("expected empty asset list after delete: %#v", listAfterDelete.JSON)
+	}
+}
+
 func TestCertificateAssetDownloadOptionsDifferentiateGeneratedAndUploadedAssets(t *testing.T) {
 	store := newTestStore(t)
 	manager := newTestAuthManager(t, true)

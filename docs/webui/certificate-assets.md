@@ -1,444 +1,326 @@
-# 证书资产管理页面 UI 规范
+# 证书资产管理页面当前实现
 
-更新时间：2026-04-24
+更新时间：2026-04-25
 
-本文档描述证书资产管理页面的设计规范。后端 API 已完成实现，前端页面待开发。
+本文档描述 `CertificateAssetsView.vue` 的当前已落地行为，不是前瞻式设计稿。
 
-## 1. 路由与命名
+## 1. 路由与入口
 
 | 项目 | 值 | 说明 |
 |------|-----|------|
-| 页面标题 | `证书资产` | 导航文案、页面标题统一使用该名称 |
-| 路由名 | `CertificateAssets` | 前端内部路由标识 |
-| 路由路径 | `/certificate-assets` | 新增独立路径 |
-| 视图组件 | `CertificateAssetsView.vue` | 页面主组件 |
+| 路由路径 | `/certificate-assets` | 相对 WebUI 基址生效 |
+| 路由名 | `CertificateAssets` | 前端路由标识 |
+| 入口位置 | `MainLayout` 侧边栏 | 文案为“证书资产” |
+| 视图组件 | `src/views/CertificateAssetsView.vue` | 页面主组件 |
 
-## 2. 页面结构
+当前页面已经接入：
 
-参考现有分组配置页面的布局模式，页面结构如下：
+- 登录态检查
+- 侧边栏导航
+- PC / 移动端弹层适配
 
-```text
-┌──────────────────────────────────────────────────────────────┐
-│  证书资产                                           [刷新]   │
-├──────────────────────────────────────────────────────────────┤
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │ 资产类型: [全部 ▼]  来源: [全部 ▼]       [导入][生成]  │ │
-│  └────────────────────────────────────────────────────────┘ │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │ 名称 │ 类型 │ 来源 │ 颁发者 │ 有效期 │ 状态 │ 操作    │ │
-│  │ ────────────────────────────────────────────────────── │ │
-│  │ web-cert │ 证书 │ 上传 │ Let's Encrypt │ 2026-05-24 │ 有效 │ 查看/删除 │
-│  │ root-ca │ CA │ 生成 │ (自签) │ 2036-04-24 │ 有效 │ 查看/删除 │
-│  │ expired-cert │ 证书 │ 上传 │ Old CA │ 2025-01-01 │ 已过期 │ 查看/删除 │
-│  └────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────┘
-```
+## 2. 数据来源
 
-结构说明：
+页面不再自行解析 PEM 证书内容，列表和详情直接消费后端返回的派生字段。
 
-- 页面头部：标题和刷新按钮
-- 筛选栏：资产类型下拉、来源下拉、操作按钮组
-- 内容区：单列表格，撑满剩余高度
+当前使用的接口：
 
-## 3. 筛选与操作
+- `GET /api/v1/certificate-assets`
+- `POST /api/v1/certificate-assets/upload`
+- `POST /api/v1/certificate-assets/paste`
+- `POST /api/v1/certificate-assets/generate`
+- `GET /api/v1/certificate-assets/{id}/delete-impact`
+- `DELETE /api/v1/certificate-assets/{id}`
+- `DELETE /api/v1/certificate-assets/{id}?cascade=true`
+- `GET /api/v1/certificate-assets/{id}/download-options`
+- `GET /api/v1/certificate-assets/{id}/download`
 
-### 3.1 筛选条件
+当前列表项字段以 `src/api/index.ts` 中的 `CertificateAsset` 为准，包含：
 
-| 筛选项 | 选项 | 说明 |
-|--------|------|------|
-| 资产类型 | 全部 / 证书 / CA | 按 `asset_type` 筛选 |
-| 来源 | 全部 / 上传 / 生成 | 按 `source` 筛选 |
+- 基础字段：`id`、`name`、`remark`、`source`、`asset_type`、`format_type`
+- 关系字段：`issuer_asset_id`、`issuer_name`
+- 证书派生字段：`common_name`、`subject`、`issuer`、`serial_number`、`not_before`、`not_after`、`dns_names`、`ip_addresses`
+- 状态字段：`key_present`、`can_issue`、`is_self_signed`、`chain_length`
 
-筛选为前端本地过滤，不请求后端。
+## 3. 页面结构
 
-### 3.2 顶部操作按钮
+当前页面结构固定为三段：
 
-| 按钮 | 说明 |
-|------|------|
-| 导入 | 打开"导入证书/CA"弹窗，支持上传和粘贴两种方式 |
-| 生成 | 打开"生成证书/CA"弹窗 |
+1. 页面标题和刷新按钮
+2. 筛选栏
+3. 资产列表表格
 
-## 4. 资产列表表格
+筛选栏包含：
 
-### 4.1 表格列定义
+- 资产类型：`all / certificate / ca`
+- 来源：`all / upload / generated`
+- 顶部操作：`导入`、`生成`
 
-| 列名 | 字段来源 | 说明 |
-|------|----------|------|
+筛选为前端本地过滤，不额外请求后端。
+
+移动端约定：
+
+- 导入弹窗、生成弹窗、下载弹窗在移动端切换为底部 `el-drawer`
+- 详情使用 `el-drawer`，移动端从底部弹出，桌面端从右侧弹出
+
+## 4. 列表与详情
+
+### 4.1 列表列
+
+| 列名 | 来源 | 说明 |
+|------|------|------|
 | 名称 | `name` | 资产名称 |
-| 类型 | `asset_type` | `证书` 或 `CA`，使用 Tag 展示 |
-| 来源 | `source` | `上传` 或 `生成`，使用 Tag 展示 |
-| 颁发者 | 现场解析 | 证书的 `issuer CN`；CA 自签时显示"(自签)" |
-| 有效期 | 现场解析 | `not_after` 日期，格式 `YYYY-MM-DD` |
-| 状态 | 现场解析 | 基于当前时间和 `not_before`/`not_after` 计算 |
-| 操作 | - | 查看、删除按钮 |
+| 类型 | `asset_type` | `CA` / `证书` |
+| 来源 | `source` | `上传` / `生成` |
+| 颁发者 | `issuer_name` / `issuer` / `is_self_signed` | 自签显示“(自签)” |
+| 有效期 | `not_after` | 页面按 `YYYY-MM-DD` 显示 |
+| 状态 | `not_before` + `not_after` | `有效 / 即将过期 / 已过期 / 未生效 / 未知` |
+| 操作 | - | `查看`、`删除` |
 
-### 4.2 状态展示规则
+### 4.2 详情抽屉
 
-| 状态 | 条件 | Tag 类型 |
-|------|------|----------|
-| 有效 | 当前时间在有效期内 | `success` |
-| 即将过期 | 距离过期不足 7 天 | `warning` |
-| 已过期 | 当前时间超过 `not_after` | `danger` |
-| 未生效 | 当前时间早于 `not_before` | `info` |
+详情当前展示三块信息：
 
-### 4.3 派生信息获取
+- 基础信息：名称、类型、来源、备注、上游 CA、创建时间、更新时间
+- 证书信息：CN、Subject、Issuer、序列号、有效期、状态、SAN、自签标记、链长度
+- 私钥信息：是否存储、是否可签发
 
-后端 API 返回的资产数据中包含原始 `crt` PEM 内容，前端需要：
+当前详情操作只有两个：
 
-- 使用 Web Crypto API 或纯 JS x509 解析库提取展示字段
-- 解析内容：`subject CN`、`issuer CN`、`not_before`、`not_after`、`SAN`、`fingerprint`
-- 解析逻辑统一封装在 `src/utils/certParser.ts`
+- `下载`
+- `删除资产`
 
-## 5. 导入证书/CA
+当前未实现：
 
-### 5.1 弹窗结构
+- 复制证书
+- 复制私钥
+- 在线编辑 PEM
 
-使用 `el-dialog`，宽度 500px，标题"导入证书/CA"。
+## 5. 导入
 
-弹窗内使用 `el-tabs` 切换两种导入方式：
+导入弹层包含两个 Tab：
 
-| Tab | 说明 |
-|-----|------|
-| 上传文件 | 通过文件选择器上传 `crt` 和 `key` 文件 |
-| 粘贴 PEM | 手动粘贴 PEM 文本 |
+- `上传文件`
+- `粘贴 PEM`
 
-### 5.2 上传文件 Tab
+### 5.1 上传文件
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| 资产类型 | `el-select` | 是 | `证书` / `CA` |
-| 名称 | `el-input` | 是 | 资产名称 |
-| 备注 | `el-input` | 否 | 可选备注 |
-| 证书文件 | `el-upload` | 是 | `.crt` / `.pem` 文件 |
-| 私钥文件 | `el-upload` | 条件 | `.key` / `.pem` 文件；`证书` 类型时必填，`CA` 类型时可选 |
+字段如下：
 
-文件上传后，前端读取文件内容作为 PEM 文本，提交时发送 JSON 请求。
+- `name`
+- `remark`
+- `crt` 文件
+- `key` 文件，可选
 
-### 5.3 粘贴 PEM Tab
+当前上传行为：
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| 资产类型 | `el-select` | 是 | `证书` / `CA` |
-| 名称 | `el-input` | 是 | 资产名称 |
-| 备注 | `el-input` | 否 | 可选备注 |
-| 证书内容 | `el-input type="textarea"` | 是 | PEM 格式证书文本 |
-| 私钥内容 | `el-input type="textarea"` | 条件 | PEM 格式私钥文本；`证书` 类型时必填，`CA` 类型时可选 |
+- 前端直接提交 `multipart/form-data`
+- 不再让管理员手选资产类型
+- 资产类型由后端根据首张证书自动识别
 
-### 5.4 API 调用
+### 5.2 粘贴 PEM
 
-- 上传和粘贴统一调用对应 API：
-  - 上传文件：`POST /api/v1/certificate-assets/upload`
-  - 粘贴 PEM：`POST /api/v1/certificate-assets/paste`
-- 请求格式为 `multipart/form-data`（上传）或 `application/json`（粘贴）
+字段如下：
 
-### 5.5 错误处理
+- `name`
+- `remark`
+- `crt`
+- `key`，可选
 
-后端返回结构化错误，前端需要解析并展示：
+当前粘贴行为：
 
-| error_code | 说明 | 前端展示 |
-|------------|------|----------|
-| `validation_error` | 字段校验失败 | 展示 `details` 中的字段级错误 |
-| `name_conflict` | 名称已存在 | 提示"该名称已存在，请更换" |
-| `duplicate_content` | 证书内容重复 | 提示"该证书已存在，无需重复导入" |
+- 前端直接提交 JSON
+- 资产类型仍由后端自动识别
 
-## 6. 生成证书/CA
+### 5.3 当前错误处理
 
-### 6.1 弹窗结构
+页面统一用 `ElMessage.error` 直接展示后端错误文案。
 
-使用 `el-dialog`，宽度 500px，标题"生成证书/CA"。
+当前常见错误码包括：
 
-弹窗内使用 `el-tabs` 切换两种生成类型：
+- `certificate_asset_validation_failed`
+- `certificate_asset_name_conflict`
+- `certificate_asset_duplicate_content`
 
-| Tab | 说明 |
-|-----|------|
-| 生成 CA | 生成新的 CA 证书 |
-| 生成证书 | 使用现有 CA 签发证书 |
+## 6. 生成
 
-### 6.2 生成 CA Tab
+生成弹层包含两个 Tab：
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| 名称 | `el-input` | 是 | 资产名称 |
-| 备注 | `el-input` | 否 | 可选备注 |
-| Common Name | `el-input` | 是 | CA 的 CN 字段 |
-| 有效期(天) | `el-input-number` | 是 | 默认 3650（10年） |
-| 是否可签发 | `el-switch` | 否 | 生成带私钥的 CA，可用于签发子证书 |
+- `生成 CA`
+- `生成证书`
 
-### 6.3 生成证书 Tab
+### 6.1 生成 CA
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| 名称 | `el-input` | 是 | 资产名称 |
-| 备注 | `el-input` | 否 | 可选备注 |
-| 签发 CA | `el-select` | 是 | 选择现有可签发 CA（`asset_type=ca` 且有私钥） |
-| Common Name | `el-input` | 是 | 证书的 CN 字段 |
-| SAN 域名 | `el-input` | 否 | 多个域名用逗号分隔 |
-| SAN IP | `el-input` | 否 | 多个 IP 用逗号分隔 |
-| 有效期(天) | `el-input-number` | 是 | 默认 365（1年） |
+当前字段：
 
-### 6.4 API 调用
+- `name`
+- `remark`
+- `issuer_asset_id`
+- `common_name`
+- `key_algorithm`
+- `key_bits`
+- `validity_days`
 
-- 统一调用：`POST /api/v1/certificate-assets/generate`
-- 请求体中包含 `generate_type: 'ca' | 'certificate'`
+行为约定：
 
-## 7. 查看资产详情
+- 上游 CA 留空时生成自签根 CA
+- 选择上游 CA 时生成中间 CA
+- 只允许选择 `can_issue=true` 的 CA
 
-### 7.1 弹窗结构
+### 6.2 生成证书
 
-使用 `el-drawer`，宽度 500px，标题"证书详情"或"CA 详情"。
+当前字段：
 
-### 7.2 详情内容
+- `name`
+- `remark`
+- `issuer_asset_id`
+- `common_name`
+- `key_algorithm`
+- `key_bits`
+- `dns_names`
+- `ip_addresses`
+- `validity_days`
 
-| 字段 | 说明 |
-|------|------|
-| 名称 | `name` |
-| 类型 | `asset_type`，Tag 展示 |
-| 来源 | `source`，Tag 展示 |
-| 备注 | `remark`，无备注时显示"-" |
-| 创建时间 | `created_at` |
-| 更新时间 | `updated_at` |
-| 上游 CA | `issuer_asset_id` 对应的资产名称，无则显示"(无)" |
+行为约定：
 
-**证书信息**（现场解析）：
+- `issuer_asset_id` 必填
+- `dns_names`、`ip_addresses` 在前端以逗号分隔输入，提交时拆成数组
 
-| 字段 | 说明 |
-|------|------|
-| 主题 Subject | 完整 DN |
-| 颁发者 Issuer | 完整 DN |
-| 序列号 | 十六进制 |
-| 指纹 SHA-256 | 十六进制，支持复制 |
-| 有效期起始 | `not_before` |
-| 有效期结束 | `not_after` |
-| SAN 域名 | DNS SAN 列表 |
-| SAN IP | IP SAN 列表 |
+### 6.3 当前算法与长度
 
-**私钥信息**：
+当前支持三类算法：
 
-- 仅显示"已存储"或"未存储"
-- 不展示私钥内容
+- `ecdsa`
+- `rsa`
+- `ed25519`
 
-### 7.3 详情页操作
+长度规则：
 
-| 按钮 | 说明 |
-|------|------|
-| 复制证书 | 复制 `crt` PEM 内容到剪贴板 |
-| 复制私钥 | 复制 `key` PEM 内容到剪贴板（无私钥时禁用） |
-| 删除 | 删除该资产 |
+- `ecdsa`：固定选项 `256 / 384 / 521`
+- `ed25519`：固定 `256`
+- `rsa`：管理员输入，必须 `>= 2048` 且为 `8` 的倍数
 
-## 8. 删除资产
+当前默认值：
 
-### 8.1 普通删除
+- 算法默认 `ecdsa`
+- 长度默认 `256`
 
-点击删除按钮时：
+## 7. 下载
 
-1. 先调用 `GET /api/v1/certificate-assets/{id}/delete-impact` 获取影响分析
-2. 根据返回结果展示确认弹窗
+下载前，页面先调用 `download-options` 拉取当前资产允许的下载模式。
 
-### 8.2 删除影响分析
+### 7.1 当前下载模式
 
-后端返回格式：
+| 模式 | 适用资产 | 说明 |
+|------|----------|------|
+| `original` | 上传资产 | 原样下载当前资产保存的 PEM 结构 |
+| `single` | 生成资产 | 下载当前节点 |
+| `chain` | 生成资产 | 下载“当前节点到某个祖先”的单条证书链 |
+| `tree` | 生成 CA | 下载该 CA 节点的部分子树或整棵树 |
 
-```typescript
-interface DeleteImpactResponse {
-  has_children: boolean
-  children: Array<{ id: number; name: string; asset_type: string }>
-}
-```
+### 7.2 当前页面交互
 
-### 8.3 确认弹窗
+- `chain` 模式下，页面展示祖先选择器
+- `tree` 模式下，页面展示树形勾选器
+- 未显式选择祖先或树节点时，后端按默认行为处理
 
-**无子证书时**：
+### 7.3 当前下载产物
 
-```
-确定删除证书资产"{name}"吗？此操作不可恢复。
-```
+当前所有下载模式统一返回 ZIP。
 
-**有子证书时**：
+具体约定：
 
-```
-该证书/CA 被以下证书引用：
-- child-cert-1 (证书)
-- child-ca-1 (CA)
+- `original`：ZIP 内包含原始 `.crt`，有私钥时额外包含 `.key`
+- `single`：ZIP 内包含当前节点 `.crt`，有私钥时额外包含 `.key`
+- `chain`：ZIP 内包含聚合后的 `*-chain.crt`，有私钥时额外包含当前节点 `.key`
+- `tree`：ZIP 内按节点拆分出多个 `.crt` / `.key`
 
-删除将同时删除以上子证书，此操作不可恢复。
-确定继续删除吗？
-```
+当前前端只负责触发浏览器下载，不做 ZIP 解包。
 
-弹窗增加"级联删除"复选框，默认勾选。
+## 8. 删除
 
-### 8.4 API 调用
+删除前，页面固定先调用：
 
-- 普通删除：`DELETE /api/v1/certificate-assets/{id}`
-- 级联删除：`DELETE /api/v1/certificate-assets/{id}?cascade=true`
+- `GET /api/v1/certificate-assets/{id}/delete-impact`
 
-## 9. API 类型定义
+返回结构以 `CertificateAssetDeleteImpact` 为准：
 
-```typescript
-// 证书资产
-interface CertificateAsset {
-  id: number
+- `target`
+- `affected_items`
+- `requires_confirmation`
+- `warning_message`
+
+### 8.1 当前删除确认语义
+
+无影响项时：
+
+- 直接提示“确定删除”
+
+有影响项时：
+
+- 页面展示 `affected_items`
+- 确认后自动以 `cascade=true` 发起删除
+- 当前没有额外的“级联删除”复选框
+
+### 8.2 当前影响范围
+
+`affected_items` 不只包含生成树下游，还包括删除后会导致校验失效的其他资产，例如：
+
+- 生成资产的直接 / 间接子节点
+- 依赖数据库 CA 补链的上传资产
+
+## 9. 当前 API 类型摘要
+
+```ts
+type CertificateAssetGenerateKeyAlgorithm = 'ecdsa' | 'rsa' | 'ed25519'
+
+type CertificateAssetDownloadMode = 'original' | 'single' | 'chain' | 'tree'
+
+interface CertificateAssetGeneratePayload {
   name: string
-  remark: string
-  source: 'upload' | 'generated'
+  remark?: string
   asset_type: 'certificate' | 'ca'
-  format_type: 'pem'
-  crt: string           // PEM 内容
-  crt_hash: string
-  key: string           // PEM 内容，可为空
-  issuer_asset_id: number | null
-  created_at: string
-  updated_at: string
-}
-
-// 证书派生展示信息（前端解析）
-interface ParsedCertInfo {
-  subject_cn: string
-  subject_dn: string
-  issuer_cn: string
-  issuer_dn: string
-  serial: string
-  not_before: Date
-  not_after: Date
-  dns_sans: string[]
-  ip_sans: string[]
-  fingerprint: string
-  is_ca: boolean
-}
-
-// 删除影响响应
-interface DeleteImpactResponse {
-  has_children: boolean
-  children: Array<{ id: number; name: string; asset_type: string }>
-}
-
-// 生成请求
-interface GenerateCARequest {
-  name: string
-  remark?: string
+  issuer_asset_id?: number
   common_name: string
   validity_days: number
-  can_issue: boolean
+  dns_names?: string[]
+  ip_addresses?: string[]
+  key_algorithm?: CertificateAssetGenerateKeyAlgorithm
+  key_bits?: number
 }
 
-interface GenerateCertRequest {
-  name: string
-  remark?: string
-  issuer_asset_id: number
-  common_name: string
-  dns_sans?: string[]
-  ip_sans?: string[]
-  validity_days: number
-}
-```
-
-## 10. 组件选用
-
-| 场景 | Element Plus 组件 |
-|------|-------------------|
-| 资产列表 | `el-table` |
-| 筛选下拉 | `el-select` |
-| 导入弹窗 | `el-dialog` + `el-tabs` |
-| 生成弹窗 | `el-dialog` + `el-tabs` |
-| 详情抽屉 | `el-drawer` |
-| 表单 | `el-form` + `el-form-item` |
-| 输入框 | `el-input` |
-| 数字输入 | `el-input-number` |
-| 选择器 | `el-select` |
-| 开关 | `el-switch` |
-| 文件上传 | `el-upload` |
-| 文本域 | `el-input type="textarea"` |
-| 状态标签 | `el-tag` |
-| 消息提示 | `ElMessage` |
-| 确认弹窗 | `ElMessageBox.confirm` |
-| 描述列表 | `el-descriptions` |
-
-## 11. 证书解析工具
-
-### 11.1 技术方案
-
-使用纯 JavaScript 实现的 ASN.1/PEM 解析库，不依赖 Web Crypto API（兼容性考虑）。
-
-推荐库：
-- `asn1.js` 或 `@peculiar/asn1` - ASN.1 解析
-- 或自行实现最小化 PEM/x509 解析
-
-### 11.2 解析接口
-
-```typescript
-// src/utils/certParser.ts
-
-export interface ParsedCert {
-  subjectCN: string
-  subjectDN: string
-  issuerCN: string
-  issuerDN: string
-  serial: string
-  notBefore: Date
-  notAfter: Date
-  dnsSANs: string[]
-  ipSANs: string[]
-  fingerprint: string
-  isCA: boolean
+interface CertificateAssetDeleteImpact {
+  target: CertificateAsset
+  affected_items: Array<{
+    item: CertificateAsset
+    depth: number
+  }>
+  requires_confirmation: boolean
+  warning_message?: string
 }
 
-export function parseCertificatePEM(pem: string): ParsedCert | null
-export function calculateCertificateStatus(parsed: ParsedCert): 'valid' | 'expiring' | 'expired' | 'not_yet_valid'
-export function formatDate(date: Date): string  // YYYY-MM-DD
-```
-
-### 11.3 错误处理
-
-- PEM 解析失败时返回 `null`
-- 调用方捕获 `null` 后展示"解析失败"
-
-## 12. 路由集成
-
-### 12.1 路由配置
-
-在 `src/router/index.ts` 中新增：
-
-```typescript
-{
-  path: '/',
-  component: () => import('@/layouts/MainLayout.vue'),
-  children: [
-    // 现有路由...
-    {
-      path: 'certificate-assets',
-      name: 'CertificateAssets',
-      component: () => import('@/views/CertificateAssetsView.vue')
-    }
-  ]
+interface CertificateAssetDownloadOptions {
+  target: CertificateAsset
+  modes: Array<{
+    mode: CertificateAssetDownloadMode
+    default: boolean
+  }>
+  chain_items?: Array<{
+    item: CertificateAsset
+    depth: number
+  }>
+  tree_items?: Array<{
+    item: CertificateAsset
+    parent_asset_id?: number
+    depth: number
+  }>
 }
 ```
 
-### 12.2 侧边栏导航
+## 10. 当前限制
 
-在 `MainLayout.vue` 的菜单中新增：
-
-```vue
-<el-menu-item :index="{ name: 'CertificateAssets' }">
-  <el-icon><Key /></el-icon>
-  <span>证书资产</span>
-</el-menu-item>
-```
-
-图标使用 Element Plus 内置的 `Key` 或 `Document` 图标。
-
-## 13. 边界与限制
-
-- 不实现证书内容的在线编辑（只读展示）
-- 不实现私钥内容的展示（只显示是否存储）
-- 不实现证书与隧道/分组的绑定关系展示
-- 不实现证书格式转换（只支持 PEM）
-- 前端解析证书仅用于展示，不参与业务逻辑
-
-## 14. 错误状态
-
-| 场景 | 处理 |
-|------|------|
-| 列表加载失败 | 显示错误文案和"重试"按钮 |
-| 无资产 | 显示"暂无证书资产，请导入或生成" |
-| 导入/生成失败 | `ElMessage.error` 展示后端返回的错误信息 |
-| 解析证书失败 | 详情页展示"证书解析失败"提示 |
-| 无可签发 CA | 生成证书时提示"请先导入或生成可签发 CA" |
+- 不支持在页面手工指定导入资产类型，统一由后端识别
+- 不支持复制证书 / 私钥内容
+- 不支持在线编辑已存在资产
+- 不支持在页面展示 tunnel 对证书资产的引用关系
+- 不支持下载时修改上传资产结构；上传资产只允许 `original`

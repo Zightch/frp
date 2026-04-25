@@ -429,7 +429,7 @@ func mapCertificateAssetError(err error) error {
 	if errors.As(err, &deleteConfirmErr) {
 		return &apiError{
 			Status:  http.StatusConflict,
-			Message: "删除该证书所影响到的子证书",
+			Message: "删除该证书资产会影响其他证书资产",
 			Code:    "certificate_asset_delete_requires_confirmation",
 			Details: map[string]any{
 				"impact": mapCertificateAssetDeleteImpactView(deleteConfirmErr.Impact),
@@ -509,7 +509,7 @@ func mapCertificateAssetDeleteImpactView(impact certassets.DeleteImpact) certifi
 		RequiresConfirmation: len(items) > 0,
 	}
 	if len(items) > 0 {
-		view.WarningMessage = "删除该证书所影响到的子证书"
+		view.WarningMessage = "删除该证书资产会影响其他证书资产"
 	}
 	return view
 }

@@ -344,13 +344,13 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - 隧道入口 ACL 执行
 - 分组/隧道规则管理页
 
-### 8.1 已确认待实现的统一证书 / CA 资产与隧道级 CA 池
+### 8.1 当前已实现的统一证书 / CA 资产层与待实现的隧道级 CA 池
 
-当前“证书管理”已经进一步收口出一套统一设计，但还没有进入真实代码链路。
+当前证书资产层已经进入真实代码链路；隧道级 CA 池仍保留为后续项。
 
 当前已确认的范围如下：
 
-- `frps` 后续统一管理证书资产和 CA 资产
+- `frps` 当前统一管理证书资产和 CA 资产
 - 底层使用同一张资产表，展示时按资产类型区分
 - 当前只支持 `pem` 格式
 - 证书 / CA 原文直接存数据库
@@ -372,7 +372,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 - `created_at`
 - `updated_at`
 
-当前还需要一张树状关系表 `certificate_asset_relations`：
+当前使用一张树状关系表 `certificate_asset_relations`：
 
 - `id`
 - `child_asset_id`
@@ -409,7 +409,7 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 
 - `asset_type=certificate` 时，运行时如果要作为客户端证书使用，必须有 `key`
 - `asset_type=ca` 时，`key` 可以为空
-- 只有 `source=generated` 且 `asset_type=ca` 且 `key` 非空的资产，后续才能用于签发证书
+- 只有 `source=generated` 且 `asset_type=ca` 且 `key` 非空的资产，当前才能用于签发证书
 - 文件上传和手动粘贴统一记为 `source=upload`
 - 管理面生成的 CA 和证书统一记为 `source=generated`
 
@@ -424,9 +424,16 @@ UI 规范详见 `docs/webui/style-guide.md`，接入管理页布局详见 `docs/
 生成资产的下载语义当前固定为：
 
 - 默认只下载当前节点
-- 可以选择“当前节点到某个祖先”的一条单链，输出为一个多证书 PEM
-- 可以选择某个 CA 节点的部分子树或整棵树，输出为多文件打包结果
+- 可以选择“当前节点到某个祖先”的一条单链，HTTP 响应为 ZIP，内部包含一个聚合后的 `*.crt`
+- 可以选择某个 CA 节点的部分子树或整棵树，HTTP 响应为 ZIP，内部按节点拆分为多个 `crt` / `key`
 - 所有 `crt` 聚合和归档打包都在 `frps` 内存完成，不落盘，不调用外部工具
+
+删除语义当前固定为：
+
+- 删除前先计算 `delete-impact`
+- 影响范围不仅包括生成树下游，也包括删除后会失去数据库资产补链能力的其他资产
+- 有影响项时必须显式使用级联删除
+- 级联删除时，目标资产和影响资产在同一事务内一起删除
 
 当前同时已确认 CA 池回退到隧道级：
 
