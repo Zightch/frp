@@ -219,6 +219,12 @@ CREATE TABLE tunnels (
 	local_host TEXT NOT NULL,
 	local_start INTEGER NOT NULL,
 	local_end INTEGER NOT NULL,
+	listen_tls_mode TEXT NOT NULL DEFAULT 'off',
+	listen_tls_load_system_ca INTEGER NOT NULL DEFAULT 0,
+	backend_tls_mode TEXT NOT NULL DEFAULT 'off',
+	backend_tls_server_name TEXT NOT NULL DEFAULT '',
+	backend_tls_load_system_ca INTEGER NOT NULL DEFAULT 0,
+	backend_tls_insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
@@ -248,6 +254,7 @@ CREATE TABLE certificate_asset_relations (
 );
 CREATE TABLE certificate_asset_usages (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	target_type TEXT NOT NULL DEFAULT 'global',
 	usage_type TEXT NOT NULL,
 	target_id INTEGER NOT NULL DEFAULT 0,
 	asset_id INTEGER NOT NULL,

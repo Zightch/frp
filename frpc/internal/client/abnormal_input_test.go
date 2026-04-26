@@ -184,6 +184,77 @@ func TestClientApplyConfigPushRejectsInvalidSnapshotsWithoutAckOrRuntimeTeardown
 			},
 			wantMessage: "remote and local port ranges must be aligned",
 		},
+		{
+			name: "backend tls on udp tunnel",
+			push: protocol.ConfigPush{
+				ConfigVersion: 2,
+				GeneratedAtMs: 200,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:       7,
+						Protocol:       protocol.ProtocolUDP,
+						TunnelFlags:    protocol.TunnelFlagEnabled,
+						RemoteStart:    20000,
+						RemoteEnd:      20000,
+						LocalHost:      mustHost(t, "127.0.0.1"),
+						LocalStart:     5000,
+						LocalEnd:       5000,
+						BackendTLSMode: protocol.TunnelTLSModeTLS,
+					},
+				},
+			},
+			wantMessage: "backend tls is only supported for tcp tunnels",
+		},
+		{
+			name: "backend mtls missing client cert",
+			push: protocol.ConfigPush{
+				ConfigVersion: 2,
+				GeneratedAtMs: 200,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:                     7,
+						Protocol:                     protocol.ProtocolTCP,
+						TunnelFlags:                  protocol.TunnelFlagEnabled,
+						RemoteStart:                  20000,
+						RemoteEnd:                    20000,
+						LocalHost:                    mustHost(t, "127.0.0.1"),
+						LocalStart:                   5000,
+						LocalEnd:                     5000,
+						BackendTLSMode:               protocol.TunnelTLSModeMTLS,
+						BackendTLSLoadSystemCA:       true,
+						BackendTLSClientCertPEM:      "",
+						BackendTLSClientKeyPEM:       "",
+						BackendTLSServerName:         "backend.internal",
+						BackendTLSCAPEM:              "ca",
+						BackendTLSInsecureSkipVerify: false,
+					},
+				},
+			},
+			wantMessage: "backend mtls requires client certificate and key",
+		},
+		{
+			name: "backend tls missing trust source",
+			push: protocol.ConfigPush{
+				ConfigVersion: 2,
+				GeneratedAtMs: 200,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:                     7,
+						Protocol:                     protocol.ProtocolTCP,
+						TunnelFlags:                  protocol.TunnelFlagEnabled,
+						RemoteStart:                  20000,
+						RemoteEnd:                    20000,
+						LocalHost:                    mustHost(t, "127.0.0.1"),
+						LocalStart:                   5000,
+						LocalEnd:                     5000,
+						BackendTLSMode:               protocol.TunnelTLSModeTLS,
+						BackendTLSLoadSystemCA:       false,
+						BackendTLSInsecureSkipVerify: false,
+					},
+				},
+			},
+			wantMessage: "backend tls requires system ca, custom ca, or insecure skip verify",
+		},
 	}
 
 	for _, tc := range cases {

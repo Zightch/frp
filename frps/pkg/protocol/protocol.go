@@ -91,6 +91,12 @@ const (
 )
 
 const (
+	TunnelTLSModeOff  uint8 = 0
+	TunnelTLSModeTLS  uint8 = 1
+	TunnelTLSModeMTLS uint8 = 2
+)
+
+const (
 	ErrorCodeProtocolInvalidLength   uint16 = 1001
 	ErrorCodeProtocolUnknownType     uint16 = 1002
 	ErrorCodeProtocolInvalidVersion  uint16 = 1003
@@ -351,14 +357,22 @@ type ConfigPush struct {
 }
 
 type TunnelEntry struct {
-	TunnelID    uint32
-	Protocol    uint8
-	TunnelFlags uint8
-	RemoteStart uint16
-	RemoteEnd   uint16
-	LocalHost   Host
-	LocalStart  uint16
-	LocalEnd    uint16
+	TunnelID                     uint32
+	Protocol                     uint8
+	TunnelFlags                  uint8
+	RemoteStart                  uint16
+	RemoteEnd                    uint16
+	LocalHost                    Host
+	LocalStart                   uint16
+	LocalEnd                     uint16
+	Revision                     uint64
+	BackendTLSMode               uint8
+	BackendTLSLoadSystemCA       bool
+	BackendTLSInsecureSkipVerify bool
+	BackendTLSServerName         string
+	BackendTLSCAPEM              string
+	BackendTLSClientCertPEM      string
+	BackendTLSClientKeyPEM       string
 }
 
 type ConfigAck struct {
@@ -660,7 +674,7 @@ func UnmarshalConfigPush(data []byte) (ConfigPush, error) {
 		return message, err
 	}
 	message.Tunnels = make([]TunnelEntry, 0, count)
-	for range int(count) {
+	for index := 0; index < int(count); index++ {
 		tunnel, err := decodeTunnelEntry(dec)
 		if err != nil {
 			return message, err
@@ -928,6 +942,22 @@ func encodeTunnelEntry(enc *bodyEncoder, tunnel TunnelEntry) error {
 	}
 	enc.u16(tunnel.LocalStart)
 	enc.u16(tunnel.LocalEnd)
+	enc.u64(tunnel.Revision)
+	enc.u8(tunnel.BackendTLSMode)
+	enc.bool(tunnel.BackendTLSLoadSystemCA)
+	enc.bool(tunnel.BackendTLSInsecureSkipVerify)
+	if err := enc.shortstr(tunnel.BackendTLSServerName); err != nil {
+		return err
+	}
+	if err := enc.longstr(tunnel.BackendTLSCAPEM); err != nil {
+		return err
+	}
+	if err := enc.longstr(tunnel.BackendTLSClientCertPEM); err != nil {
+		return err
+	}
+	if err := enc.longstr(tunnel.BackendTLSClientKeyPEM); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -963,6 +993,30 @@ func decodeTunnelEntry(dec *bodyDecoder) (TunnelEntry, error) {
 		return tunnel, err
 	}
 	if tunnel.LocalEnd, err = dec.u16(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.Revision, err = dec.u64(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.BackendTLSMode, err = dec.u8(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.BackendTLSLoadSystemCA, err = dec.bool(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.BackendTLSInsecureSkipVerify, err = dec.bool(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.BackendTLSServerName, err = dec.shortstr(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.BackendTLSCAPEM, err = dec.longstr(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.BackendTLSClientCertPEM, err = dec.longstr(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.BackendTLSClientKeyPEM, err = dec.longstr(); err != nil {
 		return tunnel, err
 	}
 	return tunnel, nil
@@ -1127,6 +1181,15 @@ func (e *bodyEncoder) shortstr(value string) error {
 	return nil
 }
 
+func (e *bodyEncoder) longstr(value string) error {
+	if len(value) > math.MaxUint32 {
+		return NewError(ErrorCodeProtocolBadBody, "longstr too long: %d", len(value))
+	}
+	e.u32(uint32(len(value)))
+	e.bytes([]byte(value))
+	return nil
+}
+
 type bodyDecoder struct {
 	data   []byte
 	offset int
@@ -1208,6 +1271,18 @@ func (d *bodyDecoder) u64() (uint64, error) {
 
 func (d *bodyDecoder) shortstr() (string, error) {
 	length, err := d.u16()
+	if err != nil {
+		return "", err
+	}
+	value, err := d.fixedBytes(int(length))
+	if err != nil {
+		return "", err
+	}
+	return string(value), nil
+}
+
+func (d *bodyDecoder) longstr() (string, error) {
+	length, err := d.u32()
 	if err != nil {
 		return "", err
 	}

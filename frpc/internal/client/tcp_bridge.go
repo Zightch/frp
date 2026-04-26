@@ -37,7 +37,16 @@ func (c *Client) handleStreamOpen(conn net.Conn, state *sessionState, frame prot
 		})
 	}
 
-	localConn, err := net.DialTimeout("tcp", target, defaultDialTimeout)
+	tunnel, ok := state.tunnelByID(open.TunnelID)
+	if !ok {
+		return c.replyStreamOpened(conn, state, frame, protocol.StreamOpened{
+			Status:    protocol.StatusError,
+			ErrorCode: protocol.ErrorCodeStreamTunnelNotFound,
+			Message:   fmt.Sprintf("tunnel %d not found", open.TunnelID),
+		})
+	}
+
+	localConn, err := dialTunnelBackend(tunnel, target)
 	if err != nil {
 		return c.replyStreamOpened(conn, state, frame, protocol.StreamOpened{
 			Status:    protocol.StatusError,

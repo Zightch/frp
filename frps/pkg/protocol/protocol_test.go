@@ -3,6 +3,7 @@ package protocol
 import (
 	"errors"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -121,19 +122,28 @@ func TestConfigPushRoundTrip(t *testing.T) {
 		t.Fatalf("parse host: %v", err)
 	}
 
+	caPEM := "-----BEGIN CERTIFICATE-----\n" + strings.Repeat("A", 70000) + "\n-----END CERTIFICATE-----\n"
 	body, err := MarshalConfigPush(ConfigPush{
 		ConfigVersion: 12,
 		GeneratedAtMs: 34,
 		Tunnels: []TunnelEntry{
 			{
-				TunnelID:    1,
-				Protocol:    ProtocolTCP,
-				TunnelFlags: TunnelFlagEnabled,
-				RemoteStart: 20000,
-				RemoteEnd:   20000,
-				LocalHost:   host,
-				LocalStart:  22,
-				LocalEnd:    22,
+				TunnelID:                     1,
+				Protocol:                     ProtocolTCP,
+				TunnelFlags:                  TunnelFlagEnabled,
+				RemoteStart:                  20000,
+				RemoteEnd:                    20000,
+				LocalHost:                    host,
+				LocalStart:                   22,
+				LocalEnd:                     22,
+				Revision:                     5678,
+				BackendTLSMode:               TunnelTLSModeMTLS,
+				BackendTLSLoadSystemCA:       true,
+				BackendTLSInsecureSkipVerify: true,
+				BackendTLSServerName:         "backend.internal",
+				BackendTLSCAPEM:              caPEM,
+				BackendTLSClientCertPEM:      "client-cert",
+				BackendTLSClientKeyPEM:       "client-key",
 			},
 		},
 	})
@@ -151,8 +161,21 @@ func TestConfigPushRoundTrip(t *testing.T) {
 	if len(got.Tunnels) != 1 {
 		t.Fatalf("unexpected tunnel count: %d", len(got.Tunnels))
 	}
-	if got.Tunnels[0].LocalHost.String() != "127.0.0.1" {
-		t.Fatalf("unexpected local host: %s", got.Tunnels[0].LocalHost.String())
+	tunnel := got.Tunnels[0]
+	if tunnel.LocalHost.String() != "127.0.0.1" {
+		t.Fatalf("unexpected local host: %s", tunnel.LocalHost.String())
+	}
+	if tunnel.Revision != 5678 || tunnel.BackendTLSMode != TunnelTLSModeMTLS {
+		t.Fatalf("unexpected tunnel metadata: %#v", tunnel)
+	}
+	if !tunnel.BackendTLSLoadSystemCA || !tunnel.BackendTLSInsecureSkipVerify {
+		t.Fatalf("unexpected backend tls flags: %#v", tunnel)
+	}
+	if tunnel.BackendTLSServerName != "backend.internal" {
+		t.Fatalf("unexpected backend server name: %q", tunnel.BackendTLSServerName)
+	}
+	if tunnel.BackendTLSCAPEM != caPEM || tunnel.BackendTLSClientCertPEM != "client-cert" || tunnel.BackendTLSClientKeyPEM != "client-key" {
+		t.Fatalf("unexpected backend tls materials: %#v", tunnel)
 	}
 }
 

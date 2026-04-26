@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/proxygroups"
+	"github.com/zightch/frp/frps/internal/settings/entrycerts"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -28,7 +29,8 @@ type Repository interface {
 }
 
 type SQLRepository struct {
-	store *storage.SQL
+	store      *storage.SQL
+	entryCerts *entrycerts.Service
 }
 
 type GroupRuntime struct {
@@ -48,7 +50,10 @@ type ConfigSnapshot struct {
 }
 
 func NewRepository(store *storage.SQL) *SQLRepository {
-	return &SQLRepository{store: store}
+	return &SQLRepository{
+		store:      store,
+		entryCerts: entrycerts.NewService(store, entrycerts.ServiceOptions{}),
+	}
 }
 
 func (r *SQLRepository) LoadGroupRuntimeByClientID(ctx context.Context, clientID [16]byte) (GroupRuntime, error) {
@@ -198,6 +203,10 @@ SELECT
 	local_host,
 	local_start,
 	local_end,
+	backend_tls_mode,
+	backend_tls_server_name,
+	backend_tls_load_system_ca,
+	backend_tls_insecure_skip_verify,
 	enabled,
 	updated_at
 FROM tunnels
@@ -210,10 +219,15 @@ ORDER BY id
 		return nil, time.Time{}, fmt.Errorf("load group tunnels: %w", err)
 	}
 
+	usageMap, err := r.loadTunnelUsageMap(ctx)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+
 	tunnels := make([]protocol.TunnelEntry, 0, len(result.Rows))
 	var latestUpdatedAt time.Time
 	for _, row := range result.Rows {
-		tunnel, err := decodeTunnelRow(row)
+		tunnel, err := r.decodeTunnelRow(ctx, row, usageMap)
 		if err != nil {
 			return nil, time.Time{}, fmt.Errorf("decode group tunnel: %w", err)
 		}
@@ -224,7 +238,7 @@ ORDER BY id
 	return tunnels, latestUpdatedAt, nil
 }
 
-func decodeTunnelRow(row storage.Row) (protocol.TunnelEntry, error) {
+func (r *SQLRepository) decodeTunnelRow(ctx context.Context, row storage.Row, usageMap map[int64]map[entrycerts.UsageType][]int64) (protocol.TunnelEntry, error) {
 	var tunnel protocol.TunnelEntry
 
 	id, err := rowInt64(row, "id")
@@ -275,19 +289,92 @@ func decodeTunnelRow(row storage.Row) (protocol.TunnelEntry, error) {
 	if err != nil {
 		return tunnel, fmt.Errorf("local_host: %w", err)
 	}
+	backendMode, err := decodeTunnelTLSMode(rowString(row, "backend_tls_mode"))
+	if err != nil {
+		return tunnel, fmt.Errorf("backend_tls_mode: %w", err)
+	}
+	backendLoadSystemCA, err := rowBool(row, "backend_tls_load_system_ca")
+	if err != nil {
+		return tunnel, fmt.Errorf("backend_tls_load_system_ca: %w", err)
+	}
+	backendInsecureSkipVerify, err := rowBool(row, "backend_tls_insecure_skip_verify")
+	if err != nil {
+		return tunnel, fmt.Errorf("backend_tls_insecure_skip_verify: %w", err)
+	}
+
+	var (
+		backendCAPEM         string
+		backendClientCertPEM string
+		backendClientKeyPEM  string
+	)
+	if backendMode != protocol.TunnelTLSModeOff {
+		backendUsages := usageMap[id]
+		if assetIDs := backendUsages[entrycerts.UsageTypeTunnelBackendCA]; len(assetIDs) > 0 {
+			if r.entryCerts == nil {
+				return tunnel, fmt.Errorf("entry certificate service is unavailable")
+			}
+			pool, err := r.entryCerts.ResolveCAPoolAssets(ctx, assetIDs)
+			if err != nil {
+				return tunnel, fmt.Errorf("resolve tunnel backend ca pool: %w", err)
+			}
+			backendCAPEM = pool.PEM
+		}
+		if assetIDs := backendUsages[entrycerts.UsageTypeTunnelBackendClientCert]; len(assetIDs) > 0 {
+			if r.entryCerts == nil {
+				return tunnel, fmt.Errorf("entry certificate service is unavailable")
+			}
+			binding, err := r.entryCerts.ResolveCertificateAsset(ctx, assetIDs[0])
+			if err != nil {
+				return tunnel, fmt.Errorf("resolve tunnel backend client certificate: %w", err)
+			}
+			backendClientCertPEM = binding.CertificatePEM
+			backendClientKeyPEM = binding.KeyPEM
+		}
+	}
 
 	tunnel = protocol.TunnelEntry{
-		TunnelID:    uint32(id),
-		Protocol:    proto,
-		TunnelFlags: flags,
-		RemoteStart: uint16(remoteStart),
-		RemoteEnd:   uint16(remoteEnd),
-		LocalHost:   host,
-		LocalStart:  uint16(localStart),
-		LocalEnd:    uint16(localEnd),
+		TunnelID:                     uint32(id),
+		Protocol:                     proto,
+		TunnelFlags:                  flags,
+		RemoteStart:                  uint16(remoteStart),
+		RemoteEnd:                    uint16(remoteEnd),
+		LocalHost:                    host,
+		LocalStart:                   uint16(localStart),
+		LocalEnd:                     uint16(localEnd),
+		Revision:                     configVersion(rowTime(row, "updated_at")),
+		BackendTLSMode:               backendMode,
+		BackendTLSLoadSystemCA:       backendLoadSystemCA,
+		BackendTLSInsecureSkipVerify: backendInsecureSkipVerify,
+		BackendTLSServerName:         strings.TrimSpace(rowString(row, "backend_tls_server_name")),
+		BackendTLSCAPEM:              backendCAPEM,
+		BackendTLSClientCertPEM:      backendClientCertPEM,
+		BackendTLSClientKeyPEM:       backendClientKeyPEM,
 	}
 
 	return tunnel, nil
+}
+
+func (r *SQLRepository) loadTunnelUsageMap(ctx context.Context) (map[int64]map[entrycerts.UsageType][]int64, error) {
+	if r == nil || r.store == nil {
+		return nil, fmt.Errorf("repository store is nil")
+	}
+	usages, err := entrycerts.ListUsagesWithConn(ctx, r.store)
+	if err != nil {
+		return nil, fmt.Errorf("load tunnel certificate bindings: %w", err)
+	}
+	result := make(map[int64]map[entrycerts.UsageType][]int64)
+	for _, usage := range usages {
+		if usage.TargetType != entrycerts.TargetTypeTunnel || !usage.Enabled {
+			continue
+		}
+		byUsage, ok := result[usage.TargetID]
+		if !ok {
+			byUsage = make(map[entrycerts.UsageType][]int64)
+			result[usage.TargetID] = byUsage
+		}
+		byUsage[usage.UsageType] = append(byUsage[usage.UsageType], usage.AssetID)
+	}
+	return result, nil
 }
 
 func decodeTunnelProtocol(value string) (uint8, error) {
@@ -298,6 +385,19 @@ func decodeTunnelProtocol(value string) (uint8, error) {
 		return protocol.ProtocolUDP, nil
 	default:
 		return 0, fmt.Errorf("unsupported tunnel protocol %q", value)
+	}
+}
+
+func decodeTunnelTLSMode(value string) (uint8, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "off":
+		return protocol.TunnelTLSModeOff, nil
+	case "tls":
+		return protocol.TunnelTLSModeTLS, nil
+	case "mtls":
+		return protocol.TunnelTLSModeMTLS, nil
+	default:
+		return 0, fmt.Errorf("unsupported tunnel tls mode %q", value)
 	}
 }
 

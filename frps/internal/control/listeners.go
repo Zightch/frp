@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -319,6 +320,10 @@ func (s *Server) startTunnelListeners(opCtx tunnelListenerOperationContext) (tun
 	started := tunnelListenerBatch{}
 	switch opCtx.tunnel.Protocol {
 	case protocol.ProtocolTCP:
+		tlsConfig, err := s.loadTunnelListenerTLSConfig(context.Background(), opCtx.tunnel.TunnelID)
+		if err != nil {
+			return tunnelListenerBatch{}, opCtx.listenerStartError(opCtx.tunnel.RemoteStart, err)
+		}
 		started.tcpListeners = make([]net.Listener, 0, opCtx.remotePortCount())
 		started.tcpRuntimes = make([]tcpTunnelListener, 0, opCtx.remotePortCount())
 		for remotePort := int(opCtx.tunnel.RemoteStart); remotePort <= int(opCtx.tunnel.RemoteEnd); remotePort++ {
@@ -327,6 +332,9 @@ func (s *Server) startTunnelListeners(opCtx tunnelListenerOperationContext) (tun
 			if err != nil {
 				closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
 				return tunnelListenerBatch{}, opCtx.listenerStartError(uint16(remotePort), err)
+			}
+			if tlsConfig != nil {
+				listener = tls.NewListener(listener, tlsConfig.Clone())
 			}
 			started.tcpListeners = append(started.tcpListeners, listener)
 			started.tcpRuntimes = append(started.tcpRuntimes, tcpTunnelListener{

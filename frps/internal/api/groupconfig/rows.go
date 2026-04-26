@@ -58,6 +58,15 @@ func decodeTunnelRow(row storage.Row) (TunnelView, error) {
 	if item.LocalEnd, err = rowInt64(row, "local_end"); err != nil {
 		return item, fmt.Errorf("local_end: %w", err)
 	}
+	if item.ListenTLSLoadSystemCA, err = rowBool(row, "listen_tls_load_system_ca"); err != nil {
+		return item, fmt.Errorf("listen_tls_load_system_ca: %w", err)
+	}
+	if item.BackendTLSLoadSystemCA, err = rowBool(row, "backend_tls_load_system_ca"); err != nil {
+		return item, fmt.Errorf("backend_tls_load_system_ca: %w", err)
+	}
+	if item.BackendTLSInsecureSkipVerify, err = rowBool(row, "backend_tls_insecure_skip_verify"); err != nil {
+		return item, fmt.Errorf("backend_tls_insecure_skip_verify: %w", err)
+	}
 	if item.Enabled, err = rowBool(row, "enabled"); err != nil {
 		return item, fmt.Errorf("enabled: %w", err)
 	}
@@ -71,6 +80,9 @@ func decodeTunnelRow(row storage.Row) (TunnelView, error) {
 	item.Protocol = rowString(row, "protocol")
 	item.RemoteType = rowString(row, "remote_type")
 	item.LocalHost = rowString(row, "local_host")
+	item.ListenTLSMode = viewTunnelTLSMode(normalizeTunnelTLSMode(rowString(row, "listen_tls_mode")))
+	item.BackendTLSMode = viewTunnelTLSMode(normalizeTunnelTLSMode(rowString(row, "backend_tls_mode")))
+	item.BackendTLSServerName = rowString(row, "backend_tls_server_name")
 	item.CreatedAt = rowTimeString(row, "created_at")
 	item.UpdatedAt = rowTimeString(row, "updated_at")
 	return item, nil

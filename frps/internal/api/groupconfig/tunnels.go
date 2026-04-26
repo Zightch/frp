@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zightch/frp/frps/internal/api/httpx"
 	"github.com/zightch/frp/frps/internal/ports"
+	"github.com/zightch/frp/frps/internal/settings/entrycerts"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
@@ -22,15 +24,21 @@ func (s *Service) ListTunnels(ctx context.Context) ([]TunnelView, error) {
 	return s.withTunnelStatuses(items), nil
 }
 
-func (s *Service) CreateTunnel(ctx context.Context, payload TunnelRequest) (TunnelView, error) {
+func (s *Service) CreateTunnel(ctx context.Context, payload TunnelRequest) (TunnelMutationResult, error) {
 	normalized, err := normalizeTunnel(payload)
 	if err != nil {
-		return TunnelView{}, err
+		return TunnelMutationResult{}, err
+	}
+	if err := s.validateTunnelTLS(ctx, normalized); err != nil {
+		return TunnelMutationResult{}, err
 	}
 
-	var createdID int64
+	var (
+		createdID int64
+		group     ProxyGroupView
+	)
 	err = s.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
-		group, err := s.loadProxyGroupByID(ctx, tx, normalized.GroupID)
+		group, err = s.loadProxyGroupByID(ctx, tx, normalized.GroupID)
 		if err != nil {
 			return err
 		}
@@ -52,10 +60,16 @@ INSERT INTO tunnels (
 	local_host,
 	local_start,
 	local_end,
+	listen_tls_mode,
+	listen_tls_load_system_ca,
+	backend_tls_mode,
+	backend_tls_server_name,
+	backend_tls_load_system_ca,
+	backend_tls_insecure_skip_verify,
 	enabled,
 	created_at,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 			normalized.GroupID,
 			normalized.Name,
@@ -66,6 +80,12 @@ INSERT INTO tunnels (
 			normalized.LocalHost,
 			normalized.LocalStart,
 			normalized.LocalEnd,
+			string(normalized.ListenTLSMode),
+			boolToInt(normalized.ListenTLSLoadSystemCA),
+			string(normalized.BackendTLSMode),
+			normalized.BackendTLSServerName,
+			boolToInt(normalized.BackendTLSLoadSystemCA),
+			boolToInt(normalized.BackendTLSInsecureSkipVerify),
 			boolToInt(normalized.Enabled),
 			now,
 			now,
@@ -75,30 +95,40 @@ INSERT INTO tunnels (
 		}
 
 		createdID = result.LastInsertID
+		if err := s.replaceTunnelCertificateUsages(ctx, tx, createdID, normalized); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
-		return TunnelView{}, err
+		return TunnelMutationResult{}, err
 	}
 
 	item, err := s.loadTunnelByIDWithStatus(ctx, createdID)
 	if err != nil {
-		return TunnelView{}, err
+		return TunnelMutationResult{}, err
 	}
 
 	s.refreshGroups(item.GroupID)
-	return item, nil
+	return TunnelMutationResult{
+		Item:     item,
+		Warnings: tunnelMutationWarnings(group, normalized),
+	}, nil
 }
 
-func (s *Service) UpdateTunnel(ctx context.Context, id int64, payload TunnelRequest) (TunnelView, error) {
+func (s *Service) UpdateTunnel(ctx context.Context, id int64, payload TunnelRequest) (TunnelMutationResult, error) {
 	normalized, err := normalizeTunnel(payload)
 	if err != nil {
-		return TunnelView{}, err
+		return TunnelMutationResult{}, err
+	}
+	if err := s.validateTunnelTLS(ctx, normalized); err != nil {
+		return TunnelMutationResult{}, err
 	}
 
 	var (
 		item        TunnelView
 		previousGID int64
+		group       ProxyGroupView
 	)
 	err = s.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
 		row, err := tx.QueryOneContext(ctx, "SELECT group_id FROM tunnels WHERE id = ?", id)
@@ -113,7 +143,7 @@ func (s *Service) UpdateTunnel(ctx context.Context, id int64, payload TunnelRequ
 			return fmt.Errorf("decode tunnel group_id: %w", err)
 		}
 
-		group, err := s.loadProxyGroupByID(ctx, tx, normalized.GroupID)
+		group, err = s.loadProxyGroupByID(ctx, tx, normalized.GroupID)
 		if err != nil {
 			return err
 		}
@@ -135,6 +165,12 @@ SET
 	local_host = ?,
 	local_start = ?,
 	local_end = ?,
+	listen_tls_mode = ?,
+	listen_tls_load_system_ca = ?,
+	backend_tls_mode = ?,
+	backend_tls_server_name = ?,
+	backend_tls_load_system_ca = ?,
+	backend_tls_insecure_skip_verify = ?,
 	enabled = ?,
 	updated_at = ?
 WHERE id = ?
@@ -148,6 +184,12 @@ WHERE id = ?
 			normalized.LocalHost,
 			normalized.LocalStart,
 			normalized.LocalEnd,
+			string(normalized.ListenTLSMode),
+			boolToInt(normalized.ListenTLSLoadSystemCA),
+			string(normalized.BackendTLSMode),
+			normalized.BackendTLSServerName,
+			boolToInt(normalized.BackendTLSLoadSystemCA),
+			boolToInt(normalized.BackendTLSInsecureSkipVerify),
 			boolToInt(normalized.Enabled),
 			schemaTimestamp(),
 			id,
@@ -158,19 +200,25 @@ WHERE id = ?
 		if result.RowsAffected == 0 {
 			return &Error{Status: 404, Message: "tunnel not found"}
 		}
+		if err := s.replaceTunnelCertificateUsages(ctx, tx, id, normalized); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
-		return TunnelView{}, err
+		return TunnelMutationResult{}, err
 	}
 
 	item, err = s.loadTunnelByIDWithStatus(ctx, id)
 	if err != nil {
-		return TunnelView{}, err
+		return TunnelMutationResult{}, err
 	}
 
 	s.refreshGroups(previousGID, item.GroupID)
-	return item, nil
+	return TunnelMutationResult{
+		Item:     item,
+		Warnings: tunnelMutationWarnings(group, normalized),
+	}, nil
 }
 
 func (s *Service) DeleteTunnel(ctx context.Context, id int64) error {
@@ -186,6 +234,10 @@ func (s *Service) DeleteTunnel(ctx context.Context, id int64) error {
 		groupID, err = rowInt64(row, "group_id")
 		if err != nil {
 			return fmt.Errorf("decode tunnel group_id: %w", err)
+		}
+
+		if err := s.deleteTunnelCertificateUsages(ctx, tx, id); err != nil {
+			return err
 		}
 
 		result, err := tx.ExecContext(ctx, "DELETE FROM tunnels WHERE id = ?", id)
@@ -237,6 +289,12 @@ SELECT
 	t.local_host,
 	t.local_start,
 	t.local_end,
+	t.listen_tls_mode,
+	t.listen_tls_load_system_ca,
+	t.backend_tls_mode,
+	t.backend_tls_server_name,
+	t.backend_tls_load_system_ca,
+	t.backend_tls_insecure_skip_verify,
 	t.enabled,
 	t.created_at,
 	t.updated_at
@@ -248,6 +306,10 @@ ORDER BY t.id
 	if err != nil {
 		return nil, fmt.Errorf("list tunnels: %w", err)
 	}
+	usageMap, err := s.loadTunnelUsageMap(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
 
 	items := make([]TunnelView, 0, len(result.Rows))
 	for _, row := range result.Rows {
@@ -255,6 +317,7 @@ ORDER BY t.id
 		if err != nil {
 			return nil, fmt.Errorf("decode tunnel: %w", err)
 		}
+		s.applyTunnelUsageView(&item, usageMap[item.ID])
 		items = append(items, item)
 	}
 	return items, nil
@@ -340,19 +403,56 @@ func conflictErrorForTargets(items []TunnelView, targetIDs map[int64]struct{}) e
 
 func normalizeTunnel(payload TunnelRequest) (normalizedTunnel, error) {
 	item := normalizedTunnel{
-		GroupID:     payload.GroupID,
-		Name:        strings.TrimSpace(payload.Name),
-		Protocol:    strings.ToLower(strings.TrimSpace(payload.Protocol)),
-		RemoteType:  strings.ToLower(strings.TrimSpace(payload.RemoteType)),
-		RemoteStart: payload.RemoteStart,
-		RemoteEnd:   payload.RemoteEnd,
-		LocalHost:   strings.TrimSpace(payload.LocalHost),
-		LocalStart:  payload.LocalStart,
-		LocalEnd:    payload.LocalEnd,
-		Enabled:     true,
+		GroupID:        payload.GroupID,
+		Name:           strings.TrimSpace(payload.Name),
+		Protocol:       strings.ToLower(strings.TrimSpace(payload.Protocol)),
+		RemoteType:     strings.ToLower(strings.TrimSpace(payload.RemoteType)),
+		RemoteStart:    payload.RemoteStart,
+		RemoteEnd:      payload.RemoteEnd,
+		LocalHost:      strings.TrimSpace(payload.LocalHost),
+		LocalStart:     payload.LocalStart,
+		LocalEnd:       payload.LocalEnd,
+		Enabled:        true,
+		ListenTLSMode:  tunnelTLSModeOff,
+		BackendTLSMode: tunnelTLSModeOff,
 	}
 	if payload.Enabled != nil {
 		item.Enabled = *payload.Enabled
+	}
+	if payload.ListenTLSMode != nil {
+		item.ListenTLSMode = normalizeTunnelTLSMode(*payload.ListenTLSMode)
+	}
+	if payload.ListenTLSLoadSystemCA != nil {
+		item.ListenTLSLoadSystemCA = *payload.ListenTLSLoadSystemCA
+	}
+	var err error
+	if item.ListenTLSServerCertAssetID, err = normalizeOptionalAssetID(payload.ListenTLSServerCertAssetID, "listen_tls_server_cert_asset_id"); err != nil {
+		return normalizedTunnel{}, err
+	}
+	if item.ListenTLSClientCAAssetIDs, err = normalizeAssetIDs(payload.ListenTLSClientCAAssetIDs, "listen_tls_client_ca_asset_ids"); err != nil {
+		return normalizedTunnel{}, err
+	}
+	if payload.BackendTLSMode != nil {
+		item.BackendTLSMode = normalizeTunnelTLSMode(*payload.BackendTLSMode)
+	}
+	if payload.BackendTLSServerName != nil {
+		item.BackendTLSServerName = strings.TrimSpace(*payload.BackendTLSServerName)
+	}
+	item.BackendTLSLoadSystemCA = item.BackendTLSMode != tunnelTLSModeOff
+	if payload.BackendTLSMode == nil {
+		item.BackendTLSLoadSystemCA = false
+	}
+	if payload.BackendTLSLoadSystemCA != nil {
+		item.BackendTLSLoadSystemCA = *payload.BackendTLSLoadSystemCA
+	}
+	if payload.BackendTLSInsecureSkipVerify != nil {
+		item.BackendTLSInsecureSkipVerify = *payload.BackendTLSInsecureSkipVerify
+	}
+	if item.BackendTLSClientCertAssetID, err = normalizeOptionalAssetID(payload.BackendTLSClientCertAssetID, "backend_tls_client_cert_asset_id"); err != nil {
+		return normalizedTunnel{}, err
+	}
+	if item.BackendTLSCAAssetIDs, err = normalizeAssetIDs(payload.BackendTLSCAAssetIDs, "backend_tls_ca_asset_ids"); err != nil {
+		return normalizedTunnel{}, err
 	}
 	if item.GroupID <= 0 {
 		return normalizedTunnel{}, &Error{Status: 400, Message: "group_id must be greater than zero"}
@@ -385,7 +485,100 @@ func normalizeTunnel(payload TunnelRequest) (normalizedTunnel, error) {
 	if item.RemoteType == "range" && (item.RemoteEnd-item.RemoteStart) != (item.LocalEnd-item.LocalStart) {
 		return normalizedTunnel{}, &Error{Status: 400, Message: "remote and local port ranges must be aligned"}
 	}
+	if item.ListenTLSMode == "" {
+		return normalizedTunnel{}, &Error{Status: 400, Message: "listen_tls_mode must be off, tls, or mtls"}
+	}
+	if item.BackendTLSMode == "" {
+		return normalizedTunnel{}, &Error{Status: 400, Message: "backend_tls_mode must be off, tls, or mtls"}
+	}
+	if item.BackendTLSServerName != "" {
+		if _, err := protocol.ParseHost(item.BackendTLSServerName); err != nil {
+			return normalizedTunnel{}, &Error{Status: 400, Message: "backend_tls_server_name is invalid"}
+		}
+	}
 	return item, nil
+}
+
+func (s *Service) replaceTunnelCertificateUsages(ctx context.Context, conn storage.Conn, tunnelID int64, tunnel normalizedTunnel) error {
+	now := time.Now().UTC()
+	if err := entrycerts.ReplaceTargetUsages(ctx, conn, entrycerts.TargetTypeTunnel, tunnelID, entrycerts.UsageTypeTunnelListenServerCert, optionalAssetIDSlice(tunnel.ListenTLSServerCertAssetID), true, now); err != nil {
+		return fmt.Errorf("save tunnel listen server certificate binding: %w", err)
+	}
+	if err := entrycerts.ReplaceTargetUsages(ctx, conn, entrycerts.TargetTypeTunnel, tunnelID, entrycerts.UsageTypeTunnelListenClientCA, tunnel.ListenTLSClientCAAssetIDs, true, now); err != nil {
+		return fmt.Errorf("save tunnel listen client ca bindings: %w", err)
+	}
+	if err := entrycerts.ReplaceTargetUsages(ctx, conn, entrycerts.TargetTypeTunnel, tunnelID, entrycerts.UsageTypeTunnelBackendClientCert, optionalAssetIDSlice(tunnel.BackendTLSClientCertAssetID), true, now); err != nil {
+		return fmt.Errorf("save tunnel backend client certificate binding: %w", err)
+	}
+	if err := entrycerts.ReplaceTargetUsages(ctx, conn, entrycerts.TargetTypeTunnel, tunnelID, entrycerts.UsageTypeTunnelBackendCA, tunnel.BackendTLSCAAssetIDs, true, now); err != nil {
+		return fmt.Errorf("save tunnel backend ca bindings: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) deleteTunnelCertificateUsages(ctx context.Context, conn storage.Conn, tunnelID int64) error {
+	now := time.Now().UTC()
+	for _, usageType := range []entrycerts.UsageType{
+		entrycerts.UsageTypeTunnelListenServerCert,
+		entrycerts.UsageTypeTunnelListenClientCA,
+		entrycerts.UsageTypeTunnelBackendClientCert,
+		entrycerts.UsageTypeTunnelBackendCA,
+	} {
+		if err := entrycerts.ReplaceTargetUsages(ctx, conn, entrycerts.TargetTypeTunnel, tunnelID, usageType, nil, true, now); err != nil {
+			return fmt.Errorf("delete tunnel certificate bindings: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) loadTunnelUsageMap(ctx context.Context, conn storage.Conn) (map[int64]map[entrycerts.UsageType][]int64, error) {
+	usages, err := entrycerts.ListUsagesWithConn(ctx, conn)
+	if err != nil {
+		return nil, fmt.Errorf("list tunnel certificate bindings: %w", err)
+	}
+	result := make(map[int64]map[entrycerts.UsageType][]int64)
+	for _, usage := range usages {
+		if usage.TargetType != entrycerts.TargetTypeTunnel || !usage.Enabled {
+			continue
+		}
+		byUsage, ok := result[usage.TargetID]
+		if !ok {
+			byUsage = make(map[entrycerts.UsageType][]int64)
+			result[usage.TargetID] = byUsage
+		}
+		byUsage[usage.UsageType] = append(byUsage[usage.UsageType], usage.AssetID)
+	}
+	return result, nil
+}
+
+func (s *Service) applyTunnelUsageView(item *TunnelView, usages map[entrycerts.UsageType][]int64) {
+	if item == nil || len(usages) == 0 {
+		return
+	}
+	if assetIDs := usages[entrycerts.UsageTypeTunnelListenServerCert]; len(assetIDs) > 0 {
+		item.ListenTLSServerCertAssetID = int64Ptr(assetIDs[0])
+	}
+	if assetIDs := usages[entrycerts.UsageTypeTunnelListenClientCA]; len(assetIDs) > 0 {
+		item.ListenTLSClientCAAssetIDs = append([]int64(nil), assetIDs...)
+	}
+	if assetIDs := usages[entrycerts.UsageTypeTunnelBackendClientCert]; len(assetIDs) > 0 {
+		item.BackendTLSClientCertAssetID = int64Ptr(assetIDs[0])
+	}
+	if assetIDs := usages[entrycerts.UsageTypeTunnelBackendCA]; len(assetIDs) > 0 {
+		item.BackendTLSCAAssetIDs = append([]int64(nil), assetIDs...)
+	}
+}
+
+func optionalAssetIDSlice(value *int64) []int64 {
+	if value == nil {
+		return nil
+	}
+	return []int64{*value}
+}
+
+func int64Ptr(value int64) *int64 {
+	target := value
+	return &target
 }
 
 func (s *Service) withTunnelStatuses(items []TunnelView) []TunnelView {

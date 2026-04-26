@@ -189,7 +189,15 @@ func sameTunnelEntry(left, right protocol.TunnelEntry) bool {
 		left.RemoteEnd == right.RemoteEnd &&
 		sameHost(left.LocalHost, right.LocalHost) &&
 		left.LocalStart == right.LocalStart &&
-		left.LocalEnd == right.LocalEnd
+		left.LocalEnd == right.LocalEnd &&
+		left.Revision == right.Revision &&
+		left.BackendTLSMode == right.BackendTLSMode &&
+		left.BackendTLSLoadSystemCA == right.BackendTLSLoadSystemCA &&
+		left.BackendTLSInsecureSkipVerify == right.BackendTLSInsecureSkipVerify &&
+		left.BackendTLSServerName == right.BackendTLSServerName &&
+		left.BackendTLSCAPEM == right.BackendTLSCAPEM &&
+		left.BackendTLSClientCertPEM == right.BackendTLSClientCertPEM &&
+		left.BackendTLSClientKeyPEM == right.BackendTLSClientKeyPEM
 }
 
 func sameHost(left, right protocol.Host) bool {

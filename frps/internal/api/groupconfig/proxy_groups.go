@@ -164,6 +164,20 @@ WHERE id = ?
 
 func (s *Service) DeleteProxyGroup(ctx context.Context, id int64) error {
 	err := s.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
+		tunnelRows, err := tx.QueryContext(ctx, "SELECT id FROM tunnels WHERE group_id = ?", id)
+		if err != nil {
+			return fmt.Errorf("load proxy group tunnels before delete: %w", err)
+		}
+		for _, row := range tunnelRows.Rows {
+			tunnelID, err := rowInt64(row, "id")
+			if err != nil {
+				return fmt.Errorf("decode proxy group tunnel id: %w", err)
+			}
+			if err := s.deleteTunnelCertificateUsages(ctx, tx, tunnelID); err != nil {
+				return err
+			}
+		}
+
 		for _, statement := range []string{
 			"DELETE FROM tunnels WHERE group_id = ?",
 		} {

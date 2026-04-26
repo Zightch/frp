@@ -147,12 +147,15 @@ func (h *Handler) handleTunnels(writer http.ResponseWriter, request *http.Reques
 			return
 		}
 
-		item, err := service.CreateTunnel(request.Context(), payload)
+		result, err := service.CreateTunnel(request.Context(), payload)
 		if err != nil {
 			httpx.WriteError(writer, err)
 			return
 		}
-		httpx.WriteJSON(writer, http.StatusCreated, map[string]any{"item": item})
+		httpx.WriteJSON(writer, http.StatusCreated, map[string]any{
+			"item":     result.Item,
+			"warnings": result.Warnings,
+		})
 	default:
 		httpx.WriteMethodNotAllowed(writer)
 	}
@@ -186,12 +189,15 @@ func (h *Handler) handleTunnelResource(writer http.ResponseWriter, request *http
 			return
 		}
 
-		item, err := service.UpdateTunnel(request.Context(), id, payload)
+		result, err := service.UpdateTunnel(request.Context(), id, payload)
 		if err != nil {
 			httpx.WriteError(writer, err)
 			return
 		}
-		httpx.WriteJSON(writer, http.StatusOK, map[string]any{"item": item})
+		httpx.WriteJSON(writer, http.StatusOK, map[string]any{
+			"item":     result.Item,
+			"warnings": result.Warnings,
+		})
 	case http.MethodDelete:
 		if err := service.DeleteTunnel(request.Context(), id); err != nil {
 			httpx.WriteError(writer, err)

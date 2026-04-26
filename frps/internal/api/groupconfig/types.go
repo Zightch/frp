@@ -85,22 +85,32 @@ type ProxyGroupView struct {
 }
 
 type TunnelView struct {
-	ID           int64  `json:"id"`
-	GroupID      int64  `json:"group_id"`
-	GroupName    string `json:"group_name"`
-	Name         string `json:"name"`
-	Protocol     string `json:"protocol"`
-	RemoteType   string `json:"remote_type"`
-	RemoteStart  int64  `json:"remote_start"`
-	RemoteEnd    int64  `json:"remote_end"`
-	LocalHost    string `json:"local_host"`
-	LocalStart   int64  `json:"local_start"`
-	LocalEnd     int64  `json:"local_end"`
-	Enabled      bool   `json:"enabled"`
-	Status       string `json:"status"`
-	StatusReason string `json:"status_reason,omitempty"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID                           int64   `json:"id"`
+	GroupID                      int64   `json:"group_id"`
+	GroupName                    string  `json:"group_name"`
+	Name                         string  `json:"name"`
+	Protocol                     string  `json:"protocol"`
+	RemoteType                   string  `json:"remote_type"`
+	RemoteStart                  int64   `json:"remote_start"`
+	RemoteEnd                    int64   `json:"remote_end"`
+	LocalHost                    string  `json:"local_host"`
+	LocalStart                   int64   `json:"local_start"`
+	LocalEnd                     int64   `json:"local_end"`
+	ListenTLSMode                string  `json:"listen_tls_mode"`
+	ListenTLSLoadSystemCA        bool    `json:"listen_tls_load_system_ca"`
+	ListenTLSServerCertAssetID   *int64  `json:"listen_tls_server_cert_asset_id,omitempty"`
+	ListenTLSClientCAAssetIDs    []int64 `json:"listen_tls_client_ca_asset_ids,omitempty"`
+	BackendTLSMode               string  `json:"backend_tls_mode"`
+	BackendTLSServerName         string  `json:"backend_tls_server_name,omitempty"`
+	BackendTLSLoadSystemCA       bool    `json:"backend_tls_load_system_ca"`
+	BackendTLSInsecureSkipVerify bool    `json:"backend_tls_insecure_skip_verify"`
+	BackendTLSClientCertAssetID  *int64  `json:"backend_tls_client_cert_asset_id,omitempty"`
+	BackendTLSCAAssetIDs         []int64 `json:"backend_tls_ca_asset_ids,omitempty"`
+	Enabled                      bool    `json:"enabled"`
+	Status                       string  `json:"status"`
+	StatusReason                 string  `json:"status_reason,omitempty"`
+	CreatedAt                    string  `json:"created_at"`
+	UpdatedAt                    string  `json:"updated_at"`
 
 	GroupEffectiveIP string `json:"-"`
 	GroupEnabled     bool   `json:"-"`
@@ -121,16 +131,26 @@ type ProxyGroupPatchRequest struct {
 }
 
 type TunnelRequest struct {
-	GroupID     int64  `json:"group_id"`
-	Name        string `json:"name"`
-	Protocol    string `json:"protocol"`
-	RemoteType  string `json:"remote_type"`
-	RemoteStart int64  `json:"remote_start"`
-	RemoteEnd   int64  `json:"remote_end"`
-	LocalHost   string `json:"local_host"`
-	LocalStart  int64  `json:"local_start"`
-	LocalEnd    int64  `json:"local_end"`
-	Enabled     *bool  `json:"enabled"`
+	GroupID                      int64   `json:"group_id"`
+	Name                         string  `json:"name"`
+	Protocol                     string  `json:"protocol"`
+	RemoteType                   string  `json:"remote_type"`
+	RemoteStart                  int64   `json:"remote_start"`
+	RemoteEnd                    int64   `json:"remote_end"`
+	LocalHost                    string  `json:"local_host"`
+	LocalStart                   int64   `json:"local_start"`
+	LocalEnd                     int64   `json:"local_end"`
+	Enabled                      *bool   `json:"enabled"`
+	ListenTLSMode                *string `json:"listen_tls_mode"`
+	ListenTLSLoadSystemCA        *bool   `json:"listen_tls_load_system_ca"`
+	ListenTLSServerCertAssetID   *int64  `json:"listen_tls_server_cert_asset_id"`
+	ListenTLSClientCAAssetIDs    []int64 `json:"listen_tls_client_ca_asset_ids"`
+	BackendTLSMode               *string `json:"backend_tls_mode"`
+	BackendTLSServerName         *string `json:"backend_tls_server_name"`
+	BackendTLSLoadSystemCA       *bool   `json:"backend_tls_load_system_ca"`
+	BackendTLSInsecureSkipVerify *bool   `json:"backend_tls_insecure_skip_verify"`
+	BackendTLSClientCertAssetID  *int64  `json:"backend_tls_client_cert_asset_id"`
+	BackendTLSCAAssetIDs         []int64 `json:"backend_tls_ca_asset_ids"`
 }
 
 type LocalIPView struct {
@@ -147,16 +167,31 @@ type normalizedProxyGroup struct {
 }
 
 type normalizedTunnel struct {
-	GroupID     int64
-	Name        string
-	Protocol    string
-	RemoteType  string
-	RemoteStart int64
-	RemoteEnd   int64
-	LocalHost   string
-	LocalStart  int64
-	LocalEnd    int64
-	Enabled     bool
+	GroupID                      int64
+	Name                         string
+	Protocol                     string
+	RemoteType                   string
+	RemoteStart                  int64
+	RemoteEnd                    int64
+	LocalHost                    string
+	LocalStart                   int64
+	LocalEnd                     int64
+	Enabled                      bool
+	ListenTLSMode                tunnelTLSMode
+	ListenTLSLoadSystemCA        bool
+	ListenTLSServerCertAssetID   *int64
+	ListenTLSClientCAAssetIDs    []int64
+	BackendTLSMode               tunnelTLSMode
+	BackendTLSServerName         string
+	BackendTLSLoadSystemCA       bool
+	BackendTLSInsecureSkipVerify bool
+	BackendTLSClientCertAssetID  *int64
+	BackendTLSCAAssetIDs         []int64
+}
+
+type TunnelMutationResult struct {
+	Item     TunnelView
+	Warnings []string
 }
 
 func (e *Error) Error() string {

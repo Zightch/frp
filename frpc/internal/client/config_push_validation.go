@@ -59,5 +59,27 @@ func validateConfigPushTunnel(tunnel protocol.TunnelEntry) error {
 		return fmt.Errorf("local_host is invalid")
 	}
 
+	switch tunnel.BackendTLSMode {
+	case protocol.TunnelTLSModeOff:
+	case protocol.TunnelTLSModeTLS:
+	case protocol.TunnelTLSModeMTLS:
+	default:
+		return fmt.Errorf("unsupported backend tls mode %d", tunnel.BackendTLSMode)
+	}
+	if tunnel.Protocol != protocol.ProtocolTCP && tunnel.BackendTLSMode != protocol.TunnelTLSModeOff {
+		return fmt.Errorf("backend tls is only supported for tcp tunnels")
+	}
+	if tunnel.BackendTLSMode == protocol.TunnelTLSModeMTLS {
+		if tunnel.BackendTLSClientCertPEM == "" || tunnel.BackendTLSClientKeyPEM == "" {
+			return fmt.Errorf("backend mtls requires client certificate and key")
+		}
+	}
+	if tunnel.BackendTLSMode != protocol.TunnelTLSModeOff &&
+		!tunnel.BackendTLSInsecureSkipVerify &&
+		!tunnel.BackendTLSLoadSystemCA &&
+		tunnel.BackendTLSCAPEM == "" {
+		return fmt.Errorf("backend tls requires system ca, custom ca, or insecure skip verify")
+	}
+
 	return nil
 }

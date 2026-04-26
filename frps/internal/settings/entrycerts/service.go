@@ -48,6 +48,9 @@ func (s *Service) List(ctx context.Context) ([]DescribedUsage, error) {
 	}
 	usageByType := make(map[UsageType]Usage, len(usageRows))
 	for _, item := range usageRows {
+		if item.TargetType != TargetTypeGlobal {
+			continue
+		}
 		usageByType[item.UsageType] = item
 	}
 
@@ -56,8 +59,8 @@ func (s *Service) List(ctx context.Context) ([]DescribedUsage, error) {
 		return nil, err
 	}
 
-	items := make([]DescribedUsage, 0, len(AllUsageTypes()))
-	for _, usageType := range AllUsageTypes() {
+	items := make([]DescribedUsage, 0, len(GlobalUsageTypes()))
+	for _, usageType := range GlobalUsageTypes() {
 		usage, ok := usageByType[usageType]
 		if !ok {
 			items = append(items, DescribedUsage{
@@ -128,7 +131,34 @@ func (s *Service) Resolve(ctx context.Context, usageType UsageType, assetID int6
 	if err != nil {
 		return ResolvedBinding{}, err
 	}
-	return s.resolveBindingFromState(usageType, assetID, assets, prepared, describedByID)
+	binding, err := s.resolveBindingFromState(usageType, assetID, assets, prepared, describedByID)
+	if err != nil {
+		return ResolvedBinding{}, err
+	}
+	binding.UsageType = usageType
+	return binding, nil
+}
+
+func (s *Service) ResolveCertificateAsset(ctx context.Context, assetID int64) (ResolvedBinding, error) {
+	if s == nil || s.store == nil {
+		return ResolvedBinding{}, fmt.Errorf("entry certificate service store is nil")
+	}
+	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
+	if err != nil {
+		return ResolvedBinding{}, err
+	}
+	return s.resolveCertificateAssetFromState(assetID, assets, prepared, describedByID)
+}
+
+func (s *Service) ResolveCAPoolAssets(ctx context.Context, assetIDs []int64) (ResolvedCAPool, error) {
+	if s == nil || s.store == nil {
+		return ResolvedCAPool{}, fmt.Errorf("entry certificate service store is nil")
+	}
+	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
+	if err != nil {
+		return ResolvedCAPool{}, err
+	}
+	return s.resolveCAPoolAssetsFromState(assetIDs, assets, prepared, describedByID)
 }
 
 func (s *Service) LoadUsage(ctx context.Context, usageType UsageType) (Usage, bool, error) {
@@ -168,6 +198,65 @@ func (s *Service) DeleteUsage(ctx context.Context, usageType UsageType) error {
 		return fmt.Errorf("entry certificate service store is nil")
 	}
 	return DeleteUsageByType(ctx, s.store, usageType)
+}
+
+func (s *Service) ListTargetUsages(ctx context.Context, targetType TargetType, targetID int64) ([]Usage, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("entry certificate service store is nil")
+	}
+	return ListUsagesByTarget(ctx, s.store, targetType, targetID)
+}
+
+func (s *Service) ReplaceTargetUsages(ctx context.Context, targetType TargetType, targetID int64, usageType UsageType, assetIDs []int64) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("entry certificate service store is nil")
+	}
+	return ReplaceTargetUsages(ctx, s.store, targetType, targetID, usageType, assetIDs, true, s.now())
+}
+
+func (s *Service) ResolveTargetCertificate(ctx context.Context, targetType TargetType, targetID int64, usageType UsageType) (ResolvedBinding, bool, error) {
+	if s == nil || s.store == nil {
+		return ResolvedBinding{}, false, fmt.Errorf("entry certificate service store is nil")
+	}
+	usages, err := ListUsagesByTargetAndType(ctx, s.store, targetType, targetID, usageType)
+	if err != nil {
+		return ResolvedBinding{}, false, err
+	}
+	enabled := enabledUsages(usages)
+	switch len(enabled) {
+	case 0:
+		return ResolvedBinding{}, false, nil
+	case 1:
+	default:
+		return ResolvedBinding{}, false, fmt.Errorf("usage %q allows only one bound asset", usageType)
+	}
+
+	binding, err := s.Resolve(ctx, usageType, enabled[0].AssetID)
+	if err != nil {
+		return ResolvedBinding{}, false, err
+	}
+	return binding, true, nil
+}
+
+func (s *Service) ResolveTargetCAPool(ctx context.Context, targetType TargetType, targetID int64, usageType UsageType) (ResolvedCAPool, error) {
+	if s == nil || s.store == nil {
+		return ResolvedCAPool{}, fmt.Errorf("entry certificate service store is nil")
+	}
+	usages, err := ListUsagesByTargetAndType(ctx, s.store, targetType, targetID, usageType)
+	if err != nil {
+		return ResolvedCAPool{}, err
+	}
+	enabled := enabledUsages(usages)
+	assetIDs := make([]int64, 0, len(enabled))
+	for _, usage := range enabled {
+		assetIDs = append(assetIDs, usage.AssetID)
+	}
+	pool, err := s.ResolveCAPoolAssets(ctx, assetIDs)
+	if err != nil {
+		return ResolvedCAPool{}, err
+	}
+	pool.UsageType = usageType
+	return pool, nil
 }
 
 func (s *Service) IsEnabled(ctx context.Context, usageType UsageType) (bool, error) {
@@ -220,6 +309,15 @@ func (s *Service) resolveBindingFromState(usageType UsageType, assetID int64, _ 
 	if !isKnownUsageType(usageType) {
 		return ResolvedBinding{}, fmt.Errorf("unsupported entry certificate type %q", usageType)
 	}
+	binding, err := s.resolveCertificateAssetFromState(assetID, nil, prepared, describedByID)
+	if err != nil {
+		return ResolvedBinding{}, err
+	}
+	binding.UsageType = usageType
+	return binding, nil
+}
+
+func (s *Service) resolveCertificateAssetFromState(assetID int64, _ []certassets.Asset, prepared []certassets.PreparedAsset, describedByID map[int64]certassets.DescribedAsset) (ResolvedBinding, error) {
 	if assetID <= 0 {
 		return ResolvedBinding{}, fmt.Errorf("asset_id must be greater than zero")
 	}
@@ -249,12 +347,61 @@ func (s *Service) resolveBindingFromState(usageType UsageType, assetID int64, _ 
 		return ResolvedBinding{}, fmt.Errorf("described asset %d not found", assetID)
 	}
 	return ResolvedBinding{
-		UsageType:           usageType,
 		Asset:               asset,
 		CertificatePEM:      certificatePEM,
 		KeyPEM:              target.Asset.Key,
 		TLSCertificate:      pair,
 		ResolvedChainLength: chainLength,
+	}, nil
+}
+
+func (s *Service) resolveCAPoolAssetsFromState(assetIDs []int64, _ []certassets.Asset, prepared []certassets.PreparedAsset, describedByID map[int64]certassets.DescribedAsset) (ResolvedCAPool, error) {
+	pool := x509.NewCertPool()
+	assets := make([]certassets.DescribedAsset, 0, len(assetIDs))
+	seen := make(map[int64]struct{}, len(assetIDs))
+
+	preparedByID := make(map[int64]certassets.PreparedAsset, len(prepared))
+	for _, item := range prepared {
+		preparedByID[item.Asset.ID] = item
+	}
+
+	var builder strings.Builder
+	for _, assetID := range assetIDs {
+		if assetID <= 0 {
+			return ResolvedCAPool{}, fmt.Errorf("asset_id must be greater than zero")
+		}
+		if _, ok := seen[assetID]; ok {
+			continue
+		}
+		seen[assetID] = struct{}{}
+
+		target, ok := preparedByID[assetID]
+		if !ok {
+			return ResolvedCAPool{}, sql.ErrNoRows
+		}
+		if target.Asset.AssetType != certassets.AssetTypeCA {
+			return ResolvedCAPool{}, fmt.Errorf("bound asset must be a ca")
+		}
+		described, ok := describedByID[assetID]
+		if !ok {
+			return ResolvedCAPool{}, fmt.Errorf("described asset %d not found", assetID)
+		}
+		assets = append(assets, described)
+
+		pemText := normalizePEMText(target.Asset.CRT)
+		if pemText == "" {
+			continue
+		}
+		builder.WriteString(pemText)
+		if !pool.AppendCertsFromPEM([]byte(pemText)) {
+			return ResolvedCAPool{}, fmt.Errorf("append ca certificates from asset %d", assetID)
+		}
+	}
+
+	return ResolvedCAPool{
+		Assets: assets,
+		PEM:    builder.String(),
+		Pool:   pool,
 	}, nil
 }
 
@@ -318,9 +465,25 @@ func isSelfSigned(cert *x509.Certificate) bool {
 
 func isKnownUsageType(value UsageType) bool {
 	switch value {
-	case UsageTypeWebUIHTTPS, UsageTypeFrpcTLS:
+	case UsageTypeWebUIHTTPS,
+		UsageTypeFrpcTLS,
+		UsageTypeTunnelListenServerCert,
+		UsageTypeTunnelListenClientCA,
+		UsageTypeTunnelBackendClientCert,
+		UsageTypeTunnelBackendCA:
 		return true
 	default:
 		return false
 	}
+}
+
+func enabledUsages(usages []Usage) []Usage {
+	items := make([]Usage, 0, len(usages))
+	for _, usage := range usages {
+		if !usage.Enabled {
+			continue
+		}
+		items = append(items, usage)
+	}
+	return items
 }

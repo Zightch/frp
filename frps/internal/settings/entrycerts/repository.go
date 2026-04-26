@@ -23,6 +23,7 @@ func ListUsagesWithConn(ctx context.Context, conn storage.Conn) ([]Usage, error)
 		`
 SELECT
 	id,
+	target_type,
 	usage_type,
 	target_id,
 	asset_id,
@@ -30,7 +31,7 @@ SELECT
 	created_at,
 	updated_at
 FROM certificate_asset_usages
-ORDER BY usage_type
+ORDER BY target_type, target_id, usage_type, asset_id
 `,
 	)
 	if err != nil {
@@ -48,6 +49,85 @@ ORDER BY usage_type
 	return items, nil
 }
 
+func ListUsagesByTarget(ctx context.Context, conn storage.Conn, targetType TargetType, targetID int64) ([]Usage, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("usage connection is nil")
+	}
+
+	result, err := conn.QueryContext(
+		ctx,
+		`
+SELECT
+	id,
+	target_type,
+	usage_type,
+	target_id,
+	asset_id,
+	enabled,
+	created_at,
+	updated_at
+FROM certificate_asset_usages
+WHERE target_type = ? AND target_id = ?
+ORDER BY usage_type, asset_id
+`,
+		string(targetType),
+		targetID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list certificate bindings: %w", err)
+	}
+
+	items := make([]Usage, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		item, err := decodeUsageRow(row)
+		if err != nil {
+			return nil, fmt.Errorf("decode certificate binding: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func ListUsagesByTargetAndType(ctx context.Context, conn storage.Conn, targetType TargetType, targetID int64, usageType UsageType) ([]Usage, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("usage connection is nil")
+	}
+
+	result, err := conn.QueryContext(
+		ctx,
+		`
+SELECT
+	id,
+	target_type,
+	usage_type,
+	target_id,
+	asset_id,
+	enabled,
+	created_at,
+	updated_at
+FROM certificate_asset_usages
+WHERE target_type = ? AND target_id = ? AND usage_type = ?
+ORDER BY asset_id
+`,
+		string(targetType),
+		targetID,
+		string(usageType),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list certificate bindings by usage: %w", err)
+	}
+
+	items := make([]Usage, 0, len(result.Rows))
+	for _, row := range result.Rows {
+		item, err := decodeUsageRow(row)
+		if err != nil {
+			return nil, fmt.Errorf("decode certificate binding: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 func LoadUsageByType(ctx context.Context, conn storage.Conn, usageType UsageType) (Usage, error) {
 	if conn == nil {
 		return Usage{}, fmt.Errorf("usage connection is nil")
@@ -58,6 +138,7 @@ func LoadUsageByType(ctx context.Context, conn storage.Conn, usageType UsageType
 		`
 SELECT
 	id,
+	target_type,
 	usage_type,
 	target_id,
 	asset_id,
@@ -65,8 +146,11 @@ SELECT
 	created_at,
 	updated_at
 FROM certificate_asset_usages
-WHERE usage_type = ? AND target_id = ?
+WHERE target_type = ? AND usage_type = ? AND target_id = ?
+ORDER BY updated_at DESC, id DESC
+LIMIT 1
 `,
+		string(TargetTypeGlobal),
 		string(usageType),
 		globalTargetID,
 	)
@@ -97,9 +181,10 @@ func UpsertUsage(ctx context.Context, conn storage.Conn, usageType UsageType, as
 			ctx,
 			`
 UPDATE certificate_asset_usages
-SET asset_id = ?, enabled = ?, updated_at = ?
+SET target_type = ?, asset_id = ?, enabled = ?, updated_at = ?
 WHERE id = ?
 `,
+			string(TargetTypeGlobal),
 			assetID,
 			boolToInt(enabled),
 			nowText,
@@ -112,14 +197,16 @@ WHERE id = ?
 			ctx,
 			`
 INSERT INTO certificate_asset_usages (
+	target_type,
 	usage_type,
 	target_id,
 	asset_id,
 	enabled,
 	created_at,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?)
 `,
+			string(TargetTypeGlobal),
 			string(usageType),
 			globalTargetID,
 			assetID,
@@ -131,13 +218,14 @@ INSERT INTO certificate_asset_usages (
 			return Usage{}, fmt.Errorf("insert entry certificate: %w", execErr)
 		}
 		return Usage{
-			ID:        result.LastInsertID,
-			UsageType: usageType,
-			TargetID:  globalTargetID,
-			AssetID:   assetID,
-			Enabled:   enabled,
-			CreatedAt: now.UTC(),
-			UpdatedAt: now.UTC(),
+			ID:         result.LastInsertID,
+			TargetType: TargetTypeGlobal,
+			UsageType:  usageType,
+			TargetID:   globalTargetID,
+			AssetID:    assetID,
+			Enabled:    enabled,
+			CreatedAt:  now.UTC(),
+			UpdatedAt:  now.UTC(),
 		}, nil
 	default:
 		return Usage{}, err
@@ -153,12 +241,81 @@ func DeleteUsageByType(ctx context.Context, conn storage.Conn, usageType UsageTy
 
 	if _, err := conn.ExecContext(
 		ctx,
-		`DELETE FROM certificate_asset_usages WHERE usage_type = ? AND target_id = ?`,
+		`DELETE FROM certificate_asset_usages WHERE target_type = ? AND usage_type = ? AND target_id = ?`,
+		string(TargetTypeGlobal),
 		string(usageType),
 		globalTargetID,
 	); err != nil {
 		return fmt.Errorf("delete entry certificate: %w", err)
 	}
+	return nil
+}
+
+func ReplaceTargetUsages(ctx context.Context, conn storage.Conn, targetType TargetType, targetID int64, usageType UsageType, assetIDs []int64, enabled bool, now time.Time) error {
+	if conn == nil {
+		return fmt.Errorf("usage connection is nil")
+	}
+
+	if targetType == "" {
+		return fmt.Errorf("target_type is required")
+	}
+	if targetID < 0 {
+		return fmt.Errorf("target_id must be greater than or equal to zero")
+	}
+
+	nowText := formatTimestamp(now)
+	seen := make(map[int64]struct{}, len(assetIDs))
+	filtered := make([]int64, 0, len(assetIDs))
+	for _, assetID := range assetIDs {
+		if assetID <= 0 {
+			return fmt.Errorf("asset_id must be greater than zero")
+		}
+		if _, ok := seen[assetID]; ok {
+			continue
+		}
+		seen[assetID] = struct{}{}
+		filtered = append(filtered, assetID)
+	}
+
+	if _, err := conn.ExecContext(
+		ctx,
+		`
+DELETE FROM certificate_asset_usages
+WHERE target_type = ? AND target_id = ? AND usage_type = ?
+`,
+		string(targetType),
+		targetID,
+		string(usageType),
+	); err != nil {
+		return fmt.Errorf("delete certificate bindings: %w", err)
+	}
+
+	for _, assetID := range filtered {
+		if _, err := conn.ExecContext(
+			ctx,
+			`
+INSERT INTO certificate_asset_usages (
+	target_type,
+	usage_type,
+	target_id,
+	asset_id,
+	enabled,
+	created_at,
+	updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+`,
+			string(targetType),
+			string(usageType),
+			targetID,
+			assetID,
+			boolToInt(enabled),
+			nowText,
+			nowText,
+		); err != nil {
+			return fmt.Errorf("insert certificate binding: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -176,6 +333,7 @@ func decodeUsageRow(row storage.Row) (Usage, error) {
 	if item.ID, err = rowInt64(row, "id"); err != nil {
 		return Usage{}, fmt.Errorf("id: %w", err)
 	}
+	item.TargetType = NormalizeTargetType(rowString(row, "target_type"))
 	item.UsageType = NormalizeUsageType(rowString(row, "usage_type"))
 	if item.TargetID, err = rowInt64(row, "target_id"); err != nil {
 		return Usage{}, fmt.Errorf("target_id: %w", err)
