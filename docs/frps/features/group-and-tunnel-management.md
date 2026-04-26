@@ -54,6 +54,16 @@
 - `local_host`
 - `local_start`
 - `local_end`
+- `listen_tls_mode`
+- `listen_tls_load_system_ca`
+- `listen_tls_server_cert_asset_id`
+- `listen_tls_client_ca_asset_ids`
+- `backend_tls_mode`
+- `backend_tls_server_name`
+- `backend_tls_load_system_ca`
+- `backend_tls_insecure_skip_verify`
+- `backend_tls_client_cert_asset_id`
+- `backend_tls_ca_asset_ids`
 - `enabled`
 
 当前校验：
@@ -62,6 +72,26 @@
 - `single` 模式要求本地和远端都为单端口
 - `range` 模式要求本地和远端跨度一致
 - `local_host` 必须是合法 IP 或 hostname
+- 隧道 TLS 当前只支持 `protocol=tcp`
+- `listen_tls_mode = off | tls | mtls`
+- `backend_tls_mode = off | tls | mtls`
+- `listen_tls_mode != off` 时必须绑定 `listen_tls_server_cert_asset_id`
+- `listen_tls_mode = mtls` 时，必须满足：
+  - `listen_tls_load_system_ca = true`
+  - 或 `listen_tls_client_ca_asset_ids` 非空
+- `backend_tls_mode = mtls` 时必须绑定 `backend_tls_client_cert_asset_id`
+- `backend_tls_mode != off` 且 `backend_tls_insecure_skip_verify = false` 时，必须满足：
+  - `backend_tls_load_system_ca = true`
+  - 或 `backend_tls_ca_asset_ids` 非空
+
+当前 tunnel TLS 语义：
+
+- `listen_tls_*` 表示外网客户端连接 `frps` 隧道监听器这一侧
+- `backend_tls_*` 表示 `frpc` 连接内网后端目标这一侧
+- `listen_tls_client_ca_asset_ids` 和 `backend_tls_ca_asset_ids` 都允许多选，语义是 CA 池
+- `listen_tls_load_system_ca` 默认关闭
+- `backend_tls_load_system_ca` 在启用 backend TLS 时默认开启
+- 如果 backend TLS 需要向 `frpc` 下发自定义 CA 或客户端证书，但分组 `control_transport_security=plain`，保存仍允许成功，但会返回 warning
 
 ## 跨平台统一端口冲突规则
 
@@ -109,6 +139,8 @@
 - 分组 `effective_ip`
 - 隧道新增 / 删除
 - 隧道监听空间和本地目标相关字段
+- 隧道监听侧 TLS 相关字段
+- 隧道 backend TLS 相关字段
 - 隧道 `enabled`
 
 下列变更当前不触发热重载：

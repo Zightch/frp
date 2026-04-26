@@ -1,12 +1,13 @@
 # frps 设计文档
 
-这里存放“方向已确认、代码尚未全部落地”的设计文档。
+这里存放以设计边界、实现约束和后续演进说明为主的文档。
 
 当前有效条目：
 
-- [证书绑定设计：WebUI HTTPS 与 frpc TLS](./certificate-binding.md)
+- [证书绑定设计：入口证书与 Tunnel TLS](./certificate-binding.md)
 
 约定：
 
-- 这里的内容不能直接当作“当前已实现行为”对外承诺。
-- 一旦真实代码落地，需同步把最终口径写回 `features/` 和 `technical/`。
+- `features/` 负责对外描述当前能力。
+- `technical/` 负责描述当前实现结构。
+- `design/` 负责补充边界、约束和演进方向。

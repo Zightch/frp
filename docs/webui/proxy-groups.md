@@ -241,6 +241,16 @@ interface Tunnel {
   local_host: string
   local_start: number
   local_end: number
+  listen_tls_mode: 'off' | 'tls' | 'mtls'
+  listen_tls_load_system_ca: boolean
+  listen_tls_server_cert_asset_id?: number
+  listen_tls_client_ca_asset_ids?: number[]
+  backend_tls_mode: 'off' | 'tls' | 'mtls'
+  backend_tls_server_name?: string
+  backend_tls_load_system_ca: boolean
+  backend_tls_insecure_skip_verify: boolean
+  backend_tls_client_cert_asset_id?: number
+  backend_tls_ca_asset_ids?: number[]
   enabled: boolean
   status: string
   status_reason?: string
@@ -259,8 +269,24 @@ interface Tunnel {
 | `/proxy-groups/{id}/key` POST | `{item: ProxyGroup, key: string}` |
 | `/local-ips` GET | `{items: LocalIP[]}` |
 | `/tunnels` GET | `{items: Tunnel[]}` |
-| `/tunnels` POST | `{item: Tunnel}` |
-| `/tunnels/{id}` PATCH | `{item: Tunnel}` |
+| `/tunnels` POST | `{item: Tunnel, warnings: string[]}` |
+| `/tunnels/{id}` PATCH | `{item: Tunnel, warnings: string[]}` |
+
+### Tunnel TLS 选项来源
+
+隧道编辑表单后续接入时，证书选择不需要单独的新接口，直接复用：
+
+- `GET /api/v1/certificate-assets`
+
+前端筛选规则：
+
+- 监听证书 / backend client cert：`asset_type=certificate` 且 `key_present=true`
+- CA 池：`asset_type=ca`
+
+当前 `warnings` 主要用于提示：
+
+- backend TLS 需要向 `frpc` 下发自定义 CA 或客户端证书
+- 但该分组 `control_transport_security=plain`
 
 ## 10. 当前状态展示边界
 

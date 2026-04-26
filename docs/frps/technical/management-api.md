@@ -40,6 +40,32 @@
 - `PATCH /api/v1/tunnels/{id}`
 - `DELETE /api/v1/tunnels/{id}`
 
+隧道写接口当前直接承载 tunnel TLS 配置，不再额外拆分单独的 tunnel 证书绑定接口。
+
+`POST /api/v1/tunnels` 与 `PATCH /api/v1/tunnels/{id}` 当前支持的 TLS 字段：
+
+- `listen_tls_mode`
+- `listen_tls_load_system_ca`
+- `listen_tls_server_cert_asset_id`
+- `listen_tls_client_ca_asset_ids`
+- `backend_tls_mode`
+- `backend_tls_server_name`
+- `backend_tls_load_system_ca`
+- `backend_tls_insecure_skip_verify`
+- `backend_tls_client_cert_asset_id`
+- `backend_tls_ca_asset_ids`
+
+当前返回：
+
+- `GET /api/v1/tunnels` -> `{items: TunnelView[]}`
+- `POST /api/v1/tunnels` -> `{item: TunnelView, warnings: string[]}`
+- `PATCH /api/v1/tunnels/{id}` -> `{item: TunnelView, warnings: string[]}`
+
+其中 `warnings` 当前主要用于提示：
+
+- tunnel backend TLS 需要向 `frpc` 下发 CA 或客户端证书
+- 但该分组的控制连接策略仍为 `control_transport_security=plain`
+
 ## 证书资产接口
 
 - `GET /api/v1/certificate-assets`
@@ -82,7 +108,11 @@
 
 下面这些资源当前还不存在：
 
-- 证书绑定 usage 管理
-- tunnel 级 CA 池管理
 - 连接观察与连接级操作
 - 抓包与限速控制
+
+补充说明：
+
+- 全局入口证书绑定走 `settings/entry-certificates`
+- tunnel 级证书绑定走 `tunnels` 资源本身
+- 可选资产列表统一走 `GET /api/v1/certificate-assets`

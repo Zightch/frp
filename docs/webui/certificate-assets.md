@@ -35,9 +35,9 @@
 - `DELETE /api/v1/certificate-assets/{id}?cascade=true`
 - `GET /api/v1/certificate-assets/{id}/download-options`
 - `GET /api/v1/certificate-assets/{id}/download`
-- `GET /api/v1/certificate-usages`
-- `PUT /api/v1/certificate-usages/{usage_type}`
-- `DELETE /api/v1/certificate-usages/{usage_type}`
+- `GET /api/v1/settings/entry-certificates`
+- `PUT /api/v1/settings/entry-certificates/{usage_type}`
+- `DELETE /api/v1/settings/entry-certificates/{usage_type}`
 
 当前列表项字段以 `src/api/index.ts` 中的 `CertificateAsset` 为准，包含：
 
@@ -51,22 +51,13 @@
 当前页面结构固定为四段：
 
 1. 页面标题和刷新按钮
-2. 入口证书绑定卡片
-3. 筛选栏
-4. 资产列表表格
+2. 筛选栏
+3. 资产列表表格
+4. 详情 / 导入 / 生成 / 下载等弹层
 
-入口证书绑定卡片当前固定两张：
+入口证书绑定卡片已经迁移到系统设置页：
 
-- `WebUI HTTPS`
-- `frpc TLS`
-
-每张卡片当前都会展示：
-
-- 当前状态
-- 当前绑定证书
-- 解析链长度
-- 绑定说明
-- `绑定证书 / 更换证书 / 解绑` 操作
+- 路由：`/settings/entry-certificates`
 
 筛选栏包含：
 
@@ -255,22 +246,6 @@
 |------|----------|------|
 | `original` | 上传资产 | 原样下载当前资产保存的 PEM 结构 |
 | `single` | 生成资产 | 下载当前节点 |
-
-## 8. 入口证书绑定
-
-### 8.1 当前使用点
-
-| 使用点 | 说明 |
-|--------|------|
-| `webui_https` | 管理监听器 HTTPS 服务端证书 |
-| `frpc_tls` | `frpc` 登录监听口在 TLS 模式下使用的全局服务端证书 |
-
-### 8.2 当前交互
-
-- 只允许选择 `asset_type=certificate` 且 `key_present=true` 的资产
-- 绑定 `webui_https` 成功后，页面会自动跳转到同地址的 `https://`
-- 解绑 `webui_https` 时，页面会自动回跳 `http://`
-- `frpc_tls` 的绑定不会主动跳转页面
 | `chain` | 生成资产 | 下载“当前节点到某个祖先”的单条证书链 |
 | `tree` | 生成 CA | 下载该 CA 节点的部分子树或整棵树 |
 
@@ -293,7 +268,25 @@
 
 当前前端只负责触发浏览器下载，不做 ZIP 解包。
 
-## 8. 删除
+## 8. 与其他页面的复用
+
+证书资产页当前只负责管理资产本身，不再承载入口证书绑定卡片。
+
+其他页面复用本页数据时，统一走：
+
+- `GET /api/v1/certificate-assets`
+
+当前筛选约定：
+
+- 入口证书 / tunnel 监听证书 / backend client cert：`asset_type=certificate` 且 `key_present=true`
+- CA 池：`asset_type=ca`
+
+当前被复用的主要场景：
+
+- `/settings/entry-certificates`
+- 分组配置页中的 tunnel TLS 表单
+
+## 9. 删除
 
 删除前，页面固定先调用：
 
@@ -306,7 +299,7 @@
 - `requires_confirmation`
 - `warning_message`
 
-### 8.1 当前删除确认语义
+### 9.1 当前删除确认语义
 
 无影响项时：
 
@@ -318,14 +311,14 @@
 - 确认后自动以 `cascade=true` 发起删除
 - 当前没有额外的“级联删除”复选框
 
-### 8.2 当前影响范围
+### 9.2 当前影响范围
 
 `affected_items` 不只包含生成树下游，还包括删除后会导致校验失效的其他资产，例如：
 
 - 生成资产的直接 / 间接子节点
 - 依赖数据库 CA 补链的上传资产
 
-## 9. 当前 API 类型摘要
+## 10. 当前 API 类型摘要
 
 ```ts
 type CertificateAssetGenerateKeyAlgorithm = 'ecdsa' | 'rsa' | 'ed25519'

@@ -5,7 +5,7 @@
 ## 目录
 
 - `design/`
-  - 尚未落地、但已收口方向的方案设计。
+  - 设计边界、实现约束和演进说明。
 - `features/`
   - 当前已经进入真实代码和测试链路的行为说明。
 - `technical/`
@@ -27,6 +27,6 @@
 
 ## 当前重点设计项
 
-- [证书绑定设计：WebUI HTTPS 与 frpc TLS](./design/certificate-binding.md)
+- [证书绑定设计：入口证书与 Tunnel TLS](./design/certificate-binding.md)
 
 根目录不再保留旧版平铺文档；请直接从本索引进入。

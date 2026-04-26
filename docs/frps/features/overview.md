@@ -19,6 +19,7 @@
 - 控制面：`client_id + client_secret` challenge/response 登录、心跳、`config.push / config.ack`
 - 在线热重载：整组冻结、整组完整快照下发、`ack` 后 listener 重建
 - 证书资产：上传、粘贴、生成、编辑名称/备注、删除影响分析、下载选项和下载产物
+- 证书绑定：`webui_https`、`frpc_tls`、tunnel 监听侧 TLS、tunnel backend TLS
 
 ## 当前明确不承诺
 
@@ -28,9 +29,6 @@
 - 连接列表和连接级管理
 - 限速执行
 - 抓包执行
-- 证书绑定到入口监听器
-
-证书绑定属于下一阶段设计，见 [../design/certificate-binding.md](../design/certificate-binding.md)。
 
 ## 当前功能文档
 

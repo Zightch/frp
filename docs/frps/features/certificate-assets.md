@@ -1,6 +1,6 @@
 # 证书资产
 
-当前 `frps` 已经具备统一证书 / CA 资产层，但还没有把证书真正绑定到监听入口。
+当前 `frps` 已经具备统一证书 / CA 资产层，并且已经作为入口证书和 tunnel TLS 的底层资产来源。
 
 ## 当前已实现范围
 
@@ -10,11 +10,11 @@
 - 支持编辑资产 `name`、`remark`
 - 支持删除影响分析和级联删除
 - 支持下载选项查询和下载接口
-
-当前尚未实现：
-
-- WebUI HTTPS 证书绑定
-- `frpc` 登录口 TLS 证书绑定
+- 支持被证书绑定层复用：
+  - `webui_https`
+  - `frpc_tls`
+  - tunnel 监听侧 TLS
+  - tunnel backend TLS
 
 对应设计见 [../design/certificate-binding.md](../design/certificate-binding.md)。
 

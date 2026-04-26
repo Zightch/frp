@@ -17,9 +17,13 @@
 
 ## frpc 登录
 
-当前 `7000` 还是裸 TCP，登录握手是：
+当前 `7000` 控制连接已经固定为“两段握手”：
 
 ```text
+frpc -> transport.client_hello
+frps -> transport.server_hello
+if selected_security_mode == tls:
+    TLS handshake
 frpc -> auth.begin
 frps -> auth.challenge
 frpc -> auth.finish
@@ -31,13 +35,15 @@ frps -> start listeners
 
 当前会检查：
 
+- `transport.client_hello` 是否先到达
 - `client_id` 是否存在
+- 分组 `control_transport_security` 是否要求把当前连接升级到 TLS
+- 分组要求 TLS 时，`frpc_tls` 服务端证书当前是否可用
 - 分组是否启用
 - challenge 是否有效且未重放
 - challenge 响应是否匹配
+- `auth.begin` 中的 `client_id` 是否与 `transport.client_hello` 一致
 - 当前分组单客户端槽位是否已被占用
-
-`7000 TLS` 预协商和证书绑定还未落地，见 [../design/certificate-binding.md](../design/certificate-binding.md)。
 
 ## 配置快照
 
@@ -49,13 +55,27 @@ frps -> start listeners
 - `generatedAtMs`
 - `tunnels`
 
-当前不下发：
+当前 `tunnels` 快照除了基础端口映射，还会按需下发 backend TLS 信息：
+
+- `backend_tls_mode`
+- `backend_tls_server_name`
+- `backend_tls_load_system_ca`
+- `backend_tls_insecure_skip_verify`
+- backend TLS 所需 CA PEM
+- backend mTLS 所需 client cert / key PEM
+
+当前仍不下发：
 
 - ACL
 - 分组总限速
 - 抓包控制
 - 反向代理配置
-- 证书绑定信息
+- `frps` 监听侧 TLS 私钥材料
+
+其中：
+
+- `frps` 监听侧 TLS 材料由 `frps` 本地按 tunnel id 解析
+- `frpc` backend TLS 材料才会进入 `ConfigSnapshot`
 
 ## 运行态恢复
 
