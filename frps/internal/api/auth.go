@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zightch/frp/frps/internal/api/httpx"
 	authn "github.com/zightch/frp/frps/internal/auth"
 )
 
@@ -22,11 +23,11 @@ type authLoginRequest struct {
 
 func (s *Server) handleAuthState(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		writeMethodNotAllowed(writer)
+		httpx.WriteMethodNotAllowed(writer)
 		return
 	}
 	if s.auth == nil {
-		writeError(writer, &apiError{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
+		httpx.WriteError(writer, &httpx.Error{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
 		return
 	}
 
@@ -38,7 +39,7 @@ func (s *Server) handleAuthState(writer http.ResponseWriter, request *http.Reque
 		if hasManagementSessionCookie(request) {
 			s.clearManagementSessionCookie(writer)
 		}
-		writeJSON(writer, http.StatusOK, response)
+		httpx.WriteJSON(writer, http.StatusOK, response)
 		return
 	}
 
@@ -52,56 +53,56 @@ func (s *Server) handleAuthState(writer http.ResponseWriter, request *http.Reque
 			s.clearManagementSessionCookie(writer)
 		}
 	default:
-		writeError(writer, translateAuthError(err))
+		httpx.WriteError(writer, translateAuthError(err))
 		return
 	}
 
-	writeJSON(writer, http.StatusOK, response)
+	httpx.WriteJSON(writer, http.StatusOK, response)
 }
 
 func (s *Server) handleAuthInit(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		writeMethodNotAllowed(writer)
+		httpx.WriteMethodNotAllowed(writer)
 		return
 	}
 	if s.auth == nil {
-		writeError(writer, &apiError{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
+		httpx.WriteError(writer, &httpx.Error{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
 		return
 	}
 
 	var payload authInitRequest
-	if err := decodeJSONBody(request, &payload); err != nil {
-		writeError(writer, err)
+	if err := httpx.DecodeJSONBody(request, &payload); err != nil {
+		httpx.WriteError(writer, err)
 		return
 	}
 
 	if err := s.auth.Initialize(payload.KeyHash); err != nil {
-		writeError(writer, translateAuthError(err))
+		httpx.WriteError(writer, translateAuthError(err))
 		return
 	}
 
-	writeJSON(writer, http.StatusCreated, map[string]any{
+	httpx.WriteJSON(writer, http.StatusCreated, map[string]any{
 		"initialized": true,
 	})
 }
 
 func (s *Server) handleAuthChallenge(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		writeMethodNotAllowed(writer)
+		httpx.WriteMethodNotAllowed(writer)
 		return
 	}
 	if s.auth == nil {
-		writeError(writer, &apiError{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
+		httpx.WriteError(writer, &httpx.Error{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
 		return
 	}
 
 	challenge, err := s.auth.IssueChallenge()
 	if err != nil {
-		writeError(writer, translateAuthError(err))
+		httpx.WriteError(writer, translateAuthError(err))
 		return
 	}
 
-	writeJSON(writer, http.StatusOK, map[string]any{
+	httpx.WriteJSON(writer, http.StatusOK, map[string]any{
 		"challenge_id": challenge.ID,
 		"salt":         challenge.Salt,
 		"expires_at":   challenge.ExpiresAt.Format(time.RFC3339),
@@ -110,28 +111,28 @@ func (s *Server) handleAuthChallenge(writer http.ResponseWriter, request *http.R
 
 func (s *Server) handleAuthLogin(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		writeMethodNotAllowed(writer)
+		httpx.WriteMethodNotAllowed(writer)
 		return
 	}
 	if s.auth == nil {
-		writeError(writer, &apiError{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
+		httpx.WriteError(writer, &httpx.Error{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
 		return
 	}
 
 	var payload authLoginRequest
-	if err := decodeJSONBody(request, &payload); err != nil {
-		writeError(writer, err)
+	if err := httpx.DecodeJSONBody(request, &payload); err != nil {
+		httpx.WriteError(writer, err)
 		return
 	}
 
 	session, token, err := s.auth.Login(payload.ChallengeID, payload.Proof)
 	if err != nil {
-		writeError(writer, translateAuthError(err))
+		httpx.WriteError(writer, translateAuthError(err))
 		return
 	}
 
 	s.writeManagementSessionCookie(writer, request, token, session.ExpiresAt)
-	writeJSON(writer, http.StatusOK, map[string]any{
+	httpx.WriteJSON(writer, http.StatusOK, map[string]any{
 		"initialized":   true,
 		"authenticated": true,
 		"expires_at":    session.ExpiresAt.Format(time.RFC3339),
@@ -140,7 +141,7 @@ func (s *Server) handleAuthLogin(writer http.ResponseWriter, request *http.Reque
 
 func (s *Server) handleAuthSession(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		writeMethodNotAllowed(writer)
+		httpx.WriteMethodNotAllowed(writer)
 		return
 	}
 	if !s.requireManagementSession(writer, request) {
@@ -149,11 +150,11 @@ func (s *Server) handleAuthSession(writer http.ResponseWriter, request *http.Req
 
 	session, _, err := s.lookupManagementSession(request)
 	if err != nil {
-		writeError(writer, translateAuthError(err))
+		httpx.WriteError(writer, translateAuthError(err))
 		return
 	}
 
-	writeJSON(writer, http.StatusOK, map[string]any{
+	httpx.WriteJSON(writer, http.StatusOK, map[string]any{
 		"initialized":   true,
 		"authenticated": true,
 		"expires_at":    session.ExpiresAt.Format(time.RFC3339),
@@ -162,11 +163,11 @@ func (s *Server) handleAuthSession(writer http.ResponseWriter, request *http.Req
 
 func (s *Server) handleAuthLogout(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		writeMethodNotAllowed(writer)
+		httpx.WriteMethodNotAllowed(writer)
 		return
 	}
 	if s.auth == nil {
-		writeError(writer, &apiError{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
+		httpx.WriteError(writer, &httpx.Error{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
 		return
 	}
 
@@ -175,7 +176,7 @@ func (s *Server) handleAuthLogout(writer http.ResponseWriter, request *http.Requ
 	}
 	s.clearManagementSessionCookie(writer)
 
-	writeJSON(writer, http.StatusOK, map[string]any{
+	httpx.WriteJSON(writer, http.StatusOK, map[string]any{
 		"initialized":   s.auth.Initialized(),
 		"authenticated": false,
 		"logged_out":    true,
@@ -184,14 +185,14 @@ func (s *Server) handleAuthLogout(writer http.ResponseWriter, request *http.Requ
 
 func (s *Server) requireManagementSession(writer http.ResponseWriter, request *http.Request) bool {
 	if s.auth == nil {
-		writeError(writer, &apiError{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
+		httpx.WriteError(writer, &httpx.Error{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
 		return false
 	}
 	if !s.auth.Initialized() {
 		if hasManagementSessionCookie(request) {
 			s.clearManagementSessionCookie(writer)
 		}
-		writeError(writer, &apiError{Status: http.StatusConflict, Message: "management secret is not initialized"})
+		httpx.WriteError(writer, &httpx.Error{Status: http.StatusConflict, Message: "management secret is not initialized"})
 		return false
 	}
 
@@ -199,7 +200,7 @@ func (s *Server) requireManagementSession(writer http.ResponseWriter, request *h
 		if (errors.Is(err, authn.ErrSessionRequired) || errors.Is(err, authn.ErrSessionExpired)) && hasManagementSessionCookie(request) {
 			s.clearManagementSessionCookie(writer)
 		}
-		writeError(writer, translateAuthError(err))
+		httpx.WriteError(writer, translateAuthError(err))
 		return false
 	}
 
@@ -264,21 +265,21 @@ func hasManagementSessionCookie(request *http.Request) bool {
 func translateAuthError(err error) error {
 	switch {
 	case errors.Is(err, authn.ErrAlreadyInitialized):
-		return &apiError{Status: http.StatusConflict, Message: err.Error()}
+		return &httpx.Error{Status: http.StatusConflict, Message: err.Error()}
 	case errors.Is(err, authn.ErrNotInitialized):
-		return &apiError{Status: http.StatusConflict, Message: err.Error()}
+		return &httpx.Error{Status: http.StatusConflict, Message: err.Error()}
 	case errors.Is(err, authn.ErrInvalidKeyHash):
-		return &apiError{Status: http.StatusBadRequest, Message: err.Error()}
+		return &httpx.Error{Status: http.StatusBadRequest, Message: err.Error()}
 	case errors.Is(err, authn.ErrInvalidProof):
-		return &apiError{Status: http.StatusUnauthorized, Message: err.Error()}
+		return &httpx.Error{Status: http.StatusUnauthorized, Message: err.Error()}
 	case errors.Is(err, authn.ErrChallengeExpired):
-		return &apiError{Status: http.StatusGone, Message: err.Error()}
+		return &httpx.Error{Status: http.StatusGone, Message: err.Error()}
 	case errors.Is(err, authn.ErrChallengeReplayed):
-		return &apiError{Status: http.StatusConflict, Message: err.Error()}
+		return &httpx.Error{Status: http.StatusConflict, Message: err.Error()}
 	case errors.Is(err, authn.ErrSessionRequired):
-		return &apiError{Status: http.StatusUnauthorized, Message: err.Error()}
+		return &httpx.Error{Status: http.StatusUnauthorized, Message: err.Error()}
 	case errors.Is(err, authn.ErrSessionExpired):
-		return &apiError{Status: http.StatusUnauthorized, Message: err.Error()}
+		return &httpx.Error{Status: http.StatusUnauthorized, Message: err.Error()}
 	default:
 		return err
 	}

@@ -13,6 +13,9 @@ import (
 	"sync"
 	"time"
 
+	apicertassets "github.com/zightch/frp/frps/internal/api/certassets"
+	"github.com/zightch/frp/frps/internal/api/groupconfig"
+	apisettings "github.com/zightch/frp/frps/internal/api/settings"
 	authn "github.com/zightch/frp/frps/internal/auth"
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/settings/entrycerts"
@@ -52,7 +55,6 @@ type Server struct {
 	startedAt         time.Time
 	version           string
 	auth              *authn.Manager
-	manager           *managementService
 	webui             http.Handler
 	webuiPath         string
 	handler           http.Handler
@@ -99,7 +101,6 @@ func NewServer(options Options, logger *slog.Logger, version string) (*Server, e
 		startedAt:         time.Now().UTC(),
 		version:           version,
 		auth:              options.Auth,
-		manager:           newManagementService(options.Store, options.Network, options.RuntimeRefresher, options.RuntimeStatus),
 		webui:             webuiHandler,
 		webuiPath:         webuiPathPrefix,
 		addr:              options.Addr,
@@ -119,49 +120,54 @@ func NewServer(options Options, logger *slog.Logger, version string) (*Server, e
 	apiMux.HandleFunc("/api/v1/auth/login", srv.handleAuthLogin)
 	apiMux.HandleFunc("/api/v1/auth/session", srv.handleAuthSession)
 	apiMux.HandleFunc("/api/v1/auth/logout", srv.handleAuthLogout)
-	apiMux.HandleFunc(entryCertificatesPathSettings, srv.handleEntryCertificates)
-	apiMux.HandleFunc(entryCertificatesPathSettings+"/", srv.handleEntryCertificateResource)
-	apiMux.HandleFunc("/api/v1/proxy-groups", srv.handleProxyGroups)
-	apiMux.HandleFunc("/api/v1/proxy-groups/", srv.handleProxyGroupResource)
-	apiMux.HandleFunc("/api/v1/tunnels", srv.handleTunnels)
-	apiMux.HandleFunc("/api/v1/tunnels/", srv.handleTunnelResource)
-	apiMux.HandleFunc("/api/v1/local-ips", srv.handleLocalIPs)
-	apiMux.HandleFunc("/api/v1/certificate-assets", srv.handleCertificateAssets)
-	apiMux.HandleFunc("/api/v1/certificate-assets/upload", srv.handleCertificateAssetUpload)
-	apiMux.HandleFunc("/api/v1/certificate-assets/paste", srv.handleCertificateAssetPaste)
-	apiMux.HandleFunc("/api/v1/certificate-assets/generate", srv.handleCertificateAssetGenerate)
-	apiMux.HandleFunc("/api/v1/certificate-assets/", srv.handleCertificateAssetResource)
 
-	srv.handler = srv.loggingMiddleware(newManagementHTTPHandler(apiMux, srv.webui, webuiPathPrefix))
-	if srv.manager != nil {
-		srv.manager.server = srv
-	}
+	groupConfigService := groupconfig.NewService(groupconfig.Options{
+		Store:            options.Store,
+		Network:          options.Network,
+		RuntimeRefresher: options.RuntimeRefresher,
+		RuntimeStatus:    options.RuntimeStatus,
+	})
+	groupconfig.NewHandler(groupConfigService, srv.requireManagementSession).RegisterRoutes(apiMux)
+
+	certificateAssetService := apicertassets.NewService(apicertassets.Options{
+		Store: options.Store,
+	})
+	apicertassets.NewHandler(certificateAssetService, srv.requireManagementSession).RegisterRoutes(apiMux)
+
+	entryCertificateService := apisettings.NewService(apisettings.Options{
+		Store:             options.Store,
+		TLSRequiredGroups: groupConfigService,
+		Runtime:           srv,
+	})
+	apisettings.NewHandler(entryCertificateService, srv.requireManagementSession).RegisterRoutes(apiMux)
+
+	srv.handler = srv.loggingMiddleware(newAPIWebUIHandler(apiMux, srv.webui, webuiPathPrefix))
 
 	return srv, nil
 }
 
-type managementHTTPHandler struct {
+type apiWebUIHandler struct {
 	api             http.Handler
 	webui           http.Handler
 	webuiPathPrefix string
 }
 
-func newManagementHTTPHandler(apiHandler http.Handler, webuiHandler http.Handler, webuiPathPrefix string) http.Handler {
-	return &managementHTTPHandler{
+func newAPIWebUIHandler(apiHandler http.Handler, webuiHandler http.Handler, webuiPathPrefix string) http.Handler {
+	return &apiWebUIHandler{
 		api:             apiHandler,
 		webui:           webuiHandler,
 		webuiPathPrefix: webuiPathPrefix,
 	}
 }
 
-func (h *managementHTTPHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+func (h *apiWebUIHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	requestPath := request.URL.Path
 	if requestPath == "" {
 		requestPath = "/"
 	}
 
 	if h.webuiPathPrefix == "" {
-		if isManagementAPIPath(requestPath) {
+		if isAPIPath(requestPath) {
 			h.api.ServeHTTP(writer, request)
 			return
 		}
@@ -169,7 +175,7 @@ func (h *managementHTTPHandler) ServeHTTP(writer http.ResponseWriter, request *h
 		return
 	}
 
-	if isManagementAPIPath(requestPath) {
+	if isAPIPath(requestPath) {
 		h.api.ServeHTTP(writer, request)
 		return
 	}
@@ -190,7 +196,7 @@ func (h *managementHTTPHandler) ServeHTTP(writer http.ResponseWriter, request *h
 			strippedRequest.URL.RawPath = strings.TrimPrefix(request.URL.RawPath, h.webuiPathPrefix)
 		}
 
-		if isManagementAPIPath(strippedPath) {
+		if isAPIPath(strippedPath) {
 			h.api.ServeHTTP(writer, strippedRequest)
 			return
 		}
@@ -201,7 +207,7 @@ func (h *managementHTTPHandler) ServeHTTP(writer http.ResponseWriter, request *h
 	http.NotFound(writer, request)
 }
 
-func isManagementAPIPath(path string) bool {
+func isAPIPath(path string) bool {
 	switch {
 	case path == "/healthz", path == "/readyz", path == "/api/v1/healthz":
 		return true
@@ -211,19 +217,19 @@ func isManagementAPIPath(path string) bool {
 		path == "/api/v1/auth/login",
 		path == "/api/v1/auth/session",
 		path == "/api/v1/auth/logout",
-		path == entryCertificatesPathSettings,
+		path == apisettings.EntryCertificatesPath,
 		path == "/api/v1/proxy-groups",
 		path == "/api/v1/tunnels",
 		path == "/api/v1/local-ips",
-		path == "/api/v1/certificate-assets",
-		path == "/api/v1/certificate-assets/upload",
-		path == "/api/v1/certificate-assets/paste",
-		path == "/api/v1/certificate-assets/generate":
+		path == apicertassets.Path,
+		path == apicertassets.Path+"/upload",
+		path == apicertassets.Path+"/paste",
+		path == apicertassets.Path+"/generate":
 		return true
-	case strings.HasPrefix(path, "/api/v1/proxy-groups/"),
-		strings.HasPrefix(path, entryCertificatesPathSettings+"/"),
+	case strings.HasPrefix(path, apisettings.EntryCertificatesPath+"/"),
+		strings.HasPrefix(path, "/api/v1/proxy-groups/"),
 		strings.HasPrefix(path, "/api/v1/tunnels/"),
-		strings.HasPrefix(path, "/api/v1/certificate-assets/"):
+		strings.HasPrefix(path, apicertassets.Path+"/"):
 		return true
 	case strings.HasPrefix(path, "/api/"):
 		return true
