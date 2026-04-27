@@ -25,7 +25,7 @@ func NewSupervisor(executor session.Executor) *Supervisor {
 	}
 }
 
-func (s *Supervisor) AttachSession(parent context.Context, initial session.SessionState, connID string) *session.Agent {
+func (s *Supervisor) AttachSession(parent context.Context, initial session.SessionState) *session.Agent {
 	if s == nil {
 		return nil
 	}
@@ -59,8 +59,6 @@ func (s *Supervisor) AttachSession(parent context.Context, initial session.Sessi
 			delete(s.cancelByID, initial.SessionID)
 		}
 	}()
-
-	_ = agent.Enqueue(session.SessionAttached{ConnID: connID})
 	return agent
 }
 

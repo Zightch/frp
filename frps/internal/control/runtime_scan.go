@@ -165,34 +165,59 @@ func (s *Server) scanGroupRuntimeIssues(group GroupRuntime, staticConflictIDs ma
 	return issues
 }
 
-func (s *Server) recoverScannedActiveSessionTunnels(targetSelector runtimeTargetSelector, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) error {
+func (s *Server) recoverScannedActiveSessionTunnels(_ runtimeTargetSelector, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) error {
 	if s == nil || group.ID <= 0 || len(targetTunnels) == 0 {
 		return nil
 	}
-	target, ok := targetSelector.session(group.ID)
-	if !ok {
+	active, ok := s.activeSession(group.ID)
+	if !ok || active == nil || active.session == nil {
 		return nil
 	}
-	lockedTarget, ok := s.lockRuntimeAdminOperationTarget(target.id)
-	if !ok {
+
+	if active.session.hasPendingConfig() || s.isShuttingDown() {
 		return nil
 	}
-	defer lockedTarget.unlock()
+
+	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	if currentGroup.EffectiveIP != group.EffectiveIP {
+		return nil
+	}
+
 	logger := s.logger.With(
-		"session_id", target.id.SessionID,
+		"session_id", active.session.ID,
 		"group_id", group.ID,
 		"group_name", group.Name,
 	)
-	coordinator := s.runtimeAdminCoordinator()
-	plan := coordinator.planScannedRecovery(newRuntimeScannedRecoveryRequest(target, group, targetTunnels, staticConflictIDs, issues))
-	if plan.action == runtimeAdminActionPushFullConfig {
+
+	if sameRuntimeSnapshot(currentSnapshot, group.Snapshot) {
+		if !hasRecoverableScannedTunnels(targetTunnels, staticConflictIDs, issues) {
+			return nil
+		}
 		logger.Info(
-			"recovering active session config after runtime prerequisites returned",
+			"recovering active session listeners after runtime prerequisites returned",
 			"config_version", group.Snapshot.Version,
 			"tunnel_count", len(group.Snapshot.Tunnels),
 		)
+		return s.ensureTunnelListeners(active.conn, logger, active.session)
 	}
-	return coordinator.executeLocked(logger, lockedTarget, plan)
+
+	if !shouldRecoverScannedActiveSessionConfig(currentSnapshot, group.Snapshot) {
+		return nil
+	}
+	if _, err := s.resolveGroupEffectiveIP(group); err != nil {
+		return nil
+	}
+
+	logger.Info(
+		"recovering active session config after runtime prerequisites returned",
+		"config_version", group.Snapshot.Version,
+		"tunnel_count", len(group.Snapshot.Tunnels),
+	)
+	if runtime := s.controlV2Runtime(active.session.ID); runtime != nil {
+		runtime.setDesiredGroup(group)
+	}
+	s.supervisor.UpdateDesiredRuntime(group.ID, desiredRuntimeFromGroup(group))
+	return nil
 }
 
 func shouldRecoverScannedActiveSessionConfig(currentSnapshot, nextSnapshot ConfigSnapshot) bool {

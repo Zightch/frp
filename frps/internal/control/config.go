@@ -7,6 +7,7 @@ import (
 	"net"
 	"strings"
 
+	v2session "github.com/zightch/frp/frps/internal/controlv2/session"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
@@ -17,7 +18,7 @@ var (
 	errConfigVersionMismatch = errors.New("config version mismatch")
 )
 
-func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *sessionState, frame protocol.Frame) error {
+func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *sessionState, agent *v2session.Agent, frame protocol.Frame) error {
 	if frame.RequestID == 0 {
 		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "config.ack requestId must be non-zero")
 	}
@@ -90,6 +91,18 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 			return err
 		}
 	}
+	if isInitialStartup {
+		if _, err := s.resolveGroupEffectiveIP(appliedConfig.group); err != nil {
+			reason := buildGroupEffectiveIPRuntimeReason(appliedConfig.group, err)
+			for _, tunnel := range enabledTunnels(appliedConfig.snapshot) {
+				s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, appliedConfig.snapshot.Version, reason)
+			}
+			if reason, ok := buildInitialStartupRejectedReason(appliedConfig.group, err); ok {
+				return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeConfigApplyFailed, "%s", reason)
+			}
+			return err
+		}
+	}
 	testhooks.Point(
 		"control.config_ack.after_accept",
 		testhooks.F("group_id", appliedConfig.group.ID),
@@ -98,13 +111,11 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		testhooks.F("config_version", ack.ConfigVersion),
 	)
 	logger.Info("config acknowledged", "config_version", ack.ConfigVersion, "applied_at_ms", ack.AppliedAtMs)
-	if err := s.applyAcceptedConfig(conn, logger, session, appliedConfig); err != nil {
-		if isInitialStartup {
-			if reason, ok := buildInitialStartupRejectedReason(appliedConfig.group, err); ok {
-				return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeConfigApplyFailed, "%s", reason)
-			}
-		}
-		return err
+	if agent == nil || !agent.Enqueue(v2session.ConfigAckReceived{
+		RequestID:     frame.RequestID,
+		ConfigVersion: ack.ConfigVersion,
+	}) {
+		return net.ErrClosed
 	}
 	return nil
 }

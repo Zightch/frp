@@ -40,14 +40,18 @@ func (s *Server) Supervisor() *Supervisor {
 	return s.supervisor
 }
 
-func (s *Server) HandleAuthenticatedSession(parent context.Context, initial session.SessionState, connID string) *session.Agent {
+func (s *Server) HandleAuthenticatedSession(parent context.Context, initial session.SessionState, attached session.SessionAttached) *session.Agent {
 	if s == nil || s.supervisor == nil {
 		return nil
 	}
-	return s.supervisor.AttachSession(parent, initial, connID)
+	agent := s.supervisor.AttachSession(parent, initial)
+	if agent != nil {
+		_ = agent.Enqueue(attached)
+	}
+	return agent
 }
 
-func (s *Server) HandleAuthenticatedClient(parent context.Context, clientID [16]byte, sessionID uint64, connID string) (*session.Agent, error) {
+func (s *Server) HandleAuthenticatedClient(parent context.Context, clientID [16]byte, sessionID uint64, attached session.SessionAttached) (*session.Agent, error) {
 	if s == nil {
 		return nil, fmt.Errorf("controlv2 server is unavailable")
 	}
@@ -66,7 +70,7 @@ func (s *Server) HandleAuthenticatedClient(parent context.Context, clientID [16]
 	initial := session.NewState(record.GroupID, sessionID)
 	snapshot := record.Snapshot
 	initial.Desired = &snapshot
-	return s.HandleAuthenticatedSession(parent, initial, connID), nil
+	return s.HandleAuthenticatedSession(parent, initial, attached), nil
 }
 
 func (s *Server) Dispatch(sessionID uint64, event session.Event) bool {

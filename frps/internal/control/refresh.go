@@ -12,91 +12,33 @@ func (s *Server) RefreshGroup(groupID int64) {
 		return
 	}
 
-	targetSelector := runtimeTargetSelector{}
-	if s.runtimeRegistry != nil {
-		targetSelector = newRuntimeTargetSelector(s.runtimeRegistry.snapshot())
-	}
-	target, ok := targetSelector.session(groupID)
-	if !ok {
+	active, ok := s.activeSession(groupID)
+	if !ok || active == nil || active.session == nil {
 		return
 	}
-	lockedTarget, ok := s.lockRuntimeAdminOperationTarget(target.id)
-	if !ok {
-		return
-	}
-	defer lockedTarget.unlock()
 
 	group, err := s.loadGroupRuntimeByID(groupID)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrGroupNotFound):
-			s.logger.Info("closing active session for deleted proxy group", "group_id", groupID, "session_id", target.id.SessionID)
-			_ = s.runtimeAdminCoordinator().executeLocked(
-				s.logger.With("session_id", target.id.SessionID, "group_id", groupID),
-				lockedTarget,
-				runtimeAdminActionPlan{action: runtimeAdminActionCloseSession, targetID: target.id},
-			)
+			s.logger.Info("closing active session for deleted proxy group", "group_id", groupID, "session_id", active.session.ID)
+			_ = active.conn.Close()
 		default:
-			s.logger.Warn("refresh proxy group runtime failed", "group_id", groupID, "session_id", target.id.SessionID, "error", err)
+			s.logger.Warn("refresh proxy group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
 		}
 		return
 	}
 
-	coordinator := s.runtimeAdminCoordinator()
-	logger := s.logger.With(
-		"session_id", target.id.SessionID,
-		"group_id", group.ID,
-		"group_name", group.Name,
-	)
-	plan := coordinator.planRefresh(newRuntimeRefreshRequest(target, group))
-	switch plan.action {
-	case runtimeAdminActionSyncPendingConfig:
-		message := "deduplicating refresh against matching pending config"
-		if len(plan.snapshot.Tunnels) == 0 {
-			message = "deduplicating refresh against matching pending empty config"
-		}
-		logger.Info(message, "config_version", plan.snapshot.Version)
-	case runtimeAdminActionCloseSession:
-		logger.Info("closing active session because a previous config update is still pending")
-	case runtimeAdminActionRebindRuntime:
-		logger.Info(
-			"rebinding active group runtime after effective_ip change",
-			"old_effective_ip", target.group.EffectiveIP,
-			"new_effective_ip", group.EffectiveIP,
-		)
-	case runtimeAdminActionPushEmptyConfig:
-		if desiredSnapshot := runtimeSnapshotForGroup(group); len(desiredSnapshot.Tunnels) != 0 {
-			logger.Info(
-				"shrinking active group runtime to empty config after effective_ip became unavailable",
-				"effective_ip", group.EffectiveIP,
-			)
-		}
+	snapshot, _, _ := s.runtimeRefreshSnapshot(group, runtimeSnapshotForGroup(group))
+	group.Snapshot = snapshot
+	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	if currentGroup.EffectiveIP == group.EffectiveIP && samePushedConfigSnapshot(currentSnapshot, group.Snapshot) {
+		active.session.replaceGroupRuntime(group)
 	}
-
-	if err := coordinator.executeLocked(logger, lockedTarget, plan); err != nil {
-		switch plan.action {
-		case runtimeAdminActionRebindRuntime:
-			logger.Warn("rebind active group runtime failed", "error", err)
-		case runtimeAdminActionPushEmptyConfig:
-			if errors.Is(err, errConfigUpdateInFlight) {
-				logger.Info("closing active session because a previous config update is still pending")
-			}
-			message := "push empty config failed"
-			if desiredSnapshot := runtimeSnapshotForGroup(group); len(desiredSnapshot.Tunnels) != 0 {
-				message = "push empty config after effective_ip refresh failed"
-			}
-			logger.Warn(message, "error", err)
-		case runtimeAdminActionPushFullConfig:
-			if errors.Is(err, errConfigUpdateInFlight) {
-				logger.Info("closing active session because a previous config update is still pending")
-			}
-			logger.Warn("push refreshed config failed", "error", err)
-		default:
-			logger.Warn("refresh active group runtime failed", "action", plan.action.String(), "error", err)
-		}
-		_ = coordinator.executeLocked(logger, lockedTarget, runtimeAdminActionPlan{action: runtimeAdminActionCloseSession, targetID: target.id})
-		return
+	if runtime := s.controlV2Runtime(active.session.ID); runtime != nil {
+		runtime.setDesiredGroup(group)
 	}
+	s.supervisor.UpdateDesiredRuntime(groupID, desiredRuntimeFromGroup(group))
 }
 
 func (s *Server) freezeGroupRuntime(conn net.Conn, session *sessionState) error {

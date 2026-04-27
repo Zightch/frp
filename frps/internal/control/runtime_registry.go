@@ -73,6 +73,7 @@ func (r *runtimeRegistry) register(conn net.Conn, session *sessionState) {
 		conn:    conn,
 		session: session,
 	}
+	r.groupSlots[session.currentGroupID()] = session.ID
 	r.mu.Unlock()
 }
 

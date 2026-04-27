@@ -5,7 +5,7 @@ import "testing"
 func TestReduceSessionAttachedSchedulesHelloAndReconcile(t *testing.T) {
 	state := NewState(7, 42)
 
-	next, actions := Reduce(state, SessionAttached{ConnID: "conn-1"})
+	next, actions := Reduce(state, SessionAttached{ConnID: "conn-1", HelloRequestID: 7})
 
 	if !next.Conn.Attached || next.Conn.ConnID != "conn-1" {
 		t.Fatalf("expected attached control connection, got %+v", next.Conn)
@@ -16,8 +16,12 @@ func TestReduceSessionAttachedSchedulesHelloAndReconcile(t *testing.T) {
 	if len(actions) != 2 {
 		t.Fatalf("expected 2 actions, got %d", len(actions))
 	}
-	if _, ok := actions[0].(ActionSendServerHello); !ok {
+	hello, ok := actions[0].(ActionSendServerHello)
+	if !ok {
 		t.Fatalf("expected first action to send server hello, got %T", actions[0])
+	}
+	if hello.RequestID != 7 {
+		t.Fatalf("expected hello request id 7, got %d", hello.RequestID)
 	}
 	if _, ok := actions[1].(ActionRequestReconcile); !ok {
 		t.Fatalf("expected second action to request reconcile, got %T", actions[1])

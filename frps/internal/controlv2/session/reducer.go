@@ -10,10 +10,13 @@ func Reduce(state SessionState, event Event) (SessionState, []Action) {
 			ConnID:   typed.ConnID,
 		}
 		next.Phase = SessionPhaseSyncingConfig
-		return next, []Action{
-			ActionSendServerHello{},
+		actions := []Action{
 			ActionRequestReconcile{Reason: "session_attached"},
 		}
+		if typed.HelloRequestID != 0 {
+			actions = append([]Action{ActionSendServerHello{RequestID: typed.HelloRequestID}}, actions...)
+		}
+		return next, actions
 
 	case DesiredRuntimeUpdated:
 		snapshot := typed.Snapshot
@@ -42,6 +45,13 @@ func Reduce(state SessionState, event Event) (SessionState, []Action) {
 			}
 		}
 
+		var previousApplied *AppliedRuntimeSnapshot
+		if next.Applied != nil {
+			copyApplied := *next.Applied
+			copyApplied.Snapshot.Tunnels = append([]DesiredTunnelRuntime(nil), next.Applied.Snapshot.Tunnels...)
+			previousApplied = &copyApplied
+		}
+
 		applied := AppliedRuntimeSnapshot{Snapshot: next.Pending.Snapshot}
 		next.Applied = &applied
 		next.Pending = nil
@@ -52,6 +62,22 @@ func Reduce(state SessionState, event Event) (SessionState, []Action) {
 		if !desiredHasEnabledTunnels(applied.Snapshot) {
 			next.RuntimePhase = RuntimePhaseEmpty
 			return next, []Action{ActionRequestReconcile{Reason: "config_ack_empty_runtime"}}
+		}
+
+		if previousApplied != nil && !snapshotsEqual(previousApplied.Snapshot, applied.Snapshot) {
+			next.Bindings = make(map[BindingKey]BindingState)
+			next.RuntimePhase = RuntimePhaseRecovering
+			return next, []Action{
+				ActionStopBindings{Keys: bindingKeys(state.Bindings), Epoch: state.Epoch},
+				ActionDrainStreams{Reason: "config update"},
+				ActionDrainUDPSessions{Reason: "config update"},
+				ActionResetRuntime{},
+				ActionPrepareBindings{
+					EffectiveIP: applied.Snapshot.EffectiveIP,
+					Snapshot:    applied.Snapshot,
+					Epoch:       next.Epoch,
+				},
+			}
 		}
 
 		next.RuntimePhase = RuntimePhaseBinding
@@ -100,6 +126,11 @@ func Reduce(state SessionState, event Event) (SessionState, []Action) {
 		if allBindingsActive(next.Bindings) {
 			next.RuntimePhase = RuntimePhaseActive
 			next.BlockReason = BlockReasonNone
+			if next.Desired != nil && next.Applied != nil && !snapshotsEqual(*next.Desired, next.Applied.Snapshot) {
+				return next, []Action{
+					ActionRequestReconcile{Reason: "binding_active_but_desired_changed"},
+				}
+			}
 		}
 		return next, nil
 

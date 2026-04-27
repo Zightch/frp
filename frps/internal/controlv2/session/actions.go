@@ -4,7 +4,9 @@ type Action interface {
 	sessionAction()
 }
 
-type ActionSendServerHello struct{}
+type ActionSendServerHello struct {
+	RequestID uint32
+}
 
 func (ActionSendServerHello) sessionAction() {}
 

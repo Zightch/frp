@@ -45,7 +45,10 @@ func TestServerHandleAuthenticatedClientLoadsDesiredRuntime(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	agent, err := server.HandleAuthenticatedClient(ctx, clientID, 42, "conn-a")
+	agent, err := server.HandleAuthenticatedClient(ctx, clientID, 42, session.SessionAttached{
+		ConnID:         "conn-a",
+		HelloRequestID: 7,
+	})
 	if err != nil {
 		t.Fatalf("handle authenticated client: %v", err)
 	}

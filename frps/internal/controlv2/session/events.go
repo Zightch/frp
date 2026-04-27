@@ -5,7 +5,8 @@ type Event interface {
 }
 
 type SessionAttached struct {
-	ConnID string
+	ConnID         string
+	HelloRequestID uint32
 }
 
 func (SessionAttached) sessionEvent() {}

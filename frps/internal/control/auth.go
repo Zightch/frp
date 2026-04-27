@@ -1,12 +1,16 @@
 package control
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"time"
 
+	v2session "github.com/zightch/frp/frps/internal/controlv2/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -17,13 +21,13 @@ type authChallenge struct {
 	Used             bool
 }
 
-func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte) (*sessionState, error) {
+func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *slog.Logger) (*sessionState, *v2session.Agent, error) {
 	frame, err := s.readFrame(conn)
 	if err != nil {
-		return nil, s.replyProtocolError(conn, frame, err)
+		return nil, nil, s.replyProtocolError(conn, frame, err)
 	}
 	if frame.Type != protocol.TypeAuthBegin {
-		return nil, s.replyError(
+		return nil, nil, s.replyError(
 			conn,
 			frame.RequestID,
 			frame.StreamID,
@@ -33,55 +37,55 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte) (*sessio
 		)
 	}
 	if frame.RequestID == 0 {
-		return nil, s.replyError(conn, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.begin requestId must be non-zero")
+		return nil, nil, s.replyError(conn, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.begin requestId must be non-zero")
 	}
 	if frame.StreamID != 0 {
-		return nil, s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.begin streamId must be zero")
+		return nil, nil, s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.begin streamId must be zero")
 	}
 
 	begin, err := protocol.UnmarshalAuthBegin(frame.Body)
 	if err != nil {
-		return nil, s.replyProtocolError(conn, frame, err)
+		return nil, nil, s.replyProtocolError(conn, frame, err)
 	}
 	if begin.ClientID != expectedClientID {
-		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidClient, "auth.begin client_id does not match transport.client_hello")
+		return nil, nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidClient, "auth.begin client_id does not match transport.client_hello")
 	}
 
 	group, err := s.loadGroupRuntimeByClientID(begin.ClientID)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrGroupNotFound):
-			return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidClient, "client_id not found")
+			return nil, nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidClient, "client_id not found")
 		default:
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if !group.Enabled {
-		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthGroupDisabled, "proxy group is disabled")
+		return nil, nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthGroupDisabled, "proxy group is disabled")
 	}
 
 	challenge, err := s.issueChallenge(group.ClientSecretHash)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	challengeBody, err := protocol.MarshalAuthChallenge(challenge)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.writeFrame(conn, protocol.Frame{
 		Type:      protocol.TypeAuthChallenge,
 		RequestID: frame.RequestID,
 		Body:      challengeBody,
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	frame, err = s.readFrame(conn)
 	if err != nil {
-		return nil, s.replyProtocolError(conn, frame, err)
+		return nil, nil, s.replyProtocolError(conn, frame, err)
 	}
 	if frame.Type != protocol.TypeAuthFinish {
-		return nil, s.replyError(
+		return nil, nil, s.replyError(
 			conn,
 			frame.RequestID,
 			frame.StreamID,
@@ -91,69 +95,65 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte) (*sessio
 		)
 	}
 	if frame.RequestID == 0 {
-		return nil, s.replyError(conn, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.finish requestId must be non-zero")
+		return nil, nil, s.replyError(conn, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.finish requestId must be non-zero")
 	}
 	if frame.StreamID != 0 {
-		return nil, s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.finish streamId must be zero")
+		return nil, nil, s.replyError(conn, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "auth.finish streamId must be zero")
 	}
 
 	finish, err := protocol.UnmarshalAuthFinish(frame.Body)
 	if err != nil {
-		return nil, s.replyProtocolError(conn, frame, err)
+		return nil, nil, s.replyProtocolError(conn, frame, err)
 	}
 	if err := s.consumeChallenge(finish.ChallengeID, finish.Response); err != nil {
-		return nil, s.replyProtocolError(conn, frame, err)
+		return nil, nil, s.replyProtocolError(conn, frame, err)
 	}
 
 	group, err = s.loadGroupRuntimeByClientID(begin.ClientID)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrGroupNotFound):
-			return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidClient, "client_id not found")
+			return nil, nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidClient, "client_id not found")
 		default:
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if !group.Enabled {
-		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthGroupDisabled, "proxy group is disabled")
+		return nil, nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthGroupDisabled, "proxy group is disabled")
 	}
 
 	session := newSessionState(
 		s.nextSessionID.Add(1),
 		group,
-		group.Snapshot,
+		runtimeSnapshotForGroup(group),
 		sessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
 	)
+	initial := v2session.NewState(group.ID, session.ID)
+	desired := desiredRuntimeFromGroup(group)
+	initial.Desired = &desired
 
-	if !s.reserveGroupSlot(session.currentGroupID(), session.ID) {
-		return nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthClientLimitReached, "proxy group already has an active client")
+	runtime := &controlV2Runtime{
+		conn:         conn,
+		logger:       logger,
+		session:      session,
+		desiredGroup: group,
+	}
+	s.registerControlV2Runtime(session.ID, runtime)
+
+	agent := s.supervisor.AttachSession(context.Background(), initial)
+	if agent == nil {
+		s.unregisterControlV2Runtime(session.ID)
+		return nil, nil, fmt.Errorf("controlv2 supervisor is unavailable")
+	}
+	if !agent.Enqueue(v2session.SessionAttached{
+		ConnID:         conn.RemoteAddr().String(),
+		HelloRequestID: frame.RequestID,
+	}) {
+		s.unregisterControlV2Runtime(session.ID)
+		return nil, nil, fmt.Errorf("controlv2 session attach failed")
 	}
 
-	helloBody, err := protocol.MarshalServerHello(protocol.ServerHello{
-		HeartbeatIntervalMs: uint32(s.options.HeartbeatInterval / time.Millisecond),
-		SessionID:           session.ID,
-		CapabilityBits:      0,
-		ServerVersion:       s.version,
-	})
-	if err != nil {
-		s.releaseGroupSlot(session.currentGroupID(), session.ID)
-		return nil, err
-	}
-	if err := s.writeFrame(conn, protocol.Frame{
-		Type:      protocol.TypeServerHello,
-		RequestID: frame.RequestID,
-		Body:      helloBody,
-	}); err != nil {
-		s.releaseGroupSlot(session.currentGroupID(), session.ID)
-		return nil, err
-	}
-
-	if err := s.pushConfig(conn, session); err != nil {
-		s.releaseGroupSlot(session.currentGroupID(), session.ID)
-		return nil, err
-	}
-
-	return session, nil
+	return session, agent, nil
 }
 
 func (s *Server) issueChallenge(clientSecretHash [32]byte) (protocol.AuthChallenge, error) {
