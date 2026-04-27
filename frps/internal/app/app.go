@@ -11,24 +11,27 @@ import (
 	"github.com/zightch/frp/frps/internal/certassets"
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/control"
+	"github.com/zightch/frp/frps/internal/controlv2"
 	"github.com/zightch/frp/frps/internal/settings/entrycerts"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 )
 
 type App struct {
-	config  config.Config
-	logger  *slog.Logger
-	version string
-	api     *api.Server
-	auth    *auth.Manager
-	control *control.Server
-	network *system.NetworkSnapshotService
-	store   *storage.SQL
-	certs   *certassets.Runtime
+	config    config.Config
+	logger    *slog.Logger
+	version   string
+	api       *api.Server
+	auth      *auth.Manager
+	control   *control.Server
+	controlV2 *controlv2.Server
+	network   *system.NetworkSnapshotService
+	store     *storage.SQL
+	certs     *certassets.Runtime
 }
 
 var newControlServer = control.NewServer
+var newControlV2Server = controlv2.NewServer
 
 func New(cfg config.Config, logger *slog.Logger, version string) *App {
 	return &App{
@@ -79,6 +82,17 @@ func (a *App) Run(parent context.Context) error {
 		a.closeAuth()
 		return fmt.Errorf("init control runtime scan: %w", err)
 	}
+	controlV2Server, err := newControlV2Server(controlv2.Options{
+		Repo: controlv2.NewSQLRepository(a.store),
+	})
+	if err != nil {
+		_ = a.closeLocalNetwork(context.Background())
+		a.closeCertificateAssets()
+		a.closeDatabase()
+		a.closeAuth()
+		return fmt.Errorf("init control v2: %w", err)
+	}
+	a.controlV2 = controlV2Server
 
 	apiServer, err := api.NewServer(
 		api.Options{
@@ -86,7 +100,7 @@ func (a *App) Run(parent context.Context) error {
 			ReadHeaderTimeout: a.config.ReadHeaderTimeoutDuration(),
 			Store:             a.store,
 			Network:           a.network,
-			RuntimeRefresher:  a.control,
+			RuntimeRefresher:  groupRuntimeRefreshFanout{targets: []api.GroupRuntimeRefresher{a.control, a.controlV2}},
 			RuntimeStatus:     a.control,
 			Auth:              a.auth,
 			WebUIDistDir:      a.config.WebUI.DistDir,
@@ -165,6 +179,10 @@ func (a *App) shutdown() error {
 		if err := a.control.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
 			errs = append(errs, fmt.Errorf("shutdown control listener: %w", err))
 		}
+	}
+	if a.controlV2 != nil {
+		a.controlV2.Shutdown()
+		a.controlV2 = nil
 	}
 
 	if err := a.closeLocalNetwork(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {

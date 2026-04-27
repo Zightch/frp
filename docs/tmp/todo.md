@@ -66,7 +66,11 @@
 - 当前轮不引入插件系统、事件总线框架、DI 容器或通用 workflow engine。
 - 当前轮不把 TCP/UDP 抽成一个“万能统一 tunnel runtime”；协议桥接仍按 TCP/UDP 分开实现。
 - 当前轮状态机只做内部建模，不把 side effect 塞进第三方状态机回调。
-- 当前已经进入 `controlv2` 代码骨架阶段，但暂未接入旧 `app.App`、暂未替换旧 `control/`，也暂未接入真实 `net.Listener` / 真实控制连接执行链路。
+- 当前已经进入 `controlv2` 代码骨架 + `app.App` 影子装配阶段：
+  - 已接入真实 SQL repo 适配
+  - 已在 `app.App` 内实例化 `controlv2.Server`
+  - 管理面 `RefreshGroup` 已 fanout 到旧 `control` 和 `controlv2`
+  - 但仍未替换旧 `control/` 的真实 `net.Listener` / transport / auth / 帧循环执行链路
 
 当前状态：
 
@@ -82,10 +86,13 @@
 - `frps/internal/controlv2/session/agent.go` 已落地，当前 reducer/reconcile 已经接入最小 inbox、follow-up event 和 executor 壳层。
 - `frps/internal/controlv2/supervisor.go` 已落地，当前已经有最小的 group/session agent 注册、会话接管、期望配置广播和网络变化广播骨架。
 - `frps/internal/controlv2/bind/` 已落地最小 `BindManager` 内存实现与测试骨架。
-- `frps/internal/controlv2/repo.go` 已落地 `RuntimeRepo` 接口。
-- `frps/internal/controlv2/server.go` 已落地最小 `Server` 包装层，当前已经有 `HandleAuthenticatedSession`、`Dispatch`、`RefreshDesiredRuntimeByGroup`、`NotifyNetworkChange`、`Shutdown` 调用面。
-- 当前已经完成“状态建模起点 + 最小执行壳层 + 控制面包装层”这一步，下一步进入真实控制连接装配与旧 `app` 接线层。
+- `frps/internal/controlv2/repo.go` 已收口为 `DesiredRuntimeRecord + RuntimeRepo`，不再丢失 `groupID`。
+- `frps/internal/controlv2/sqlrepo.go` 已落地真实 SQL repo 适配，当前通过旧 `control.Repository` 投影为 `controlv2` 的 `DesiredRuntimeSnapshot`。
+- `frps/internal/controlv2/server.go` 已补上 `HandleAuthenticatedClient`，当前已经可以从认证后的 `clientID` 直接加载期望配置并创建 session 初始状态。
+- `frps/internal/app/app.go` 已接入 `controlv2.Server` 的最小装配，并把管理面 `RefreshGroup` fanout 到旧 `control` 和 `controlv2`。
+- 当前环境已升级到可工作的 Go 新版本，`frps` 模块全量 `go test ./...` 已通过。
+- 当前已经完成“状态建模起点 + 最小执行壳层 + 真实 repo 适配 + app 影子装配”这一步，下一步进入真实控制连接装配与旧 `control.Server` 拆线层。
 
 当前唯一下一步：
 
-- 在 `frps/internal/app/app.go` 中增加 `controlv2` 的可切换装配入口，并把 transport/auth 后的真实连接事件、配置刷新和网络变化先接到 `controlv2.Server` / `Supervisor`。
+- 拆开旧 `frps/internal/control/server.go` 的 transport/auth/会话读循环，把“认证完成后的会话建立”改成先进入 `controlv2.Server.HandleAuthenticatedClient`，再逐步把 `config.push/ack`、binding executor、TCP/UDP runtime 和网络变化迁到 `SessionAgent + Executor` 链路。

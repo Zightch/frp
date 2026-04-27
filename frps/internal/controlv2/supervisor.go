@@ -55,7 +55,7 @@ func (s *Supervisor) AttachSession(parent context.Context, initial session.Sessi
 		if s.bySession[initial.SessionID] == agent {
 			delete(s.bySession, initial.SessionID)
 		}
-		if s.cancelByID[initial.SessionID] == cancel {
+		if _, ok := s.cancelByID[initial.SessionID]; ok {
 			delete(s.cancelByID, initial.SessionID)
 		}
 	}()

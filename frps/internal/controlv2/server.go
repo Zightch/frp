@@ -47,6 +47,28 @@ func (s *Server) HandleAuthenticatedSession(parent context.Context, initial sess
 	return s.supervisor.AttachSession(parent, initial, connID)
 }
 
+func (s *Server) HandleAuthenticatedClient(parent context.Context, clientID [16]byte, sessionID uint64, connID string) (*session.Agent, error) {
+	if s == nil {
+		return nil, fmt.Errorf("controlv2 server is unavailable")
+	}
+	if s.repo == nil {
+		return nil, fmt.Errorf("controlv2 runtime repo is unavailable")
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+
+	record, err := s.repo.LoadDesiredRuntimeByClientID(parent, clientID)
+	if err != nil {
+		return nil, err
+	}
+
+	initial := session.NewState(record.GroupID, sessionID)
+	snapshot := record.Snapshot
+	initial.Desired = &snapshot
+	return s.HandleAuthenticatedSession(parent, initial, connID), nil
+}
+
 func (s *Server) Dispatch(sessionID uint64, event session.Event) bool {
 	if s == nil || s.supervisor == nil {
 		return false
@@ -62,14 +84,21 @@ func (s *Server) RefreshDesiredRuntimeByGroup(ctx context.Context, groupID int64
 		return fmt.Errorf("controlv2 runtime repo is unavailable")
 	}
 
-	snapshot, err := s.repo.LoadDesiredRuntimeByGroupID(ctx, groupID)
+	record, err := s.repo.LoadDesiredRuntimeByGroupID(ctx, groupID)
 	if err != nil {
 		return err
 	}
 	if s.supervisor != nil {
-		s.supervisor.UpdateDesiredRuntime(groupID, snapshot)
+		s.supervisor.UpdateDesiredRuntime(groupID, record.Snapshot)
 	}
 	return nil
+}
+
+func (s *Server) RefreshGroup(groupID int64) {
+	if s == nil || groupID <= 0 {
+		return
+	}
+	_ = s.RefreshDesiredRuntimeByGroup(context.Background(), groupID)
 }
 
 func (s *Server) NotifyNetworkChange() {
