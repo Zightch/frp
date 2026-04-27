@@ -4,12 +4,15 @@ import (
 	"net"
 	"strings"
 
+	v2session "github.com/zightch/frp/frps/internal/controlv2/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 	"github.com/zightch/frp/frps/pkg/transport"
 )
 
-type runtimeTargetSelector struct {
+type runtimeSessionStateLookup func(sessionID uint64) (v2session.SessionState, bool)
+
+type runtimeViewIndex struct {
 	sessions        []runtimeSessionTarget
 	sessionsByID    map[runtimeSessionTargetID]runtimeSessionTarget
 	sessionsByGroup map[int64]runtimeSessionTarget
@@ -34,32 +37,31 @@ type runtimeConnectionTargetID struct {
 }
 
 type runtimePendingConfigTarget struct {
-	requestID uint32
-	group     GroupRuntime
-	snapshot  ConfigSnapshot
+	requestID   uint32
+	snapshot    ConfigSnapshot
+	effectiveIP string
 }
 
 type runtimeSessionTarget struct {
-	id                       runtimeSessionTargetID
-	group                    GroupRuntime
-	conn                     net.Conn
-	connID                   string
-	effectiveIP              string
-	snapshot                 ConfigSnapshot
-	lastAckedConfigVersion   uint64
-	pending                  *runtimePendingConfigTarget
-	recoveryMode             testsupport.RecoveryMode
-	runtimeFrozen            bool
-	listenersStarted         bool
-	runtimeGeneration        uint64
-	activeStreamCount        uint32
-	activeUDPSessionCount    uint32
-	activeTunnelIDs          map[uint32]struct{}
-	listeners                []runtimeListenerTarget
-	listenersByTunnel        map[uint32][]runtimeListenerTarget
-	missingListeners         []runtimeMissingListenerTarget
-	missingListenersByTunnel map[uint32]runtimeMissingListenerTarget
-	connections              []runtimeConnectionTarget
+	id                     runtimeSessionTargetID
+	conn                   net.Conn
+	connID                 string
+	effectiveIP            string
+	snapshot               ConfigSnapshot
+	lastAckedConfigVersion uint64
+	pending                *runtimePendingConfigTarget
+	recoveryMode           testsupport.RecoveryMode
+	runtimeFrozen          bool
+	listenersStarted       bool
+	runtimeGeneration      uint64
+	activeStreamCount      uint32
+	activeUDPSessionCount  uint32
+	activeTunnelIDs        map[uint32]struct{}
+	listeners              []runtimeListenerTarget
+	listenersByTunnel      map[uint32][]runtimeListenerTarget
+	missingListeners       []runtimeMissingListenerTarget
+	missingByTunnel        map[uint32]runtimeMissingListenerTarget
+	connections            []runtimeConnectionTarget
 }
 
 type runtimeListenerTarget struct {
@@ -100,63 +102,66 @@ type runtimeTunnelTarget struct {
 	missingPorts   []uint16
 }
 
-func newRuntimeTargetSelector(snapshot runtimeRegistrySnapshot) runtimeTargetSelector {
-	selector := runtimeTargetSelector{
+func newRuntimeViewIndex(snapshot runtimeRegistrySnapshot, lookup runtimeSessionStateLookup) runtimeViewIndex {
+	index := runtimeViewIndex{
 		sessions:        make([]runtimeSessionTarget, 0, len(snapshot.sessions)),
 		sessionsByID:    make(map[runtimeSessionTargetID]runtimeSessionTarget, len(snapshot.sessions)),
 		sessionsByGroup: make(map[int64]runtimeSessionTarget, len(snapshot.sessions)),
 	}
-	for _, session := range snapshot.sessions {
-		target := newRuntimeSessionTarget(session)
+	for _, sessionSnapshot := range snapshot.sessions {
+		target := newRuntimeSessionTarget(sessionSnapshot, lookup)
 		if target.id.GroupID == 0 || target.id.SessionID == 0 {
 			continue
 		}
-		selector.sessions = append(selector.sessions, target)
-		selector.sessionsByID[target.id] = target
-		selector.sessionsByGroup[target.id.GroupID] = target
+		index.sessions = append(index.sessions, target)
+		index.sessionsByID[target.id] = target
+		index.sessionsByGroup[target.id.GroupID] = target
 	}
-	return selector
+	return index
 }
 
-func newRuntimeSessionTarget(snapshot runtimeSessionSnapshot) runtimeSessionTarget {
+func newRuntimeSessionTarget(snapshot runtimeSessionSnapshot, lookup runtimeSessionStateLookup) runtimeSessionTarget {
 	group := snapshot.config.group
-	group.Snapshot = snapshot.config.snapshot
 	target := runtimeSessionTarget{
 		id: runtimeSessionTargetID{
 			GroupID:   group.ID,
 			SessionID: snapshot.sessionID,
 		},
-		group:                    group,
-		conn:                     snapshot.conn,
-		connID:                   transport.ConnectionID(snapshot.conn),
-		effectiveIP:              group.EffectiveIP,
-		snapshot:                 snapshot.config.snapshot,
-		lastAckedConfigVersion:   snapshot.config.lastAckedConfigValue,
-		recoveryMode:             snapshot.config.recoveryMode,
-		runtimeFrozen:            snapshot.runtime.frozen,
-		listenersStarted:         snapshot.runtime.listenersStarted,
-		runtimeGeneration:        snapshot.runtime.generation,
-		activeStreamCount:        snapshot.runtime.activeStreamCount,
-		activeUDPSessionCount:    snapshot.runtime.activeUDPSessionCount,
-		activeTunnelIDs:          snapshot.runtime.activeTunnelIDs,
-		listenersByTunnel:        make(map[uint32][]runtimeListenerTarget),
-		missingListenersByTunnel: make(map[uint32]runtimeMissingListenerTarget),
-		connections:              make([]runtimeConnectionTarget, 0, len(snapshot.runtime.connections)),
+		conn:                   snapshot.conn,
+		connID:                 transport.ConnectionID(snapshot.conn),
+		effectiveIP:            group.EffectiveIP,
+		snapshot:               snapshot.config.snapshot,
+		lastAckedConfigVersion: snapshot.config.lastAckedConfigValue,
+		recoveryMode:           snapshot.config.recoveryMode,
+		runtimeFrozen:          snapshot.runtime.frozen,
+		listenersStarted:       snapshot.runtime.listenersStarted,
+		runtimeGeneration:      snapshot.runtime.generation,
+		activeStreamCount:      snapshot.runtime.activeStreamCount,
+		activeUDPSessionCount:  snapshot.runtime.activeUDPSessionCount,
+		activeTunnelIDs:        snapshot.runtime.activeTunnelIDs,
+		listenersByTunnel:      make(map[uint32][]runtimeListenerTarget),
+		missingByTunnel:        make(map[uint32]runtimeMissingListenerTarget),
+		connections:            make([]runtimeConnectionTarget, 0, len(snapshot.runtime.connections)),
 	}
+
 	if snapshot.config.pendingRequestID != 0 {
-		pendingGroup := snapshot.config.pendingGroup
-		pendingGroup.Snapshot = snapshot.config.pendingSnapshot
 		target.pending = &runtimePendingConfigTarget{
-			requestID: snapshot.config.pendingRequestID,
-			group:     pendingGroup,
-			snapshot:  snapshot.config.pendingSnapshot,
+			requestID:   snapshot.config.pendingRequestID,
+			snapshot:    snapshot.config.pendingSnapshot,
+			effectiveIP: snapshot.config.pendingGroup.EffectiveIP,
+		}
+	}
+
+	if lookup != nil {
+		if state, ok := lookup(snapshot.sessionID); ok {
+			target = applyControlV2SessionState(target, state)
 		}
 	}
 
 	for _, attached := range snapshot.runtime.attachedListeners {
 		listener := runtimeListenerTarget{
 			id: runtimeTunnelTargetID{
-				GroupID:   group.ID,
+				GroupID:   target.id.GroupID,
 				SessionID: snapshot.sessionID,
 				TunnelID:  attached.tunnelID,
 			},
@@ -173,7 +178,7 @@ func newRuntimeSessionTarget(snapshot runtimeSessionSnapshot) runtimeSessionTarg
 	for _, connection := range snapshot.runtime.connections {
 		target.connections = append(target.connections, runtimeConnectionTarget{
 			id: runtimeConnectionTargetID{
-				GroupID:      group.ID,
+				GroupID:      target.id.GroupID,
 				SessionID:    snapshot.sessionID,
 				ConnectionID: connection.connectionID,
 				Kind:         connection.kind,
@@ -188,15 +193,41 @@ func newRuntimeSessionTarget(snapshot runtimeSessionSnapshot) runtimeSessionTarg
 		})
 	}
 
-	target.missingListeners = buildRuntimeMissingListenerTargets(target.id, target.snapshot.Tunnels, target.listenersByTunnel, target.missingListenersByTunnel)
+	target.missingListeners = buildRuntimeMissingListenerTargets(target.id, target.snapshot.Tunnels, target.listenersByTunnel)
 	for _, missing := range target.missingListeners {
-		target.missingListenersByTunnel[missing.id.TunnelID] = missing
+		target.missingByTunnel[missing.id.TunnelID] = missing
 	}
 
 	return target
 }
 
-func buildRuntimeMissingListenerTargets(id runtimeSessionTargetID, tunnels []protocol.TunnelEntry, listenersByTunnel map[uint32][]runtimeListenerTarget, missingByTunnel map[uint32]runtimeMissingListenerTarget) []runtimeMissingListenerTarget {
+func applyControlV2SessionState(target runtimeSessionTarget, state v2session.SessionState) runtimeSessionTarget {
+	if state.GroupID > 0 {
+		target.id.GroupID = state.GroupID
+	}
+
+	if state.Applied != nil {
+		target.snapshot = configSnapshotFromDesired(state.Applied.Snapshot)
+		target.effectiveIP = state.Applied.Snapshot.EffectiveIP
+		target.lastAckedConfigVersion = state.Applied.Snapshot.Version
+	} else {
+		target.lastAckedConfigVersion = 0
+	}
+
+	if state.Pending != nil {
+		target.pending = &runtimePendingConfigTarget{
+			requestID:   state.Pending.RequestID,
+			snapshot:    configSnapshotFromDesired(state.Pending.Snapshot),
+			effectiveIP: state.Pending.Snapshot.EffectiveIP,
+		}
+	} else {
+		target.pending = nil
+	}
+
+	return target
+}
+
+func buildRuntimeMissingListenerTargets(id runtimeSessionTargetID, tunnels []protocol.TunnelEntry, listenersByTunnel map[uint32][]runtimeListenerTarget) []runtimeMissingListenerTarget {
 	missing := make([]runtimeMissingListenerTarget, 0)
 	for _, tunnel := range tunnels {
 		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
@@ -225,7 +256,7 @@ func buildRuntimeMissingListenerTargets(id runtimeSessionTargetID, tunnels []pro
 			continue
 		}
 
-		target := runtimeMissingListenerTarget{
+		missing = append(missing, runtimeMissingListenerTarget{
 			id: runtimeTunnelTargetID{
 				GroupID:   id.GroupID,
 				SessionID: id.SessionID,
@@ -233,28 +264,40 @@ func buildRuntimeMissingListenerTargets(id runtimeSessionTargetID, tunnels []pro
 			},
 			protocol:     protocolName(tunnel.Protocol),
 			missingPorts: missingPorts,
-		}
-		missing = append(missing, target)
-		missingByTunnel[tunnel.TunnelID] = target
+		})
 	}
 	return missing
 }
 
-func (s runtimeTargetSelector) sessionsList() []runtimeSessionTarget {
+func (s *Server) controlV2SessionState(sessionID uint64) (v2session.SessionState, bool) {
+	if s == nil || s.supervisor == nil {
+		return v2session.SessionState{}, false
+	}
+	return s.supervisor.SessionState(sessionID)
+}
+
+func (s *Server) runtimeViewIndex() runtimeViewIndex {
+	if s == nil || s.runtimeRegistry == nil {
+		return runtimeViewIndex{}
+	}
+	return newRuntimeViewIndex(s.runtimeRegistry.snapshot(), s.controlV2SessionState)
+}
+
+func (s runtimeViewIndex) sessionsList() []runtimeSessionTarget {
 	return s.sessions
 }
 
-func (s runtimeTargetSelector) session(groupID int64) (runtimeSessionTarget, bool) {
+func (s runtimeViewIndex) session(groupID int64) (runtimeSessionTarget, bool) {
 	target, ok := s.sessionsByGroup[groupID]
 	return target, ok
 }
 
-func (s runtimeTargetSelector) sessionByID(id runtimeSessionTargetID) (runtimeSessionTarget, bool) {
+func (s runtimeViewIndex) sessionByID(id runtimeSessionTargetID) (runtimeSessionTarget, bool) {
 	target, ok := s.sessionsByID[id]
 	return target, ok
 }
 
-func (s runtimeTargetSelector) selectNonListeningEnabledTunnels(group GroupRuntime) []protocol.TunnelEntry {
+func (s runtimeViewIndex) selectNonListeningEnabledTunnels(group GroupRuntime) []protocol.TunnelEntry {
 	if !group.Enabled {
 		return nil
 	}
@@ -266,7 +309,7 @@ func (s runtimeTargetSelector) selectNonListeningEnabledTunnels(group GroupRunti
 	return selectNonListeningEnabledTunnels(group.Snapshot.Tunnels, session.activeTunnelIDs)
 }
 
-func (s runtimeTargetSelector) selectTunnels(groups []GroupRuntime, runtimeIssues map[int64]string, staticConflictIDs map[int64]struct{}) []runtimeTunnelTarget {
+func (s runtimeViewIndex) selectTunnels(groups []GroupRuntime, runtimeIssues map[int64]string, staticConflictIDs map[int64]struct{}) []runtimeTunnelTarget {
 	targets := make([]runtimeTunnelTarget, 0)
 	for _, group := range groups {
 		session, hasSession := s.session(group.ID)
@@ -296,7 +339,7 @@ func (s runtimeTargetSelector) selectTunnels(groups []GroupRuntime, runtimeIssue
 
 			if hasSession {
 				target.listeners = append(target.listeners, session.listenersByTunnel[tunnel.TunnelID]...)
-				if missing, ok := session.missingListenersByTunnel[tunnel.TunnelID]; ok {
+				if missing, ok := session.missingByTunnel[tunnel.TunnelID]; ok {
 					target.missingPorts = append(target.missingPorts, missing.missingPorts...)
 				}
 			}
@@ -332,7 +375,7 @@ func (t runtimeSessionTarget) observedState() testsupport.SessionObservedState {
 			RequestID:   t.pending.requestID,
 			Version:     t.pending.snapshot.Version,
 			TunnelCount: len(t.pending.snapshot.Tunnels),
-			EffectiveIP: t.pending.group.EffectiveIP,
+			EffectiveIP: t.pending.effectiveIP,
 		}
 	}
 	return observed
@@ -358,12 +401,13 @@ func (t runtimeSessionTarget) observedListeners() []testsupport.AttachedListener
 func (t runtimeSessionTarget) observedMissingListeners() []testsupport.MissingListenerObservedState {
 	missing := make([]testsupport.MissingListenerObservedState, 0, len(t.missingListeners))
 	for _, listener := range t.missingListeners {
+		ports := append([]uint16(nil), listener.missingPorts...)
 		missing = append(missing, testsupport.MissingListenerObservedState{
 			GroupID:      listener.id.GroupID,
 			SessionID:    listener.id.SessionID,
 			TunnelID:     listener.id.TunnelID,
 			Protocol:     listener.protocol,
-			MissingPorts: listener.missingPorts,
+			MissingPorts: ports,
 		})
 	}
 	return missing

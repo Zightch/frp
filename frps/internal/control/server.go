@@ -232,6 +232,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if listener != nil {
 			_ = listener.Close()
 		}
+		if s.supervisor != nil {
+			s.supervisor.Shutdown()
+		}
 		for _, conn := range activeConn {
 			_ = conn.Close()
 		}

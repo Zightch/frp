@@ -64,22 +64,19 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 	s.clearUnknownTunnelRuntimeIssues(knownTunnelIDs)
 
 	staticConflictIDs := detectConfiguredConflictTunnelIDs(groups)
-	targetSelector := runtimeTargetSelector{}
-	if s.runtimeRegistry != nil {
-		targetSelector = newRuntimeTargetSelector(s.runtimeRegistry.snapshot())
-	}
+	viewIndex := s.runtimeViewIndex()
 
 	for _, group := range groups {
-		targetTunnels := targetSelector.selectNonListeningEnabledTunnels(group)
+		targetTunnels := viewIndex.selectNonListeningEnabledTunnels(group)
 		issues := s.scanGroupRuntimeIssues(group, staticConflictIDs, targetTunnels)
-		preserveHealthyIssues := s.preserveScannedHealthyRuntimeIssuesUntilRecovery(targetSelector, group, targetTunnels, staticConflictIDs, issues)
+		preserveHealthyIssues := s.preserveScannedHealthyRuntimeIssuesUntilRecovery(viewIndex, group, targetTunnels, staticConflictIDs, issues)
 		s.applyScannedTunnelRuntimeIssues(group.Snapshot, staticConflictIDs, issues, preserveHealthyIssues)
 		testhooks.Point(
 			"runtime.scan.before_group_recover",
 			testhooks.F("group_id", group.ID),
 			testhooks.F("target_tunnel_count", len(targetTunnels)),
 		)
-		if err := s.recoverScannedActiveSessionTunnels(targetSelector, group, targetTunnels, staticConflictIDs, issues); err != nil {
+		if err := s.recoverScannedActiveSessionTunnels(viewIndex, group, targetTunnels, staticConflictIDs, issues); err != nil {
 			s.logger.Warn("recover scanned non-listening tunnels failed", "group_id", group.ID, "error", err)
 		}
 	}
@@ -110,14 +107,6 @@ func (s *Server) finishRuntimeScanRound() {
 	s.runtimeScanStateMu.Lock()
 	s.runtimeScanInFlight = false
 	s.runtimeScanStateMu.Unlock()
-}
-
-func (s *Server) selectScannedNonListeningTunnels(group GroupRuntime) []protocol.TunnelEntry {
-	targetSelector := runtimeTargetSelector{}
-	if s != nil && s.runtimeRegistry != nil {
-		targetSelector = newRuntimeTargetSelector(s.runtimeRegistry.snapshot())
-	}
-	return targetSelector.selectNonListeningEnabledTunnels(group)
 }
 
 func (s *Server) scanGroupRuntimeIssues(group GroupRuntime, staticConflictIDs map[int64]struct{}, targetTunnels []protocol.TunnelEntry) map[uint32]string {
@@ -165,7 +154,7 @@ func (s *Server) scanGroupRuntimeIssues(group GroupRuntime, staticConflictIDs ma
 	return issues
 }
 
-func (s *Server) recoverScannedActiveSessionTunnels(_ runtimeTargetSelector, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) error {
+func (s *Server) recoverScannedActiveSessionTunnels(viewIndex runtimeViewIndex, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) error {
 	if s == nil || group.ID <= 0 || len(targetTunnels) == 0 {
 		return nil
 	}
@@ -174,12 +163,12 @@ func (s *Server) recoverScannedActiveSessionTunnels(_ runtimeTargetSelector, gro
 		return nil
 	}
 
-	if active.session.hasPendingConfig() || s.isShuttingDown() {
+	target, ok := viewIndex.session(group.ID)
+	if !ok || target.hasPendingConfig() || s.isShuttingDown() {
 		return nil
 	}
 
-	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
-	if currentGroup.EffectiveIP != group.EffectiveIP {
+	if target.effectiveIP != group.EffectiveIP {
 		return nil
 	}
 
@@ -189,7 +178,7 @@ func (s *Server) recoverScannedActiveSessionTunnels(_ runtimeTargetSelector, gro
 		"group_name", group.Name,
 	)
 
-	if sameRuntimeSnapshot(currentSnapshot, group.Snapshot) {
+	if sameRuntimeSnapshot(target.snapshot, group.Snapshot) {
 		if !hasRecoverableScannedTunnels(targetTunnels, staticConflictIDs, issues) {
 			return nil
 		}
@@ -201,7 +190,7 @@ func (s *Server) recoverScannedActiveSessionTunnels(_ runtimeTargetSelector, gro
 		return s.ensureTunnelListeners(active.conn, logger, active.session)
 	}
 
-	if !shouldRecoverScannedActiveSessionConfig(currentSnapshot, group.Snapshot) {
+	if !shouldRecoverScannedActiveSessionConfig(target.snapshot, group.Snapshot) {
 		return nil
 	}
 	if _, err := s.resolveGroupEffectiveIP(group); err != nil {
@@ -243,12 +232,12 @@ func hasRecoverableScannedTunnels(targetTunnels []protocol.TunnelEntry, staticCo
 	return false
 }
 
-func (s *Server) preserveScannedHealthyRuntimeIssuesUntilRecovery(targetSelector runtimeTargetSelector, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) map[uint32]struct{} {
+func (s *Server) preserveScannedHealthyRuntimeIssuesUntilRecovery(viewIndex runtimeViewIndex, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) map[uint32]struct{} {
 	if s == nil || group.ID <= 0 || len(targetTunnels) == 0 {
 		return nil
 	}
 
-	target, ok := targetSelector.session(group.ID)
+	target, ok := viewIndex.session(group.ID)
 	if !ok {
 		return nil
 	}
@@ -256,7 +245,7 @@ func (s *Server) preserveScannedHealthyRuntimeIssuesUntilRecovery(targetSelector
 		return preserveHealthyScannedTunnels(targetTunnels, staticConflictIDs, issues)
 	}
 
-	if target.group.EffectiveIP != group.EffectiveIP {
+	if target.effectiveIP != group.EffectiveIP {
 		return nil
 	}
 	if !sameRuntimeSnapshot(target.snapshot, group.Snapshot) && !shouldRecoverScannedActiveSessionConfig(target.snapshot, group.Snapshot) {

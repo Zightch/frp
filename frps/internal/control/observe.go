@@ -32,7 +32,7 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 	if s.runtimeRegistry != nil {
 		registryState = s.runtimeRegistry.snapshot()
 	}
-	targetSelector := newRuntimeTargetSelector(registryState)
+	viewIndex := newRuntimeViewIndex(registryState, s.controlV2SessionState)
 	runtimeIssues := s.TunnelRuntimeIssues()
 
 	state := testsupport.ServerObservedState{
@@ -42,7 +42,7 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 		GroupSlots:             registryState.groupSlots,
 	}
 
-	for _, session := range targetSelector.sessionsList() {
+	for _, session := range viewIndex.sessionsList() {
 		state.Sessions = append(state.Sessions, session.observedState())
 		state.Listeners = append(state.Listeners, session.observedListeners()...)
 		state.MissingListeners = append(state.MissingListeners, session.observedMissingListeners()...)
@@ -51,7 +51,7 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 
 	groups := s.observeGroups()
 	staticConflictIDs := detectConfiguredConflictTunnelIDs(groups)
-	for _, tunnel := range targetSelector.selectTunnels(groups, runtimeIssues, staticConflictIDs) {
+	for _, tunnel := range viewIndex.selectTunnels(groups, runtimeIssues, staticConflictIDs) {
 		state.Tunnels = append(state.Tunnels, tunnel.observedState())
 	}
 

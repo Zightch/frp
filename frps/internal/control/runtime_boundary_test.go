@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	v2session "github.com/zightch/frp/frps/internal/controlv2/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 )
@@ -111,7 +112,7 @@ func TestRuntimeRegistryBuildsSnapshotAndActiveRuntimeGroups(t *testing.T) {
 	}
 }
 
-func TestRuntimeTargetSelectorBuildsSessionTunnelAndConnectionTargets(t *testing.T) {
+func TestRuntimeViewIndexBuildsSessionTunnelAndConnectionTargets(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen tcp: %v", err)
@@ -175,8 +176,8 @@ func TestRuntimeTargetSelectorBuildsSessionTunnelAndConnectionTargets(t *testing
 	registry := newRuntimeRegistry()
 	registry.register(serverConn, session)
 
-	selector := newRuntimeTargetSelector(registry.snapshot())
-	sessions := selector.sessionsList()
+	viewIndex := newRuntimeViewIndex(registry.snapshot(), nil)
+	sessions := viewIndex.sessionsList()
 	if len(sessions) != 1 {
 		t.Fatalf("expected one runtime session target, got %#v", sessions)
 	}
@@ -185,8 +186,8 @@ func TestRuntimeTargetSelectorBuildsSessionTunnelAndConnectionTargets(t *testing
 	if sessionTarget.id.GroupID != group.ID || sessionTarget.id.SessionID != session.ID {
 		t.Fatalf("unexpected session target identity: %#v", sessionTarget.id)
 	}
-	if selected, ok := selector.sessionByID(sessionTarget.id); !ok || selected.id != sessionTarget.id {
-		t.Fatalf("expected selector to resolve session by stable id, got ok=%v target=%#v", ok, selected)
+	if selected, ok := viewIndex.sessionByID(sessionTarget.id); !ok || selected.id != sessionTarget.id {
+		t.Fatalf("expected runtime view to resolve session by stable id, got ok=%v target=%#v", ok, selected)
 	}
 	if sessionTarget.connID == "" {
 		t.Fatalf("expected session target conn id, got %#v", sessionTarget)
@@ -200,9 +201,9 @@ func TestRuntimeTargetSelectorBuildsSessionTunnelAndConnectionTargets(t *testing
 	if len(sessionTarget.listenersByTunnel[7]) != 1 {
 		t.Fatalf("expected attached listener target on tunnel 7, got %#v", sessionTarget.listenersByTunnel)
 	}
-	missing := sessionTarget.missingListenersByTunnel[8]
+	missing := sessionTarget.missingByTunnel[8]
 	if missing.id.TunnelID != 8 || len(missing.missingPorts) != 1 || missing.missingPorts[0] != missingPort {
-		t.Fatalf("unexpected missing listener target: %#v", sessionTarget.missingListenersByTunnel)
+		t.Fatalf("unexpected missing listener target: %#v", sessionTarget.missingByTunnel)
 	}
 	if len(sessionTarget.connections) != 1 {
 		t.Fatalf("expected one runtime connection target, got %#v", sessionTarget.connections)
@@ -215,7 +216,7 @@ func TestRuntimeTargetSelectorBuildsSessionTunnelAndConnectionTargets(t *testing
 		t.Fatalf("unexpected runtime connection target metadata: %#v", connection)
 	}
 
-	targetTunnels := selector.selectTunnels(
+	targetTunnels := viewIndex.selectTunnels(
 		[]GroupRuntime{group},
 		map[int64]string{8: "bind failed"},
 		map[int64]struct{}{7: {}},
@@ -242,7 +243,7 @@ func TestRuntimeTargetSelectorBuildsSessionTunnelAndConnectionTargets(t *testing
 		t.Fatalf("unexpected missing tunnel target: %#v", missingTunnelTarget)
 	}
 
-	nonListening := selector.selectNonListeningEnabledTunnels(group)
+	nonListening := viewIndex.selectNonListeningEnabledTunnels(group)
 	if len(nonListening) != 1 || nonListening[0].TunnelID != 8 {
 		t.Fatalf("expected only non-listening tunnel 8, got %#v", nonListening)
 	}
@@ -256,7 +257,7 @@ func TestRuntimeTargetSelectorBuildsSessionTunnelAndConnectionTargets(t *testing
 	}
 }
 
-func TestRuntimeRegistryLockSessionTargetRejectsReplacementSessionID(t *testing.T) {
+func TestRuntimeViewPrefersControlV2StateOverLegacyConfigProjection(t *testing.T) {
 	group := GroupRuntime{
 		ID:          1,
 		Name:        "group-a",
@@ -266,29 +267,50 @@ func TestRuntimeRegistryLockSessionTargetRejectsReplacementSessionID(t *testing.
 	snapshot := ConfigSnapshot{Version: 1}
 	group.Snapshot = snapshot
 
-	oldSession := newSessionState(11, group, snapshot, 0)
-	newSession := newSessionState(12, group, snapshot, 0)
-
-	oldClientConn, oldServerConn := net.Pipe()
-	defer oldClientConn.Close()
-	defer oldServerConn.Close()
-	newClientConn, newServerConn := net.Pipe()
-	defer newClientConn.Close()
-	defer newServerConn.Close()
-
-	registry := newRuntimeRegistry()
-	registry.register(oldServerConn, oldSession)
-	registry.register(newServerConn, newSession)
-
-	if _, ok := registry.lockSessionTarget(runtimeSessionTargetID{GroupID: group.ID, SessionID: oldSession.ID}); ok {
-		t.Fatal("expected replacement session to invalidate stale runtime target id")
+	session := newSessionState(11, group, snapshot, 0)
+	if err := session.reconfigure(
+		GroupRuntime{ID: 1, Name: "group-a", EffectiveIP: "10.0.0.1"},
+		ConfigSnapshot{Version: 2},
+		101,
+	); err != nil {
+		t.Fatalf("seed legacy pending config: %v", err)
 	}
 
-	target, ok := registry.lockSessionTarget(runtimeSessionTargetID{GroupID: group.ID, SessionID: newSession.ID})
-	if !ok {
-		t.Fatal("expected current session target id to resolve")
+	target := newRuntimeSessionTarget(runtimeSessionSnapshot{
+		sessionID: session.ID,
+		config: observedSessionConfigState{
+			group:                group,
+			snapshot:             snapshot,
+			lastAckedConfigValue: 99,
+			pendingRequestID:     101,
+			pendingGroup:         GroupRuntime{ID: 1, Name: "group-a", EffectiveIP: "10.0.0.1"},
+			pendingSnapshot:      ConfigSnapshot{Version: 2},
+			recoveryMode:         testsupport.RecoveryModePendingFullConfig,
+		},
+	}, func(sessionID uint64) (v2session.SessionState, bool) {
+		if sessionID != session.ID {
+			return v2session.SessionState{}, false
+		}
+		state := v2session.NewState(group.ID, session.ID)
+		applied := desiredRuntimeFromGroup(group)
+		applied.Version = 7
+		applied.EffectiveIP = "127.0.0.2"
+		state.Applied = &v2session.AppliedRuntimeSnapshot{Snapshot: applied}
+		return state, true
+	})
+
+	if target.snapshot.Version != 7 {
+		t.Fatalf("expected runtime view to prefer controlv2 applied snapshot, got %#v", target.snapshot)
 	}
-	target.unlock()
+	if target.effectiveIP != "127.0.0.2" {
+		t.Fatalf("expected runtime view to prefer controlv2 effective ip, got %#v", target)
+	}
+	if target.lastAckedConfigVersion != 7 {
+		t.Fatalf("expected runtime view to prefer controlv2 last acked version, got %#v", target)
+	}
+	if target.pending != nil {
+		t.Fatalf("expected runtime view to clear legacy pending config when controlv2 has none, got %#v", target.pending)
+	}
 }
 
 func TestSessionConfigApplyTracksPendingAndAppliedRecoveryModes(t *testing.T) {

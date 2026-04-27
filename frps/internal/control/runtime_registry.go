@@ -121,60 +121,6 @@ func (r *runtimeRegistry) session(groupID int64) (*activeSession, bool) {
 	return current, ok
 }
 
-func (r *runtimeRegistry) lockSession(groupID int64) (*activeSession, bool) {
-	if r == nil || groupID <= 0 {
-		return nil, false
-	}
-
-	for {
-		r.mu.Lock()
-		current, ok := r.sessions[groupID]
-		if !ok || current == nil {
-			r.mu.Unlock()
-			return nil, false
-		}
-		current.mu.Lock()
-		if r.sessions[groupID] == current {
-			r.mu.Unlock()
-			return current, true
-		}
-		current.mu.Unlock()
-		r.mu.Unlock()
-	}
-}
-
-func (r *runtimeRegistry) lockSessionTarget(id runtimeSessionTargetID) (runtimeAdminOperationTarget, bool) {
-	if r == nil || id.GroupID <= 0 || id.SessionID == 0 {
-		return runtimeAdminOperationTarget{}, false
-	}
-
-	for {
-		r.mu.Lock()
-		current, ok := r.sessions[id.GroupID]
-		if !ok || current == nil || current.session == nil || current.session.ID != id.SessionID {
-			r.mu.Unlock()
-			return runtimeAdminOperationTarget{}, false
-		}
-		current.mu.Lock()
-		if r.sessions[id.GroupID] != current || current.session == nil || current.session.ID != id.SessionID {
-			current.mu.Unlock()
-			r.mu.Unlock()
-			continue
-		}
-		r.mu.Unlock()
-
-		currentGroup, currentSnapshot := current.session.currentGroupAndSnapshot()
-		return runtimeAdminOperationTarget{
-			id:              id,
-			conn:            current.conn,
-			session:         current.session,
-			currentGroup:    currentGroup,
-			currentSnapshot: currentSnapshot,
-			release:         current.mu.Unlock,
-		}, true
-	}
-}
-
 func (r *runtimeRegistry) snapshot() runtimeRegistrySnapshot {
 	return r.snapshotExcluding(nil)
 }
@@ -298,20 +244,6 @@ func (s *Server) activeSession(groupID int64) (*activeSession, bool) {
 		return nil, false
 	}
 	return s.runtimeRegistry.session(groupID)
-}
-
-func (s *Server) lockCurrentActiveSession(groupID int64) (*activeSession, bool) {
-	if s == nil || s.runtimeRegistry == nil {
-		return nil, false
-	}
-	return s.runtimeRegistry.lockSession(groupID)
-}
-
-func (s *Server) lockRuntimeAdminOperationTarget(id runtimeSessionTargetID) (runtimeAdminOperationTarget, bool) {
-	if s == nil || s.runtimeRegistry == nil {
-		return runtimeAdminOperationTarget{}, false
-	}
-	return s.runtimeRegistry.lockSessionTarget(id)
 }
 
 func (s *Server) activeRuntimeGroups(exclude *sessionState) []runtimeGroupSnapshot {
