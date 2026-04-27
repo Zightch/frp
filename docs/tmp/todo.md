@@ -66,13 +66,26 @@
 - 当前轮不引入插件系统、事件总线框架、DI 容器或通用 workflow engine。
 - 当前轮不把 TCP/UDP 抽成一个“万能统一 tunnel runtime”；协议桥接仍按 TCP/UDP 分开实现。
 - 当前轮状态机只做内部建模，不把 side effect 塞进第三方状态机回调。
-- 当前这一步只更新 `todo` 文档，不动代码。
+- 当前已经进入 `controlv2` 代码骨架阶段，但暂未接入旧 `app.App`、暂未替换旧 `control/`，也暂未接入真实 `net.Listener` / 真实控制连接执行链路。
 
 当前状态：
 
 - 现状分析已经完成，已确认当前 `control` 的主要复杂度来自多层状态叠加、资源 ownership 分散和异步恢复路径交叉。
-- `control v2` 的重构方向已经确定为：`Supervisor + SessionAgent + BindManager + RuntimeRepo + reducer/reconcile`。
+- `docs/tmp/control-v2-design.md` 已完成，明确了 `Supervisor + SessionAgent + BindManager + RuntimeRepo + reducer/reconcile` 的目标总图、ownership、状态、事件、动作和实施顺序。
+- `frps/internal/controlv2/session/` 第一批骨架已落地：
+  - `state.go`
+  - `events.go`
+  - `actions.go`
+  - `reducer.go`
+  - `reconcile.go`
+  - `reducer_test.go`
+- `frps/internal/controlv2/session/agent.go` 已落地，当前 reducer/reconcile 已经接入最小 inbox、follow-up event 和 executor 壳层。
+- `frps/internal/controlv2/supervisor.go` 已落地，当前已经有最小的 group/session agent 注册、会话接管、期望配置广播和网络变化广播骨架。
+- `frps/internal/controlv2/bind/` 已落地最小 `BindManager` 内存实现与测试骨架。
+- `frps/internal/controlv2/repo.go` 已落地 `RuntimeRepo` 接口。
+- `frps/internal/controlv2/server.go` 已落地最小 `Server` 包装层，当前已经有 `HandleAuthenticatedSession`、`Dispatch`、`RefreshDesiredRuntimeByGroup`、`NotifyNetworkChange`、`Shutdown` 调用面。
+- 当前已经完成“状态建模起点 + 最小执行壳层 + 控制面包装层”这一步，下一步进入真实控制连接装配与旧 `app` 接线层。
 
 当前唯一下一步：
 
-- 在 `docs/tmp/` 下补出 `control v2` 详细设计稿，精确写清 `Supervisor`、`SessionAgent`、`BindManager` 的事件、状态、动作和切换关系，再开始代码落地。
+- 在 `frps/internal/app/app.go` 中增加 `controlv2` 的可切换装配入口，并把 transport/auth 后的真实连接事件、配置刷新和网络变化先接到 `controlv2.Server` / `Supervisor`。
