@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/ports"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -64,7 +65,7 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 	s.clearUnknownTunnelRuntimeIssues(knownTunnelIDs)
 
 	staticConflictIDs := detectConfiguredConflictTunnelIDs(groups)
-	viewIndex := s.runtimeViewIndex()
+	viewIndex := s.runtimeSnapshotIndex()
 
 	for _, group := range groups {
 		targetTunnels := viewIndex.selectNonListeningEnabledTunnels(group)
@@ -154,7 +155,7 @@ func (s *Server) scanGroupRuntimeIssues(group GroupRuntime, staticConflictIDs ma
 	return issues
 }
 
-func (s *Server) recoverScannedActiveSessionTunnels(viewIndex runtimeViewIndex, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) error {
+func (s *Server) recoverScannedActiveSessionTunnels(viewIndex runtimeSnapshotIndex, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) error {
 	if s == nil || group.ID <= 0 || len(targetTunnels) == 0 {
 		return nil
 	}
@@ -183,11 +184,11 @@ func (s *Server) recoverScannedActiveSessionTunnels(viewIndex runtimeViewIndex, 
 			return nil
 		}
 		logger.Info(
-			"recovering active session listeners after runtime prerequisites returned",
+			"requesting active session listener recovery after runtime prerequisites returned",
 			"config_version", group.Snapshot.Version,
 			"tunnel_count", len(group.Snapshot.Tunnels),
 		)
-		return s.ensureTunnelListeners(active.conn, logger, active.session)
+		return s.requestAuditedSessionRuntimeRecovery(target.id.SessionID, targetTunnels)
 	}
 
 	if !shouldRecoverScannedActiveSessionConfig(target.snapshot, group.Snapshot) {
@@ -202,7 +203,7 @@ func (s *Server) recoverScannedActiveSessionTunnels(viewIndex runtimeViewIndex, 
 		"config_version", group.Snapshot.Version,
 		"tunnel_count", len(group.Snapshot.Tunnels),
 	)
-	if runtime := s.controlV2Runtime(active.session.ID); runtime != nil {
+	if runtime := s.runtimeExecutor(active.session.ID); runtime != nil {
 		runtime.setDesiredGroup(group)
 	}
 	s.supervisor.UpdateDesiredRuntime(group.ID, desiredRuntimeFromGroup(group))
@@ -232,7 +233,73 @@ func hasRecoverableScannedTunnels(targetTunnels []protocol.TunnelEntry, staticCo
 	return false
 }
 
-func (s *Server) preserveScannedHealthyRuntimeIssuesUntilRecovery(viewIndex runtimeViewIndex, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) map[uint32]struct{} {
+func (s *Server) requestAuditedSessionRuntimeRecovery(sessionID uint64, targetTunnels []protocol.TunnelEntry) error {
+	if s == nil || s.supervisor == nil || sessionID == 0 || len(targetTunnels) == 0 {
+		return nil
+	}
+
+	state, ok := s.supervisor.SessionState(sessionID)
+	if !ok {
+		return nil
+	}
+
+	targetTunnelIDs := make(map[uint32]struct{}, len(targetTunnels))
+	for _, tunnel := range targetTunnels {
+		targetTunnelIDs[tunnel.TunnelID] = struct{}{}
+	}
+
+	dispatched := false
+	if state.RuntimePhase == controlsession.RuntimePhaseActive {
+		for key := range state.Bindings {
+			tunnelID := tunnelIDForBinding(state, key)
+			if _, ok := targetTunnelIDs[tunnelID]; !ok {
+				continue
+			}
+			dispatched = s.supervisor.DispatchBySessionID(sessionID, controlsession.BindingClosed{
+				Key:    key,
+				Reason: "runtime audit detected missing listener",
+			}) || dispatched
+		}
+	}
+	if dispatched {
+		s.awaitAuditedSessionRecovery(sessionID, targetTunnelIDs)
+		return nil
+	}
+	s.supervisor.DispatchBySessionID(sessionID, controlsession.ReconcileRequested{
+		Reason: "runtime_audit_recover",
+	})
+	s.awaitAuditedSessionRecovery(sessionID, targetTunnelIDs)
+	return nil
+}
+
+func (s *Server) awaitAuditedSessionRecovery(sessionID uint64, targetTunnelIDs map[uint32]struct{}) {
+	if s == nil || len(targetTunnelIDs) == 0 {
+		return
+	}
+
+	runtime := s.runtimeExecutor(sessionID)
+	if runtime == nil || runtime.session == nil {
+		return
+	}
+
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		active := runtime.session.activeRuntimeTunnelIDs()
+		recovered := true
+		for tunnelID := range targetTunnelIDs {
+			if _, ok := active[tunnelID]; !ok {
+				recovered = false
+				break
+			}
+		}
+		if recovered {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (s *Server) preserveScannedHealthyRuntimeIssuesUntilRecovery(viewIndex runtimeSnapshotIndex, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) map[uint32]struct{} {
 	if s == nil || group.ID <= 0 || len(targetTunnels) == 0 {
 		return nil
 	}

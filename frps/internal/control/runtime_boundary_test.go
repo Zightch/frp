@@ -1,13 +1,14 @@
 package control
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
 	"testing"
 	"time"
 
-	v2session "github.com/zightch/frp/frps/internal/controlv2/session"
+	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 )
@@ -29,7 +30,7 @@ func TestRuntimeIssueStoreKeepsNewerConfigVersion(t *testing.T) {
 	}
 }
 
-func TestRuntimeRegistryBuildsSnapshotAndActiveRuntimeGroups(t *testing.T) {
+func TestSupervisorSnapshotBuildsSessionAndActiveRuntimeGroups(t *testing.T) {
 	host, err := protocol.ParseHost("127.0.0.1")
 	if err != nil {
 		t.Fatalf("parse host: %v", err)
@@ -74,45 +75,62 @@ func TestRuntimeRegistryBuildsSnapshotAndActiveRuntimeGroups(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	registry := newRuntimeRegistry()
-	if !registry.reserveGroupSlot(group.ID, session.ID) {
+	state := controlsession.NewState(group.ID, session.ID)
+	desired := desiredRuntimeFromGroup(group)
+	state.Desired = &desired
+	state.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: desired}
+
+	supervisor := NewSupervisor(controlsession.NoopExecutor{})
+	defer supervisor.Shutdown()
+	runtime := &runtimeExecutor{
+		groupID:      group.ID,
+		conn:         serverConn,
+		session:      session,
+		desiredGroup: group,
+	}
+	if !supervisor.ReserveGroupSlot(group.ID, session.ID) {
 		t.Fatal("expected group slot reservation to succeed")
 	}
-	registry.register(serverConn, session)
-
-	registrySnapshot := registry.snapshot()
-	if got := registrySnapshot.groupSlots[group.ID]; got != session.ID {
-		t.Fatalf("unexpected group slot snapshot: %#v", registrySnapshot.groupSlots)
-	}
-	if len(registrySnapshot.sessions) != 1 {
-		t.Fatalf("expected one runtime session snapshot, got %#v", registrySnapshot.sessions)
-	}
-	if registrySnapshot.sessions[0].runtime.generation != snapshot.Version {
-		t.Fatalf("unexpected runtime generation in snapshot: %#v", registrySnapshot.sessions[0].runtime)
-	}
-	if _, ok := registrySnapshot.sessions[0].runtime.activeTunnelIDs[7]; !ok {
-		t.Fatalf("expected runtime snapshot to expose active tunnel ids, got %#v", registrySnapshot.sessions[0].runtime.activeTunnelIDs)
-	}
-	if len(registrySnapshot.sessions[0].runtime.attachedListeners) != 1 {
-		t.Fatalf("expected runtime snapshot to expose attached listeners, got %#v", registrySnapshot.sessions[0].runtime.attachedListeners)
-	}
-	if registrySnapshot.sessions[0].runtime.attachedListeners[0].port != uint16(listener.Addr().(*net.TCPAddr).Port) {
-		t.Fatalf("unexpected attached listener port: %#v", registrySnapshot.sessions[0].runtime.attachedListeners)
+	supervisor.ReleaseGroupSlot(group.ID, session.ID)
+	agent := supervisor.AttachSession(context.Background(), state, runtime)
+	if agent == nil {
+		t.Fatal("expected supervisor to attach session")
 	}
 
-	activeGroups := registry.activeRuntimeGroups(nil)
+	supervisorSnapshot := supervisor.Snapshot(nil)
+	if got := supervisorSnapshot.groupSlots[group.ID]; got != session.ID {
+		t.Fatalf("unexpected group slot snapshot: %#v", supervisorSnapshot.groupSlots)
+	}
+	if len(supervisorSnapshot.sessions) != 1 {
+		t.Fatalf("expected one runtime session snapshot, got %#v", supervisorSnapshot.sessions)
+	}
+	if supervisorSnapshot.sessions[0].runtime.generation != snapshot.Version {
+		t.Fatalf("unexpected runtime generation in snapshot: %#v", supervisorSnapshot.sessions[0].runtime)
+	}
+	if _, ok := supervisorSnapshot.sessions[0].runtime.activeTunnelIDs[7]; !ok {
+		t.Fatalf("expected runtime snapshot to expose active tunnel ids, got %#v", supervisorSnapshot.sessions[0].runtime.activeTunnelIDs)
+	}
+	if len(supervisorSnapshot.sessions[0].runtime.attachedListeners) != 1 {
+		t.Fatalf("expected runtime snapshot to expose attached listeners, got %#v", supervisorSnapshot.sessions[0].runtime.attachedListeners)
+	}
+	if supervisorSnapshot.sessions[0].runtime.attachedListeners[0].port != uint16(listener.Addr().(*net.TCPAddr).Port) {
+		t.Fatalf("unexpected attached listener port: %#v", supervisorSnapshot.sessions[0].runtime.attachedListeners)
+	}
+
+	server := &Server{supervisor: supervisor}
+	activeGroups := server.activeRuntimeGroups(nil)
 	if len(activeGroups) != 1 {
 		t.Fatalf("expected one active runtime group, got %#v", activeGroups)
 	}
 	if activeGroups[0].group.ID != group.ID || len(activeGroups[0].snapshot.Tunnels) != 1 || activeGroups[0].snapshot.Tunnels[0].TunnelID != 7 {
 		t.Fatalf("unexpected active runtime group snapshot: %#v", activeGroups)
 	}
-	if groups := registry.activeRuntimeGroups(session); len(groups) != 0 {
+	if groups := server.activeRuntimeGroups(session); len(groups) != 0 {
 		t.Fatalf("expected excluded session to be absent from runtime groups, got %#v", groups)
 	}
 }
 
-func TestRuntimeViewIndexBuildsSessionTunnelAndConnectionTargets(t *testing.T) {
+func TestRuntimeSnapshotIndexBuildsSessionTunnelAndConnectionTargets(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen tcp: %v", err)
@@ -173,10 +191,24 @@ func TestRuntimeViewIndexBuildsSessionTunnelAndConnectionTargets(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	registry := newRuntimeRegistry()
-	registry.register(serverConn, session)
+	state := controlsession.NewState(group.ID, session.ID)
+	desired := desiredRuntimeFromGroup(group)
+	state.Desired = &desired
+	state.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: desired}
 
-	viewIndex := newRuntimeViewIndex(registry.snapshot(), nil)
+	supervisor := NewSupervisor(controlsession.NoopExecutor{})
+	defer supervisor.Shutdown()
+	runtime := &runtimeExecutor{
+		groupID:      group.ID,
+		conn:         serverConn,
+		session:      session,
+		desiredGroup: group,
+	}
+	if agent := supervisor.AttachSession(context.Background(), state, runtime); agent == nil {
+		t.Fatal("expected supervisor to attach session")
+	}
+
+	viewIndex := newRuntimeSnapshotIndex(supervisor.Snapshot(nil))
 	sessions := viewIndex.sessionsList()
 	if len(sessions) != 1 {
 		t.Fatalf("expected one runtime session target, got %#v", sessions)
@@ -257,7 +289,7 @@ func TestRuntimeViewIndexBuildsSessionTunnelAndConnectionTargets(t *testing.T) {
 	}
 }
 
-func TestRuntimeViewPrefersControlV2StateOverLegacyConfigProjection(t *testing.T) {
+func TestRuntimeSnapshotBuildsProjectionFromSessionState(t *testing.T) {
 	group := GroupRuntime{
 		ID:          1,
 		Name:        "group-a",
@@ -267,49 +299,33 @@ func TestRuntimeViewPrefersControlV2StateOverLegacyConfigProjection(t *testing.T
 	snapshot := ConfigSnapshot{Version: 1}
 	group.Snapshot = snapshot
 
-	session := newSessionState(11, group, snapshot, 0)
-	if err := session.reconfigure(
-		GroupRuntime{ID: 1, Name: "group-a", EffectiveIP: "10.0.0.1"},
-		ConfigSnapshot{Version: 2},
-		101,
-	); err != nil {
-		t.Fatalf("seed legacy pending config: %v", err)
-	}
+	state := controlsession.NewState(group.ID, 11)
+	desired := desiredRuntimeFromGroup(group)
+	state.Desired = &desired
+	applied := desiredRuntimeFromGroup(group)
+	applied.Version = 7
+	applied.EffectiveIP = "127.0.0.2"
+	state.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: applied}
 
 	target := newRuntimeSessionTarget(runtimeSessionSnapshot{
-		sessionID: session.ID,
-		config: observedSessionConfigState{
-			group:                group,
-			snapshot:             snapshot,
-			lastAckedConfigValue: 99,
-			pendingRequestID:     101,
-			pendingGroup:         GroupRuntime{ID: 1, Name: "group-a", EffectiveIP: "10.0.0.1"},
-			pendingSnapshot:      ConfigSnapshot{Version: 2},
-			recoveryMode:         testsupport.RecoveryModePendingFullConfig,
-		},
-	}, func(sessionID uint64) (v2session.SessionState, bool) {
-		if sessionID != session.ID {
-			return v2session.SessionState{}, false
-		}
-		state := v2session.NewState(group.ID, session.ID)
-		applied := desiredRuntimeFromGroup(group)
-		applied.Version = 7
-		applied.EffectiveIP = "127.0.0.2"
-		state.Applied = &v2session.AppliedRuntimeSnapshot{Snapshot: applied}
-		return state, true
+		groupID:      group.ID,
+		sessionID:    11,
+		desiredGroup: group,
+		recoveryMode: testsupport.RecoveryModePendingFullConfig,
+		state:        state,
 	})
 
 	if target.snapshot.Version != 7 {
-		t.Fatalf("expected runtime view to prefer controlv2 applied snapshot, got %#v", target.snapshot)
+		t.Fatalf("expected runtime view to prefer applied snapshot, got %#v", target.snapshot)
 	}
 	if target.effectiveIP != "127.0.0.2" {
-		t.Fatalf("expected runtime view to prefer controlv2 effective ip, got %#v", target)
+		t.Fatalf("expected runtime view to prefer applied effective ip, got %#v", target)
 	}
 	if target.lastAckedConfigVersion != 7 {
-		t.Fatalf("expected runtime view to prefer controlv2 last acked version, got %#v", target)
+		t.Fatalf("expected runtime view to prefer applied last acked version, got %#v", target)
 	}
 	if target.pending != nil {
-		t.Fatalf("expected runtime view to clear legacy pending config when controlv2 has none, got %#v", target.pending)
+		t.Fatalf("expected runtime view to clear pending config when session state has none, got %#v", target.pending)
 	}
 }
 

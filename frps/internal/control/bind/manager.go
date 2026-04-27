@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/zightch/frp/frps/internal/controlv2/session"
+	"github.com/zightch/frp/frps/internal/control/session"
 )
 
 var ErrBindingConflict = errors.New("binding conflict")

@@ -35,7 +35,7 @@ func (s *Server) RefreshGroup(groupID int64) {
 	if currentGroup.EffectiveIP == group.EffectiveIP && samePushedConfigSnapshot(currentSnapshot, group.Snapshot) {
 		active.session.replaceGroupRuntime(group)
 	}
-	if runtime := s.controlV2Runtime(active.session.ID); runtime != nil {
+	if runtime := s.runtimeExecutor(active.session.ID); runtime != nil {
 		runtime.setDesiredGroup(group)
 	}
 	s.supervisor.UpdateDesiredRuntime(groupID, desiredRuntimeFromGroup(group))

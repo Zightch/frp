@@ -1,6 +1,6 @@
 package bind
 
-import "github.com/zightch/frp/frps/internal/controlv2/session"
+import "github.com/zightch/frp/frps/internal/control/session"
 
 type ClaimOwner struct {
 	GroupID   int64

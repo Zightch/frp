@@ -4,15 +4,13 @@ import (
 	"net"
 	"strings"
 
-	v2session "github.com/zightch/frp/frps/internal/controlv2/session"
+	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 	"github.com/zightch/frp/frps/pkg/transport"
 )
 
-type runtimeSessionStateLookup func(sessionID uint64) (v2session.SessionState, bool)
-
-type runtimeViewIndex struct {
+type runtimeSnapshotIndex struct {
 	sessions        []runtimeSessionTarget
 	sessionsByID    map[runtimeSessionTargetID]runtimeSessionTarget
 	sessionsByGroup map[int64]runtimeSessionTarget
@@ -102,14 +100,14 @@ type runtimeTunnelTarget struct {
 	missingPorts   []uint16
 }
 
-func newRuntimeViewIndex(snapshot runtimeRegistrySnapshot, lookup runtimeSessionStateLookup) runtimeViewIndex {
-	index := runtimeViewIndex{
+func newRuntimeSnapshotIndex(snapshot supervisorSnapshot) runtimeSnapshotIndex {
+	index := runtimeSnapshotIndex{
 		sessions:        make([]runtimeSessionTarget, 0, len(snapshot.sessions)),
 		sessionsByID:    make(map[runtimeSessionTargetID]runtimeSessionTarget, len(snapshot.sessions)),
 		sessionsByGroup: make(map[int64]runtimeSessionTarget, len(snapshot.sessions)),
 	}
 	for _, sessionSnapshot := range snapshot.sessions {
-		target := newRuntimeSessionTarget(sessionSnapshot, lookup)
+		target := newRuntimeSessionTarget(sessionSnapshot)
 		if target.id.GroupID == 0 || target.id.SessionID == 0 {
 			continue
 		}
@@ -120,19 +118,20 @@ func newRuntimeViewIndex(snapshot runtimeRegistrySnapshot, lookup runtimeSession
 	return index
 }
 
-func newRuntimeSessionTarget(snapshot runtimeSessionSnapshot, lookup runtimeSessionStateLookup) runtimeSessionTarget {
-	group := snapshot.config.group
+func newRuntimeSessionTarget(snapshot runtimeSessionSnapshot) runtimeSessionTarget {
+	config := buildRuntimeObservedConfig(snapshot.state, snapshot.desiredGroup)
 	target := runtimeSessionTarget{
 		id: runtimeSessionTargetID{
-			GroupID:   group.ID,
+			GroupID:   snapshot.groupID,
 			SessionID: snapshot.sessionID,
 		},
 		conn:                   snapshot.conn,
 		connID:                 transport.ConnectionID(snapshot.conn),
-		effectiveIP:            group.EffectiveIP,
-		snapshot:               snapshot.config.snapshot,
-		lastAckedConfigVersion: snapshot.config.lastAckedConfigValue,
-		recoveryMode:           snapshot.config.recoveryMode,
+		effectiveIP:            config.effectiveIP,
+		snapshot:               config.snapshot,
+		lastAckedConfigVersion: config.lastAckedConfigVersion,
+		pending:                config.pending,
+		recoveryMode:           snapshot.recoveryMode,
 		runtimeFrozen:          snapshot.runtime.frozen,
 		listenersStarted:       snapshot.runtime.listenersStarted,
 		runtimeGeneration:      snapshot.runtime.generation,
@@ -142,20 +141,6 @@ func newRuntimeSessionTarget(snapshot runtimeSessionSnapshot, lookup runtimeSess
 		listenersByTunnel:      make(map[uint32][]runtimeListenerTarget),
 		missingByTunnel:        make(map[uint32]runtimeMissingListenerTarget),
 		connections:            make([]runtimeConnectionTarget, 0, len(snapshot.runtime.connections)),
-	}
-
-	if snapshot.config.pendingRequestID != 0 {
-		target.pending = &runtimePendingConfigTarget{
-			requestID:   snapshot.config.pendingRequestID,
-			snapshot:    snapshot.config.pendingSnapshot,
-			effectiveIP: snapshot.config.pendingGroup.EffectiveIP,
-		}
-	}
-
-	if lookup != nil {
-		if state, ok := lookup(snapshot.sessionID); ok {
-			target = applyControlV2SessionState(target, state)
-		}
 	}
 
 	for _, attached := range snapshot.runtime.attachedListeners {
@@ -201,30 +186,37 @@ func newRuntimeSessionTarget(snapshot runtimeSessionSnapshot, lookup runtimeSess
 	return target
 }
 
-func applyControlV2SessionState(target runtimeSessionTarget, state v2session.SessionState) runtimeSessionTarget {
-	if state.GroupID > 0 {
-		target.id.GroupID = state.GroupID
+type runtimeObservedConfig struct {
+	effectiveIP            string
+	snapshot               ConfigSnapshot
+	lastAckedConfigVersion uint64
+	pending                *runtimePendingConfigTarget
+}
+
+func buildRuntimeObservedConfig(state controlsession.SessionState, desiredGroup GroupRuntime) runtimeObservedConfig {
+	config := runtimeObservedConfig{
+		effectiveIP: desiredGroup.EffectiveIP,
+		snapshot:    desiredGroup.Snapshot,
 	}
 
 	if state.Applied != nil {
-		target.snapshot = configSnapshotFromDesired(state.Applied.Snapshot)
-		target.effectiveIP = state.Applied.Snapshot.EffectiveIP
-		target.lastAckedConfigVersion = state.Applied.Snapshot.Version
-	} else {
-		target.lastAckedConfigVersion = 0
+		config.snapshot = configSnapshotFromDesired(state.Applied.Snapshot)
+		config.effectiveIP = state.Applied.Snapshot.EffectiveIP
+		config.lastAckedConfigVersion = state.Applied.Snapshot.Version
+	} else if state.Desired != nil {
+		config.snapshot = configSnapshotFromDesired(*state.Desired)
+		config.effectiveIP = state.Desired.EffectiveIP
 	}
 
 	if state.Pending != nil {
-		target.pending = &runtimePendingConfigTarget{
+		config.pending = &runtimePendingConfigTarget{
 			requestID:   state.Pending.RequestID,
 			snapshot:    configSnapshotFromDesired(state.Pending.Snapshot),
 			effectiveIP: state.Pending.Snapshot.EffectiveIP,
 		}
-	} else {
-		target.pending = nil
 	}
 
-	return target
+	return config
 }
 
 func buildRuntimeMissingListenerTargets(id runtimeSessionTargetID, tunnels []protocol.TunnelEntry, listenersByTunnel map[uint32][]runtimeListenerTarget) []runtimeMissingListenerTarget {
@@ -269,35 +261,28 @@ func buildRuntimeMissingListenerTargets(id runtimeSessionTargetID, tunnels []pro
 	return missing
 }
 
-func (s *Server) controlV2SessionState(sessionID uint64) (v2session.SessionState, bool) {
+func (s *Server) runtimeSnapshotIndex() runtimeSnapshotIndex {
 	if s == nil || s.supervisor == nil {
-		return v2session.SessionState{}, false
+		return runtimeSnapshotIndex{}
 	}
-	return s.supervisor.SessionState(sessionID)
+	return newRuntimeSnapshotIndex(s.supervisor.Snapshot(nil))
 }
 
-func (s *Server) runtimeViewIndex() runtimeViewIndex {
-	if s == nil || s.runtimeRegistry == nil {
-		return runtimeViewIndex{}
-	}
-	return newRuntimeViewIndex(s.runtimeRegistry.snapshot(), s.controlV2SessionState)
-}
-
-func (s runtimeViewIndex) sessionsList() []runtimeSessionTarget {
+func (s runtimeSnapshotIndex) sessionsList() []runtimeSessionTarget {
 	return s.sessions
 }
 
-func (s runtimeViewIndex) session(groupID int64) (runtimeSessionTarget, bool) {
+func (s runtimeSnapshotIndex) session(groupID int64) (runtimeSessionTarget, bool) {
 	target, ok := s.sessionsByGroup[groupID]
 	return target, ok
 }
 
-func (s runtimeViewIndex) sessionByID(id runtimeSessionTargetID) (runtimeSessionTarget, bool) {
+func (s runtimeSnapshotIndex) sessionByID(id runtimeSessionTargetID) (runtimeSessionTarget, bool) {
 	target, ok := s.sessionsByID[id]
 	return target, ok
 }
 
-func (s runtimeViewIndex) selectNonListeningEnabledTunnels(group GroupRuntime) []protocol.TunnelEntry {
+func (s runtimeSnapshotIndex) selectNonListeningEnabledTunnels(group GroupRuntime) []protocol.TunnelEntry {
 	if !group.Enabled {
 		return nil
 	}
@@ -309,7 +294,7 @@ func (s runtimeViewIndex) selectNonListeningEnabledTunnels(group GroupRuntime) [
 	return selectNonListeningEnabledTunnels(group.Snapshot.Tunnels, session.activeTunnelIDs)
 }
 
-func (s runtimeViewIndex) selectTunnels(groups []GroupRuntime, runtimeIssues map[int64]string, staticConflictIDs map[int64]struct{}) []runtimeTunnelTarget {
+func (s runtimeSnapshotIndex) selectTunnels(groups []GroupRuntime, runtimeIssues map[int64]string, staticConflictIDs map[int64]struct{}) []runtimeTunnelTarget {
 	targets := make([]runtimeTunnelTarget, 0)
 	for _, group := range groups {
 		session, hasSession := s.session(group.ID)

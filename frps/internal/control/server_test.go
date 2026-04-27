@@ -2122,7 +2122,7 @@ func TestServerRefreshGroupBlocksReplacementSessionUntilRefreshCompletes(t *test
 }
 
 func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing.T) {
-	t.Skip("obsolete under controlv2 semantics: runtime drain/rebind now occurs after refreshed config ack, not before")
+	t.Skip("obsolete under session-state semantics: runtime drain/rebind now occurs after refreshed config ack, not before")
 
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
@@ -2389,7 +2389,7 @@ func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing
 }
 
 func TestServerRefreshGroupRebindsListenersWhenOnlyEffectiveIPChanges(t *testing.T) {
-	t.Skip("obsolete under controlv2 semantics: effective_ip changes are applied through refreshed config ack, not immediate local rebind")
+	t.Skip("obsolete under session-state semantics: effective_ip changes are applied through refreshed config ack, not immediate local rebind")
 
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
@@ -2690,7 +2690,7 @@ func TestServerRefreshGroupRebindsListenersWhenOnlyEffectiveIPChanges(t *testing
 }
 
 func TestServerRefreshGroupPushesEmptyConfigWhenEffectiveIPBecomesNotCurrentLocalIP(t *testing.T) {
-	t.Skip("obsolete under controlv2 semantics: empty-runtime shrink now preserves existing runtime until refreshed config ack")
+	t.Skip("obsolete under session-state semantics: empty-runtime shrink now preserves existing runtime until refreshed config ack")
 
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
@@ -2923,7 +2923,7 @@ func TestServerRefreshGroupPushesEmptyConfigWhenEffectiveIPBecomesNotCurrentLoca
 }
 
 func TestServerScanNonListeningTunnelRuntimeIssuesRepushesConfigAfterEffectiveIPBecomesLocalAgain(t *testing.T) {
-	t.Skip("obsolete under controlv2 semantics: runtime scan is no longer the primary config replay path")
+	t.Skip("obsolete under session-state semantics: runtime scan is no longer the primary config replay path")
 
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))
@@ -3137,7 +3137,7 @@ func TestServerScanNonListeningTunnelRuntimeIssuesRepushesConfigAfterEffectiveIP
 }
 
 func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConflictsWithActiveGroup(t *testing.T) {
-	t.Skip("obsolete under controlv2 semantics: conflicting rebinds are resolved after refreshed config ack, not immediate in-place")
+	t.Skip("obsolete under session-state semantics: conflicting rebinds are resolved after refreshed config ack, not immediate in-place")
 
 	var tokenID [16]byte
 	copy(tokenID[:], []byte("token-id-1234567"))

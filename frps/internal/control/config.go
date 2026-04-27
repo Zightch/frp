@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	v2session "github.com/zightch/frp/frps/internal/controlv2/session"
+	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
@@ -18,7 +18,7 @@ var (
 	errConfigVersionMismatch = errors.New("config version mismatch")
 )
 
-func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *sessionState, agent *v2session.Agent, frame protocol.Frame) error {
+func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *sessionState, agent *controlsession.Agent, frame protocol.Frame) error {
 	if frame.RequestID == 0 {
 		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "config.ack requestId must be non-zero")
 	}
@@ -111,7 +111,7 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		testhooks.F("config_version", ack.ConfigVersion),
 	)
 	logger.Info("config acknowledged", "config_version", ack.ConfigVersion, "applied_at_ms", ack.AppliedAtMs)
-	if agent == nil || !agent.Enqueue(v2session.ConfigAckReceived{
+	if agent == nil || !agent.Enqueue(controlsession.ConfigAckReceived{
 		RequestID:     frame.RequestID,
 		ConfigVersion: ack.ConfigVersion,
 	}) {

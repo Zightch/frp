@@ -10,7 +10,7 @@ import (
 	"net"
 	"time"
 
-	v2session "github.com/zightch/frp/frps/internal/controlv2/session"
+	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -21,7 +21,7 @@ type authChallenge struct {
 	Used             bool
 }
 
-func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *slog.Logger) (*sessionState, *v2session.Agent, error) {
+func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *slog.Logger) (*sessionState, *controlsession.Agent, error) {
 	frame, err := s.readFrame(conn)
 	if err != nil {
 		return nil, nil, s.replyProtocolError(conn, frame, err)
@@ -128,29 +128,27 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 		runtimeSnapshotForGroup(group),
 		sessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
 	)
-	initial := v2session.NewState(group.ID, session.ID)
+	initial := controlsession.NewState(group.ID, session.ID)
 	desired := desiredRuntimeFromGroup(group)
 	initial.Desired = &desired
 
-	runtime := &controlV2Runtime{
+	runtime := &runtimeExecutor{
+		groupID:      group.ID,
 		conn:         conn,
 		logger:       logger,
 		session:      session,
 		desiredGroup: group,
 	}
-	s.registerControlV2Runtime(session.ID, runtime)
-
-	agent := s.supervisor.AttachSession(context.Background(), initial)
+	agent := s.supervisor.AttachSession(context.Background(), initial, runtime)
 	if agent == nil {
-		s.unregisterControlV2Runtime(session.ID)
-		return nil, nil, fmt.Errorf("controlv2 supervisor is unavailable")
+		return nil, nil, fmt.Errorf("control supervisor is unavailable")
 	}
-	if !agent.Enqueue(v2session.SessionAttached{
+	if !agent.Enqueue(controlsession.SessionAttached{
 		ConnID:         conn.RemoteAddr().String(),
 		HelloRequestID: frame.RequestID,
 	}) {
-		s.unregisterControlV2Runtime(session.ID)
-		return nil, nil, fmt.Errorf("controlv2 session attach failed")
+		s.supervisor.DetachRuntime(session.ID)
+		return nil, nil, fmt.Errorf("control session attach failed")
 	}
 
 	return session, agent, nil

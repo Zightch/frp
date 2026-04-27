@@ -28,18 +28,18 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 	controlListenerOpen := s.controlListenerOpen
 	s.mu.Unlock()
 
-	registryState := runtimeRegistrySnapshot{}
-	if s.runtimeRegistry != nil {
-		registryState = s.runtimeRegistry.snapshot()
+	supervisorSnapshot := supervisorSnapshot{}
+	if s.supervisor != nil {
+		supervisorSnapshot = s.supervisor.Snapshot(nil)
 	}
-	viewIndex := newRuntimeViewIndex(registryState, s.controlV2SessionState)
+	viewIndex := newRuntimeSnapshotIndex(supervisorSnapshot)
 	runtimeIssues := s.TunnelRuntimeIssues()
 
 	state := testsupport.ServerObservedState{
 		InitialRuntimeScanDone: initialRuntimeScanDone,
 		ControlListenerOpen:    controlListenerOpen,
 		LoginGateOpen:          initialRuntimeScanDone && controlListenerOpen,
-		GroupSlots:             registryState.groupSlots,
+		GroupSlots:             supervisorSnapshot.groupSlots,
 	}
 
 	for _, session := range viewIndex.sessionsList() {

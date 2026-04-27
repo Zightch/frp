@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/zightch/frp/frps/internal/controlv2/session"
+	"github.com/zightch/frp/frps/internal/control/session"
 )
 
 func TestMemoryManagerPrepareStartStop(t *testing.T) {

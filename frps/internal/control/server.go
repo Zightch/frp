@@ -11,8 +11,7 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/clock"
-	"github.com/zightch/frp/frps/internal/controlv2"
-	v2session "github.com/zightch/frp/frps/internal/controlv2/session"
+	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/internal/testhooks"
@@ -62,7 +61,6 @@ type Server struct {
 	controlListenerOpen bool
 	activeConn          map[net.Conn]struct{}
 	runtimeIssues       *runtimeIssueStore
-	runtimeRegistry     *runtimeRegistry
 	closeOnce           sync.Once
 	connWG              sync.WaitGroup
 	scanWG              sync.WaitGroup
@@ -83,9 +81,7 @@ type Server struct {
 	controlTLSMu          sync.RWMutex
 	controlTLSCertificate *tls.Certificate
 
-	supervisor *controlv2.Supervisor
-	v2Mu       sync.RWMutex
-	v2Sessions map[uint64]*controlV2Runtime
+	supervisor *Supervisor
 }
 
 type activeSession struct {
@@ -128,23 +124,21 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 	}
 
 	server := &Server{
-		options:         options,
-		logger:          logger,
-		version:         version,
-		repo:            options.Repository,
-		network:         options.Network,
-		clock:           options.Clock,
-		scheduler:       options.Scheduler,
-		listeners:       options.ListenerFactory,
-		frames:          options.FrameIO,
-		activeConn:      make(map[net.Conn]struct{}),
-		runtimeIssues:   newRuntimeIssueStore(),
-		runtimeRegistry: newRuntimeRegistry(),
-		shutdownCh:      make(chan struct{}),
-		challenges:      make(map[uint32]*authChallenge),
-		v2Sessions:      make(map[uint64]*controlV2Runtime),
+		options:       options,
+		logger:        logger,
+		version:       version,
+		repo:          options.Repository,
+		network:       options.Network,
+		clock:         options.Clock,
+		scheduler:     options.Scheduler,
+		listeners:     options.ListenerFactory,
+		frames:        options.FrameIO,
+		activeConn:    make(map[net.Conn]struct{}),
+		runtimeIssues: newRuntimeIssueStore(),
+		shutdownCh:    make(chan struct{}),
+		challenges:    make(map[uint32]*authChallenge),
 	}
-	server.supervisor = controlv2.NewSupervisor(controlV2Executor{server: server})
+	server.supervisor = NewSupervisor(serverActionExecutor{server: server})
 	return server
 }
 
@@ -311,12 +305,10 @@ func (s *Server) handleConnection(conn net.Conn) {
 		"group_id", group.ID,
 		"group_name", group.Name,
 	)
-	s.registerActiveSession(conn, session)
-	defer s.unregisterActiveSession(session)
-	defer s.unregisterControlV2Runtime(session.ID)
+	defer s.unregisterRuntimeExecutor(session.ID)
 	defer func() {
 		if agent != nil {
-			_ = agent.Enqueue(v2session.ControlConnClosed{Reason: "connection closed"})
+			_ = agent.Enqueue(controlsession.ControlConnClosed{Reason: "connection closed"})
 		}
 	}()
 	defer s.shutdownSession(session)
@@ -337,7 +329,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	logger.Info("frpc control connection closed", "reason", "completed")
 }
 
-func (s *Server) runSession(conn net.Conn, logger *slog.Logger, session *sessionState, agent *v2session.Agent) error {
+func (s *Server) runSession(conn net.Conn, logger *slog.Logger, session *sessionState, agent *controlsession.Agent) error {
 	for {
 		frame, err := s.readFrameWithSessionTimeout(conn, session, session.readTimeout)
 		if err != nil {
@@ -387,7 +379,7 @@ func (s *Server) runSession(conn net.Conn, logger *slog.Logger, session *session
 	}
 }
 
-func (s *Server) handleHeartbeatPing(conn net.Conn, session *sessionState, agent *v2session.Agent, frame protocol.Frame) error {
+func (s *Server) handleHeartbeatPing(conn net.Conn, session *sessionState, agent *controlsession.Agent, frame protocol.Frame) error {
 	if frame.RequestID == 0 {
 		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "heartbeat.ping requestId must be non-zero")
 	}
@@ -399,7 +391,7 @@ func (s *Server) handleHeartbeatPing(conn net.Conn, session *sessionState, agent
 	if err != nil {
 		return s.replyProtocolErrorWithSession(conn, session, frame, err)
 	}
-	if agent == nil || !agent.Enqueue(v2session.HeartbeatPingReceived{
+	if agent == nil || !agent.Enqueue(controlsession.HeartbeatPingReceived{
 		RequestID:    frame.RequestID,
 		ClientUnixMs: ping.ClientUnixMs,
 	}) {

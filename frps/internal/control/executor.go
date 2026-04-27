@@ -9,12 +9,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/zightch/frp/frps/internal/controlv2/bind"
-	"github.com/zightch/frp/frps/internal/controlv2/session"
+	controlbind "github.com/zightch/frp/frps/internal/control/bind"
+	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
-type controlV2Runtime struct {
+type runtimeExecutor struct {
+	groupID int64
 	conn    net.Conn
 	logger  *slog.Logger
 	session *sessionState
@@ -25,42 +26,25 @@ type controlV2Runtime struct {
 	drainedSessions []*publicUDPSession
 }
 
-type controlV2Executor struct {
+type serverActionExecutor struct {
 	server *Server
 }
 
-func (s *Server) registerControlV2Runtime(sessionID uint64, runtime *controlV2Runtime) {
-	if s == nil || runtime == nil || sessionID == 0 {
+func (s *Server) unregisterRuntimeExecutor(sessionID uint64) {
+	if s == nil || s.supervisor == nil || sessionID == 0 {
 		return
 	}
-
-	s.v2Mu.Lock()
-	s.v2Sessions[sessionID] = runtime
-	s.v2Mu.Unlock()
+	s.supervisor.DetachRuntime(sessionID)
 }
 
-func (s *Server) unregisterControlV2Runtime(sessionID uint64) {
-	if s == nil || sessionID == 0 {
-		return
-	}
-
-	s.v2Mu.Lock()
-	delete(s.v2Sessions, sessionID)
-	s.v2Mu.Unlock()
-}
-
-func (s *Server) controlV2Runtime(sessionID uint64) *controlV2Runtime {
-	if s == nil || sessionID == 0 {
+func (s *Server) runtimeExecutor(sessionID uint64) *runtimeExecutor {
+	if s == nil || s.supervisor == nil || sessionID == 0 {
 		return nil
 	}
-
-	s.v2Mu.RLock()
-	runtime := s.v2Sessions[sessionID]
-	s.v2Mu.RUnlock()
-	return runtime
+	return s.supervisor.RuntimeExecutor(sessionID)
 }
 
-func (r *controlV2Runtime) desiredGroupRuntime() GroupRuntime {
+func (r *runtimeExecutor) desiredGroupRuntime() GroupRuntime {
 	if r == nil {
 		return GroupRuntime{}
 	}
@@ -70,7 +54,24 @@ func (r *controlV2Runtime) desiredGroupRuntime() GroupRuntime {
 	return r.desiredGroup
 }
 
-func (r *controlV2Runtime) setDesiredGroup(group GroupRuntime) {
+func (r *runtimeExecutor) snapshot(state controlsession.SessionState) runtimeSessionSnapshot {
+	if r == nil {
+		return runtimeSessionSnapshot{}
+	}
+
+	_, runtimeState := r.session.observeState()
+	return runtimeSessionSnapshot{
+		groupID:      r.groupID,
+		sessionID:    state.SessionID,
+		conn:         r.conn,
+		desiredGroup: r.desiredGroupRuntime(),
+		recoveryMode: r.session.recoveryModeValue(),
+		state:        state,
+		runtime:      runtimeState,
+	}
+}
+
+func (r *runtimeExecutor) setDesiredGroup(group GroupRuntime) {
 	if r == nil {
 		return
 	}
@@ -80,7 +81,7 @@ func (r *controlV2Runtime) setDesiredGroup(group GroupRuntime) {
 	r.mu.Unlock()
 }
 
-func (r *controlV2Runtime) storeDrained(streams map[uint32]*publicStream, udpSessions []*publicUDPSession) {
+func (r *runtimeExecutor) storeDrained(streams map[uint32]*publicStream, udpSessions []*publicUDPSession) {
 	if r == nil {
 		return
 	}
@@ -100,7 +101,7 @@ func (r *controlV2Runtime) storeDrained(streams map[uint32]*publicStream, udpSes
 	r.mu.Unlock()
 }
 
-func (r *controlV2Runtime) takeDrainedStreams() map[uint32]*publicStream {
+func (r *runtimeExecutor) takeDrainedStreams() map[uint32]*publicStream {
 	if r == nil {
 		return nil
 	}
@@ -112,7 +113,7 @@ func (r *controlV2Runtime) takeDrainedStreams() map[uint32]*publicStream {
 	return streams
 }
 
-func (r *controlV2Runtime) takeDrainedUDPSessions() []*publicUDPSession {
+func (r *runtimeExecutor) takeDrainedUDPSessions() []*publicUDPSession {
 	if r == nil {
 		return nil
 	}
@@ -124,18 +125,18 @@ func (r *controlV2Runtime) takeDrainedUDPSessions() []*publicUDPSession {
 	return sessions
 }
 
-func (e controlV2Executor) Execute(_ context.Context, state session.SessionState, action session.Action) []session.Event {
+func (e serverActionExecutor) Execute(_ context.Context, state controlsession.SessionState, action controlsession.Action) []controlsession.Event {
 	if e.server == nil {
 		return nil
 	}
 
-	runtime := e.server.controlV2Runtime(state.SessionID)
+	runtime := e.server.runtimeExecutor(state.SessionID)
 	if runtime == nil || runtime.session == nil || runtime.conn == nil {
 		return nil
 	}
 
 	switch typed := action.(type) {
-	case session.ActionSendServerHello:
+	case controlsession.ActionSendServerHello:
 		body, err := protocol.MarshalServerHello(protocol.ServerHello{
 			HeartbeatIntervalMs: uint32(e.server.options.HeartbeatInterval.Milliseconds()),
 			SessionID:           state.SessionID,
@@ -143,7 +144,7 @@ func (e controlV2Executor) Execute(_ context.Context, state session.SessionState
 			ServerVersion:       e.server.version,
 		})
 		if err != nil {
-			return []session.Event{session.ProtocolErrorDetected{Reason: err.Error()}}
+			return []controlsession.Event{controlsession.ProtocolErrorDetected{Reason: err.Error()}}
 		}
 		if err := e.server.writeFrameWithSession(runtime.conn, runtime.session, protocol.Frame{
 			Type:      protocol.TypeServerHello,
@@ -151,16 +152,16 @@ func (e controlV2Executor) Execute(_ context.Context, state session.SessionState
 			Body:      body,
 		}); err != nil {
 			_ = runtime.conn.Close()
-			return []session.Event{session.ControlConnClosed{Reason: err.Error()}}
+			return []controlsession.Event{controlsession.ControlConnClosed{Reason: err.Error()}}
 		}
 		return nil
 
-	case session.ActionPushConfig:
+	case controlsession.ActionPushConfig:
 		group := runtime.desiredGroupRuntime()
 		snapshot := configSnapshotFromDesired(typed.Snapshot)
 		group.Snapshot = snapshot
 		if err := runtime.session.reconfigure(group, snapshot, typed.RequestID); err != nil {
-			return []session.Event{session.ProtocolErrorDetected{Reason: err.Error()}}
+			return []controlsession.Event{controlsession.ProtocolErrorDetected{Reason: err.Error()}}
 		}
 
 		body, err := protocol.MarshalConfigPush(protocol.ConfigPush{
@@ -170,7 +171,7 @@ func (e controlV2Executor) Execute(_ context.Context, state session.SessionState
 		})
 		if err != nil {
 			runtime.session.clearPendingConfigRequest(typed.RequestID)
-			return []session.Event{session.ProtocolErrorDetected{Reason: err.Error()}}
+			return []controlsession.Event{controlsession.ProtocolErrorDetected{Reason: err.Error()}}
 		}
 
 		if err := e.server.writeFrameWithSession(runtime.conn, runtime.session, protocol.Frame{
@@ -180,11 +181,11 @@ func (e controlV2Executor) Execute(_ context.Context, state session.SessionState
 		}); err != nil {
 			runtime.session.clearPendingConfigRequest(typed.RequestID)
 			_ = runtime.conn.Close()
-			return []session.Event{session.ControlConnClosed{Reason: err.Error()}}
+			return []controlsession.Event{controlsession.ControlConnClosed{Reason: err.Error()}}
 		}
 		return nil
 
-	case session.ActionSendConfigError:
+	case controlsession.ActionSendConfigError:
 		if err := e.server.writeErrorWithSession(
 			runtime.conn,
 			runtime.session,
@@ -195,17 +196,17 @@ func (e controlV2Executor) Execute(_ context.Context, state session.SessionState
 			typed.Message,
 		); err != nil {
 			_ = runtime.conn.Close()
-			return []session.Event{session.ControlConnClosed{Reason: err.Error()}}
+			return []controlsession.Event{controlsession.ControlConnClosed{Reason: err.Error()}}
 		}
 		return nil
 
-	case session.ActionSendHeartbeatPong:
+	case controlsession.ActionSendHeartbeatPong:
 		body, err := protocol.MarshalHeartbeatPong(protocol.HeartbeatPong{
 			ClientUnixMs: typed.ClientUnixMs,
 			ServerUnixMs: uint64(e.server.clock.Now().UnixMilli()),
 		})
 		if err != nil {
-			return []session.Event{session.ProtocolErrorDetected{Reason: err.Error()}}
+			return []controlsession.Event{controlsession.ProtocolErrorDetected{Reason: err.Error()}}
 		}
 		if err := e.server.writeFrameWithSession(runtime.conn, runtime.session, protocol.Frame{
 			Type:      protocol.TypeHeartbeatPong,
@@ -213,42 +214,42 @@ func (e controlV2Executor) Execute(_ context.Context, state session.SessionState
 			Body:      body,
 		}); err != nil {
 			_ = runtime.conn.Close()
-			return []session.Event{session.ControlConnClosed{Reason: err.Error()}}
+			return []controlsession.Event{controlsession.ControlConnClosed{Reason: err.Error()}}
 		}
 		return nil
 
-	case session.ActionPrepareBindings:
+	case controlsession.ActionPrepareBindings:
 		group := runtime.desiredGroupRuntime()
 		group.EffectiveIP = typed.EffectiveIP
 		group.Snapshot = configSnapshotFromDesired(typed.Snapshot)
 		bindIP, err := e.server.resolveGroupEffectiveIP(group)
 		if err != nil {
-			return []session.Event{
-				session.BindingsPreparationFailed{
+			return []controlsession.Event{
+				controlsession.BindingsPreparationFailed{
 					Reason:  blockReasonForRuntimeError(err),
 					Message: buildGroupEffectiveIPRuntimeReason(group, err),
 				},
 			}
 		}
-		return []session.Event{
-			session.BindingsPrepared{
-				Keys: bind.ExpandBindings(bindIP, typed.Snapshot.Tunnels),
+		return []controlsession.Event{
+			controlsession.BindingsPrepared{
+				Keys: controlbind.ExpandBindings(bindIP, typed.Snapshot.Tunnels),
 			},
 		}
 
-	case session.ActionStartBindings:
+	case controlsession.ActionStartBindings:
 		if err := e.server.ensureTunnelListeners(runtime.conn, runtime.logger, runtime.session); err != nil {
 			return bindingFailureEvents(typed.Keys, err)
 		}
 		return bindingOutcomeEvents(state, typed.Keys, runtime.session.activeRuntimeTunnelIDs(), e.server.TunnelRuntimeIssues())
 
-	case session.ActionStopBindings:
+	case controlsession.ActionStopBindings:
 		listeners, udpListeners, streams, udpSessions := runtime.session.freezeTunnelRuntime()
 		closeStartedTunnelListeners(listeners, udpListeners)
 		runtime.storeDrained(streams, udpSessions)
 		return nil
 
-	case session.ActionDrainStreams:
+	case controlsession.ActionDrainStreams:
 		for streamID, stream := range runtime.takeDrainedStreams() {
 			if err := e.server.sendStreamClose(runtime.conn, runtime.session, streamID, protocol.CloseReasonAdminTerminated, typed.Reason); err != nil {
 				if runtime.logger != nil {
@@ -260,7 +261,7 @@ func (e controlV2Executor) Execute(_ context.Context, state session.SessionState
 		}
 		return nil
 
-	case session.ActionDrainUDPSessions:
+	case controlsession.ActionDrainUDPSessions:
 		for _, udpSession := range runtime.takeDrainedUDPSessions() {
 			if udpSession == nil {
 				continue
@@ -273,22 +274,22 @@ func (e controlV2Executor) Execute(_ context.Context, state session.SessionState
 		}
 		return nil
 
-	case session.ActionResetRuntime:
+	case controlsession.ActionResetRuntime:
 		runtime.session.allowTunnelRuntimeStart()
 		return nil
 
-	case session.ActionCloseControlConn:
+	case controlsession.ActionCloseControlConn:
 		_ = runtime.conn.Close()
-		return []session.Event{session.ControlConnClosed{Reason: typed.Reason}}
+		return []controlsession.Event{controlsession.ControlConnClosed{Reason: typed.Reason}}
 
 	default:
 		return nil
 	}
 }
 
-func desiredRuntimeFromGroup(group GroupRuntime) session.DesiredRuntimeSnapshot {
+func desiredRuntimeFromGroup(group GroupRuntime) controlsession.DesiredRuntimeSnapshot {
 	snapshot := runtimeSnapshotForGroup(group)
-	return session.DesiredRuntimeSnapshot{
+	return controlsession.DesiredRuntimeSnapshot{
 		Version:       snapshot.Version,
 		GeneratedAtMs: snapshot.GeneratedAtMs,
 		EffectiveIP:   group.EffectiveIP,
@@ -296,10 +297,10 @@ func desiredRuntimeFromGroup(group GroupRuntime) session.DesiredRuntimeSnapshot 
 	}
 }
 
-func desiredTunnelsFromConfig(tunnels []protocol.TunnelEntry) []session.DesiredTunnelRuntime {
-	desired := make([]session.DesiredTunnelRuntime, 0, len(tunnels))
+func desiredTunnelsFromConfig(tunnels []protocol.TunnelEntry) []controlsession.DesiredTunnelRuntime {
+	desired := make([]controlsession.DesiredTunnelRuntime, 0, len(tunnels))
 	for _, tunnel := range tunnels {
-		desired = append(desired, session.DesiredTunnelRuntime{
+		desired = append(desired, controlsession.DesiredTunnelRuntime{
 			TunnelID:    tunnel.TunnelID,
 			Protocol:    protocolName(tunnel.Protocol),
 			Enabled:     tunnel.TunnelFlags&protocol.TunnelFlagEnabled != 0,
@@ -313,7 +314,7 @@ func desiredTunnelsFromConfig(tunnels []protocol.TunnelEntry) []session.DesiredT
 	return desired
 }
 
-func configSnapshotFromDesired(snapshot session.DesiredRuntimeSnapshot) ConfigSnapshot {
+func configSnapshotFromDesired(snapshot controlsession.DesiredRuntimeSnapshot) ConfigSnapshot {
 	return ConfigSnapshot{
 		Version:       snapshot.Version,
 		GeneratedAtMs: snapshot.GeneratedAtMs,
@@ -321,7 +322,7 @@ func configSnapshotFromDesired(snapshot session.DesiredRuntimeSnapshot) ConfigSn
 	}
 }
 
-func configTunnelsFromDesired(tunnels []session.DesiredTunnelRuntime) []protocol.TunnelEntry {
+func configTunnelsFromDesired(tunnels []controlsession.DesiredTunnelRuntime) []protocol.TunnelEntry {
 	configured := make([]protocol.TunnelEntry, 0, len(tunnels))
 	for _, tunnel := range tunnels {
 		host, _ := protocol.ParseHost(tunnel.LocalHost)
@@ -357,32 +358,32 @@ func protocolValue(value string) uint8 {
 	}
 }
 
-func blockReasonForRuntimeError(err error) session.BlockReason {
+func blockReasonForRuntimeError(err error) controlsession.BlockReason {
 	var effectiveIPErr *groupEffectiveIPStartError
 	if errors.As(err, &effectiveIPErr) {
 		switch effectiveIPErr.Kind {
 		case groupEffectiveIPStartErrorInvalid:
-			return session.BlockReasonEffectiveIPInvalid
+			return controlsession.BlockReasonEffectiveIPInvalid
 		case groupEffectiveIPStartErrorNotLocal:
-			return session.BlockReasonEffectiveIPNotLocal
+			return controlsession.BlockReasonEffectiveIPNotLocal
 		}
 	}
 
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
 	case strings.Contains(message, "端口冲突"), strings.Contains(message, "conflict"):
-		return session.BlockReasonPortConflict
+		return controlsession.BlockReasonPortConflict
 	default:
-		return session.BlockReasonListenerStartFailed
+		return controlsession.BlockReasonListenerStartFailed
 	}
 }
 
-func bindingFailureEvents(keys []session.BindingKey, err error) []session.Event {
+func bindingFailureEvents(keys []controlsession.BindingKey, err error) []controlsession.Event {
 	reason := blockReasonForRuntimeError(err)
 	message := err.Error()
-	events := make([]session.Event, 0, len(keys))
+	events := make([]controlsession.Event, 0, len(keys))
 	for _, key := range keys {
-		events = append(events, session.BindingStartFailed{
+		events = append(events, controlsession.BindingStartFailed{
 			Key:     key,
 			Reason:  reason,
 			Message: message,
@@ -391,12 +392,12 @@ func bindingFailureEvents(keys []session.BindingKey, err error) []session.Event 
 	return events
 }
 
-func bindingOutcomeEvents(state session.SessionState, keys []session.BindingKey, activeTunnelIDs map[uint32]struct{}, issues map[int64]string) []session.Event {
-	events := make([]session.Event, 0, len(keys))
+func bindingOutcomeEvents(state controlsession.SessionState, keys []controlsession.BindingKey, activeTunnelIDs map[uint32]struct{}, issues map[int64]string) []controlsession.Event {
+	events := make([]controlsession.Event, 0, len(keys))
 	for _, key := range keys {
 		tunnelID := tunnelIDForBinding(state, key)
 		if _, ok := activeTunnelIDs[tunnelID]; ok {
-			events = append(events, session.BindingStarted{Key: key})
+			events = append(events, controlsession.BindingStarted{Key: key})
 			continue
 		}
 
@@ -404,7 +405,7 @@ func bindingOutcomeEvents(state session.SessionState, keys []session.BindingKey,
 		if message == "" {
 			message = fmt.Sprintf("%s listener did not start", strings.ToUpper(key.Protocol))
 		}
-		events = append(events, session.BindingStartFailed{
+		events = append(events, controlsession.BindingStartFailed{
 			Key:     key,
 			Reason:  blockReasonForRuntimeError(errors.New(message)),
 			Message: message,
@@ -413,7 +414,7 @@ func bindingOutcomeEvents(state session.SessionState, keys []session.BindingKey,
 	return events
 }
 
-func tunnelIDForBinding(state session.SessionState, key session.BindingKey) uint32 {
+func tunnelIDForBinding(state controlsession.SessionState, key controlsession.BindingKey) uint32 {
 	if state.Applied == nil {
 		return 0
 	}
