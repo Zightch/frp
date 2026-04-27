@@ -1,18 +1,22 @@
-# `frps/internal/control` v2 详细设计稿
+# `frps/internal/control` 最终统一结构设计稿
 
 更新时间：2026-04-27
 
-本文是当前这一轮 `control v2` 重构的执行设计稿，只服务当前重构，不承担旧实现兼容义务。
+本文仍沿用历史文件名 `control-v2-design.md`，但目标已经明确调整为最终稳定结构：
 
-如果本文与现有 `docs/project-overview.md`、`docs/frps-frpc-current-architecture.md` 或 `docs/frps/*` 中基于旧实现的描述冲突，以本文作为后续实现基线；等 `control v2` 落地并替换旧实现后，再把稳定结果同步回正式文档。
+- 最终只保留一个控制面包：`frps/internal/control/`
+- `frps/internal/controlv2/` 仅允许作为迁移中间态存在，最终必须删除
+- 不再接受“旧 `control` 继续做外壳，新 `controlv2` 继续做状态机”这种长期分叉
+
+如果本文与现有 `docs/project-overview.md`、`docs/frps-frpc-current-architecture.md` 或 `docs/frps/*` 中基于旧实现的描述冲突，以本文作为后续实现基线；等统一结构落地后，再把稳定结果同步回正式文档。
 
 ## 1. 目标
 
-本轮重构只解决一件事：
+本轮最终目标只解决一件事：
 
-- 用一套显式状态、单写者 ownership 和统一 reconcile 的 `control v2`，整体替换当前 `frps/internal/control` 的共享锁拼装模型。
+- 用一套显式状态、单写者 ownership、统一 reconcile 和单目录实现，整体替换当前 `frps/internal/control` 与 `frps/internal/controlv2` 的双轨模型。
 
-当前重构不是“小修小补”，而是重写下面这条主链路：
+重写范围覆盖完整主链路：
 
 ```text
 frpc 连接接入
@@ -21,204 +25,300 @@ frpc 连接接入
 -> 配置同步
 -> listener 启停
 -> TCP/UDP 数据面桥接
--> 管理面刷新 / 本机网络变化 / listener 恢复
+-> 管理面刷新 / 本机网络变化 / 运行态恢复 / 运行态观测
 ```
+
+最终稳定态必须满足：
+
+- 顶层只有一个 `control.Server`
+- 同一个 group 只有一个权威 `SessionAgent`
+- 同一个运行态资源只有一个 owner
+- 控制面生命周期与数据面 fast path 分离
+- 不再依赖旧 `sessionState`、`runtimeRegistry`、`runtimeView`、`runtimeIssueStore`、`runtime scan` 主恢复路径
 
 ## 2. 当前问题
 
-现有 `control/` 的主要问题不是“功能不够”，而是状态和资源边界分散：
+当前问题已经不是“旧 `control` 有缺陷、新 `controlv2` 还没补完”，而是这两个目录的职责拆分方式本身不适合作为最终结构：
 
-- `Server` 同时持有接入、连接、challenge、runtime scan、active session 索引、TLS runtime。
-- `sessionState` 同时持有配置状态、listener、TCP stream、UDP session、runtime generation 和写锁。
-- 管理面刷新、后台 `runtime scan` 和连接读循环会从不同 goroutine 推进同一个 session。
-- listener 启停、冲突裁决和恢复逻辑分散在 `listeners.go`、`refresh.go`、`runtime_scan.go`、`runtime_coordinator.go`。
-- 当前真实状态依赖 `pending/current`、`frozen`、`listeners.started`、`generation`、多个 map 和 `recoveryMode` 的组合，不够显式。
+- `internal/control` 里仍然持有真实 listener、TCP/UDP bridge、TLS runtime、repo、runtime scan、观察投影。
+- `internal/controlv2` 里只持有 session 状态机骨架和部分 supervisor/bind claim 逻辑。
+- 新旧两侧之间还靠桥接层同步状态，导致真实状态既存在于旧 `sessionState`，也存在于新 `session.SessionState`。
+- 旧目录继续承担 I/O 和资源生命周期，新目录继续承担部分决策，这会把 ownership 永久切裂。
 
-结果是：
+如果继续保持分叉，后续所有功能都会重复落在两处：
 
-- 资源所有权难一眼看清。
-- 恢复路径分叉太多。
-- 需要大量场景测试才能兜住并发边界。
-- 后续扩展控制协议、session takeover、局部恢复时，心智负担会继续上升。
+- 一处维护显式状态
+- 一处维护真实资源
+- 中间再加一层投影或桥
 
-## 3. 新架构总图
+这不是过渡复杂度，而是结构性复杂度。
 
-`control v2` 固定拆成 5 个核心部件：
+## 3. 最终架构总图
+
+最终稳定态固定拆成 6 个核心部件：
 
 ```text
-Server
-  |
-  | 接入 / 编解码 / 帧收发
-  v
-Supervisor
-  |
-  | 为每个 group 路由事件
-  v
-SessionAgent (one group -> one agent)
-  |
-  | 产生 action
-  +--> BindManager
-  +--> RuntimeRepo
-  +--> ControlConnWriter
+App / API
+   |
+   v
+control.Server
+   |
+   +--> Authenticator
+   +--> Supervisor
+   +--> Observer
+   +--> TLSRuntime
 
-RuntimeRepo
-  |
-  +--> DB / 证书绑定 / 运行时快照投影
+Supervisor
+   |
+   +--> SessionAgent (one group -> one agent)
+           |
+           +--> RuntimeExecutor
+                   |
+                   +--> ControlConnWriter
+                   +--> BindManager
+                   +--> RuntimeRepo
+                   +--> Timers / Retry Scheduler
 
 BindManager
-  |
-  +--> TCP listener / UDP listener / 端口 claim / 冲突裁决
+   |
+   +--> TCP listener / UDP listener / claim / conflict / listener callback
 ```
 
-### 3.1 `Server`
+这里最重要的边界是：
 
-职责只保留：
+- `SessionAgent` 只拥有逻辑状态
+- `RuntimeExecutor` 只拥有真实资源句柄
+- `BindManager` 只拥有监听地址 claim 和 listener 生命周期
 
-- 控制端口监听
-- 每条 `frpc` 控制连接的 transport 协商
-- 登录期 `auth.begin/challenge/finish`
-- 帧编解码
-- 把连接事件和消息事件投递给 `Supervisor`
+## 4. 最终目录结构
 
-明确不再负责：
+最终目录应当直接收成：
 
-- 直接修改 active session 运行态
-- listener 启停决策
-- 恢复决策
-- 运行态扫描补洞
+```text
+internal/control/
+  server.go
+  supervisor.go
+  observe.go
+  auth.go
+  wire.go
+  tls.go
+  runtime.go
+  executor.go
 
-### 3.2 `Supervisor`
+  session/
+    agent.go
+    state.go
+    events.go
+    actions.go
+    reducer.go
+    reconcile.go
 
-`Supervisor` 是 `control v2` 的全局协调器，职责固定为：
+  bind/
+    manager.go
+    claims.go
+    tcp.go
+    udp.go
+    tls.go
+
+  repo/
+    model.go
+    auth.go
+    runtime.go
+    sql.go
+```
+
+最终必须删除：
+
+- `internal/controlv2/`
+- 旧 `internal/control` 中只服务双轨桥接的文件
+
+不建议保留新的 `internal/controlv2/` 再做一次“包名迁移”。稳定态包名直接回归 `internal/control`。
+
+## 5. 顶层对象职责
+
+### 5.1 `control.Server`
+
+`Server` 只保留顶层生命周期和对外接口：
+
+- `Warmup(ctx)` 或同等语义的启动预热
+- `ListenAndServe(ctx)`
+- `Shutdown(ctx)`
+- `RefreshGroup(groupID)`
+- `ObserveState()`
+- `TunnelRuntimeIssues()`
+- `ConfigureControlTLS(binding)`
+- `ClearControlTLS()`
+
+`Server` 允许持有：
+
+- 控制端口 listener
+- 未登录连接集合
+- TLS 入口证书
+- `Authenticator`
+- `Supervisor`
+- `Observer`
+
+`Server` 不再允许直接持有：
+
+- 某个 group 的配置状态
+- 某个 group 的 stream / udp session map
+- listener handle map
+- runtime issue store
+- runtime scan 决策状态
+
+### 5.2 `Authenticator`
+
+`Authenticator` 负责：
+
+- `transport.client_hello`
+- transport security 模式选择
+- 必要时升级 control 连接到 TLS
+- `auth.begin/challenge/finish`
+- 认证期 repo 读取
+
+输出必须收束为一个 bootstrap 结果：
+
+```go
+type AuthenticatedSessionBootstrap struct {
+    GroupID     int64
+    SessionID   uint64
+    Desired     session.DesiredRuntimeSnapshot
+    Conn        net.Conn
+    ConnID      string
+    RequestID   uint32
+}
+```
+
+这样登录层不会再把旧 `GroupRuntime`、旧 `sessionState` 或 runtime 资源直接泄漏给后续链路。
+
+### 5.3 `Supervisor`
+
+`Supervisor` 是全局协调器，职责固定为：
 
 - 维护 `groupID -> SessionAgent`
 - 维护 `sessionID -> SessionAgent`
-- 接收下面几类上游事件：
-  - 新登录成功
-  - 已登录连接收到控制帧
-  - 管理面配置刷新
-  - 本机网络快照变化
-  - listener / runtime 异常回调
-  - 进程 shutdown
-- 保证同一 group 同时只有一个权威 `SessionAgent`
-- 决定“新登录替换旧会话”还是“旧会话保持”
+- 维护 `sessionID -> RuntimeExecutor`
+- 决定 takeover 策略
+- 处理 group refresh、网络变化、shutdown、listener 回调分发
 
-`Supervisor` 不做细粒度协议业务和 listener I/O。
+`Supervisor` 不负责：
 
-### 3.3 `SessionAgent`
+- 协议帧业务判断
+- listener 启停细节
+- TCP/UDP payload 转发
+
+### 5.4 `SessionAgent`
 
 `SessionAgent` 是单个 group 的唯一状态写入者：
 
-- 一个 group 最多只有一个在线 `SessionAgent`
-- 该 group 的配置状态、runtime 状态、stream、udp session 全由同一个 goroutine 串行推进
-- 所有外部输入都先变成 event 进入 agent inbox
-- agent 内部通过 `Reduce(state, event) -> actions` 更新状态
-- 所有 side effect 通过 action 执行，执行结果再以 event 形式回流 agent
+- 同一个 group 只允许一个在线 agent
+- 所有状态转移都通过 event 串行推进
+- reducer 只改状态，不做 I/O
+- reconcile 只根据状态计算动作
 
-`SessionAgent` 是整个新架构的权威核心。
+它只拥有逻辑状态，不拥有资源句柄。
 
-### 3.4 `BindManager`
+### 5.5 `RuntimeExecutor`
 
-`BindManager` 是 listener/端口的唯一拥有者：
+`RuntimeExecutor` 是每个在线 session 的真实资源 owner，负责：
 
-- 持有所有当前已经 claim 的监听地址
-- 统一创建/关闭 TCP listener 和 UDP listener
-- 统一做端口冲突裁决
-- 给 session 回报 bind success / bind failed / listener closed
+- 向 control connection 写 `server.hello/config.push/heartbeat/stream/udp` 帧
+- 持有当前 epoch 的 TCP/UDP 运行时资源句柄
+- 调用 `BindManager` 启停 listener
+- 维护 stream open 后的 data pump
+- 维护 UDP session 的 peer/runtime handle 映射
+- 管理 idle timeout / retry timer
 
-这会直接替代当前：
+`RuntimeExecutor` 不做业务决策，只执行 action，并把结果回流成 event。
 
-- `listeners.go` 内部的运行时冲突推断
-- `runtime scan` 通过快照反推“谁还没监听起来”
-- `activeRuntimeGroups` 用于冲突探测的跨 session 扫描
+### 5.6 `BindManager`
 
-### 3.5 `RuntimeRepo`
+`BindManager` 是监听地址和 listener 的唯一 owner，负责：
 
-`RuntimeRepo` 只负责把持久化配置投影成不可变运行时快照：
+- `effective_ip` 校验
+- 端口 claim / 冲突裁决
+- TCP listener 启动与 accept 回调
+- UDP listener 启动与 read 回调
+- listener 关闭、异常、释放 claim
 
-- `LoadDesiredRuntimeByClientID`
-- `LoadDesiredRuntimeByGroupID`
-- `ListDesiredRuntimes`
+它直接替代旧实现里分散在：
 
-输出模型只服务 `control v2`：
+- `listeners.go`
+- `refresh.go`
+- `runtime_scan.go`
+- `runtime conflict` 推断路径
 
-- `DesiredGroupRuntime`
-- `DesiredTunnelRuntime`
-- `DesiredRuntimeSnapshot`
+## 6. Ownership 规则
 
-不再让旧 `protocol.TunnelEntry` 同时承载数据库语义、服务端运行时语义和客户端下发语义。
+这是最终结构的最高约束。
 
-## 4. Ownership 规则
+### 6.1 状态所有权
 
-这是 `control v2` 的最高约束。
-
-### 4.1 状态所有权
-
-- `Server` 只拥有未登录连接和帧 I/O 生命周期。
-- `Supervisor` 只拥有 agent 注册表和全局会话替换策略。
-- `SessionAgent` 只拥有某个 group 的运行时状态。
+- `Server` 只拥有进程级生命周期和未登录连接。
+- `Supervisor` 只拥有 agent/executor 注册表和全局替换策略。
+- `SessionAgent` 只拥有 group 级逻辑状态。
+- `RuntimeExecutor` 只拥有当前在线 session 的真实资源句柄。
 - `BindManager` 只拥有 listener/claim 生命周期。
-- `RuntimeRepo` 不拥有可变状态，只提供快照读取。
+- `Repo` 不拥有可变运行态，只提供快照读取。
 
-### 4.2 修改权
+### 6.2 修改权
 
-下面这些对象只能被单一 owner 修改：
+只能由单一 owner 修改的对象：
 
-- group 级配置状态：只允许 `SessionAgent`
-- stream / udp session map：只允许 `SessionAgent`
+- group 配置状态：只允许 `SessionAgent`
+- stream / udp session 元数据：只允许 `SessionAgent`
+- stream / udp session 真实句柄：只允许 `RuntimeExecutor`
 - listener handle / bind claim：只允许 `BindManager`
-- active agent registry：只允许 `Supervisor`
+- active agent/executor registry：只允许 `Supervisor`
 
-### 4.3 side effect 规则
-
-状态转移和 side effect 必须分离：
+### 6.3 side effect 规则
 
 - reducer 内不做 I/O
-- reducer 不直接关连接、不直接起 listener、不直接发帧
+- reducer 不直接起 listener、不直接关连接、不直接发帧
 - reducer 只产生 action
-- action 执行后回流结果 event
+- action 执行结果必须再回流成 event
 
-这条规则用于避免旧模型里“逻辑状态推进”和“资源操作”缠在一起。
+## 7. repo 模型必须拆开
 
-## 5. 运行态模型
+当前旧 `GroupRuntime` 同时承载：
 
-`SessionAgent` 的权威状态如下：
+- 认证信息
+- transport security 策略
+- desired runtime
+- 观测语义
+
+最终必须拆成至少两类读取模型：
 
 ```go
-type SessionPhase uint8
+type AuthGroupRecord struct {
+    GroupID                  int64
+    Enabled                  bool
+    ClientSecretHash         [32]byte
+    ControlTransportSecurity string
+}
 
-const (
-    SessionPhaseHandshaking SessionPhase = iota + 1
-    SessionPhaseSyncingConfig
-    SessionPhaseOnline
-    SessionPhaseDraining
-    SessionPhaseClosed
-)
-
-type RuntimePhase uint8
-
-const (
-    RuntimePhaseEmpty RuntimePhase = iota + 1
-    RuntimePhaseBinding
-    RuntimePhaseActive
-    RuntimePhaseBlocked
-    RuntimePhaseRecovering
-)
-
-type BlockReason uint8
-
-const (
-    BlockReasonNone BlockReason = iota
-    BlockReasonEffectiveIPInvalid
-    BlockReasonEffectiveIPNotLocal
-    BlockReasonPortConflict
-    BlockReasonListenerStartFailed
-    BlockReasonSessionReplaced
-    BlockReasonShutdown
-)
+type DesiredRuntimeRecord struct {
+    GroupID   int64
+    GroupName string
+    Snapshot  session.DesiredRuntimeSnapshot
+}
 ```
 
-完整状态对象：
+必要时再加：
+
+- tunnel listen TLS 运行时读取模型
+- 观测投影读取模型
+
+稳定态不能再让一个 repo struct 同时适配登录、配置同步、扫描和 WebUI 观测。
+
+## 8. Session 状态模型
+
+权威逻辑状态仍按 actor 模型组织，但要做两点收口：
+
+1. `SessionState` 只保存生命周期和元数据，不保存 payload 或真实 socket
+2. `StreamDataReceived` / `UDPDataReceived` 这种 payload 级 event 不再作为稳定态核心模型
+
+建议保留的核心状态：
 
 ```go
 type SessionState struct {
@@ -233,104 +333,99 @@ type SessionState struct {
     Pending *PendingConfigPush
     Applied *AppliedRuntimeSnapshot
 
-    ConnState ControlConnState
-    Epoch     uint64
+    Conn   ControlConnState
+    Epoch  uint64
 
     Bindings    map[BindingKey]BindingState
-    Streams     map[uint32]TCPStreamState
-    UDPSessions map[uint32]UDPSessionState
+    Streams     map[uint32]TCPStreamMeta
+    UDPSessions map[uint32]UDPSessionMeta
 }
 ```
 
-### 5.1 配置状态
+其中：
 
-配置同步不再拆成 `current/pending/acked/recoveryMode` 多段散布字段，而是明确成：
+- `Streams` 只保存 `streamID/tunnelID/remotePort/clientAddr/epoch/established`
+- `UDPSessions` 只保存 `sessionID/tunnelID/remotePort/clientAddr/epoch/opened/idleTimeout`
+- 真正的 `net.Conn`、`UDPListener`、timer handle、pump goroutine 都只在 `RuntimeExecutor`
 
-- `Desired`
-  - 最新希望达到的完整配置
-- `Pending`
-  - 已经推给 `frpc`、等待 `config.ack` 的配置
-- `Applied`
-  - 已经被 `frpc` 确认、且当前服务端数据面应以其为准的配置
+### 8.1 `Desired / Pending / Applied`
 
-规则固定为：
+规则保持单向明确：
 
-- 一个 session 同时最多只有一个 `Pending`
-- `Applied` 只能由 `ConfigAckAccepted` 事件推进
-- `Desired` 可以先变化多次，reconcile 决定是否要生成新的 `Pending`
+- `Desired`：最新希望达到的配置
+- `Pending`：已下发、等待 `config.ack` 的配置
+- `Applied`：已确认、当前服务端 runtime 应以其为准的配置
 
-### 5.2 epoch
+固定约束：
 
-保留旧实现里 `generation/configVersion` 的优点，但提升成显式 epoch：
+- 同时最多一个 `Pending`
+- `Applied` 只由 `ConfigAckReceived` 推进
+- 每次 `Applied` 变化都推进 `Epoch`
 
-- 每次 `Applied` 变化都会推进 `Epoch`
-- 所有 listener、stream、udp session 都带上创建时 epoch
-- 来自旧 epoch 的运行时回包或 listener 结果，统一丢弃或转换成 no-op
+### 8.2 `Epoch`
 
-这样仍能守住“旧配置资源不继续写当前控制连接”的约束，但不再散在多个锁之间。
+`Epoch` 是跨逻辑状态与真实资源的护栏：
 
-## 6. 事件模型
+- listener
+- TCP stream
+- UDP session
+- timer / retry task
 
-`SessionAgent` 只吃事件，不直接被外部函数改状态。
+全部都带创建时 `epoch`。
 
-```go
-type Event interface {
-    sessionEvent()
-}
-```
+来自旧 epoch 的结果只允许：
 
-### 6.1 上游事件
+- 安静丢弃
+- 资源释放
+
+不允许：
+
+- 回写 control connection
+- 覆盖当前状态
+
+## 9. 事件与动作模型
+
+### 9.1 保留的核心事件
 
 - `SessionAttached`
-  - 新登录成功，agent 绑定连接
 - `DesiredRuntimeUpdated`
-  - 管理面改配置后，Supervisor 把最新快照送入 agent
 - `NetworkSnapshotChanged`
-  - 本机 IP 快照变化
 - `SessionTakeoverRequested`
-  - 新登录请求接管旧 session
 - `ShutdownRequested`
-
-### 6.2 协议事件
-
 - `ConfigAckReceived`
 - `HeartbeatPingReceived`
 - `StreamOpenedReceived`
-- `StreamDataReceived`
 - `StreamClosedReceived`
-- `UDPDataReceived`
 - `UDPCloseReceived`
 - `ControlConnClosed`
 - `ProtocolErrorDetected`
-
-### 6.3 运行时结果事件
-
 - `BindingsPrepared`
 - `BindingStarted`
 - `BindingStartFailed`
 - `BindingClosed`
 - `TCPAccepted`
-- `TCPReadFailed`
-- `UDPDatagramReceived`
+- `UDPPeerDiscovered`
 - `UDPIdleTimeoutReached`
-
-### 6.4 内部控制事件
-
 - `ReconcileRequested`
-- `PendingConfigExpired`
 - `DrainCompleted`
 
-## 7. 动作模型
+### 9.2 需要从稳定模型中降级的 payload 事件
 
-reducer 输出 action，执行器只负责执行，不做业务判断。
+下面这些不应再作为稳定态 reducer 主输入：
 
-```go
-type Action interface {
-    sessionAction()
-}
-```
+- `StreamDataReceived`
+- `UDPDataReceived`
+- 每一个公网侧 TCP/UDP payload 事件
 
-### 7.1 连接与协议动作
+原因不是它们不能工作，而是：
+
+- payload 事件量太大
+- 它们不改变高层生命周期状态
+- 把所有 payload 都串进 agent 会让状态机承担不必要的吞吐路径
+
+稳定态里，actor 负责 lifecycle，payload 走 fast path。
+
+### 9.3 保留的核心动作
 
 - `ActionSendServerHello`
 - `ActionPushConfig`
@@ -338,261 +433,122 @@ type Action interface {
 - `ActionSendHeartbeatPong`
 - `ActionSendStreamOpen`
 - `ActionSendStreamClose`
-- `ActionSendUDPStart`
-- `ActionSendUDPData`
+- `ActionSendUDPOpen`
 - `ActionSendUDPClose`
-- `ActionCloseControlConn`
-
-### 7.2 runtime 动作
-
 - `ActionPrepareBindings`
 - `ActionStartBindings`
 - `ActionStopBindings`
 - `ActionDrainStreams`
 - `ActionDrainUDPSessions`
 - `ActionResetRuntime`
-
-### 7.3 调度动作
-
+- `ActionScheduleRetry`
+- `ActionCloseControlConn`
 - `ActionRequestReconcile`
-- `ActionPublishObservation`
 - `ActionLogTransition`
 
-## 8. reducer 规则
+payload 级写动作也应降级成 executor fast path，不作为 reducer 的高频输出。
 
-reducer 只做三件事：
+## 10. 数据面 fast path
 
-1. 校验当前状态是否允许该 event。
-2. 生成新状态。
-3. 返回动作列表。
+这是最终结构和当前 `controlv2` 骨架最大的差异。
 
-所有 reducer 必须满足：
+### 10.1 TCP
 
-- 幂等：重复 event 不造成额外资源泄漏
-- 单向：无 side effect
-- 可测试：纯输入输出即可断言
-
-### 8.1 首次上线
-
-```text
-SessionAttached
--> state.Phase = SessionPhaseSyncingConfig
--> ActionSendServerHello
--> ActionPushConfig(initial desired runtime)
-```
-
-### 8.2 配置确认
-
-```text
-ConfigAckReceived
--> Pending -> Applied
--> Epoch++
--> if Applied empty: RuntimePhaseEmpty
--> else: RuntimePhaseBinding
--> ActionPrepareBindings
-```
-
-### 8.3 listener 启动成功
-
-```text
-BindingStarted(all required ports satisfied)
--> RuntimePhaseActive
-```
-
-### 8.4 阻塞
-
-```text
-BindingStartFailed(conflict / invalid effective_ip / not local)
--> RuntimePhaseBlocked
--> BlockReason = ...
-```
-
-### 8.5 恢复
-
-```text
-DesiredRuntimeUpdated / NetworkSnapshotChanged / BindingClosed
--> ActionRequestReconcile
-```
-
-### 8.6 takeover
-
-```text
-SessionTakeoverRequested
--> old session: SessionPhaseDraining + BlockReasonSessionReplaced
--> drain runtime
--> close conn
--> SessionPhaseClosed
-```
-
-## 9. reconcile 规则
-
-`Reconcile` 是 `control v2` 的核心，不再让管理面刷新、网络变化、scan 恢复分别走各自逻辑。
-
-统一入口：
-
-```go
-func Reconcile(state SessionState) []Action
-```
-
-固定处理顺序：
-
-1. 如果 session 已关闭，返回空。
-2. 如果控制连接不可用，转 `Draining/Closed`。
-3. 计算 `Desired` 与 `Applied` 是否一致。
-4. 如果不一致且当前没有 `Pending`，生成新的 `ActionPushConfig`。
-5. 如果 `Applied` 为空配置，确保 runtime 已经完全收缩。
-6. 如果 `Applied` 非空但 runtime 未满足，生成 `ActionPrepareBindings/ActionStartBindings`。
-7. 如果 runtime 因网络/IP/冲突阻塞，但阻塞条件已消失，重新进入 `Binding/Recovering`。
-
-### 9.1 reconcile 统一接收的触发源
-
-- 登录完成
-- `config.ack`
-- 管理面刷新
-- 本机网络快照变化
-- listener 异常关闭
-- drain 完成
-
-也就是说，旧模型里的：
-
-- `RefreshGroup`
-- `runtime scan`
-- `ensureTunnelListeners`
-- `rebindGroupRuntime`
-- `push empty/full config`
-
-在新模型里不再是散落命令，而是统一通过 `Reconcile` 计算动作。
-
-## 10. Session Takeover 规则
-
-旧模型当前是“一个 group 只能有 1 个在线 `frpc`，新连接登录直接被拒绝”。
-
-`control v2` 改成：
-
-- 新连接登录成功后默认接管旧 session
-- 旧 session 收到 `SessionTakeoverRequested`
-- 旧 session 进入 `Draining`
-- 旧 session 主动关闭 stream / udp session / bindings
-- drain 完成后关闭控制连接
-- 新 session 成为该 group 的权威 agent
-
-这样可以直接删掉旧实现里很多围绕 group slot 和竞争窗口的复杂补丁。
-
-## 11. `BindManager`
-
-`BindManager` 对外暴露的接口只保留：
-
-```go
-type BindManager interface {
-    Prepare(ctx context.Context, req PrepareBindingsRequest) (PrepareBindingsResult, error)
-    Start(ctx context.Context, req StartBindingsRequest) error
-    Stop(ctx context.Context, req StopBindingsRequest) error
-}
-```
-
-### 11.1 `Prepare`
-
-职责：
-
-- 校验 `effective_ip`
-- 展开 tunnel 需要的全部远端端口
-- 做端口冲突裁决
-- 形成 binding plan
-
-输出必须是确定性结果：
-
-- 全部可启动
-- 哪些端口冲突
-- 哪些端口因 `effective_ip` 无效或非本机而阻塞
-
-### 11.2 `Start`
-
-职责：
-
-- 以 binding plan 启动 TCP/UDP listener
-- 把 accept/read 回调翻译成 agent event
-
-### 11.3 `Stop`
-
-职责：
-
-- 按 epoch 或 session 范围关闭 listener
-- 释放 claim
-
-### 11.4 冲突裁决原则
-
-端口冲突必须发生在 claim/start 前，而不是事后扫描：
-
-- 同一个 `protocol + effective_ip + port` 只能有一个 owner
-- range tunnel 只是多端口 claim 的批量形式
-- `0.0.0.0` / `::` 与具体 IP 的冲突规则仍按现有 `ports` 逻辑裁决，但裁决入口统一移到 `BindManager`
-
-## 12. TCP/UDP runtime
-
-新模型里 TCP/UDP 仍分开，不做“万能 tunnel runtime”。
-
-### 12.1 TCP
+控制流：
 
 ```text
 listener accept
 -> TCPAccepted event
--> reducer 生成 ActionSendStreamOpen
--> 收到 stream.opened(ok)
--> 标记 stream active
--> 后续 data 双向转发
--> 任一路径关闭 -> stream drain/close
+-> agent 分配 streamID/requestID
+-> ActionSendStreamOpen
+-> StreamOpenedReceived(ok)
+-> executor 启动双向 data pump
 ```
 
-### 12.2 UDP
+一旦 `stream.opened(ok)` 完成：
+
+- `publicConn -> frpc stream.data`
+- `frpc stream.data -> publicConn`
+
+都由 `RuntimeExecutor` 直接走 fast path，不逐 payload 过 reducer。
+
+actor 只处理：
+
+- open
+- close
+- stale epoch
+- drain
+
+### 10.2 UDP
+
+控制流：
 
 ```text
-listener datagram
--> UDPDatagramReceived event
--> 若 session 不存在则创建
--> ActionSendUDPStart + ActionSendUDPData
--> frpc 回包 -> 写回公网客户端
--> idle timeout -> ActionSendUDPClose
+listener datagram from new peer
+-> UDPPeerDiscovered event
+-> agent 分配 udp session id
+-> ActionSendUDPOpen
+-> executor 建立 peer handle
 ```
 
-### 12.3 runtime epoch 护栏
+之后：
 
-- TCP stream 和 UDP session 都带 `epoch`
-- 如果控制面已经切到新 epoch，旧 runtime 结果事件进入 reducer 时直接判为 stale
-- stale event 只能做资源释放，不能再回写控制连接
+- 同一 peer 的 datagram 直接 fast path 写到 control connection
+- `frpc -> udp.data` 直接按 session handle 回写公网
 
-## 13. 协议与接入层
+actor 只处理：
 
-### 13.1 `Server` 内部读循环
+- 首次 peer/session 建立
+- close
+- idle timeout
+- stale epoch
 
-新 `server.go` 只保留：
+## 11. 恢复模型
 
-- accept
-- `transport.client_hello`
-- `auth.begin/challenge/finish`
-- 读帧
-- 把帧翻译成 typed event 发给 `Supervisor`
+最终结构里不再保留“全局 runtime scan 作为主恢复路径”。
 
-不再保留：
+恢复统一由下面几类事件触发：
 
-- 直接处理 `config.ack`
-- 直接处理 `stream.*`
-- 直接处理 `udp.*`
-- 直接做 listener 启停
+- `DesiredRuntimeUpdated`
+- `NetworkSnapshotChanged`
+- `BindingClosed`
+- `BindingStartFailed`
+- `ControlConnClosed`
+- retry timer 到期
 
-### 13.2 协议变更原则
+也就是说，恢复逻辑改成：
 
-本轮允许改 `frps <-> frpc` 协议，但只在下面两种场景改：
+- session 级状态判断
+- reconcile 生成 retry / rebind / empty/full push
+- executor 执行动作
 
-- 有助于让 `SessionAgent` 的状态更明确
-- 有助于减少旧协议里“靠隐含语义补边界”的部分
+### 11.1 startup gate 仍然保留，但语义改成 audit
 
-否则，优先保持现有 wire protocol 不动，把收益集中在运行态模型重写上。
+虽然不再保留旧 `runtime scan` 主路径，但启动门闩仍需要保留，用于：
 
-## 14. 观测模型
+- 发布首次 runtime status
+- 检查静态配置冲突
+- 检查本机 `effective_ip` 可见性
 
-旧 `ObserveState` 的思路保留，但改成直接读取显式状态，而不是从散落字段拼接。
+因此旧 `EnsureInitialRuntimeScan()` 的最终语义应改成：
 
-新的 session 观测重点：
+- `Warmup(ctx)` 或 `EnsureInitialAudit(ctx)`
+
+它只负责启动前观测预热，不负责会话恢复和 listener 修补。
+
+## 12. 观测模型
+
+观测应直接从显式状态拼装，而不是从旧运行态字段反推。
+
+### 12.1 观测输入源
+
+- `Supervisor`：agent/executor 注册表
+- `SessionAgent`：逻辑状态
+- `RuntimeExecutor`：资源元数据快照
+- `BindManager`：listener/claim 快照
+- `Repo`：必要时补静态 desired runtime
+
+### 12.2 观测输出重点
 
 - `SessionPhase`
 - `RuntimePhase`
@@ -605,154 +561,131 @@ listener datagram
 - `ActiveStreams`
 - `ActiveUDPSessions`
 
-这样测试可以直接断言：
+`TunnelRuntimeIssues()` 也不再由独立 store 维护，而是从：
 
-- “当前是 blocked，因为 effective_ip_not_local”
-- “当前是 syncing_config，pending version=xxx”
-- “当前是 recovering，epoch=4”
+- agent block state
+- binding failure reason
+- bind manager claim/conflict 信息
 
-## 15. 文件布局建议
+派生得到。
 
-建议直接新建 `frps/internal/controlv2/`：
+## 13. 旧实现去向
 
-```text
-internal/controlv2/
-  server.go
-  supervisor.go
-  repo.go
-  observe.go
+最终落地时，旧文件应该按下面方式吸收或删除：
 
-  session/
-    agent.go
-    state.go
-    events.go
-    actions.go
-    reducer.go
-    reconcile.go
-    execute.go
+- `server.go` / `auth.go` / `transport_security.go` / `tls_runtime.go`
+  - 保留在顶层 `control/`，但缩成接入层和顶层 API
+- `session.go` / `config.go` / `control_v2_runtime.go`
+  - 拆入 `session/` 与 `executor.go`
+- `listeners.go`
+  - 拆入 `bind/` 与 `runtime.go`
+- `tcp_bridge.go` / `udp.go` / `session_io.go`
+  - 迁入 `executor.go` 与 `runtime.go`
+- `runtime_registry.go` / `runtime_view.go` / `runtime_issue_store.go`
+  - 删除，能力由 `Supervisor + Agent + Executor + Observer` 直接替代
+- `runtime_scan.go`
+  - 删除主恢复职责，只保留必要的 startup audit 能力，且改名
+- `refresh.go`
+  - 删除单独编排逻辑，统一改成 `Supervisor -> DesiredRuntimeUpdated -> Reconcile`
 
-  bind/
-    manager.go
-    claims.go
-    tcp.go
-    udp.go
+## 14. 测试结构
 
-  protocol/
-    handshake.go
-    dispatch.go
-```
+最终测试也应跟着结构重排：
 
-替换完成前：
-
-- `app.App` 暂时改为可切换装配 `controlv2`
-- 老 `control/` 不再继续加功能
-
-替换完成后：
-
-- 删除旧 `control/` 整个实现
-- 删除旧的 runtime coordinator/scan/registry/refresh 拼装路径
-
-## 16. 测试策略
-
-### 16.1 reducer 单测
+### 14.1 `session/` 纯单测
 
 覆盖：
 
-- 首次 `SessionAttached`
-- `DesiredRuntimeUpdated`
-- `ConfigAckReceived`
+- attach
+- desired update
+- config ack
 - block / recover
 - takeover
 - shutdown
+- stale epoch
 
-### 16.2 reconcile 单测
+### 14.2 `bind/` 单测
 
 覆盖：
 
-- desired != applied
-- applied empty
-- runtime blocked but constraints recovered
-- binding partial failure
-- stale epoch event
+- claim / release
+- `0.0.0.0` 与具体 IP 冲突
+- TCP/UDP range 展开
+- TLS listener 绑定
 
-### 16.3 actor 集成测试
+### 14.3 `executor` 集成测试
+
+覆盖：
+
+- hello/config/ack
+- TCP stream open/close/data pump
+- UDP session open/idle/data fast path
+- listener start/stop/drain
+
+### 14.4 顶层场景测试
 
 覆盖：
 
 - 登录 -> 首次配置 -> listener active
-- 管理面热重载
-- `effective_ip` 消失 -> empty runtime
-- `effective_ip` 恢复 -> full runtime recover
-- 新 session takeover 旧 session
+- group refresh
+- network change
+- takeover
+- startup gate / audit
+- control TLS
 
-### 16.4 端到端回归
+稳定性测试入口最终应从 `./internal/control` 继续跑，但包内结构将不再区分旧 `control` 与 `controlv2`。
 
-至少保留：
-
-- TCP single/range
-- UDP single/range
-- 管理面刷新
-- 本机网络变化
-- listener conflict
-
-## 17. 实施顺序
+## 15. 推荐实施顺序
 
 ### 第 1 步
 
-- 建 `controlv2/session` 的状态、事件、动作、reducer、reconcile 骨架
+- 先固定最终文档和目标目录，停止给旧 `control/` 与 `controlv2/` 双轨继续补功能
 
 ### 第 2 步
 
-- 建 `Supervisor` 和 agent registry
+- 在 `internal/control/session/` 固定最终 `state/events/actions/reducer/reconcile`
+- 同时删掉 payload 级 event/action 的稳定态依赖
 
 ### 第 3 步
 
-- 抽 `RuntimeRepo`
+- 新建 `executor.go` / `runtime.go`
+- 把真实 control conn writer、stream handle、udp handle、timer、epoch resource map 收口进去
 
 ### 第 4 步
 
-- 抽 `BindManager`
+- 新建 `bind/` 真实 listener manager
+- 接管 claim、冲突裁决、TCP/UDP listener 和 tunnel listen TLS
 
 ### 第 5 步
 
-- 接入 `Server` 的登录和帧分发
+- 拆 `repo/` 为认证读取与 desired runtime 读取
 
 ### 第 6 步
 
-- 接回 TCP bridge
+- 把 `Supervisor` 和顶层 `Server` 切到新结构
 
 ### 第 7 步
 
-- 接回 UDP bridge
+- 删除 `internal/controlv2/`
+- 删除旧 `runtimeRegistry/runtimeView/runtimeIssueStore/runtime scan` 主路径
 
-### 第 8 步
+## 16. 明确不做的事
 
-- 接回管理面刷新和网络变化
+- 不保留 `internal/control` 与 `internal/controlv2` 长期并存
+- 不让旧 `sessionState` 和新 `SessionState` 再双写
+- 不把每个 TCP/UDP payload 都送进 reducer
+- 不保留全局 `runtime scan` 作为主恢复控制流
+- 不引第三方状态机或事件总线框架
 
-### 第 9 步
+## 17. 最终判定标准
 
-- 切换 `app.App`
+只有满足下面条件，才算真正完成“去分叉”：
 
-### 第 10 步
+- 仓库里只剩一个控制面实现目录：`frps/internal/control/`
+- `app`、`api`、测试和稳定性入口都不再 import 或依赖 `internal/controlv2`
+- `ObserveState()` 不再依赖旧 runtime view 混合投影
+- `TunnelRuntimeIssues()` 不再依赖独立 store
+- TCP/UDP bridge 不再依赖旧 `sessionState`
+- `runtime scan` 不再驱动在线恢复
 
-- 删除旧 `control/`
-
-## 18. 明确不做的事
-
-- 不引第三方状态机库
-- 不引通用事件总线框架
-- 不保留旧 `runtime scan` 作为主控制路径
-- 不让多个 goroutine 继续共享修改一个 session 状态对象
-- 不做“TCP/UDP 完全统一抽象”
-
-## 19. 当前实现入口
-
-基于本文，下一步代码落地从下面这几个最小文件开始：
-
-- `frps/internal/controlv2/session/state.go`
-- `frps/internal/controlv2/session/events.go`
-- `frps/internal/controlv2/session/actions.go`
-- `frps/internal/controlv2/session/reducer.go`
-- `frps/internal/controlv2/session/reconcile.go`
-
-这一步先把状态和转移模型写稳，再接 `Supervisor` 和 `BindManager`。
+在达到这些条件之前，都只能算迁移中间态，不能算稳定结构。
