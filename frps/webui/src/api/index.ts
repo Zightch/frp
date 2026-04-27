@@ -21,6 +21,8 @@ export interface LocalIP {
   standard: string
 }
 
+export type TunnelTLSMode = 'off' | 'tls' | 'mtls'
+
 export interface Tunnel {
   id: number
   group_id: number
@@ -33,6 +35,16 @@ export interface Tunnel {
   local_host: string
   local_start: number
   local_end: number
+  listen_tls_mode: TunnelTLSMode
+  listen_tls_load_system_ca: boolean
+  listen_tls_server_cert_asset_id?: number
+  listen_tls_client_ca_asset_ids?: number[]
+  backend_tls_mode: TunnelTLSMode
+  backend_tls_server_name?: string
+  backend_tls_load_system_ca: boolean
+  backend_tls_insecure_skip_verify: boolean
+  backend_tls_client_cert_asset_id?: number
+  backend_tls_ca_asset_ids?: number[]
   enabled: boolean
   status: string
   status_reason?: string
@@ -50,6 +62,16 @@ export interface TunnelPayload {
   local_host: string
   local_start: number
   local_end: number
+  listen_tls_mode: TunnelTLSMode
+  listen_tls_load_system_ca?: boolean
+  listen_tls_server_cert_asset_id?: number
+  listen_tls_client_ca_asset_ids?: number[]
+  backend_tls_mode: TunnelTLSMode
+  backend_tls_server_name?: string
+  backend_tls_load_system_ca?: boolean
+  backend_tls_insecure_skip_verify?: boolean
+  backend_tls_client_cert_asset_id?: number
+  backend_tls_ca_asset_ids?: number[]
   enabled: boolean
 }
 
@@ -245,18 +267,28 @@ export const localIPsApi = {
 
 // --- Tunnels API ---
 
+export interface TunnelCreateResult {
+  item: Tunnel
+  warnings?: string[]
+}
+
+export interface TunnelUpdateResult {
+  item: Tunnel
+  warnings?: string[]
+}
+
 export const tunnelsApi = {
   list: (groupId?: number) => {
     const query = groupId ? `?group_id=${groupId}` : ''
     return request<{ items: Tunnel[] }>(`/tunnels${query}`)
   },
 
-  create: (data: TunnelPayload) => request<{ item: Tunnel }>('/tunnels', {
+  create: (data: TunnelPayload) => request<TunnelCreateResult>('/tunnels', {
     method: 'POST',
     body: JSON.stringify(data)
   }),
 
-  update: (id: number, data: TunnelPayload) => request<{ item: Tunnel }>(`/tunnels/${id}`, {
+  update: (id: number, data: TunnelPayload) => request<TunnelUpdateResult>(`/tunnels/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(data)
   }),

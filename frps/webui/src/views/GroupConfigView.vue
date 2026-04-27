@@ -6,13 +6,16 @@ import type { FormInstance, FormRules } from 'element-plus'
 import {
   authApi,
   certificateUsagesApi,
+  certificateAssetsApi,
   proxyGroupsApi as groupConfigApi,
   tunnelsApi,
   localIPsApi,
   type CertificateUsage,
+  type CertificateAsset,
   type ProxyGroup,
   type Tunnel,
   type TunnelPayload,
+  type TunnelTLSMode,
   type LocalIP
 } from '@/api'
 import { useMobile } from '@/composables/useMobile'
@@ -30,6 +33,19 @@ type TunnelFormModel = {
   local_host: string
   local_start: number | null
   local_end: number | null
+  // Listen TLS
+  listen_tls_mode: TunnelTLSMode
+  listen_tls_load_system_ca: boolean
+  listen_tls_server_cert_asset_id: number | null
+  listen_tls_client_ca_asset_ids: number[]
+  // Backend TLS
+  backend_tls_mode: TunnelTLSMode
+  backend_tls_server_name: string
+  backend_tls_load_system_ca: boolean
+  backend_tls_insecure_skip_verify: boolean
+  backend_tls_client_cert_asset_id: number | null
+  backend_tls_ca_asset_ids: number[]
+  // Common
   enabled: boolean
 }
 
@@ -51,7 +67,9 @@ const groups = ref<ProxyGroup[]>([])
 const tunnels = ref<Tunnel[]>([])
 const localIPs = ref<LocalIP[]>([])
 const certificateUsages = ref<CertificateUsage[]>([])
+const certificateAssets = ref<CertificateAsset[]>([])
 const localIPsLoading = ref(false)
+const certificateAssetsLoading = ref(false)
 const selectedGroupId = ref<number | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -101,7 +119,12 @@ const tunnelFormRules: FormRules<TunnelFormModel> = {
   local_host: [{ asyncValidator: createRequiredTextValidator('本地地址'), trigger: 'blur' }],
   local_start: [{ asyncValidator: createPortStartValidator('local_start'), trigger: ['blur', 'change'] }],
   local_end: [{ asyncValidator: createPortEndValidator('local_end'), trigger: ['blur', 'change'] }],
-  enabled: [{ asyncValidator: createEnabledValidator(), trigger: 'change' }]
+  enabled: [{ asyncValidator: createEnabledValidator(), trigger: 'change' }],
+  // TLS validations
+  listen_tls_mode: [{ asyncValidator: validateListenTLSMode, trigger: 'change' }],
+  listen_tls_server_cert_asset_id: [{ asyncValidator: validateListenTLSServerCert, trigger: 'change' }],
+  backend_tls_mode: [{ asyncValidator: validateBackendTLSMode, trigger: 'change' }],
+  backend_tls_client_cert_asset_id: [{ asyncValidator: validateBackendTLSClientCert, trigger: 'change' }]
 }
 
 // Editing tunnel ID (for edit mode)
@@ -122,6 +145,14 @@ const filteredTunnels = computed(() =>
 const frpcTLSUsage = computed(() =>
   certificateUsages.value.find(item => item.usage_type === 'frpc_tls') || null
 )
+
+const backendTLSWarning = computed(() => {
+  if (!selectedGroup.value) return null
+  if (selectedGroup.value.control_transport_security !== 'plain') return null
+  if (tunnelForm.value.backend_tls_mode === 'off') return null
+  if (!tunnelForm.value.backend_tls_client_cert_asset_id && tunnelForm.value.backend_tls_ca_asset_ids.length === 0) return null
+  return '当前分组 control_transport_security=plain，backend TLS 证书或 CA 会通过明文控制连接下发给 frpc，建议改为 tls_required。'
+})
 
 // Lifecycle
 onMounted(async () => {
@@ -152,14 +183,16 @@ onMounted(async () => {
 async function loadData() {
   loading.value = true
   localIPsLoading.value = true
+  certificateAssetsLoading.value = true
   error.value = ''
 
   try {
-    const [groupsResult, tunnelsResult, ipsResult, certificateUsagesResult] = await Promise.all([
+    const [groupsResult, tunnelsResult, ipsResult, certificateUsagesResult, certificateAssetsResult] = await Promise.all([
       groupConfigApi.list(),
       tunnelsApi.list(),
       localIPsApi.list(),
-      certificateUsagesApi.list()
+      certificateUsagesApi.list(),
+      certificateAssetsApi.list()
     ])
 
     if (groupsResult.error) {
@@ -182,10 +215,16 @@ async function loadData() {
       return
     }
 
+    if (certificateAssetsResult.error) {
+      error.value = certificateAssetsResult.error
+      return
+    }
+
     groups.value = groupsResult.data?.items || []
     tunnels.value = tunnelsResult.data?.items || []
     localIPs.value = ipsResult.data?.items || []
     certificateUsages.value = certificateUsagesResult.data?.items || []
+    certificateAssets.value = certificateAssetsResult.data?.items || []
 
     if (!groups.value.some(group => group.id === selectedGroupId.value)) {
       selectedGroupId.value = groups.value[0]?.id ?? null
@@ -195,6 +234,7 @@ async function loadData() {
   } finally {
     loading.value = false
     localIPsLoading.value = false
+    certificateAssetsLoading.value = false
   }
 }
 
@@ -239,6 +279,33 @@ function formatLocalAddr(tunnel: Tunnel): string {
   return `${tunnel.local_host}:${port}`
 }
 
+// Certificate asset helpers
+function getServerCertificateOptions(): CertificateAsset[] {
+  return certificateAssets.value.filter(
+    asset => asset.asset_type === 'certificate' && asset.key_present
+  )
+}
+
+function getCAAssetOptions(): CertificateAsset[] {
+  return certificateAssets.value.filter(
+    asset => asset.asset_type === 'ca'
+  )
+}
+
+function getCertificateName(asset: CertificateAsset): string {
+  const parts = [asset.name]
+  if (asset.common_name) {
+    parts.push(`(${asset.common_name})`)
+  }
+  return parts.join(' ')
+}
+
+function getAssetNameById(assetId: number | null | undefined): string {
+  if (!assetId) return '-'
+  const asset = certificateAssets.value.find(a => a.id === assetId)
+  return asset ? asset.name : '-'
+}
+
 function createTunnelForm(): TunnelFormModel {
   return {
     name: '',
@@ -249,6 +316,19 @@ function createTunnelForm(): TunnelFormModel {
     local_host: '127.0.0.1',
     local_start: null,
     local_end: null,
+    // Listen TLS
+    listen_tls_mode: 'off',
+    listen_tls_load_system_ca: false,
+    listen_tls_server_cert_asset_id: null,
+    listen_tls_client_ca_asset_ids: [],
+    // Backend TLS
+    backend_tls_mode: 'off',
+    backend_tls_server_name: '',
+    backend_tls_load_system_ca: true,
+    backend_tls_insecure_skip_verify: false,
+    backend_tls_client_cert_asset_id: null,
+    backend_tls_ca_asset_ids: [],
+    // Common
     enabled: true
   }
 }
@@ -383,6 +463,57 @@ function validateTunnelPortFields() {
     tunnelFormRef.value?.clearValidate(['remote_end', 'local_end'])
   }
 
+  nextTick(() => {
+    tunnelFormRef.value?.validateField(fields).catch(() => undefined)
+  })
+}
+
+// TLS validation functions
+function validateListenTLSMode() {
+  return Promise.resolve()
+}
+
+function validateListenTLSServerCert() {
+  if (tunnelForm.value.protocol !== 'tcp') {
+    return Promise.resolve()
+  }
+  if (tunnelForm.value.listen_tls_mode !== 'off' && !tunnelForm.value.listen_tls_server_cert_asset_id) {
+    return Promise.reject(new Error('启用监听 TLS 时必须选择服务端证书'))
+  }
+  if (tunnelForm.value.listen_tls_mode === 'mtls') {
+    if (!tunnelForm.value.listen_tls_load_system_ca && tunnelForm.value.listen_tls_client_ca_asset_ids.length === 0) {
+      return Promise.reject(new Error('监听 mTLS 模式需要启用系统 CA 或选择客户端 CA'))
+    }
+  }
+  return Promise.resolve()
+}
+
+function validateBackendTLSMode() {
+  return Promise.resolve()
+}
+
+function validateBackendTLSClientCert() {
+  if (tunnelForm.value.protocol !== 'tcp') {
+    return Promise.resolve()
+  }
+  if (tunnelForm.value.backend_tls_mode === 'mtls' && !tunnelForm.value.backend_tls_client_cert_asset_id) {
+    return Promise.reject(new Error('后端 mTLS 模式需要选择客户端证书'))
+  }
+  if (tunnelForm.value.backend_tls_mode !== 'off' && !tunnelForm.value.backend_tls_insecure_skip_verify) {
+    if (!tunnelForm.value.backend_tls_load_system_ca && tunnelForm.value.backend_tls_ca_asset_ids.length === 0) {
+      return Promise.reject(new Error('后端 TLS 需要启用系统 CA、选择自定义 CA 或启用跳过验证'))
+    }
+  }
+  return Promise.resolve()
+}
+
+function validateTLSFields() {
+  const fields: Array<keyof TunnelFormModel> = [
+    'listen_tls_mode',
+    'listen_tls_server_cert_asset_id',
+    'backend_tls_mode',
+    'backend_tls_client_cert_asset_id'
+  ]
   nextTick(() => {
     tunnelFormRef.value?.validateField(fields).catch(() => undefined)
   })
@@ -534,6 +665,19 @@ function openEditTunnelDrawer(tunnel: Tunnel) {
     local_host: tunnel.local_host,
     local_start: tunnel.local_start,
     local_end: tunnel.local_end,
+    // Listen TLS
+    listen_tls_mode: tunnel.listen_tls_mode,
+    listen_tls_load_system_ca: tunnel.listen_tls_load_system_ca,
+    listen_tls_server_cert_asset_id: tunnel.listen_tls_server_cert_asset_id ?? null,
+    listen_tls_client_ca_asset_ids: tunnel.listen_tls_client_ca_asset_ids ?? [],
+    // Backend TLS
+    backend_tls_mode: tunnel.backend_tls_mode,
+    backend_tls_server_name: tunnel.backend_tls_server_name ?? '',
+    backend_tls_load_system_ca: tunnel.backend_tls_load_system_ca,
+    backend_tls_insecure_skip_verify: tunnel.backend_tls_insecure_skip_verify,
+    backend_tls_client_cert_asset_id: tunnel.backend_tls_client_cert_asset_id ?? null,
+    backend_tls_ca_asset_ids: tunnel.backend_tls_ca_asset_ids ?? [],
+    // Common
     enabled: tunnel.enabled
   }
   tunnelDrawerVisible.value = true
@@ -545,7 +689,7 @@ function buildTunnelPayload(groupId: number): TunnelPayload {
   const remoteStart = tunnelForm.value.remote_start as number
   const localStart = tunnelForm.value.local_start as number
 
-  return {
+  const payload: TunnelPayload = {
     group_id: groupId,
     name: tunnelForm.value.name.trim(),
     protocol: tunnelForm.value.protocol,
@@ -555,8 +699,45 @@ function buildTunnelPayload(groupId: number): TunnelPayload {
     local_host: tunnelForm.value.local_host.trim(),
     local_start: localStart,
     local_end: isRange ? (tunnelForm.value.local_end as number) : localStart,
+    // Listen TLS
+    listen_tls_mode: tunnelForm.value.protocol === 'tcp' ? tunnelForm.value.listen_tls_mode : 'off',
+    backend_tls_mode: tunnelForm.value.protocol === 'tcp' ? tunnelForm.value.backend_tls_mode : 'off',
+    // Common
     enabled: tunnelForm.value.enabled
   }
+
+  // Only include TLS fields for TCP protocol
+  if (payload.protocol === 'tcp') {
+    // Listen TLS
+    if (payload.listen_tls_mode !== 'off') {
+      payload.listen_tls_server_cert_asset_id = tunnelForm.value.listen_tls_server_cert_asset_id ?? undefined
+    }
+    if (payload.listen_tls_mode === 'mtls') {
+      payload.listen_tls_load_system_ca = tunnelForm.value.listen_tls_load_system_ca
+      if (tunnelForm.value.listen_tls_client_ca_asset_ids.length > 0) {
+        payload.listen_tls_client_ca_asset_ids = tunnelForm.value.listen_tls_client_ca_asset_ids
+      }
+    }
+
+    // Backend TLS
+    if (payload.backend_tls_mode !== 'off') {
+      payload.backend_tls_load_system_ca = tunnelForm.value.backend_tls_load_system_ca
+      payload.backend_tls_insecure_skip_verify = tunnelForm.value.backend_tls_insecure_skip_verify
+      if (tunnelForm.value.backend_tls_server_name.trim()) {
+        payload.backend_tls_server_name = tunnelForm.value.backend_tls_server_name.trim()
+      }
+    }
+    if (payload.backend_tls_mode === 'mtls') {
+      payload.backend_tls_client_cert_asset_id = tunnelForm.value.backend_tls_client_cert_asset_id ?? undefined
+    }
+    if (payload.backend_tls_mode !== 'off' && !payload.backend_tls_insecure_skip_verify) {
+      if (tunnelForm.value.backend_tls_ca_asset_ids.length > 0) {
+        payload.backend_tls_ca_asset_ids = tunnelForm.value.backend_tls_ca_asset_ids
+      }
+    }
+  }
+
+  return payload
 }
 
 async function submitTunnelForm() {
@@ -573,7 +754,11 @@ async function submitTunnelForm() {
         ElMessage.error(result.error)
         return
       }
-      ElMessage.success('隧道创建成功')
+      if (result.data?.warnings && result.data.warnings.length > 0) {
+        ElMessage.warning(result.data.warnings.join('；'))
+      } else {
+        ElMessage.success('隧道创建成功')
+      }
     } else {
       if (!editingTunnelId.value || !editingTunnelGroupId.value) return
       const result = await tunnelsApi.update(
@@ -584,7 +769,11 @@ async function submitTunnelForm() {
         ElMessage.error(result.error)
         return
       }
-      ElMessage.success('隧道更新成功')
+      if (result.data?.warnings && result.data.warnings.length > 0) {
+        ElMessage.warning(result.data.warnings.join('；'))
+      } else {
+        ElMessage.success('隧道更新成功')
+      }
     }
 
     tunnelDrawerVisible.value = false
@@ -836,6 +1025,24 @@ function copyKey(value: string) {
                     {{ formatLocalAddr(row) }}
                   </template>
                 </el-table-column>
+                <el-table-column label="TLS" width="80" align="center">
+                  <template #default="{ row }">
+                    <template v-if="row.protocol === 'tcp' && (row.listen_tls_mode !== 'off' || row.backend_tls_mode !== 'off')">
+                      <el-tooltip placement="top">
+                        <template #content>
+                          <div v-if="row.listen_tls_mode !== 'off'">
+                            监听: {{ row.listen_tls_mode === 'mtls' ? 'mTLS' : 'TLS' }}
+                          </div>
+                          <div v-if="row.backend_tls_mode !== 'off'">
+                            后端: {{ row.backend_tls_mode === 'mtls' ? 'mTLS' : 'TLS' }}
+                          </div>
+                        </template>
+                        <el-tag type="success" size="small">启用</el-tag>
+                      </el-tooltip>
+                    </template>
+                    <el-tag v-else type="info" size="small">禁用</el-tag>
+                  </template>
+                </el-table-column>
                 <el-table-column label="状态" width="80" align="center">
                   <template #default="{ row }">
                     <el-tooltip
@@ -1047,6 +1254,132 @@ function copyKey(value: string) {
         <el-form-item label="启用" prop="enabled">
           <el-switch v-model="tunnelForm.enabled" />
         </el-form-item>
+
+        <!-- TLS Configuration (TCP only) -->
+        <template v-if="tunnelForm.protocol === 'tcp'">
+          <el-divider content-position="left">监听 TLS</el-divider>
+          <el-form-item label="模式" prop="listen_tls_mode">
+            <el-select v-model="tunnelForm.listen_tls_mode" class="full-width" @change="validateTLSFields">
+              <el-option label="禁用" value="off" />
+              <el-option label="TLS（服务端认证）" value="tls" />
+              <el-option label="mTLS（双向认证）" value="mtls" />
+            </el-select>
+          </el-form-item>
+          <template v-if="tunnelForm.listen_tls_mode !== 'off'">
+            <el-form-item label="服务端证书" prop="listen_tls_server_cert_asset_id">
+              <el-select
+                v-model="tunnelForm.listen_tls_server_cert_asset_id"
+                class="full-width"
+                placeholder="选择服务端证书"
+                :loading="certificateAssetsLoading"
+                clearable
+                @change="validateTLSFields"
+              >
+                <el-option
+                  v-for="cert in getServerCertificateOptions()"
+                  :key="cert.id"
+                  :label="getCertificateName(cert)"
+                  :value="cert.id"
+                />
+              </el-select>
+            </el-form-item>
+          </template>
+          <template v-if="tunnelForm.listen_tls_mode === 'mtls'">
+            <el-form-item label="加载系统 CA">
+              <el-switch v-model="tunnelForm.listen_tls_load_system_ca" @change="validateTLSFields" />
+            </el-form-item>
+            <el-form-item label="客户端 CA 池">
+              <el-select
+                v-model="tunnelForm.listen_tls_client_ca_asset_ids"
+                class="full-width"
+                placeholder="选择客户端 CA（可多选）"
+                :loading="certificateAssetsLoading"
+                multiple
+                clearable
+                @change="validateTLSFields"
+              >
+                <el-option
+                  v-for="ca in getCAAssetOptions()"
+                  :key="ca.id"
+                  :label="getCertificateName(ca)"
+                  :value="ca.id"
+                />
+              </el-select>
+            </el-form-item>
+          </template>
+
+          <el-divider content-position="left">后端 TLS</el-divider>
+          <el-form-item label="模式" prop="backend_tls_mode">
+            <el-select v-model="tunnelForm.backend_tls_mode" class="full-width" @change="validateTLSFields">
+              <el-option label="禁用" value="off" />
+              <el-option label="TLS（后端认证）" value="tls" />
+              <el-option label="mTLS（双向认证）" value="mtls" />
+            </el-select>
+          </el-form-item>
+          <template v-if="tunnelForm.backend_tls_mode !== 'off'">
+            <el-form-item label="服务器名称">
+              <el-input
+                v-model="tunnelForm.backend_tls_server_name"
+                placeholder="用于验证后端证书（可选）"
+              />
+            </el-form-item>
+            <el-form-item label="跳过验证">
+              <el-switch v-model="tunnelForm.backend_tls_insecure_skip_verify" @change="validateTLSFields" />
+            </el-form-item>
+            <template v-if="!tunnelForm.backend_tls_insecure_skip_verify">
+              <el-form-item label="加载系统 CA">
+                <el-switch v-model="tunnelForm.backend_tls_load_system_ca" @change="validateTLSFields" />
+              </el-form-item>
+              <el-form-item label="自定义 CA 池">
+                <el-select
+                  v-model="tunnelForm.backend_tls_ca_asset_ids"
+                  class="full-width"
+                  placeholder="选择后端 CA（可多选）"
+                  :loading="certificateAssetsLoading"
+                  multiple
+                  clearable
+                  @change="validateTLSFields"
+                >
+                  <el-option
+                    v-for="ca in getCAAssetOptions()"
+                    :key="ca.id"
+                    :label="getCertificateName(ca)"
+                    :value="ca.id"
+                  />
+                </el-select>
+              </el-form-item>
+            </template>
+          </template>
+          <template v-if="tunnelForm.backend_tls_mode === 'mtls'">
+            <el-form-item label="客户端证书" prop="backend_tls_client_cert_asset_id">
+              <el-select
+                v-model="tunnelForm.backend_tls_client_cert_asset_id"
+                class="full-width"
+                placeholder="选择客户端证书"
+                :loading="certificateAssetsLoading"
+                clearable
+                @change="validateTLSFields"
+              >
+                <el-option
+                  v-for="cert in getServerCertificateOptions()"
+                  :key="cert.id"
+                  :label="getCertificateName(cert)"
+                  :value="cert.id"
+                />
+              </el-select>
+            </el-form-item>
+          </template>
+
+          <el-alert
+            v-if="backendTLSWarning"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="tls-warning-alert"
+          >
+            {{ backendTLSWarning }}
+          </el-alert>
+        </template>
       </el-form>
       <template #footer>
         <el-button @click="tunnelDrawerVisible = false">取消</el-button>
@@ -1193,5 +1526,9 @@ function copyKey(value: string) {
 
 .tunnel-list-col-mobile {
   margin-top: var(--spacing-base);
+}
+
+.tls-warning-alert {
+  margin-top: var(--spacing-md);
 }
 </style>
