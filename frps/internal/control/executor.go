@@ -160,9 +160,6 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 		group := runtime.desiredGroupRuntime()
 		snapshot := configSnapshotFromDesired(typed.Snapshot)
 		group.Snapshot = snapshot
-		if err := runtime.session.reconfigure(group, snapshot, typed.RequestID); err != nil {
-			return []controlsession.Event{controlsession.ProtocolErrorDetected{Reason: err.Error()}}
-		}
 
 		body, err := protocol.MarshalConfigPush(protocol.ConfigPush{
 			ConfigVersion: snapshot.Version,
@@ -170,7 +167,6 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 			Tunnels:       snapshot.Tunnels,
 		})
 		if err != nil {
-			runtime.session.clearPendingConfigRequest(typed.RequestID)
 			return []controlsession.Event{controlsession.ProtocolErrorDetected{Reason: err.Error()}}
 		}
 
@@ -179,7 +175,6 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 			RequestID: typed.RequestID,
 			Body:      body,
 		}); err != nil {
-			runtime.session.clearPendingConfigRequest(typed.RequestID)
 			_ = runtime.conn.Close()
 			return []controlsession.Event{controlsession.ControlConnClosed{Reason: err.Error()}}
 		}
@@ -284,77 +279,6 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 
 	default:
 		return nil
-	}
-}
-
-func desiredRuntimeFromGroup(group GroupRuntime) controlsession.DesiredRuntimeSnapshot {
-	snapshot := runtimeSnapshotForGroup(group)
-	return controlsession.DesiredRuntimeSnapshot{
-		Version:       snapshot.Version,
-		GeneratedAtMs: snapshot.GeneratedAtMs,
-		EffectiveIP:   group.EffectiveIP,
-		Tunnels:       desiredTunnelsFromConfig(snapshot.Tunnels),
-	}
-}
-
-func desiredTunnelsFromConfig(tunnels []protocol.TunnelEntry) []controlsession.DesiredTunnelRuntime {
-	desired := make([]controlsession.DesiredTunnelRuntime, 0, len(tunnels))
-	for _, tunnel := range tunnels {
-		desired = append(desired, controlsession.DesiredTunnelRuntime{
-			TunnelID:    tunnel.TunnelID,
-			Protocol:    protocolName(tunnel.Protocol),
-			Enabled:     tunnel.TunnelFlags&protocol.TunnelFlagEnabled != 0,
-			RemoteStart: tunnel.RemoteStart,
-			RemoteEnd:   tunnel.RemoteEnd,
-			LocalHost:   tunnel.LocalHost.String(),
-			LocalStart:  tunnel.LocalStart,
-			LocalEnd:    tunnel.LocalEnd,
-		})
-	}
-	return desired
-}
-
-func configSnapshotFromDesired(snapshot controlsession.DesiredRuntimeSnapshot) ConfigSnapshot {
-	return ConfigSnapshot{
-		Version:       snapshot.Version,
-		GeneratedAtMs: snapshot.GeneratedAtMs,
-		Tunnels:       configTunnelsFromDesired(snapshot.Tunnels),
-	}
-}
-
-func configTunnelsFromDesired(tunnels []controlsession.DesiredTunnelRuntime) []protocol.TunnelEntry {
-	configured := make([]protocol.TunnelEntry, 0, len(tunnels))
-	for _, tunnel := range tunnels {
-		host, _ := protocol.ParseHost(tunnel.LocalHost)
-		flags := uint8(0)
-		if tunnel.Enabled {
-			flags |= protocol.TunnelFlagEnabled
-		}
-		if tunnel.RemoteStart != tunnel.RemoteEnd || tunnel.LocalStart != tunnel.LocalEnd {
-			flags |= protocol.TunnelFlagRange
-		}
-		configured = append(configured, protocol.TunnelEntry{
-			TunnelID:    tunnel.TunnelID,
-			Protocol:    protocolValue(tunnel.Protocol),
-			TunnelFlags: flags,
-			RemoteStart: tunnel.RemoteStart,
-			RemoteEnd:   tunnel.RemoteEnd,
-			LocalHost:   host,
-			LocalStart:  tunnel.LocalStart,
-			LocalEnd:    tunnel.LocalEnd,
-		})
-	}
-	return configured
-}
-
-func protocolValue(value string) uint8 {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "tcp":
-		return protocol.ProtocolTCP
-	case "udp":
-		return protocol.ProtocolUDP
-	default:
-		return 0
 	}
 }
 

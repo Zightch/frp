@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/transport"
 )
@@ -115,18 +116,6 @@ type sessionUDPDatagramForwardOperation struct {
 	created    bool
 	udpSession *publicUDPSession
 	frames     []protocol.Frame
-}
-
-type observedSessionRuntimeConnection struct {
-	connectionID   uint32
-	kind           string
-	protocol       string
-	tunnelID       uint32
-	remotePort     uint16
-	clientAddr     string
-	openedAtMs     uint64
-	lastActiveAtMs uint64
-	idleTimeoutMs  uint32
 }
 
 type publicStream struct {
@@ -260,8 +249,8 @@ func (s *sessionState) preparePublicUDPDatagramForward(configVersion uint64, tun
 	}, nil
 }
 
-func observeRuntimeConnections(streams map[uint32]*publicStream, udpSessions map[uint32]*publicUDPSession) []observedSessionRuntimeConnection {
-	connections := make([]observedSessionRuntimeConnection, 0, len(streams)+len(udpSessions))
+func observeRuntimeConnections(streams map[uint32]*publicStream, udpSessions map[uint32]*publicUDPSession) []controlruntime.ObservedConnection {
+	connections := make([]controlruntime.ObservedConnection, 0, len(streams)+len(udpSessions))
 	for streamID, stream := range streams {
 		if stream == nil {
 			continue
@@ -276,13 +265,13 @@ func observeRuntimeConnections(streams map[uint32]*publicStream, udpSessions map
 	}
 
 	sort.Slice(connections, func(i, j int) bool {
-		if connections[i].kind == connections[j].kind {
-			if connections[i].tunnelID == connections[j].tunnelID {
-				return connections[i].connectionID < connections[j].connectionID
+		if connections[i].Kind == connections[j].Kind {
+			if connections[i].TunnelID == connections[j].TunnelID {
+				return connections[i].ConnectionID < connections[j].ConnectionID
 			}
-			return connections[i].tunnelID < connections[j].tunnelID
+			return connections[i].TunnelID < connections[j].TunnelID
 		}
-		return connections[i].kind < connections[j].kind
+		return connections[i].Kind < connections[j].Kind
 	})
 
 	return connections
@@ -486,16 +475,16 @@ func (s *publicStream) touch(now time.Time) {
 	s.lastActiveUnixMs.Store(now.UTC().UnixMilli())
 }
 
-func (s *publicStream) observedConnection(streamID uint32) observedSessionRuntimeConnection {
-	return observedSessionRuntimeConnection{
-		connectionID:   streamID,
-		kind:           observedRuntimeConnectionKindTCPStream,
-		protocol:       "tcp",
-		tunnelID:       s.tunnel.TunnelID,
-		remotePort:     s.remotePort,
-		clientAddr:     sockAddrString(s.clientAddr),
-		openedAtMs:     s.openedAtMs,
-		lastActiveAtMs: nonNegativeUnixMilli(s.lastActiveUnixMs.Load()),
+func (s *publicStream) observedConnection(streamID uint32) controlruntime.ObservedConnection {
+	return controlruntime.ObservedConnection{
+		ConnectionID:   streamID,
+		Kind:           observedRuntimeConnectionKindTCPStream,
+		Protocol:       "tcp",
+		TunnelID:       s.tunnel.TunnelID,
+		RemotePort:     s.remotePort,
+		ClientAddr:     sockAddrString(s.clientAddr),
+		OpenedAtMs:     s.openedAtMs,
+		LastActiveAtMs: nonNegativeUnixMilli(s.lastActiveUnixMs.Load()),
 	}
 }
 
@@ -704,17 +693,17 @@ func (s *publicUDPSession) key() string {
 	return publicUDPSessionKey(s.tunnelID, s.remotePort, s.clientAddr)
 }
 
-func (s *publicUDPSession) observedConnection() observedSessionRuntimeConnection {
-	return observedSessionRuntimeConnection{
-		connectionID:   s.sessionID,
-		kind:           observedRuntimeConnectionKindUDPSession,
-		protocol:       "udp",
-		tunnelID:       s.tunnelID,
-		remotePort:     s.remotePort,
-		clientAddr:     sockAddrString(s.clientAddr),
-		openedAtMs:     s.openedAtMs,
-		lastActiveAtMs: nonNegativeUnixMilli(s.lastActiveUnixMs.Load()),
-		idleTimeoutMs:  uint32(s.idleTimeout / time.Millisecond),
+func (s *publicUDPSession) observedConnection() controlruntime.ObservedConnection {
+	return controlruntime.ObservedConnection{
+		ConnectionID:   s.sessionID,
+		Kind:           observedRuntimeConnectionKindUDPSession,
+		Protocol:       "udp",
+		TunnelID:       s.tunnelID,
+		RemotePort:     s.remotePort,
+		ClientAddr:     sockAddrString(s.clientAddr),
+		OpenedAtMs:     s.openedAtMs,
+		LastActiveAtMs: nonNegativeUnixMilli(s.lastActiveUnixMs.Load()),
+		IdleTimeoutMs:  uint32(s.idleTimeout / time.Millisecond),
 	}
 }
 

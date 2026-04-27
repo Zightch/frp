@@ -143,10 +143,16 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 	if agent == nil {
 		return nil, nil, fmt.Errorf("control supervisor is unavailable")
 	}
-	if !agent.Enqueue(controlsession.SessionAttached{
+	attachEvent := controlsession.SessionAttached{
 		ConnID:         conn.RemoteAddr().String(),
 		HelloRequestID: frame.RequestID,
-	}) {
+	}
+	session.applyControlEvent(attachEvent)
+	session.controlMu.Lock()
+	session.pending = group
+	session.recovery = pendingRecoveryModeForSnapshot(group.Snapshot)
+	session.controlMu.Unlock()
+	if !agent.Enqueue(attachEvent) {
 		s.supervisor.DetachRuntime(session.ID)
 		return nil, nil, fmt.Errorf("control session attach failed")
 	}

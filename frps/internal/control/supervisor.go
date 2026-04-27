@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 )
@@ -34,7 +35,7 @@ type runtimeSessionSnapshot struct {
 	desiredGroup GroupRuntime
 	recoveryMode testsupport.RecoveryMode
 	state        controlsession.SessionState
-	runtime      observedSessionRuntimeState
+	runtime      controlruntime.ObservedState
 }
 
 func NewSupervisor(executor controlsession.Executor) *Supervisor {

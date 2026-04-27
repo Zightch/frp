@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
@@ -425,6 +426,21 @@ func TestServerScanNonListeningTunnelRuntimeIssuesScansActivePartialGroupAndReco
 		},
 		group.Snapshot,
 	)
+	sessionGroup := GroupRuntime{
+		ID:          group.ID,
+		Name:        group.Name,
+		Enabled:     group.Enabled,
+		EffectiveIP: group.EffectiveIP,
+		Snapshot:    group.Snapshot,
+	}
+	state := controlsession.NewState(sessionGroup.ID, session.ID)
+	desired := desiredRuntimeFromGroup(sessionGroup)
+	state.Desired = &desired
+	state.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: desired}
+	state.Conn = controlsession.ControlConnState{Attached: true, ConnID: "test-conn"}
+	state.Phase = controlsession.SessionPhaseOnline
+	state.RuntimePhase = controlsession.RuntimePhaseBinding
+	session.setControlState(state)
 	defer server.shutdownSession(session)
 
 	if err := server.ensureTunnelListeners(serverConn, slog.New(slog.NewTextHandler(io.Discard, nil)), session); err != nil {

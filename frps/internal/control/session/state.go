@@ -184,6 +184,32 @@ func cloneState(state SessionState) SessionState {
 	return next
 }
 
+func Clone(state SessionState) SessionState {
+	return cloneState(state)
+}
+
+func Advance(state SessionState, event Event) SessionState {
+	current := cloneState(state)
+	queue := []Event{event}
+
+	for len(queue) > 0 {
+		nextEvent := queue[0]
+		queue = queue[1:]
+
+		next, actions := Reduce(current, nextEvent)
+		current = next
+		for _, action := range actions {
+			request, ok := action.(ActionRequestReconcile)
+			if !ok {
+				continue
+			}
+			queue = append(queue, ReconcileRequested{Reason: request.Reason})
+		}
+	}
+
+	return current
+}
+
 func nextRequestID(state *SessionState) uint32 {
 	requestID := state.NextRequestID
 	state.NextRequestID++

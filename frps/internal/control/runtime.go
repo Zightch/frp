@@ -16,6 +16,7 @@ import (
 
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
 	controlrepo "github.com/zightch/frp/frps/internal/control/repo"
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/ports"
 	"github.com/zightch/frp/frps/internal/storage"
@@ -127,21 +128,6 @@ func (s *Server) listenUDP(ctx context.Context, bind ListenerBind, addr *net.UDP
 	return listener, err
 }
 
-type sessionAppliedConfigState struct {
-	group    GroupRuntime
-	snapshot ConfigSnapshot
-}
-
-type sessionPendingConfigState struct {
-	requestID uint32
-	group     GroupRuntime
-	snapshot  ConfigSnapshot
-}
-
-type sessionAckedConfigState struct {
-	version uint64
-}
-
 type sessionConfigPushOperation struct {
 	requestID    uint32
 	group        GroupRuntime
@@ -152,13 +138,6 @@ type sessionConfigPushOperation struct {
 type sessionConfigApplyResult struct {
 	group        GroupRuntime
 	snapshot     ConfigSnapshot
-	recoveryMode testsupport.RecoveryMode
-}
-
-type sessionConfigState struct {
-	current      sessionAppliedConfigState
-	pending      sessionPendingConfigState
-	acked        sessionAckedConfigState
 	recoveryMode testsupport.RecoveryMode
 }
 
@@ -189,8 +168,11 @@ type sessionState struct {
 	nextStreamID        atomic.Uint32
 	readTimeout         time.Duration
 
-	configMu sync.Mutex
-	config   sessionConfigState
+	controlMu sync.Mutex
+	control   controlsession.SessionState
+	group     GroupRuntime
+	pending   GroupRuntime
+	recovery  testsupport.RecoveryMode
 
 	writeMu     sync.Mutex
 	runtimeMu   sync.Mutex
@@ -201,42 +183,24 @@ type sessionState struct {
 }
 
 type observedSessionConfigState struct {
-	group                GroupRuntime
-	snapshot             ConfigSnapshot
-	lastAckedConfigValue uint64
-	pendingRequestID     uint32
-	pendingGroup         GroupRuntime
-	pendingSnapshot      ConfigSnapshot
-	recoveryMode         testsupport.RecoveryMode
-}
-
-type observedSessionRuntimeState struct {
-	frozen                bool
-	listenersStarted      bool
-	generation            uint64
-	activeTunnelIDs       map[uint32]struct{}
-	attachedListeners     []observedSessionRuntimeListener
-	activeStreamCount     uint32
-	activeUDPSessionCount uint32
-	connections           []observedSessionRuntimeConnection
-}
-
-type observedSessionRuntimeListener struct {
-	tunnelID uint32
-	protocol string
-	bindIP   string
-	port     uint16
+	state        controlsession.SessionState
+	group        GroupRuntime
+	pendingGroup GroupRuntime
+	recoveryMode testsupport.RecoveryMode
 }
 
 func newSessionState(id uint64, group GroupRuntime, snapshot ConfigSnapshot, readTimeout time.Duration) *sessionState {
 	session := &sessionState{
 		ID:          id,
 		readTimeout: readTimeout,
+		group:       group,
 	}
-	session.config.current = sessionAppliedConfigState{
-		group:    group,
-		snapshot: snapshot,
-	}
+	session.group.Snapshot = snapshot
+	session.control = controlsession.NewState(group.ID, id)
+	desiredGroup := group
+	desiredGroup.Snapshot = snapshot
+	desired := desiredRuntimeFromGroup(desiredGroup)
+	session.control.Desired = &desired
 	session.runtime.done = make(chan struct{})
 	session.runtime.listeners.tcp = make(map[uint32][]net.Listener)
 	session.runtime.listeners.udp = make(map[uint32][]UDPListener)
@@ -298,6 +262,25 @@ func (s *sessionState) nextTunnelStreamID() uint32 {
 		streamID = s.nextStreamID.Add(1)
 	}
 	return streamID
+}
+
+func (s *sessionState) controlState() controlsession.SessionState {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	return controlsession.Clone(s.control)
+}
+
+func (s *sessionState) setControlState(state controlsession.SessionState) {
+	s.controlMu.Lock()
+	s.control = controlsession.Clone(state)
+	s.controlMu.Unlock()
+}
+
+func (s *sessionState) applyControlEvent(event controlsession.Event) controlsession.SessionState {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	s.control = controlsession.Advance(s.control, event)
+	return controlsession.Clone(s.control)
 }
 
 func (s *sessionState) hasRuntimeListenersLocked() bool {
@@ -459,46 +442,45 @@ func (s *sessionState) closePublicStream(streamID uint32) bool {
 }
 
 func (s *sessionState) currentGroupID() int64 {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	return s.config.current.group.ID
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	return s.group.ID
 }
 
 func (s *sessionState) currentGroupAndSnapshot() (GroupRuntime, ConfigSnapshot) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	return s.config.current.group, s.config.current.snapshot
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	return s.group, s.group.Snapshot
 }
 
 func (s *sessionState) currentSnapshot() ConfigSnapshot {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	return s.config.current.snapshot
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	return s.group.Snapshot
 }
 
 func (s *sessionState) setRecoveryMode(mode testsupport.RecoveryMode) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	s.config.recoveryMode = mode
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	s.recovery = mode
 }
 
 func (s *sessionState) recoveryModeValue() testsupport.RecoveryMode {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	return s.config.recoveryMode
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	return s.recovery
 }
 
 func (s *sessionState) currentGroup() GroupRuntime {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	return s.config.current.group
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	return s.group
 }
 
 func (s *sessionState) replaceGroupRuntime(group GroupRuntime) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	group.Snapshot = s.config.current.snapshot
-	s.config.current.group = group
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	s.group = group
 }
 
 func pendingRecoveryModeForSnapshot(snapshot ConfigSnapshot) testsupport.RecoveryMode {
@@ -516,24 +498,23 @@ func appliedRecoveryModeForSnapshot(snapshot ConfigSnapshot) testsupport.Recover
 }
 
 func (s *sessionState) prepareConfigPush(group GroupRuntime, snapshot ConfigSnapshot) (sessionConfigPushOperation, error) {
-	requestID := s.nextRequestID()
-	recoveryMode := pendingRecoveryModeForSnapshot(snapshot)
-
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	if s.config.pending.requestID != 0 {
+	state := s.controlState()
+	if state.Pending != nil {
 		return sessionConfigPushOperation{}, errConfigUpdateInFlight
 	}
 
-	s.config.pending = sessionPendingConfigState{
-		requestID: requestID,
-		group:     group,
-		snapshot:  snapshot,
+	group.Snapshot = snapshot
+	next := s.applyControlEvent(controlsession.DesiredRuntimeUpdated{Snapshot: desiredRuntimeFromGroup(group)})
+	if next.Pending == nil {
+		return sessionConfigPushOperation{}, errConfigUpdateInFlight
 	}
-	s.config.recoveryMode = recoveryMode
+	recoveryMode := pendingRecoveryModeForSnapshot(snapshot)
+	s.controlMu.Lock()
+	s.pending = group
+	s.recovery = recoveryMode
+	s.controlMu.Unlock()
 	return sessionConfigPushOperation{
-		requestID:    requestID,
+		requestID:    next.Pending.RequestID,
 		group:        group,
 		snapshot:     snapshot,
 		recoveryMode: recoveryMode,
@@ -541,91 +522,88 @@ func (s *sessionState) prepareConfigPush(group GroupRuntime, snapshot ConfigSnap
 }
 
 func (s *sessionState) reconfigure(group GroupRuntime, snapshot ConfigSnapshot, requestID uint32) error {
-	recoveryMode := pendingRecoveryModeForSnapshot(snapshot)
-
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	if s.config.pending.requestID != 0 {
+	group.Snapshot = snapshot
+	desired := desiredRuntimeFromGroup(group)
+	state := s.controlState()
+	if state.Pending != nil && state.Pending.RequestID != requestID {
 		return errConfigUpdateInFlight
 	}
-
-	s.config.pending = sessionPendingConfigState{
-		requestID: requestID,
-		group:     group,
-		snapshot:  snapshot,
+	state.Desired = &desired
+	state.Pending = &controlsession.PendingConfigPush{
+		RequestID: requestID,
+		Snapshot:  desired,
 	}
-	s.config.recoveryMode = recoveryMode
+	state.Phase = controlsession.SessionPhaseSyncingConfig
+	s.setControlState(state)
+
+	s.controlMu.Lock()
+	group.Snapshot = snapshot
+	s.pending = group
+	s.recovery = pendingRecoveryModeForSnapshot(snapshot)
+	s.controlMu.Unlock()
 	return nil
 }
 
 func (s *sessionState) configAckState() (uint32, uint64) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	if s.config.pending.requestID == 0 {
-		return 0, s.config.current.snapshot.Version
+	state := s.controlState()
+	if state.Pending == nil {
+		_, snapshot := s.currentGroupAndSnapshot()
+		return 0, snapshot.Version
 	}
-	return s.config.pending.requestID, s.config.pending.snapshot.Version
+	return state.Pending.RequestID, state.Pending.Snapshot.Version
 }
 
 func (s *sessionState) lastAckedConfigVersion() uint64 {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	return s.config.acked.version
+	state := s.controlState()
+	if state.Applied == nil {
+		return 0
+	}
+	return state.Applied.Snapshot.Version
 }
 
 func (s *sessionState) acceptConfigAck(requestID uint32, version uint64) (sessionConfigApplyResult, error) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	if s.config.pending.requestID == 0 || requestID != s.config.pending.requestID {
+	state := s.controlState()
+	if state.Pending == nil || requestID != state.Pending.RequestID {
 		return sessionConfigApplyResult{}, errUnexpectedConfigAck
 	}
-	if version != s.config.pending.snapshot.Version {
+	if version != state.Pending.Snapshot.Version {
 		return sessionConfigApplyResult{}, errConfigVersionMismatch
 	}
-
-	s.config.current = sessionAppliedConfigState{
-		group:    s.config.pending.group,
-		snapshot: s.config.pending.snapshot,
-	}
-	s.config.acked.version = version
-	s.config.recoveryMode = appliedRecoveryModeForSnapshot(s.config.current.snapshot)
-	s.config.pending = sessionPendingConfigState{}
+	next := s.applyControlEvent(controlsession.ConfigAckReceived{
+		RequestID:     requestID,
+		ConfigVersion: version,
+	})
+	s.controlMu.Lock()
+	s.group = s.pending
+	s.group.Snapshot = configSnapshotFromDesired(next.Applied.Snapshot)
+	s.pending = GroupRuntime{}
+	s.recovery = appliedRecoveryModeForSnapshot(s.group.Snapshot)
+	group := s.group
+	recovery := s.recovery
+	s.controlMu.Unlock()
 	return sessionConfigApplyResult{
-		group:        s.config.current.group,
-		snapshot:     s.config.current.snapshot,
-		recoveryMode: s.config.recoveryMode,
+		group:        group,
+		snapshot:     group.Snapshot,
+		recoveryMode: recovery,
 	}, nil
 }
 
-func (s *sessionState) clearPendingConfigRequest(requestID uint32) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	if s.config.pending.requestID == requestID {
-		s.config.pending = sessionPendingConfigState{}
-	}
-}
-
 func (s *sessionState) hasPendingConfig() bool {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-	return s.config.pending.requestID != 0
+	return s.controlState().Pending != nil
 }
 
 func (s *sessionState) refreshPendingConfig(group GroupRuntime, snapshot ConfigSnapshot) bool {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	if s.config.pending.requestID == 0 {
+	state := s.controlState()
+	if state.Pending == nil {
 		return false
 	}
-	if !samePushedConfigSnapshot(s.config.pending.snapshot, snapshot) {
+	if !samePushedConfigSnapshot(configSnapshotFromDesired(state.Pending.Snapshot), snapshot) {
 		return false
 	}
-
-	s.config.pending.group = group
-	s.config.pending.snapshot = snapshot
+	s.controlMu.Lock()
+	group.Snapshot = snapshot
+	s.pending = group
+	s.controlMu.Unlock()
 	return true
 }
 
@@ -678,57 +656,54 @@ func (s *sessionState) resetTunnelRuntime() {
 	s.allowTunnelRuntimeStart()
 }
 
-func (s *sessionState) observeState() (observedSessionConfigState, observedSessionRuntimeState) {
-	s.configMu.Lock()
+func (s *sessionState) observeState() (observedSessionConfigState, controlruntime.ObservedState) {
+	s.controlMu.Lock()
 	configState := observedSessionConfigState{
-		group:                s.config.current.group,
-		snapshot:             s.config.current.snapshot,
-		lastAckedConfigValue: s.config.acked.version,
-		pendingRequestID:     s.config.pending.requestID,
-		pendingGroup:         s.config.pending.group,
-		pendingSnapshot:      s.config.pending.snapshot,
-		recoveryMode:         s.config.recoveryMode,
+		state:        controlsession.Clone(s.control),
+		group:        s.group,
+		pendingGroup: s.pending,
+		recoveryMode: s.recovery,
 	}
-	s.configMu.Unlock()
+	s.controlMu.Unlock()
 
 	s.runtimeMu.Lock()
 	runtimeConnections := observeRuntimeConnections(s.runtime.streams, s.runtime.udp.sessions)
-	runtimeState := observedSessionRuntimeState{
-		frozen:                s.runtime.frozen,
-		listenersStarted:      s.runtime.listeners.started,
-		generation:            s.runtime.generation,
-		activeTunnelIDs:       s.activeRuntimeTunnelIDsLocked(),
-		attachedListeners:     observeRuntimeListeners(s.runtime.listeners.tcp, s.runtime.listeners.udp),
-		activeStreamCount:     uint32(len(s.runtime.streams)),
-		activeUDPSessionCount: uint32(len(s.runtime.udp.sessions)),
-		connections:           runtimeConnections,
+	runtimeState := controlruntime.ObservedState{
+		Frozen:                s.runtime.frozen,
+		ListenersStarted:      s.runtime.listeners.started,
+		Generation:            s.runtime.generation,
+		ActiveTunnelIDs:       s.activeRuntimeTunnelIDsLocked(),
+		AttachedListeners:     observeRuntimeListeners(s.runtime.listeners.tcp, s.runtime.listeners.udp),
+		ActiveStreamCount:     uint32(len(s.runtime.streams)),
+		ActiveUDPSessionCount: uint32(len(s.runtime.udp.sessions)),
+		Connections:           runtimeConnections,
 	}
 	s.runtimeMu.Unlock()
 
 	return configState, runtimeState
 }
 
-func observeRuntimeListeners(tcp map[uint32][]net.Listener, udp map[uint32][]UDPListener) []observedSessionRuntimeListener {
-	listeners := make([]observedSessionRuntimeListener, 0, len(tcp)+len(udp))
+func observeRuntimeListeners(tcp map[uint32][]net.Listener, udp map[uint32][]UDPListener) []controlruntime.ObservedListener {
+	listeners := make([]controlruntime.ObservedListener, 0, len(tcp)+len(udp))
 	for tunnelID, tunnelListeners := range tcp {
 		for _, listener := range tunnelListeners {
 			bindIP, port := listenerAddr(listener.Addr())
-			listeners = append(listeners, observedSessionRuntimeListener{
-				tunnelID: tunnelID,
-				protocol: "tcp",
-				bindIP:   bindIP,
-				port:     port,
+			listeners = append(listeners, controlruntime.ObservedListener{
+				TunnelID: tunnelID,
+				Protocol: "tcp",
+				BindIP:   bindIP,
+				Port:     port,
 			})
 		}
 	}
 	for tunnelID, tunnelListeners := range udp {
 		for _, listener := range tunnelListeners {
 			bindIP, port := listenerAddr(listener.LocalAddr())
-			listeners = append(listeners, observedSessionRuntimeListener{
-				tunnelID: tunnelID,
-				protocol: "udp",
-				bindIP:   bindIP,
-				port:     port,
+			listeners = append(listeners, controlruntime.ObservedListener{
+				TunnelID: tunnelID,
+				Protocol: "udp",
+				BindIP:   bindIP,
+				Port:     port,
 			})
 		}
 	}
@@ -1021,7 +996,6 @@ func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group Gr
 		RequestID: pushOp.requestID,
 		Body:      body,
 	}); err != nil {
-		session.clearPendingConfigRequest(pushOp.requestID)
 		return err
 	}
 	testhooks.Point(
@@ -1070,6 +1044,13 @@ func (s *Server) RefreshGroup(groupID int64) {
 	}
 	if runtime := s.runtimeExecutor(active.session.ID); runtime != nil {
 		runtime.setDesiredGroup(group)
+	}
+	next := active.session.applyControlEvent(controlsession.DesiredRuntimeUpdated{Snapshot: desiredRuntimeFromGroup(group)})
+	if next.Pending != nil {
+		active.session.controlMu.Lock()
+		active.session.pending = group
+		active.session.recovery = pendingRecoveryModeForSnapshot(group.Snapshot)
+		active.session.controlMu.Unlock()
 	}
 	s.supervisor.UpdateDesiredRuntime(groupID, desiredRuntimeFromGroup(group))
 }
@@ -1278,10 +1259,10 @@ func (s runtimeSessionSnapshot) activeRuntimeGroup() (runtimeGroupSnapshot, bool
 }
 
 func (s runtimeSessionSnapshot) activeRuntimeTunnelIDs() map[uint32]struct{} {
-	if s.runtime.frozen {
+	if s.runtime.Frozen {
 		return nil
 	}
-	return s.runtime.activeTunnelIDs
+	return s.runtime.ActiveTunnelIDs
 }
 
 func (s *Server) reserveGroupSlot(groupID int64, sessionID uint64) bool {
@@ -1338,6 +1319,7 @@ func (s *Server) unregisterActiveSession(session *sessionState) {
 		return
 	}
 	s.supervisor.DetachRuntime(session.ID)
+	session.applyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 	_ = s.supervisor.DispatchBySessionID(session.ID, controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 }
 
@@ -1347,30 +1329,27 @@ func projectedSessionState(session *sessionState, conn net.Conn) controlsession.
 	}
 
 	configState, runtimeState := session.observeState()
-	state := controlsession.NewState(configState.group.ID, session.ID)
+	state := controlsession.Clone(configState.state)
+	if state.GroupID == 0 {
+		state = controlsession.NewState(configState.group.ID, session.ID)
+	}
+	state.GroupID = configState.group.ID
+	state.SessionID = session.ID
 	state.Conn = controlsession.ControlConnState{
 		Attached: conn != nil,
 		ConnID:   transport.ConnectionID(conn),
 	}
-	state.Phase = controlsession.SessionPhaseOnline
-
-	applied := desiredRuntimeFromObservedSnapshot(configState.group.EffectiveIP, configState.snapshot)
-	if configState.lastAckedConfigValue != 0 || configState.snapshot.Version != 0 || len(configState.snapshot.Tunnels) != 0 {
-		state.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: applied}
+	if state.Phase == controlsession.SessionPhaseUnknown {
+		state.Phase = controlsession.SessionPhaseOnline
 	}
 
-	desired := applied
-	if configState.pendingRequestID != 0 {
-		pending := desiredRuntimeFromObservedSnapshot(configState.pendingGroup.EffectiveIP, configState.pendingSnapshot)
-		state.Pending = &controlsession.PendingConfigPush{
-			RequestID: configState.pendingRequestID,
-			Snapshot:  pending,
-		}
-		desired = pending
-		state.Phase = controlsession.SessionPhaseSyncingConfig
+	if state.Desired == nil {
+		desired := desiredRuntimeFromObservedSnapshot(configState.group.EffectiveIP, configState.group.Snapshot)
+		state.Desired = &desired
 	}
+	desired := *state.Desired
 	state.Desired = &desired
-	state.Bindings = projectSessionBindings(desired, runtimeState.activeTunnelIDs)
+	state.Bindings = projectSessionBindings(desired, runtimeState.ActiveTunnelIDs)
 	state.RuntimePhase = projectedRuntimePhase(desired, state.Bindings, runtimeState)
 
 	return state
@@ -1406,11 +1385,11 @@ func projectSessionBindings(snapshot controlsession.DesiredRuntimeSnapshot, acti
 	return bindings
 }
 
-func projectedRuntimePhase(snapshot controlsession.DesiredRuntimeSnapshot, bindings map[controlsession.BindingKey]controlsession.BindingState, runtime observedSessionRuntimeState) controlsession.RuntimePhase {
+func projectedRuntimePhase(snapshot controlsession.DesiredRuntimeSnapshot, bindings map[controlsession.BindingKey]controlsession.BindingState, runtime controlruntime.ObservedState) controlsession.RuntimePhase {
 	if !desiredSnapshotHasEnabledTunnels(snapshot) {
 		return controlsession.RuntimePhaseEmpty
 	}
-	if runtime.frozen {
+	if runtime.Frozen {
 		return controlsession.RuntimePhaseBlocked
 	}
 	if len(bindings) == 0 {
@@ -1418,31 +1397,13 @@ func projectedRuntimePhase(snapshot controlsession.DesiredRuntimeSnapshot, bindi
 	}
 	for _, binding := range bindings {
 		if binding.Phase != controlsession.BindingPhaseActive {
-			if runtime.listenersStarted {
+			if runtime.ListenersStarted {
 				return controlsession.RuntimePhaseRecovering
 			}
 			return controlsession.RuntimePhaseBinding
 		}
 	}
 	return controlsession.RuntimePhaseActive
-}
-
-func desiredSnapshotHasEnabledTunnels(snapshot controlsession.DesiredRuntimeSnapshot) bool {
-	for _, tunnel := range snapshot.Tunnels {
-		if tunnel.Enabled {
-			return true
-		}
-	}
-	return false
-}
-
-func desiredRuntimeFromObservedSnapshot(effectiveIP string, snapshot ConfigSnapshot) controlsession.DesiredRuntimeSnapshot {
-	return controlsession.DesiredRuntimeSnapshot{
-		Version:       snapshot.Version,
-		GeneratedAtMs: snapshot.GeneratedAtMs,
-		EffectiveIP:   effectiveIP,
-		Tunnels:       desiredTunnelsFromConfig(snapshot.Tunnels),
-	}
 }
 
 func attachProjectedRuntimeSession(parent context.Context, supervisor *Supervisor, baseLogger Logger, conn net.Conn, session *sessionState) *controlsession.Agent {
@@ -1470,16 +1431,6 @@ func scopedRuntimeLogger(base Logger, session *sessionState, group GroupRuntime)
 		return logger.With("session_id", session.ID, "group_id", group.ID, "group_name", group.Name)
 	}
 	return nil
-}
-
-type tunnelRuntimeIssue struct {
-	Reason        string
-	ConfigVersion uint64
-}
-
-type runtimeIssueStore struct {
-	mu      sync.RWMutex
-	tunnels map[int64]tunnelRuntimeIssue
 }
 
 type tcpTunnelListener struct {
@@ -1529,152 +1480,6 @@ type tunnelListenerBatch struct {
 	tcpRuntimes  []tcpTunnelListener
 	udpListeners []UDPListener
 	udpRuntimes  []udpTunnelListener
-}
-
-func newRuntimeIssueStore() *runtimeIssueStore {
-	return &runtimeIssueStore{
-		tunnels: make(map[int64]tunnelRuntimeIssue),
-	}
-}
-
-func (s *runtimeIssueStore) snapshotReasons() map[int64]string {
-	if s == nil {
-		return nil
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if len(s.tunnels) == 0 {
-		return nil
-	}
-
-	issues := make(map[int64]string, len(s.tunnels))
-	for tunnelID, issue := range s.tunnels {
-		issues[tunnelID] = issue.Reason
-	}
-	return issues
-}
-
-func (s *runtimeIssueStore) clearTunnels(tunnels []protocol.TunnelEntry) {
-	if s == nil || len(tunnels) == 0 {
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, tunnel := range tunnels {
-		delete(s.tunnels, int64(tunnel.TunnelID))
-	}
-}
-
-func (s *runtimeIssueStore) record(tunnelID uint32, reason string) {
-	s.recordForConfig(tunnelID, 0, reason)
-}
-
-func (s *runtimeIssueStore) recordForConfig(tunnelID uint32, configVersion uint64, reason string) {
-	if s == nil || tunnelID == 0 {
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current, ok := s.tunnels[int64(tunnelID)]
-	if ok && configVersion != 0 && current.ConfigVersion > configVersion {
-		return
-	}
-
-	trimmedReason := strings.TrimSpace(reason)
-	if trimmedReason == "" {
-		delete(s.tunnels, int64(tunnelID))
-		return
-	}
-
-	s.tunnels[int64(tunnelID)] = tunnelRuntimeIssue{
-		Reason:        trimmedReason,
-		ConfigVersion: configVersion,
-	}
-}
-
-func (s *runtimeIssueStore) clearUnknown(knownTunnelIDs map[int64]struct{}) {
-	if s == nil {
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for tunnelID := range s.tunnels {
-		if _, ok := knownTunnelIDs[tunnelID]; ok {
-			continue
-		}
-		delete(s.tunnels, tunnelID)
-	}
-}
-
-func (s *runtimeIssueStore) applyScanResult(snapshot ConfigSnapshot, staticConflictIDs map[int64]struct{}, issues map[uint32]string, preserved map[uint32]struct{}) {
-	if s == nil {
-		return
-	}
-
-	for _, tunnel := range snapshot.Tunnels {
-		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
-			s.recordForConfig(tunnel.TunnelID, snapshot.Version, "")
-			continue
-		}
-		if _, conflicted := staticConflictIDs[int64(tunnel.TunnelID)]; conflicted {
-			s.recordForConfig(tunnel.TunnelID, snapshot.Version, "")
-			continue
-		}
-		if _, keep := preserved[tunnel.TunnelID]; keep {
-			continue
-		}
-		s.recordForConfig(tunnel.TunnelID, snapshot.Version, issues[tunnel.TunnelID])
-	}
-}
-
-func (s *Server) TunnelRuntimeIssues() map[int64]string {
-	if s == nil || s.runtimeIssues == nil {
-		return nil
-	}
-	return s.runtimeIssues.snapshotReasons()
-}
-
-func (s *Server) clearTunnelRuntimeIssues(tunnels []protocol.TunnelEntry) {
-	if s == nil || s.runtimeIssues == nil {
-		return
-	}
-	s.runtimeIssues.clearTunnels(tunnels)
-}
-
-func (s *Server) recordTunnelRuntimeIssue(tunnelID uint32, reason string) {
-	if s == nil || s.runtimeIssues == nil {
-		return
-	}
-	s.runtimeIssues.record(tunnelID, reason)
-}
-
-func (s *Server) recordTunnelRuntimeIssueForConfig(tunnelID uint32, configVersion uint64, reason string) {
-	if s == nil || s.runtimeIssues == nil {
-		return
-	}
-	s.runtimeIssues.recordForConfig(tunnelID, configVersion, reason)
-}
-
-func (s *Server) clearUnknownTunnelRuntimeIssues(knownTunnelIDs map[int64]struct{}) {
-	if s == nil || s.runtimeIssues == nil {
-		return
-	}
-	s.runtimeIssues.clearUnknown(knownTunnelIDs)
-}
-
-func (s *Server) applyScannedTunnelRuntimeIssues(snapshot ConfigSnapshot, staticConflictIDs map[int64]struct{}, issues map[uint32]string, preserved map[uint32]struct{}) {
-	if s == nil || s.runtimeIssues == nil {
-		return
-	}
-	s.runtimeIssues.applyScanResult(snapshot, staticConflictIDs, issues, preserved)
 }
 
 func (e *tunnelListenerStartError) Error() string {
@@ -2063,17 +1868,6 @@ func closeStartedTunnelListeners(tcpListeners []net.Listener, udpListeners []UDP
 	}
 }
 
-func protocolName(value uint8) string {
-	switch value {
-	case protocol.ProtocolTCP:
-		return "tcp"
-	case protocol.ProtocolUDP:
-		return "udp"
-	default:
-		return fmt.Sprintf("protocol(%d)", value)
-	}
-}
-
 func normalizeRuntimeListenIP(raw string) (string, bool) {
 	normalized, err := system.NormalizeListenIP(raw)
 	if err != nil {
@@ -2299,49 +2093,49 @@ func newRuntimeSessionTarget(snapshot runtimeSessionSnapshot) runtimeSessionTarg
 		lastAckedConfigVersion: config.lastAckedConfigVersion,
 		pending:                config.pending,
 		recoveryMode:           snapshot.recoveryMode,
-		runtimeFrozen:          snapshot.runtime.frozen,
-		listenersStarted:       snapshot.runtime.listenersStarted,
-		runtimeGeneration:      snapshot.runtime.generation,
-		activeStreamCount:      snapshot.runtime.activeStreamCount,
-		activeUDPSessionCount:  snapshot.runtime.activeUDPSessionCount,
-		activeTunnelIDs:        snapshot.runtime.activeTunnelIDs,
+		runtimeFrozen:          snapshot.runtime.Frozen,
+		listenersStarted:       snapshot.runtime.ListenersStarted,
+		runtimeGeneration:      snapshot.runtime.Generation,
+		activeStreamCount:      snapshot.runtime.ActiveStreamCount,
+		activeUDPSessionCount:  snapshot.runtime.ActiveUDPSessionCount,
+		activeTunnelIDs:        snapshot.runtime.ActiveTunnelIDs,
 		listenersByTunnel:      make(map[uint32][]runtimeListenerTarget),
 		missingByTunnel:        make(map[uint32]runtimeMissingListenerTarget),
-		connections:            make([]runtimeConnectionTarget, 0, len(snapshot.runtime.connections)),
+		connections:            make([]runtimeConnectionTarget, 0, len(snapshot.runtime.Connections)),
 	}
 
-	for _, attached := range snapshot.runtime.attachedListeners {
+	for _, attached := range snapshot.runtime.AttachedListeners {
 		listener := runtimeListenerTarget{
 			id: runtimeTunnelTargetID{
 				GroupID:   target.id.GroupID,
 				SessionID: snapshot.sessionID,
-				TunnelID:  attached.tunnelID,
+				TunnelID:  attached.TunnelID,
 			},
-			protocol:      attached.protocol,
-			bindIP:        attached.bindIP,
-			port:          attached.port,
-			configVersion: snapshot.runtime.generation,
-			kind:          attached.protocol,
+			protocol:      attached.Protocol,
+			bindIP:        attached.BindIP,
+			port:          attached.Port,
+			configVersion: snapshot.runtime.Generation,
+			kind:          attached.Protocol,
 		}
 		target.listeners = append(target.listeners, listener)
-		target.listenersByTunnel[attached.tunnelID] = append(target.listenersByTunnel[attached.tunnelID], listener)
+		target.listenersByTunnel[attached.TunnelID] = append(target.listenersByTunnel[attached.TunnelID], listener)
 	}
 
-	for _, connection := range snapshot.runtime.connections {
+	for _, connection := range snapshot.runtime.Connections {
 		target.connections = append(target.connections, runtimeConnectionTarget{
 			id: runtimeConnectionTargetID{
 				GroupID:      target.id.GroupID,
 				SessionID:    snapshot.sessionID,
-				ConnectionID: connection.connectionID,
-				Kind:         connection.kind,
+				ConnectionID: connection.ConnectionID,
+				Kind:         connection.Kind,
 			},
-			protocol:       connection.protocol,
-			tunnelID:       connection.tunnelID,
-			remotePort:     connection.remotePort,
-			clientAddr:     connection.clientAddr,
-			openedAtMs:     connection.openedAtMs,
-			lastActiveAtMs: connection.lastActiveAtMs,
-			idleTimeoutMs:  connection.idleTimeoutMs,
+			protocol:       connection.Protocol,
+			tunnelID:       connection.TunnelID,
+			remotePort:     connection.RemotePort,
+			clientAddr:     connection.ClientAddr,
+			openedAtMs:     connection.OpenedAtMs,
+			lastActiveAtMs: connection.LastActiveAtMs,
+			idleTimeoutMs:  connection.IdleTimeoutMs,
 		})
 	}
 
@@ -2646,8 +2440,6 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 	for _, group := range groups {
 		targetTunnels := viewIndex.selectNonListeningEnabledTunnels(group)
 		issues := s.scanGroupRuntimeIssues(group, staticConflictIDs, targetTunnels)
-		preserveHealthyIssues := s.preserveScannedHealthyRuntimeIssuesUntilRecovery(viewIndex, group, targetTunnels, staticConflictIDs, issues)
-		s.applyScannedTunnelRuntimeIssues(group.Snapshot, staticConflictIDs, issues, preserveHealthyIssues)
 		testhooks.Point(
 			"runtime.scan.before_group_recover",
 			testhooks.F("group_id", group.ID),
@@ -2656,6 +2448,10 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 		if err := s.recoverScannedActiveSessionTunnels(viewIndex, group, targetTunnels, staticConflictIDs, issues); err != nil {
 			s.logger.Warn("recover scanned non-listening tunnels failed", "group_id", group.ID, "error", err)
 		}
+		refreshedViewIndex := s.runtimeSnapshotIndex()
+		refreshedTargetTunnels := refreshedViewIndex.selectNonListeningEnabledTunnels(group)
+		preserveHealthyIssues := s.preserveScannedHealthyRuntimeIssuesUntilRecovery(refreshedViewIndex, group, refreshedTargetTunnels, staticConflictIDs, issues)
+		s.applyScannedTunnelRuntimeIssues(group.Snapshot, staticConflictIDs, issues, preserveHealthyIssues)
 	}
 
 	testhooks.Point("runtime.scan.after_round", testhooks.F("group_count", len(groups)))
@@ -2779,6 +2575,13 @@ func (s *Server) recoverScannedActiveSessionTunnels(viewIndex runtimeSnapshotInd
 		"config_version", group.Snapshot.Version,
 		"tunnel_count", len(group.Snapshot.Tunnels),
 	)
+	next := active.session.applyControlEvent(controlsession.DesiredRuntimeUpdated{Snapshot: desiredRuntimeFromGroup(group)})
+	if next.Pending != nil {
+		active.session.controlMu.Lock()
+		active.session.pending = group
+		active.session.recovery = pendingRecoveryModeForSnapshot(group.Snapshot)
+		active.session.controlMu.Unlock()
+	}
 	if runtime := s.runtimeExecutor(active.session.ID); runtime != nil {
 		runtime.setDesiredGroup(group)
 	}
@@ -2818,6 +2621,7 @@ func (s *Server) requestAuditedSessionRuntimeRecovery(sessionID uint64, targetTu
 	if !ok {
 		return nil
 	}
+	runtime := s.runtimeExecutor(sessionID)
 
 	targetTunnelIDs := make(map[uint32]struct{}, len(targetTunnels))
 	for _, tunnel := range targetTunnels {
@@ -2831,19 +2635,27 @@ func (s *Server) requestAuditedSessionRuntimeRecovery(sessionID uint64, targetTu
 			if _, ok := targetTunnelIDs[tunnelID]; !ok {
 				continue
 			}
-			dispatched = s.supervisor.DispatchBySessionID(sessionID, controlsession.BindingClosed{
+			event := controlsession.BindingClosed{
 				Key:    key,
 				Reason: "runtime audit detected missing listener",
-			}) || dispatched
+			}
+			if runtime != nil && runtime.session != nil {
+				runtime.session.applyControlEvent(event)
+			}
+			dispatched = s.supervisor.DispatchBySessionID(sessionID, event) || dispatched
 		}
 	}
 	if dispatched {
 		s.awaitAuditedSessionRecovery(sessionID, targetTunnelIDs)
 		return nil
 	}
-	s.supervisor.DispatchBySessionID(sessionID, controlsession.ReconcileRequested{
+	reconcileEvent := controlsession.ReconcileRequested{
 		Reason: "runtime_audit_recover",
-	})
+	}
+	if runtime != nil && runtime.session != nil {
+		runtime.session.applyControlEvent(reconcileEvent)
+	}
+	s.supervisor.DispatchBySessionID(sessionID, reconcileEvent)
 	s.awaitAuditedSessionRecovery(sessionID, targetTunnelIDs)
 	return nil
 }

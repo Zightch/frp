@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/clock"
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
@@ -60,7 +61,7 @@ type Server struct {
 	listener            net.Listener
 	controlListenerOpen bool
 	activeConn          map[net.Conn]struct{}
-	runtimeIssues       *runtimeIssueStore
+	runtimeIssues       *controlruntime.IssueStore
 	closeOnce           sync.Once
 	connWG              sync.WaitGroup
 	scanWG              sync.WaitGroup
@@ -134,7 +135,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		listeners:     options.ListenerFactory,
 		frames:        options.FrameIO,
 		activeConn:    make(map[net.Conn]struct{}),
-		runtimeIssues: newRuntimeIssueStore(),
+		runtimeIssues: controlruntime.NewIssueStore(),
 		shutdownCh:    make(chan struct{}),
 		challenges:    make(map[uint32]*authChallenge),
 	}
@@ -308,6 +309,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer s.unregisterRuntimeExecutor(session.ID)
 	defer func() {
 		if agent != nil {
+			session.applyControlEvent(controlsession.ControlConnClosed{Reason: "connection closed"})
 			_ = agent.Enqueue(controlsession.ControlConnClosed{Reason: "connection closed"})
 		}
 	}()
