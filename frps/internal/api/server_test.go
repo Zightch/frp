@@ -2,8 +2,8 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -19,9 +19,10 @@ import (
 	"time"
 
 	authn "github.com/zightch/frp/frps/internal/auth"
+	"github.com/zightch/frp/frps/internal/dbschema"
 	"github.com/zightch/frp/frps/internal/storage"
-	_ "github.com/zightch/frp/frps/internal/storage/drivers"
 	"github.com/zightch/frp/frps/internal/system"
+	"github.com/zightch/frp/frps/internal/testdb"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -2100,99 +2101,13 @@ func TestNewServerRejectsInvalidWebUIDistPath(t *testing.T) {
 func newTestStore(t *testing.T) *storage.SQL {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "api.sqlite"))
-	if err != nil {
-		t.Fatalf("open sqlite database: %v", err)
-	}
-
-	store, err := storage.NewSQLWithConn(t.Name(), db)
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	store, dbType := testdb.NewStore(t, t.Name(), "api.sqlite")
+	testdb.ResetTables(t, store, dbType, testdb.FRPSTableNames...)
 	t.Cleanup(func() {
-		store.Close()
+		testdb.ResetTables(t, store, dbType, testdb.FRPSTableNames...)
 	})
-
-	for _, statement := range []string{
-		`
-CREATE TABLE proxy_groups (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	name TEXT NOT NULL UNIQUE,
-	client_id TEXT NOT NULL UNIQUE,
-	client_secret_hash TEXT NOT NULL,
-	effective_ip TEXT NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	control_transport_security TEXT NOT NULL DEFAULT 'plain',
-	rate_limit INTEGER NOT NULL DEFAULT 0,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-		`
-CREATE TABLE tunnels (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	group_id INTEGER NOT NULL,
-	name TEXT NOT NULL,
-	protocol TEXT NOT NULL,
-	remote_type TEXT NOT NULL,
-	remote_start INTEGER NOT NULL,
-	remote_end INTEGER NOT NULL,
-	local_host TEXT NOT NULL,
-	local_start INTEGER NOT NULL,
-	local_end INTEGER NOT NULL,
-	listen_tls_mode TEXT NOT NULL DEFAULT 'off',
-	listen_tls_load_system_ca INTEGER NOT NULL DEFAULT 0,
-	backend_tls_mode TEXT NOT NULL DEFAULT 'off',
-	backend_tls_server_name TEXT NOT NULL DEFAULT '',
-	backend_tls_load_system_ca INTEGER NOT NULL DEFAULT 0,
-	backend_tls_insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL,
-	UNIQUE(group_id, name)
-)`,
-		`
-CREATE TABLE certificate_assets (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	name TEXT NOT NULL UNIQUE,
-	remark TEXT NOT NULL DEFAULT '',
-	source TEXT NOT NULL,
-	asset_type TEXT NOT NULL,
-	format_type TEXT NOT NULL,
-	crt TEXT NOT NULL,
-	crt_hash TEXT NOT NULL,
-	` + "`key`" + ` TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-		`CREATE INDEX idx_certificate_assets_crt_hash ON certificate_assets (crt_hash)`,
-		`
-CREATE TABLE certificate_asset_relations (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	child_asset_id INTEGER NOT NULL,
-	parent_asset_id INTEGER NOT NULL,
-	relation_type TEXT NOT NULL,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-		`CREATE UNIQUE INDEX uk_certificate_asset_relations_child_asset_id ON certificate_asset_relations (child_asset_id)`,
-		`CREATE INDEX idx_certificate_asset_relations_parent_asset_id ON certificate_asset_relations (parent_asset_id)`,
-		`
-CREATE TABLE certificate_asset_usages (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	target_type TEXT NOT NULL DEFAULT 'global',
-	usage_type TEXT NOT NULL,
-	target_id INTEGER NOT NULL DEFAULT 0,
-	asset_id INTEGER NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-		`CREATE UNIQUE INDEX uk_certificate_asset_usages_usage_target ON certificate_asset_usages (target_type, target_id, usage_type, asset_id)`,
-		`CREATE INDEX idx_certificate_asset_usages_asset_id ON certificate_asset_usages (asset_id)`,
-	} {
-		if _, err := store.Exec(statement); err != nil {
-			t.Fatalf("bootstrap api test schema: %v", err)
-		}
+	if err := dbschema.Ensure(context.Background(), store, dbType); err != nil {
+		t.Fatalf("bootstrap api test schema: %v", err)
 	}
 
 	return store

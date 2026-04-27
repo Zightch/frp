@@ -3,19 +3,18 @@ package control
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"io"
 	"log/slog"
 	"net"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/zightch/frp/frps/internal/dbschema"
 	"github.com/zightch/frp/frps/internal/storage"
-	_ "github.com/zightch/frp/frps/internal/storage/drivers"
 	"github.com/zightch/frp/frps/internal/system"
+	"github.com/zightch/frp/frps/internal/testdb"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -345,65 +344,13 @@ func buildConfigAckFrame(t *testing.T, requestID uint32, streamID uint32, versio
 func newDirtyEffectiveIPStore(t *testing.T, effectiveIP string) (*storage.SQL, [16]byte, [32]byte) {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "dirty-effective-ip.sqlite"))
-	if err != nil {
-		t.Fatalf("open sqlite database: %v", err)
-	}
-
-	store, err := storage.NewSQLWithConn(t.Name(), db)
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
+	store, dbType := testdb.NewStore(t, t.Name(), "dirty-effective-ip.sqlite")
+	testdb.ResetTables(t, store, dbType, testdb.FRPSTableNames...)
 	t.Cleanup(func() {
-		store.Close()
+		testdb.ResetTables(t, store, dbType, testdb.FRPSTableNames...)
 	})
-
-	for _, statement := range []string{
-		`
-CREATE TABLE proxy_groups (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	name TEXT NOT NULL,
-	client_id TEXT NOT NULL,
-	client_secret_hash TEXT NOT NULL,
-	effective_ip TEXT NOT NULL,
-	enabled INTEGER NOT NULL,
-	control_transport_security TEXT NOT NULL DEFAULT 'plain',
-	updated_at TEXT NOT NULL
-)`,
-		`
-CREATE TABLE tunnels (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	group_id INTEGER NOT NULL,
-	name TEXT NOT NULL,
-	protocol TEXT NOT NULL,
-	remote_type TEXT NOT NULL,
-	remote_start INTEGER NOT NULL,
-	remote_end INTEGER NOT NULL,
-	local_host TEXT NOT NULL,
-	local_start INTEGER NOT NULL,
-	local_end INTEGER NOT NULL,
-	backend_tls_mode TEXT NOT NULL DEFAULT 'off',
-	backend_tls_server_name TEXT NOT NULL DEFAULT '',
-	backend_tls_load_system_ca INTEGER NOT NULL DEFAULT 0,
-	backend_tls_insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
-	enabled INTEGER NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-		`
-CREATE TABLE certificate_asset_usages (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	target_type TEXT NOT NULL DEFAULT 'global',
-	usage_type TEXT NOT NULL,
-	target_id INTEGER NOT NULL DEFAULT 0,
-	asset_id INTEGER NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-	} {
-		if _, err := store.Exec(statement); err != nil {
-			t.Fatalf("bootstrap test schema: %v", err)
-		}
+	if err := dbschema.Ensure(context.Background(), store, dbType); err != nil {
+		t.Fatalf("bootstrap test schema: %v", err)
 	}
 
 	tokenID := mustHex16(t, "00112233445566778899aabbccddeeff")
@@ -413,8 +360,8 @@ CREATE TABLE certificate_asset_usages (
 
 	if _, err := store.Exec(
 		`
-INSERT INTO proxy_groups (id, name, client_id, client_secret_hash, effective_ip, enabled, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO proxy_groups (id, name, client_id, client_secret_hash, effective_ip, enabled, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		1,
 		"group-a",
@@ -422,6 +369,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
 		hex.EncodeToString(tokenHash[:]),
 		effectiveIP,
 		1,
+		updatedAt,
 		updatedAt,
 	); err != nil {
 		t.Fatalf("insert proxy group: %v", err)
@@ -432,8 +380,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
 INSERT INTO tunnels (
 	id, group_id, name, protocol, remote_type, remote_start, remote_end, local_host, local_start, local_end,
 	backend_tls_mode, backend_tls_server_name, backend_tls_load_system_ca, backend_tls_insecure_skip_verify,
-	enabled, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	enabled, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		7,
 		1,
@@ -450,6 +398,7 @@ INSERT INTO tunnels (
 		0,
 		0,
 		1,
+		updatedAt,
 		updatedAt,
 	); err != nil {
 		t.Fatalf("insert tunnel: %v", err)

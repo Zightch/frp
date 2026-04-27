@@ -3,7 +3,10 @@ package storage
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
+	"fmt"
+	"hash/crc32"
+	"os"
+	"strings"
 	"testing"
 
 	_ "github.com/zightch/frp/frps/internal/storage/drivers"
@@ -67,21 +70,29 @@ func TestExecuteRequiresOpenDatabase(t *testing.T) {
 	}
 }
 
-func TestSQLiteExecuteAndQueryReturnStructuredResult(t *testing.T) {
+func TestExecuteAndQueryReturnStructuredResult(t *testing.T) {
 	t.Parallel()
 
-	store := openSQLiteStore(t)
+	store, dbType := openTestStore(t)
+	tableName := testTableName(t, "test_users")
+	dropTableIfExists(t, store, dbType, tableName)
 
-	if _, err := store.Exec(`
-		create table test_users (
-			id integer primary key autoincrement,
+	if _, err := store.Exec(fmt.Sprintf(`
+		create table %s (
+			id integer primary key,
 			name text not null
 		)
-	`); err != nil {
+	`, quoteIdentifier(dbType, tableName))); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
+	t.Cleanup(func() {
+		dropTableIfExists(t, store, dbType, tableName)
+	})
 
-	insertResult, err := store.Execute(`insert into test_users (name) values (?), (?)`, "alice", "bob")
+	insertResult, err := store.Execute(
+		fmt.Sprintf(`insert into %s (id, name) values (?, ?), (?, ?)`, quoteIdentifier(dbType, tableName)),
+		1, "alice", 2, "bob",
+	)
 	if err != nil {
 		t.Fatalf("insert rows: %v", err)
 	}
@@ -89,7 +100,7 @@ func TestSQLiteExecuteAndQueryReturnStructuredResult(t *testing.T) {
 		t.Fatalf("expected 2 affected rows, got %d", insertResult.RowsAffected)
 	}
 
-	queryResult, err := store.Execute(`select id, name from test_users order by id asc`)
+	queryResult, err := store.Execute(fmt.Sprintf(`select id, name from %s order by id asc`, quoteIdentifier(dbType, tableName)))
 	if err != nil {
 		t.Fatalf("query rows: %v", err)
 	}
@@ -106,7 +117,7 @@ func TestSQLiteExecuteAndQueryReturnStructuredResult(t *testing.T) {
 		t.Fatalf("unexpected second row name: %#v", queryResult.Rows[1]["name"])
 	}
 
-	firstRow, err := store.QueryOne(`select id, name from test_users where name = ?`, "bob")
+	firstRow, err := store.QueryOne(fmt.Sprintf(`select id, name from %s where name = ?`, quoteIdentifier(dbType, tableName)), "bob")
 	if err != nil {
 		t.Fatalf("query one row: %v", err)
 	}
@@ -115,25 +126,30 @@ func TestSQLiteExecuteAndQueryReturnStructuredResult(t *testing.T) {
 	}
 }
 
-func TestSQLiteTransactionCommitAndRollback(t *testing.T) {
+func TestTransactionCommitAndRollback(t *testing.T) {
 	t.Parallel()
 
-	store := openSQLiteStore(t)
+	store, dbType := openTestStore(t)
+	tableName := testTableName(t, "tx_items")
+	dropTableIfExists(t, store, dbType, tableName)
 
-	if _, err := store.Exec(`
-		create table tx_items (
-			id integer primary key autoincrement,
+	if _, err := store.Exec(fmt.Sprintf(`
+		create table %s (
+			id integer primary key,
 			name text not null
 		)
-	`); err != nil {
+	`, quoteIdentifier(dbType, tableName))); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
+	t.Cleanup(func() {
+		dropTableIfExists(t, store, dbType, tableName)
+	})
 
 	tx, err := store.Begin()
 	if err != nil {
 		t.Fatalf("begin transaction: %v", err)
 	}
-	if _, err := tx.Exec(`insert into tx_items (name) values (?)`, "commit-me"); err != nil {
+	if _, err := tx.Exec(fmt.Sprintf(`insert into %s (id, name) values (?, ?)`, quoteIdentifier(dbType, tableName)), 1, "commit-me"); err != nil {
 		t.Fatalf("insert inside transaction: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -144,18 +160,18 @@ func TestSQLiteTransactionCommitAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transaction for rollback: %v", err)
 	}
-	if _, err := tx.Exec(`insert into tx_items (name) values (?)`, "rollback-me"); err != nil {
+	if _, err := tx.Exec(fmt.Sprintf(`insert into %s (id, name) values (?, ?)`, quoteIdentifier(dbType, tableName)), 2, "rollback-me"); err != nil {
 		t.Fatalf("insert rollback transaction: %v", err)
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatalf("rollback transaction: %v", err)
 	}
 
-	countRow, err := store.QueryOne(`select count(*) as total from tx_items`)
+	countRow, err := store.QueryOne(fmt.Sprintf(`select count(*) as total from %s`, quoteIdentifier(dbType, tableName)))
 	if err != nil {
 		t.Fatalf("query row count: %v", err)
 	}
-	if countRow["total"] != int64(1) {
+	if !valueEqualsInt64(countRow["total"], 1) {
 		t.Fatalf("expected committed row count to be 1, got %#v", countRow["total"])
 	}
 }
@@ -163,19 +179,24 @@ func TestSQLiteTransactionCommitAndRollback(t *testing.T) {
 func TestWithTxRollsBackOnError(t *testing.T) {
 	t.Parallel()
 
-	store := openSQLiteStore(t)
+	store, dbType := openTestStore(t)
+	tableName := testTableName(t, "tx_callbacks")
+	dropTableIfExists(t, store, dbType, tableName)
 
-	if _, err := store.Exec(`
-		create table tx_callbacks (
-			id integer primary key autoincrement,
+	if _, err := store.Exec(fmt.Sprintf(`
+		create table %s (
+			id integer primary key,
 			name text not null
 		)
-	`); err != nil {
+	`, quoteIdentifier(dbType, tableName))); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
+	t.Cleanup(func() {
+		dropTableIfExists(t, store, dbType, tableName)
+	})
 
 	expectedErr := store.WithTx(func(tx *Tx) error {
-		if _, err := tx.Exec(`insert into tx_callbacks (name) values (?)`, "rolled-back"); err != nil {
+		if _, err := tx.Exec(fmt.Sprintf(`insert into %s (id, name) values (?, ?)`, quoteIdentifier(dbType, tableName)), 1, "rolled-back"); err != nil {
 			return err
 		}
 		return sql.ErrTxDone
@@ -184,35 +205,57 @@ func TestWithTxRollsBackOnError(t *testing.T) {
 		t.Fatal("expected transaction callback error")
 	}
 
-	countRow, err := store.QueryOne(`select count(*) as total from tx_callbacks`)
+	countRow, err := store.QueryOne(fmt.Sprintf(`select count(*) as total from %s`, quoteIdentifier(dbType, tableName)))
 	if err != nil {
 		t.Fatalf("query callback row count: %v", err)
 	}
-	if countRow["total"] != int64(0) {
+	if !valueEqualsInt64(countRow["total"], 0) {
 		t.Fatalf("expected rollback to keep row count at 0, got %#v", countRow["total"])
 	}
 }
 
-func openSQLiteStore(t *testing.T) *SQL {
+func openTestStore(t *testing.T) (*SQL, string) {
 	t.Helper()
 
 	store := NewSQL(t.Name())
 	store.Close()
 
-	db := openSQLiteDB(t)
+	db, dbType := openTestDB(t)
 	if err := store.SetConn(db); err != nil {
-		t.Fatalf("set sqlite database: %v", err)
+		t.Fatalf("set database: %v", err)
 	}
 
 	t.Cleanup(store.Close)
 
-	return store
+	return store, dbType
 }
 
 func openSQLiteDB(t *testing.T) *sql.DB {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "frps.sqlite"))
+	db, _ := openTestDB(t)
+	return db
+}
+
+func openTestDB(t *testing.T) (*sql.DB, string) {
+	t.Helper()
+
+	if dsn := strings.TrimSpace(os.Getenv("FRPS_TEST_MYSQL_DSN")); dsn != "" {
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			t.Fatalf("open mysql database: %v", err)
+		}
+		if err := db.PingContext(context.Background()); err != nil {
+			_ = db.Close()
+			t.Fatalf("ping mysql database: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = db.Close()
+		})
+		return db, "mysql"
+	}
+
+	db, err := sql.Open("sqlite", fmt.Sprintf("%s/frps.sqlite", t.TempDir()))
 	if err != nil {
 		t.Fatalf("open sqlite database: %v", err)
 	}
@@ -220,6 +263,65 @@ func openSQLiteDB(t *testing.T) *sql.DB {
 		_ = db.Close()
 		t.Fatalf("ping sqlite database: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
 
-	return db
+	return db, "sqlite"
+}
+
+func testTableName(t *testing.T, base string) string {
+	t.Helper()
+
+	sanitized := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		case r >= '0' && r <= '9':
+			return r
+		default:
+			return '_'
+		}
+	}, base)
+	return fmt.Sprintf("%s_%08x", sanitized, crc32.ChecksumIEEE([]byte(t.Name())))
+}
+
+func dropTableIfExists(t *testing.T, store *SQL, dbType, tableName string) {
+	t.Helper()
+
+	if _, err := store.Exec(fmt.Sprintf("drop table if exists %s", quoteIdentifier(dbType, tableName))); err != nil {
+		t.Fatalf("drop table %s: %v", tableName, err)
+	}
+}
+
+func quoteIdentifier(dbType, value string) string {
+	switch strings.ToLower(strings.TrimSpace(dbType)) {
+	case "mysql":
+		return "`" + strings.ReplaceAll(value, "`", "``") + "`"
+	default:
+		return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+	}
+}
+
+func valueEqualsInt64(value any, expected int64) bool {
+	switch typed := value.(type) {
+	case int64:
+		return typed == expected
+	case int32:
+		return int64(typed) == expected
+	case int:
+		return int64(typed) == expected
+	case uint64:
+		return typed == uint64(expected)
+	case uint32:
+		return uint64(typed) == uint64(expected)
+	case []byte:
+		return string(typed) == fmt.Sprintf("%d", expected)
+	case string:
+		return typed == fmt.Sprintf("%d", expected)
+	default:
+		return false
+	}
 }

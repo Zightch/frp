@@ -18,7 +18,7 @@ func (s *Server) loadTunnelListenerTLSConfig(ctx context.Context, tunnelID uint3
 		return nil, fmt.Errorf("tunnel id must be non-zero")
 	}
 	if s.options.Store == nil {
-		return nil, fmt.Errorf("control store is unavailable")
+		return nil, nil
 	}
 
 	row, err := s.options.Store.QueryOneContext(

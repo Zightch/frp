@@ -178,6 +178,7 @@ func (s *Server) applySessionRuntimeStartPlan(target sessionRuntimeStartTarget, 
 			)
 			continue
 		}
+		s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, plan.snapshot.Version, "")
 		startUDPCleanup, attached := target.session.attachTunnelListeners(plan.snapshot.Version, tunnel.TunnelID, started.tcpListeners, started.udpListeners)
 		if !attached {
 			closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
@@ -210,7 +211,9 @@ func (s *Server) applySessionRuntimeStartPlan(target sessionRuntimeStartTarget, 
 			)
 			go s.serveUDPTunnelListener(serve, runtime.listener)
 		}
-		s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, plan.snapshot.Version, "")
+	}
+	for tunnelID := range target.session.activeRuntimeTunnelIDs() {
+		s.recordTunnelRuntimeIssueForConfig(tunnelID, plan.snapshot.Version, "")
 	}
 	if target.session.hasActiveRuntimeListeners() {
 		target.session.setRecoveryMode(testsupport.RecoveryModeRunning)

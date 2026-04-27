@@ -1,4 +1,4 @@
-package app
+package dbschema
 
 import (
 	"context"
@@ -425,7 +425,7 @@ CREATE TABLE IF NOT EXISTS certificate_asset_usages (
 	},
 }
 
-func ensureDatabaseSchema(ctx context.Context, store *storage.SQL, databaseType string) error {
+func Ensure(ctx context.Context, store *storage.SQL, databaseType string) error {
 	definition, ok := schemaDefinitions[strings.ToLower(strings.TrimSpace(databaseType))]
 	if !ok {
 		return fmt.Errorf("unsupported database type %q", databaseType)

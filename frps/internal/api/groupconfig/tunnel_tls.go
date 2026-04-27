@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/zightch/frp/frps/internal/proxygroups"
-	"github.com/zightch/frp/frps/internal/settings/entrycerts"
 )
 
 type tunnelTLSMode string

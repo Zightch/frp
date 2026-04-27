@@ -3,77 +3,15 @@ package control
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/zightch/frp/frps/internal/storage"
-	_ "github.com/zightch/frp/frps/internal/storage/drivers"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
 func TestSQLRepositoryLoadGroupRuntimeByClientID(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "control.sqlite"))
-	if err != nil {
-		t.Fatalf("open sqlite database: %v", err)
-	}
-	defer db.Close()
-
-	store, err := storage.NewSQLWithConn(t.Name(), db)
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	defer store.Close()
-
-	for _, statement := range []string{
-		`
-CREATE TABLE proxy_groups (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	name TEXT NOT NULL,
-	client_id TEXT NOT NULL,
-	client_secret_hash TEXT NOT NULL,
-	effective_ip TEXT NOT NULL,
-	enabled INTEGER NOT NULL,
-	control_transport_security TEXT NOT NULL DEFAULT 'plain',
-	updated_at TEXT NOT NULL
-)`,
-		`
-CREATE TABLE tunnels (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	group_id INTEGER NOT NULL,
-	name TEXT NOT NULL,
-	protocol TEXT NOT NULL,
-	remote_type TEXT NOT NULL,
-	remote_start INTEGER NOT NULL,
-	remote_end INTEGER NOT NULL,
-	local_host TEXT NOT NULL,
-	local_start INTEGER NOT NULL,
-	local_end INTEGER NOT NULL,
-	backend_tls_mode TEXT NOT NULL DEFAULT 'off',
-	backend_tls_server_name TEXT NOT NULL DEFAULT '',
-	backend_tls_load_system_ca INTEGER NOT NULL DEFAULT 0,
-	backend_tls_insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
-	enabled INTEGER NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-		`
-CREATE TABLE certificate_asset_usages (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	target_type TEXT NOT NULL DEFAULT 'global',
-	usage_type TEXT NOT NULL,
-	target_id INTEGER NOT NULL DEFAULT 0,
-	asset_id INTEGER NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-	} {
-		if _, err := store.Exec(statement); err != nil {
-			t.Fatalf("bootstrap test schema: %v", err)
-		}
-	}
+	store := newControlTestStore(t)
 
 	tokenID := mustHex16(t, "00112233445566778899aabbccddeeff")
 	tokenSecret := mustBytes32(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -81,14 +19,15 @@ CREATE TABLE certificate_asset_usages (
 
 	if _, err := store.Exec(
 		`
-INSERT INTO proxy_groups (name, client_id, client_secret_hash, effective_ip, enabled, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO proxy_groups (name, client_id, client_secret_hash, effective_ip, enabled, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 `,
 		"group-a",
 		hex.EncodeToString(tokenID[:]),
 		hex.EncodeToString(tokenHash[:]),
 		"127.0.0.1",
 		1,
+		"2026-04-18 10:00:00.000001",
 		"2026-04-18 10:00:00.000001",
 	); err != nil {
 		t.Fatalf("insert proxy group: %v", err)
@@ -97,13 +36,13 @@ VALUES (?, ?, ?, ?, ?, ?)
 	if _, err := store.Exec(
 		`
 INSERT INTO tunnels (
-	group_id, name, protocol, remote_type, remote_start, remote_end, local_host, local_start, local_end, enabled, updated_at
+	group_id, name, protocol, remote_type, remote_start, remote_end, local_host, local_start, local_end, enabled, created_at, updated_at
 ) VALUES
-	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
-	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
-		1, "ssh", "tcp", "single", 20000, 20000, "127.0.0.1", 22, 22, 1, "2026-04-18 10:00:00.000002",
-		1, "range", "udp", "range", 30000, 30009, "localhost", 40000, 40009, 0, "2026-04-18 10:00:00.000003",
+		1, "ssh", "tcp", "single", 20000, 20000, "127.0.0.1", 22, 22, 1, "2026-04-18 10:00:00.000002", "2026-04-18 10:00:00.000002",
+		1, "range", "udp", "range", 30000, 30009, "localhost", 40000, 40009, 0, "2026-04-18 10:00:00.000003", "2026-04-18 10:00:00.000003",
 	); err != nil {
 		t.Fatalf("insert tunnels: %v", err)
 	}
@@ -138,75 +77,17 @@ INSERT INTO tunnels (
 }
 
 func TestSQLRepositoryListGroupRuntimes(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "control-list.sqlite"))
-	if err != nil {
-		t.Fatalf("open sqlite database: %v", err)
-	}
-	defer db.Close()
-
-	store, err := storage.NewSQLWithConn(t.Name(), db)
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	defer store.Close()
-
-	for _, statement := range []string{
-		`
-CREATE TABLE proxy_groups (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	name TEXT NOT NULL,
-	client_id TEXT NOT NULL,
-	client_secret_hash TEXT NOT NULL,
-	effective_ip TEXT NOT NULL,
-	enabled INTEGER NOT NULL,
-	control_transport_security TEXT NOT NULL DEFAULT 'plain',
-	updated_at TEXT NOT NULL
-)`,
-		`
-CREATE TABLE tunnels (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	group_id INTEGER NOT NULL,
-	name TEXT NOT NULL,
-	protocol TEXT NOT NULL,
-	remote_type TEXT NOT NULL,
-	remote_start INTEGER NOT NULL,
-	remote_end INTEGER NOT NULL,
-	local_host TEXT NOT NULL,
-	local_start INTEGER NOT NULL,
-	local_end INTEGER NOT NULL,
-	backend_tls_mode TEXT NOT NULL DEFAULT 'off',
-	backend_tls_server_name TEXT NOT NULL DEFAULT '',
-	backend_tls_load_system_ca INTEGER NOT NULL DEFAULT 0,
-	backend_tls_insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
-	enabled INTEGER NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-		`
-CREATE TABLE certificate_asset_usages (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	target_type TEXT NOT NULL DEFAULT 'global',
-	usage_type TEXT NOT NULL,
-	target_id INTEGER NOT NULL DEFAULT 0,
-	asset_id INTEGER NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
-)`,
-	} {
-		if _, err := store.Exec(statement); err != nil {
-			t.Fatalf("bootstrap test schema: %v", err)
-		}
-	}
+	store := newControlTestStore(t)
 
 	if _, err := store.Exec(
 		`
-INSERT INTO proxy_groups (name, client_id, client_secret_hash, effective_ip, enabled, updated_at)
+INSERT INTO proxy_groups (name, client_id, client_secret_hash, effective_ip, enabled, created_at, updated_at)
 VALUES
-	(?, ?, ?, ?, ?, ?),
-	(?, ?, ?, ?, ?, ?)
+	(?, ?, ?, ?, ?, ?, ?),
+	(?, ?, ?, ?, ?, ?, ?)
 `,
-		"group-a", "00112233445566778899aabbccddeeff", strings.Repeat("aa", 32), "127.0.0.1", 1, "2026-04-18 10:00:00.000001",
-		"group-b", "ffeeddccbbaa99887766554433221100", strings.Repeat("bb", 32), "0.0.0.0", 0, "2026-04-18 10:00:00.000002",
+		"group-a", "00112233445566778899aabbccddeeff", strings.Repeat("aa", 32), "127.0.0.1", 1, "2026-04-18 10:00:00.000001", "2026-04-18 10:00:00.000001",
+		"group-b", "ffeeddccbbaa99887766554433221100", strings.Repeat("bb", 32), "0.0.0.0", 0, "2026-04-18 10:00:00.000002", "2026-04-18 10:00:00.000002",
 	); err != nil {
 		t.Fatalf("insert proxy groups: %v", err)
 	}
@@ -214,13 +95,13 @@ VALUES
 	if _, err := store.Exec(
 		`
 INSERT INTO tunnels (
-	group_id, name, protocol, remote_type, remote_start, remote_end, local_host, local_start, local_end, enabled, updated_at
+	group_id, name, protocol, remote_type, remote_start, remote_end, local_host, local_start, local_end, enabled, created_at, updated_at
 ) VALUES
-	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
-	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
-		1, "ssh", "tcp", "single", 20000, 20000, "127.0.0.1", 22, 22, 1, "2026-04-18 10:00:00.000003",
-		2, "dns", "udp", "single", 30000, 30000, "127.0.0.1", 53, 53, 1, "2026-04-18 10:00:00.000004",
+		1, "ssh", "tcp", "single", 20000, 20000, "127.0.0.1", 22, 22, 1, "2026-04-18 10:00:00.000003", "2026-04-18 10:00:00.000003",
+		2, "dns", "udp", "single", 30000, 30000, "127.0.0.1", 53, 53, 1, "2026-04-18 10:00:00.000004", "2026-04-18 10:00:00.000004",
 	); err != nil {
 		t.Fatalf("insert tunnels: %v", err)
 	}
