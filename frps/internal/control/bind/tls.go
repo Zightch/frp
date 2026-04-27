@@ -1,27 +1,27 @@
-package control
+package bind
 
 import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/zightch/frp/frps/internal/settings/entrycerts"
+	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
-func (s *Server) loadTunnelListenerTLSConfig(ctx context.Context, tunnelID uint32) (*tls.Config, error) {
-	if s == nil {
-		return nil, fmt.Errorf("control server is unavailable")
-	}
+func LoadTunnelListenerTLSConfig(ctx context.Context, store *storage.SQL, tunnelID uint32) (*tls.Config, error) {
 	if tunnelID == 0 {
 		return nil, fmt.Errorf("tunnel id must be non-zero")
 	}
-	if s.options.Store == nil {
+	if store == nil {
 		return nil, nil
 	}
 
-	row, err := s.options.Store.QueryOneContext(
+	row, err := store.QueryOneContext(
 		ctx,
 		`
 SELECT
@@ -48,7 +48,7 @@ WHERE id = ?
 		return nil, fmt.Errorf("decode listen_tls_load_system_ca: %w", err)
 	}
 
-	service := entrycerts.NewService(s.options.Store, entrycerts.ServiceOptions{})
+	service := entrycerts.NewService(store, entrycerts.ServiceOptions{})
 	binding, ok, err := service.ResolveTargetCertificate(ctx, entrycerts.TargetTypeTunnel, int64(tunnelID), entrycerts.UsageTypeTunnelListenServerCert)
 	if err != nil {
 		return nil, fmt.Errorf("resolve tunnel listen server certificate: %w", err)
@@ -105,4 +105,67 @@ func buildTunnelClientCAPool(ctx context.Context, service *entrycerts.Service, t
 		return nil, fmt.Errorf("append tunnel listen client ca certificates")
 	}
 	return pool, nil
+}
+
+func decodeTunnelTLSMode(value string) (uint8, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "off":
+		return protocol.TunnelTLSModeOff, nil
+	case "tls":
+		return protocol.TunnelTLSModeTLS, nil
+	case "mtls":
+		return protocol.TunnelTLSModeMTLS, nil
+	default:
+		return 0, fmt.Errorf("unsupported tunnel tls mode %q", value)
+	}
+}
+
+func rowString(row storage.Row, key string) string {
+	value, ok := row[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []byte:
+		return string(typed)
+	default:
+		return fmt.Sprint(typed)
+	}
+}
+
+func rowBool(row storage.Row, key string) (bool, error) {
+	value, ok := row[key]
+	if !ok || value == nil {
+		return false, nil
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed, nil
+	case int:
+		return typed != 0, nil
+	case int64:
+		return typed != 0, nil
+	case uint64:
+		return typed != 0, nil
+	case string:
+		return parseBoolString(typed)
+	case []byte:
+		return parseBoolString(string(typed))
+	default:
+		return false, fmt.Errorf("unsupported bool value %T", value)
+	}
+}
+
+func parseBoolString(value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "0", "false", "no":
+		return false, nil
+	case "1", "true", "yes":
+		return true, nil
+	default:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		return parsed != 0, err
+	}
 }

@@ -1,4 +1,4 @@
-package control
+package bind
 
 import (
 	"context"
@@ -7,16 +7,8 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 )
-
-type UDPListener interface {
-	Close() error
-	LocalAddr() net.Addr
-	ReadFromUDP([]byte) (int, *net.UDPAddr, error)
-	WriteToUDP([]byte, *net.UDPAddr) (int, error)
-}
 
 type ListenKey struct {
 	Protocol string
@@ -92,10 +84,6 @@ func (netListenerFactory) ResolveUDP(_ context.Context, bind ListenerBind) (*net
 	return net.ResolveUDPAddr("udp", addr)
 }
 
-func (netListenerFactory) ListenUDP(_ context.Context, _ ListenerBind, addr *net.UDPAddr) (UDPListener, error) {
-	return net.ListenUDP("udp", addr)
-}
-
 func (f *ScriptedListenerFactory) ListenTCP(_ context.Context, bind ListenerBind) (net.Listener, error) {
 	if err := f.beforeBind("listen_tcp", bind); err != nil {
 		return nil, err
@@ -108,13 +96,6 @@ func (f *ScriptedListenerFactory) ResolveUDP(_ context.Context, bind ListenerBin
 		return nil, err
 	}
 	return &net.UDPAddr{IP: net.ParseIP(bind.Key.IP), Port: int(bind.Key.Port)}, nil
-}
-
-func (f *ScriptedListenerFactory) ListenUDP(_ context.Context, bind ListenerBind, addr *net.UDPAddr) (UDPListener, error) {
-	if err := f.beforeBind("listen_udp", bind); err != nil {
-		return nil, err
-	}
-	return newFakeUDPListener(f, bind, addr), nil
 }
 
 func (f *ScriptedListenerFactory) SetExternallyOccupied(key ListenKey, occupied bool) {
@@ -325,55 +306,6 @@ func (l *fakeTCPListener) Addr() net.Addr {
 	return l.addr
 }
 
-type fakeUDPListener struct {
-	factory *ScriptedListenerFactory
-	bind    ListenerBind
-	addr    *net.UDPAddr
-	closed  chan struct{}
-	once    sync.Once
-}
-
-func newFakeUDPListener(factory *ScriptedListenerFactory, bind ListenerBind, addr *net.UDPAddr) *fakeUDPListener {
-	return &fakeUDPListener{
-		factory: factory,
-		bind:    bind,
-		addr: &net.UDPAddr{
-			IP:   append(net.IP(nil), addr.IP...),
-			Port: addr.Port,
-			Zone: addr.Zone,
-		},
-		closed: make(chan struct{}),
-	}
-}
-
-func (l *fakeUDPListener) Close() error {
-	l.once.Do(func() {
-		close(l.closed)
-		if l.factory != nil {
-			l.factory.release(l.bind)
-		}
-	})
-	return nil
-}
-
-func (l *fakeUDPListener) LocalAddr() net.Addr {
-	return l.addr
-}
-
-func (l *fakeUDPListener) ReadFromUDP(_ []byte) (int, *net.UDPAddr, error) {
-	<-l.closed
-	return 0, nil, net.ErrClosed
-}
-
-func (l *fakeUDPListener) WriteToUDP(payload []byte, _ *net.UDPAddr) (int, error) {
-	select {
-	case <-l.closed:
-		return 0, net.ErrClosed
-	default:
-		return len(payload), nil
-	}
-}
-
 func listenAddressInUse(bind ListenerBind) error {
 	return &net.OpError{
 		Op:   "listen",
@@ -390,70 +322,4 @@ func listenAddr(bind ListenerBind) net.Addr {
 	default:
 		return &net.TCPAddr{IP: net.ParseIP(bind.Key.IP), Port: int(bind.Key.Port)}
 	}
-}
-
-var _ UDPListener = (*net.UDPConn)(nil)
-
-func (s *Server) listenTCP(ctx context.Context, bind ListenerBind) (net.Listener, error) {
-	testhooks.Point(
-		"control.listener.before_bind",
-		testhooks.F("protocol", bind.Key.Protocol),
-		testhooks.F("kind", string(bind.Kind)),
-		testhooks.F("group_id", bind.GroupID),
-		testhooks.F("tunnel_id", bind.TunnelID),
-		testhooks.F("port", bind.Key.Port),
-	)
-	listener, err := s.listeners.ListenTCP(ctx, bind)
-	testhooks.Point(
-		"control.listener.after_bind",
-		testhooks.F("protocol", bind.Key.Protocol),
-		testhooks.F("kind", string(bind.Kind)),
-		testhooks.F("group_id", bind.GroupID),
-		testhooks.F("tunnel_id", bind.TunnelID),
-		testhooks.F("port", bind.Key.Port),
-		testhooks.F("ok", err == nil),
-	)
-	return listener, err
-}
-
-func (s *Server) resolveUDPAddr(ctx context.Context, bind ListenerBind) (*net.UDPAddr, error) {
-	testhooks.Point(
-		"control.listener.before_resolve_udp",
-		testhooks.F("kind", string(bind.Kind)),
-		testhooks.F("group_id", bind.GroupID),
-		testhooks.F("tunnel_id", bind.TunnelID),
-		testhooks.F("port", bind.Key.Port),
-	)
-	addr, err := s.listeners.ResolveUDP(ctx, bind)
-	testhooks.Point(
-		"control.listener.after_resolve_udp",
-		testhooks.F("kind", string(bind.Kind)),
-		testhooks.F("group_id", bind.GroupID),
-		testhooks.F("tunnel_id", bind.TunnelID),
-		testhooks.F("port", bind.Key.Port),
-		testhooks.F("ok", err == nil),
-	)
-	return addr, err
-}
-
-func (s *Server) listenUDP(ctx context.Context, bind ListenerBind, addr *net.UDPAddr) (UDPListener, error) {
-	testhooks.Point(
-		"control.listener.before_bind",
-		testhooks.F("protocol", bind.Key.Protocol),
-		testhooks.F("kind", string(bind.Kind)),
-		testhooks.F("group_id", bind.GroupID),
-		testhooks.F("tunnel_id", bind.TunnelID),
-		testhooks.F("port", bind.Key.Port),
-	)
-	listener, err := s.listeners.ListenUDP(ctx, bind, addr)
-	testhooks.Point(
-		"control.listener.after_bind",
-		testhooks.F("protocol", bind.Key.Protocol),
-		testhooks.F("kind", string(bind.Kind)),
-		testhooks.F("group_id", bind.GroupID),
-		testhooks.F("tunnel_id", bind.TunnelID),
-		testhooks.F("port", bind.Key.Port),
-		testhooks.F("ok", err == nil),
-	)
-	return listener, err
 }
