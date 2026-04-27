@@ -1016,7 +1016,7 @@ function copyKey(value: string) {
               <el-empty v-if="!selectedGroupId" description="请选择分组查看隧道" />
               <el-empty v-else-if="filteredTunnels.length === 0" description="该分组暂无隧道" />
               <el-table v-else :data="filteredTunnels" height="100%" stripe>
-                <el-table-column prop="name" label="名称" />
+                <el-table-column prop="name" label="名称" width="120" fixed="left" />
                 <el-table-column prop="protocol" label="协议" width="70" align="center">
                   <template #default="{ row }">
                     <el-tag size="small">{{ row.protocol.toUpperCase() }}</el-tag>
