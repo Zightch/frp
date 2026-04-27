@@ -1308,12 +1308,12 @@ async function handleDelete(asset: CertificateAsset) {
 }
 
 .content-main {
-  padding: var(--el-main-padding) 0 0 0;
+  padding: var(--spacing-base) 0 0 0;
   flex: 1;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: var(--el-card-padding);
+  gap: var(--spacing-base);
 }
 
 .filter-card {
