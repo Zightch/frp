@@ -780,14 +780,14 @@ async function handleDelete(asset: CertificateAsset) {
         <el-card class="filter-card">
           <el-row :gutter="16" align="middle">
             <el-col :xs="24" :sm="12" :md="6">
-              <el-select v-model="filterAssetType" placeholder="资产类型" clearable>
+              <el-select v-model="filterAssetType" placeholder="资产类型" size="small" clearable>
                 <el-option label="全部" value="all" />
                 <el-option label="证书" value="certificate" />
                 <el-option label="CA" value="ca" />
               </el-select>
             </el-col>
             <el-col :xs="24" :sm="12" :md="6">
-              <el-select v-model="filterSource" placeholder="来源" clearable>
+              <el-select v-model="filterSource" placeholder="来源" size="small" clearable>
                 <el-option label="全部" value="all" />
                 <el-option label="上传" value="upload" />
                 <el-option label="生成" value="generated" />
@@ -799,8 +799,8 @@ async function handleDelete(asset: CertificateAsset) {
               :md="12"
               :class="['filter-actions', { 'filter-actions-mobile': isMobile }]"
             >
-              <el-button type="primary" @click="openImportDialog">导入</el-button>
-              <el-button type="primary" @click="openGenerateDialog">生成</el-button>
+              <el-button type="primary" size="small" @click="openImportDialog">导入</el-button>
+              <el-button type="primary" size="small" @click="openGenerateDialog">生成</el-button>
             </el-col>
           </el-row>
         </el-card>
