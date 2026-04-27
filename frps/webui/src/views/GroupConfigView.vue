@@ -210,24 +210,31 @@ async function loadData() {
       return
     }
 
-    if (certificateUsagesResult.error) {
-      error.value = certificateUsagesResult.error
-      return
-    }
-
-    if (certificateAssetsResult.error) {
-      error.value = certificateAssetsResult.error
-      return
-    }
-
     groups.value = groupsResult.data?.items || []
     tunnels.value = tunnelsResult.data?.items || []
     localIPs.value = ipsResult.data?.items || []
-    certificateUsages.value = certificateUsagesResult.data?.items || []
-    certificateAssets.value = certificateAssetsResult.data?.items || []
+
+    const warnings: string[] = []
+    if (certificateUsagesResult.error) {
+      certificateUsages.value = []
+      warnings.push('入口证书状态加载失败，frpc TLS 提示暂不可用')
+    } else {
+      certificateUsages.value = certificateUsagesResult.data?.items || []
+    }
+
+    if (certificateAssetsResult.error) {
+      certificateAssets.value = []
+      warnings.push('证书资产加载失败，隧道 TLS 证书选择暂不可用')
+    } else {
+      certificateAssets.value = certificateAssetsResult.data?.items || []
+    }
 
     if (!groups.value.some(group => group.id === selectedGroupId.value)) {
       selectedGroupId.value = groups.value[0]?.id ?? null
+    }
+
+    if (warnings.length > 0) {
+      ElMessage.warning(warnings.join('；'))
     }
   } catch {
     error.value = '加载数据失败'
@@ -298,12 +305,6 @@ function getCertificateName(asset: CertificateAsset): string {
     parts.push(`(${asset.common_name})`)
   }
   return parts.join(' ')
-}
-
-function getAssetNameById(assetId: number | null | undefined): string {
-  if (!assetId) return '-'
-  const asset = certificateAssets.value.find(a => a.id === assetId)
-  return asset ? asset.name : '-'
 }
 
 function createTunnelForm(): TunnelFormModel {
@@ -470,6 +471,14 @@ function validateTunnelPortFields() {
 
 // TLS validation functions
 function validateListenTLSMode() {
+  if (tunnelForm.value.protocol !== 'tcp') {
+    return Promise.resolve()
+  }
+  if (tunnelForm.value.listen_tls_mode === 'mtls') {
+    if (!tunnelForm.value.listen_tls_load_system_ca && tunnelForm.value.listen_tls_client_ca_asset_ids.length === 0) {
+      return Promise.reject(new Error('监听 mTLS 模式需要启用系统 CA 或选择客户端 CA'))
+    }
+  }
   return Promise.resolve()
 }
 
@@ -480,15 +489,18 @@ function validateListenTLSServerCert() {
   if (tunnelForm.value.listen_tls_mode !== 'off' && !tunnelForm.value.listen_tls_server_cert_asset_id) {
     return Promise.reject(new Error('启用监听 TLS 时必须选择服务端证书'))
   }
-  if (tunnelForm.value.listen_tls_mode === 'mtls') {
-    if (!tunnelForm.value.listen_tls_load_system_ca && tunnelForm.value.listen_tls_client_ca_asset_ids.length === 0) {
-      return Promise.reject(new Error('监听 mTLS 模式需要启用系统 CA 或选择客户端 CA'))
-    }
-  }
   return Promise.resolve()
 }
 
 function validateBackendTLSMode() {
+  if (tunnelForm.value.protocol !== 'tcp') {
+    return Promise.resolve()
+  }
+  if (tunnelForm.value.backend_tls_mode !== 'off' && !tunnelForm.value.backend_tls_insecure_skip_verify) {
+    if (!tunnelForm.value.backend_tls_load_system_ca && tunnelForm.value.backend_tls_ca_asset_ids.length === 0) {
+      return Promise.reject(new Error('后端 TLS 需要启用系统 CA、选择自定义 CA 或启用跳过验证'))
+    }
+  }
   return Promise.resolve()
 }
 
@@ -498,11 +510,6 @@ function validateBackendTLSClientCert() {
   }
   if (tunnelForm.value.backend_tls_mode === 'mtls' && !tunnelForm.value.backend_tls_client_cert_asset_id) {
     return Promise.reject(new Error('后端 mTLS 模式需要选择客户端证书'))
-  }
-  if (tunnelForm.value.backend_tls_mode !== 'off' && !tunnelForm.value.backend_tls_insecure_skip_verify) {
-    if (!tunnelForm.value.backend_tls_load_system_ca && tunnelForm.value.backend_tls_ca_asset_ids.length === 0) {
-      return Promise.reject(new Error('后端 TLS 需要启用系统 CA、选择自定义 CA 或启用跳过验证'))
-    }
   }
   return Promise.resolve()
 }
@@ -1176,7 +1183,8 @@ function copyKey(value: string) {
     <el-drawer
       v-model="tunnelDrawerVisible"
       :title="tunnelDrawerMode === 'create' ? '新建隧道' : '编辑隧道'"
-      size="400px"
+      :direction="isMobile ? 'btt' : 'rtl'"
+      :size="isMobile ? '85%' : '400px'"
       :close-on-click-modal="false"
     >
       <el-form
