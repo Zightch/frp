@@ -749,7 +749,7 @@ type RuntimeServeDeps interface {
 - `go test ./internal/control/...`
 - `go test ./internal/app ./internal/api/...`
 
-### 第 6 阶段：拆 concrete session runtime state
+### 第 6 阶段：拆 concrete session runtime state（已完成）
 
 - 新建 `internal/control/runtime/state`。
 - 移动：
@@ -762,10 +762,22 @@ type RuntimeServeDeps interface {
   - observe runtime state
 - 根包 `sessionState` 临时变成 thin wrapper 或 type alias。
 
+完成内容：
+
+- 新建 `internal/control/runtime/state`，集中承载 concrete session 运行态数据结构和并发锁。
+- `ConcreteSessionState`、listener state、stream model、UDP session model、runtime freeze/reset/allow、active tunnel id projection、runtime observe projection 已下沉。
+- `control/runtime` 保留 alias/delegate 兼容层，避免一次性改动上层 app/api 和 runtime scanner 边界。
+- 根包 `sessionState` 改为嵌入 `controlruntime.ConcreteSessionState` 的 thin wrapper，`runtime.go` 中 runtime state mutation 只做委托。
+- `wire.go` 中 UDP session map/key/index/idle cleanup 行为改为委托 `runtime/state`，根包不再持有对应 map 操作实现。
+- 新增 `runtime/state` 单测，覆盖 listener attach、TCP/UDP connection tracking、observe projection 和 freeze drain。
+
 验收：
 
 - 根包 `runtime.go` 行数显著下降。
 - `sessionState` 不再是所有 runtime 行为的聚合地。
+- `go test ./internal/control/runtime/state`
+- `go test ./internal/control/...`
+- `go test ./internal/app ./internal/api/...`
 
 ### 第 7 阶段：拆 config sync
 

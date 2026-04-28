@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"sort"
 	"strconv"
 	"time"
 
@@ -184,41 +183,6 @@ func (s *sessionState) preparePublicUDPDatagramForward(configVersion uint64, tun
 			},
 		},
 	}, nil
-}
-
-func observeRuntimeConnections(streams map[uint32]*publicStream, udpSessions map[uint32]*publicUDPSession) []controlruntime.ObservedConnection {
-	connections := make([]controlruntime.ObservedConnection, 0, len(streams)+len(udpSessions))
-	for streamID, stream := range streams {
-		if stream == nil {
-			continue
-		}
-		connections = append(connections, stream.ObservedConnection(streamID))
-	}
-	for _, udpSession := range udpSessions {
-		if udpSession == nil {
-			continue
-		}
-		connections = append(connections, udpSession.ObservedConnection())
-	}
-
-	sort.Slice(connections, func(i, j int) bool {
-		if connections[i].Kind == connections[j].Kind {
-			if connections[i].TunnelID == connections[j].TunnelID {
-				return connections[i].ConnectionID < connections[j].ConnectionID
-			}
-			return connections[i].TunnelID < connections[j].TunnelID
-		}
-		return connections[i].Kind < connections[j].Kind
-	})
-
-	return connections
-}
-
-func nonNegativeUnixMilli(value int64) uint64 {
-	if value <= 0 {
-		return 0
-	}
-	return uint64(value)
 }
 
 func (s *Server) handlePublicConnection(serve tunnelRuntimeServeContext, publicConn net.Conn) {
@@ -518,64 +482,19 @@ func (s *Server) handlePublicUDPDatagram(serve tunnelRuntimeServeContext, listen
 }
 
 func (s *sessionState) bindPublicUDPSession(udpSession *publicUDPSession, configVersion uint64) (*publicUDPSession, bool) {
-	s.RuntimeMu.Lock()
-	defer s.RuntimeMu.Unlock()
-
-	if s.Runtime.Frozen || !s.Runtime.Listeners.Started || s.Runtime.Generation != configVersion {
-		return nil, false
-	}
-
-	key := udpSession.Key()
-	if sessionID, exists := s.Runtime.UDP.Keys[key]; exists {
-		if existing := s.Runtime.UDP.Sessions[sessionID]; existing != nil {
-			return existing, false
-		}
-		delete(s.Runtime.UDP.Keys, key)
-	}
-	if _, exists := s.Runtime.UDP.Sessions[udpSession.SessionID]; exists {
-		return s.Runtime.UDP.Sessions[udpSession.SessionID], false
-	}
-	s.Runtime.UDP.Sessions[udpSession.SessionID] = udpSession
-	s.Runtime.UDP.Keys[key] = udpSession.SessionID
-	return udpSession, true
+	return s.BindPublicUDPSession(udpSession, configVersion)
 }
 
 func (s *sessionState) publicUDPSession(sessionID uint32) *publicUDPSession {
-	s.RuntimeMu.Lock()
-	defer s.RuntimeMu.Unlock()
-	return s.Runtime.UDP.Sessions[sessionID]
+	return s.PublicUDPSession(sessionID)
 }
 
 func (s *sessionState) closePublicUDPSession(sessionID uint32) bool {
-	s.RuntimeMu.Lock()
-	udpSession, ok := s.Runtime.UDP.Sessions[sessionID]
-	if ok {
-		delete(s.Runtime.UDP.Sessions, sessionID)
-		delete(s.Runtime.UDP.Keys, udpSession.Key())
-	}
-	s.RuntimeMu.Unlock()
-	return ok
+	return s.ClosePublicUDPSession(sessionID)
 }
 
 func (s *sessionState) takeIdlePublicUDPSessions(now time.Time) []*publicUDPSession {
-	s.RuntimeMu.Lock()
-	defer s.RuntimeMu.Unlock()
-
-	idleSessions := make([]*publicUDPSession, 0)
-	for sessionID, udpSession := range s.Runtime.UDP.Sessions {
-		lastActiveUnixMs := udpSession.LastActiveUnixMs.Load()
-		if lastActiveUnixMs == 0 {
-			continue
-		}
-		lastActive := time.UnixMilli(lastActiveUnixMs).UTC()
-		if now.Before(lastActive) || now.Sub(lastActive) < udpSession.IdleTimeout {
-			continue
-		}
-		delete(s.Runtime.UDP.Sessions, sessionID)
-		delete(s.Runtime.UDP.Keys, udpSession.Key())
-		idleSessions = append(idleSessions, udpSession)
-	}
-	return idleSessions
+	return s.TakeIdlePublicUDPSessions(now)
 }
 
 func newPublicUDPSession(sessionID uint32, tunnel protocol.TunnelEntry, remotePort uint16, listener UDPListener, clientAddr *net.UDPAddr, now time.Time) *publicUDPSession {
@@ -591,19 +510,6 @@ func newPublicUDPSession(sessionID uint32, tunnel protocol.TunnelEntry, remotePo
 	}
 	udpSession.Touch(now)
 	return udpSession
-}
-
-func publicUDPSessionKey(tunnelID uint32, remotePort uint16, clientAddr protocol.SockAddr) string {
-	ip := clientAddr.IP
-	if ip4 := ip.To4(); ip4 != nil {
-		ip = ip4
-	} else {
-		ip = ip.To16()
-	}
-	return strconv.FormatUint(uint64(tunnelID), 10) +
-		"|" + strconv.FormatUint(uint64(remotePort), 10) +
-		"|" + ip.String() +
-		"|" + strconv.FormatUint(uint64(clientAddr.Port), 10)
 }
 
 func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {

@@ -145,101 +145,34 @@ func (s *sessionState) applyControlEvent(event controlsession.Event) controlsess
 }
 
 func (s *sessionState) resetRuntimeGenerationIfIdle() {
-	s.RuntimeMu.Lock()
-	defer s.RuntimeMu.Unlock()
-	if s.HasRuntimeListenersLocked() {
-		return
-	}
-	s.Runtime.Listeners.Started = false
-	s.Runtime.Generation = 0
+	s.ResetRuntimeGenerationIfIdle()
 }
 
 func (s *sessionState) attachTunnelListeners(configVersion uint64, tunnelID uint32, tcpListeners []net.Listener, udpListeners []UDPListener) (bool, bool) {
-	s.RuntimeMu.Lock()
-	defer s.RuntimeMu.Unlock()
-	if s.Runtime.Frozen {
-		return false, false
-	}
-	if s.Runtime.Generation != 0 && s.Runtime.Generation != configVersion {
-		return false, false
-	}
-	if len(s.Runtime.Listeners.TCP[tunnelID]) > 0 || len(s.Runtime.Listeners.UDP[tunnelID]) > 0 {
-		return false, false
-	}
-
-	if len(tcpListeners) > 0 {
-		s.Runtime.Listeners.TCP[tunnelID] = append(s.Runtime.Listeners.TCP[tunnelID], tcpListeners...)
-	}
-	if len(udpListeners) > 0 {
-		s.Runtime.Listeners.UDP[tunnelID] = append(s.Runtime.Listeners.UDP[tunnelID], udpListeners...)
-	}
-
-	if s.HasRuntimeListenersLocked() {
-		s.Runtime.Listeners.Started = true
-		s.Runtime.Generation = configVersion
-	} else {
-		s.Runtime.Listeners.Started = false
-		s.Runtime.Generation = 0
-	}
-
-	startUDPCleanup := len(udpListeners) > 0 && !s.Runtime.UDP.CleanupStarted
-	if startUDPCleanup {
-		s.Runtime.UDP.CleanupStarted = true
-	}
-	return startUDPCleanup, true
+	return s.AttachTunnelListeners(configVersion, tunnelID, tcpListeners, udpListeners)
 }
 
 func (s *sessionState) addPublicStream(streamID uint32, stream *publicStream, configVersion uint64) bool {
-	s.RuntimeMu.Lock()
-	defer s.RuntimeMu.Unlock()
-	if s.Runtime.Frozen || !s.Runtime.Listeners.Started || s.Runtime.Generation != configVersion {
-		return false
-	}
-	s.Runtime.Streams[streamID] = stream
-	return true
+	return s.AddPublicStream(streamID, stream, configVersion)
 }
 
 func (s *sessionState) canServeRuntimeIO(configVersion uint64) bool {
-	s.RuntimeMu.Lock()
-	defer s.RuntimeMu.Unlock()
-	return !s.Runtime.Frozen && s.Runtime.Listeners.Started && s.Runtime.Generation == configVersion
+	return s.CanServeRuntimeIO(configVersion)
 }
 
 func (s *sessionState) lockRuntimeIOWrite(configVersion uint64) bool {
-	s.WriteMu.Lock()
-	s.RuntimeIOMu.RLock()
-	if !s.canServeRuntimeIO(configVersion) {
-		s.RuntimeIOMu.RUnlock()
-		s.WriteMu.Unlock()
-		return false
-	}
-	return true
+	return s.LockRuntimeIOWrite(configVersion)
 }
 
 func (s *sessionState) unlockRuntimeIOWrite() {
-	s.RuntimeIOMu.RUnlock()
-	s.WriteMu.Unlock()
+	s.UnlockRuntimeIOWrite()
 }
 
 func (s *sessionState) publicStream(streamID uint32) *publicStream {
-	s.RuntimeMu.Lock()
-	defer s.RuntimeMu.Unlock()
-	return s.Runtime.Streams[streamID]
+	return s.PublicStream(streamID)
 }
 func (s *sessionState) closePublicStream(streamID uint32) bool {
-	s.RuntimeMu.Lock()
-	stream, ok := s.Runtime.Streams[streamID]
-	if ok {
-		delete(s.Runtime.Streams, streamID)
-	}
-	s.RuntimeMu.Unlock()
-	if !ok {
-		return false
-	}
-
-	stream.SignalReady(net.ErrClosed)
-	stream.Close()
-	return true
+	return s.ClosePublicStream(streamID)
 }
 
 // SessionID returns the session ID. This implements SessionStateProjectionTarget.
@@ -355,46 +288,11 @@ func (s *sessionState) refreshPendingConfig(group GroupRuntime, snapshot ConfigS
 }
 
 func (s *sessionState) freezeTunnelRuntime() ([]net.Listener, []UDPListener, map[uint32]*publicStream, []*publicUDPSession) {
-	s.RuntimeIOMu.Lock()
-	defer s.RuntimeIOMu.Unlock()
-	s.RuntimeMu.Lock()
-	defer s.RuntimeMu.Unlock()
-
-	s.Runtime.Frozen = true
-	s.Runtime.Listeners.Started = false
-	s.Runtime.Generation = 0
-
-	listeners := make([]net.Listener, 0, len(s.Runtime.Listeners.TCP))
-	for tunnelID, tunnelListeners := range s.Runtime.Listeners.TCP {
-		delete(s.Runtime.Listeners.TCP, tunnelID)
-		listeners = append(listeners, tunnelListeners...)
-	}
-	udpListeners := make([]UDPListener, 0, len(s.Runtime.Listeners.UDP))
-	for tunnelID, tunnelListeners := range s.Runtime.Listeners.UDP {
-		delete(s.Runtime.Listeners.UDP, tunnelID)
-		udpListeners = append(udpListeners, tunnelListeners...)
-	}
-	streams := make(map[uint32]*publicStream, len(s.Runtime.Streams))
-	for streamID, stream := range s.Runtime.Streams {
-		delete(s.Runtime.Streams, streamID)
-		streams[streamID] = stream
-	}
-	udpSessions := make([]*publicUDPSession, 0, len(s.Runtime.UDP.Sessions))
-	for sessionID, udpSession := range s.Runtime.UDP.Sessions {
-		delete(s.Runtime.UDP.Sessions, sessionID)
-		udpSessions = append(udpSessions, udpSession)
-	}
-	for key := range s.Runtime.UDP.Keys {
-		delete(s.Runtime.UDP.Keys, key)
-	}
-
-	return listeners, udpListeners, streams, udpSessions
+	return s.FreezeTunnelRuntime()
 }
 
 func (s *sessionState) allowTunnelRuntimeStart() {
-	s.RuntimeMu.Lock()
-	defer s.RuntimeMu.Unlock()
-	s.Runtime.Frozen = false
+	s.AllowTunnelRuntimeStart()
 }
 
 func (s *sessionState) resetTunnelRuntime() {
@@ -404,30 +302,7 @@ func (s *sessionState) resetTunnelRuntime() {
 }
 
 func (s *sessionState) observeState() (observedSessionConfigState, controlruntime.ObservedState) {
-	s.ControlMu.Lock()
-	configState := observedSessionConfigState{
-		State:        controlsession.Clone(s.Control),
-		Group:        s.Group,
-		PendingGroup: s.Pending,
-		RecoveryMode: s.Recovery,
-	}
-	s.ControlMu.Unlock()
-
-	s.RuntimeMu.Lock()
-	runtimeConnections := observeRuntimeConnections(s.Runtime.Streams, s.Runtime.UDP.Sessions)
-	runtimeState := controlruntime.ObservedState{
-		Frozen:                s.Runtime.Frozen,
-		ListenersStarted:      s.Runtime.Listeners.Started,
-		Generation:            s.Runtime.Generation,
-		ActiveTunnelIDs:       s.ActiveRuntimeTunnelIDsLocked(),
-		AttachedListeners:     controlruntime.ObserveRuntimeListeners(s.Runtime.Listeners.TCP, s.Runtime.Listeners.UDP),
-		ActiveStreamCount:     uint32(len(s.Runtime.Streams)),
-		ActiveUDPSessionCount: uint32(len(s.Runtime.UDP.Sessions)),
-		Connections:           runtimeConnections,
-	}
-	s.RuntimeMu.Unlock()
-
-	return configState, runtimeState
+	return s.ConcreteSessionState.ObserveState()
 }
 
 func (s *Server) shutdownSession(session *sessionState) {

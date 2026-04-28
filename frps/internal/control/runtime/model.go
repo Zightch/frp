@@ -2,45 +2,19 @@ package runtime
 
 import (
 	"net"
-	"strconv"
 
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
 	controldomainruntime "github.com/zightch/frp/frps/internal/control/domain/runtime"
+	controlruntimestate "github.com/zightch/frp/frps/internal/control/runtime/state"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
-type ObservedListener struct {
-	TunnelID uint32
-	Protocol string
-	BindIP   string
-	Port     uint16
-}
-
-type ObservedConnection struct {
-	ConnectionID   uint32
-	Kind           string
-	Protocol       string
-	TunnelID       uint32
-	RemotePort     uint16
-	ClientAddr     string
-	OpenedAtMs     uint64
-	LastActiveAtMs uint64
-	IdleTimeoutMs  uint32
-}
-
-type ObservedState struct {
-	Frozen                bool
-	ListenersStarted      bool
-	Generation            uint64
-	ActiveTunnelIDs       map[uint32]struct{}
-	AttachedListeners     []ObservedListener
-	ActiveStreamCount     uint32
-	ActiveUDPSessionCount uint32
-	Connections           []ObservedConnection
-}
+type ObservedListener = controlruntimestate.ObservedListener
+type ObservedConnection = controlruntimestate.ObservedConnection
+type ObservedState = controlruntimestate.ObservedState
 
 type SessionSnapshot struct {
 	GroupID      int64
@@ -96,43 +70,12 @@ func (s SessionSnapshot) ActiveRuntimeGroup() (RuntimeGroupSnapshot, bool) {
 
 // ListenerAddr extracts the bind IP and port from a net.Addr.
 func ListenerAddr(addr net.Addr) (string, uint16) {
-	if addr == nil {
-		return "", 0
-	}
-	host, portText, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return addr.String(), 0
-	}
-	port, _ := strconv.Atoi(portText)
-	return host, uint16(port)
+	return controlruntimestate.ListenerAddr(addr)
 }
 
 // ObserveRuntimeListeners builds a list of observed listeners from TCP and UDP listener maps.
 func ObserveRuntimeListeners(tcp map[uint32][]net.Listener, udp map[uint32][]controlbind.UDPListener) []ObservedListener {
-	listeners := make([]ObservedListener, 0, len(tcp)+len(udp))
-	for tunnelID, tunnelListeners := range tcp {
-		for _, listener := range tunnelListeners {
-			bindIP, port := ListenerAddr(listener.Addr())
-			listeners = append(listeners, ObservedListener{
-				TunnelID: tunnelID,
-				Protocol: "tcp",
-				BindIP:   bindIP,
-				Port:     port,
-			})
-		}
-	}
-	for tunnelID, tunnelListeners := range udp {
-		for _, listener := range tunnelListeners {
-			bindIP, port := ListenerAddr(listener.LocalAddr())
-			listeners = append(listeners, ObservedListener{
-				TunnelID: tunnelID,
-				Protocol: "udp",
-				BindIP:   bindIP,
-				Port:     port,
-			})
-		}
-	}
-	return listeners
+	return controlruntimestate.ObserveRuntimeListeners(tcp, udp)
 }
 
 // CloseStartedTunnelListeners closes the given TCP and UDP listeners.
