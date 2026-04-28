@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net"
@@ -13,6 +12,7 @@ import (
 	"github.com/zightch/frp/frps/internal/clock"
 	controlprotocolerrors "github.com/zightch/frp/frps/internal/control/protocol/errors"
 	controlframeio "github.com/zightch/frp/frps/internal/control/protocol/frameio"
+	controlhandshake "github.com/zightch/frp/frps/internal/control/protocol/handshake"
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/storage"
@@ -81,8 +81,7 @@ type Server struct {
 	nextChallengeID atomic.Uint32
 	nextSessionID   atomic.Uint64
 
-	controlTLSMu          sync.RWMutex
-	controlTLSCertificate *tls.Certificate
+	controlTLS *controlhandshake.ControlTLSStore
 
 	supervisor *Supervisor
 }
@@ -140,6 +139,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		runtimeIssues: controlruntime.NewIssueStore(),
 		shutdownCh:    make(chan struct{}),
 		challenges:    make(map[uint32]*authChallenge),
+		controlTLS:    controlhandshake.NewControlTLSStore(),
 	}
 	server.supervisor = NewSupervisor(serverActionExecutor{server: server})
 	return server

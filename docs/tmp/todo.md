@@ -698,7 +698,7 @@ type RuntimeServeDeps interface {
 - `server.go` 不再直接包含 frame marshal/write 细节。
 - session-aware writer 仍能保证 control frame 和 runtime IO 的写锁顺序。
 
-### 第 4 阶段：拆 transport handshake 和 control TLS runtime
+### 第 4 阶段：拆 transport handshake 和 control TLS runtime（已完成）
 
 - 新建 `internal/control/protocol/handshake`。
 - 下沉：
@@ -708,10 +708,20 @@ type RuntimeServeDeps interface {
 - 新建 control TLS certificate provider。
 - `ConfigureControlTLS` / `ClearControlTLS` 保持在 facade，内部委托给 TLS runtime store。
 
+完成内容：
+
+- `internal/control/protocol/handshake` 持有 transport client/server hello 编排、client id 加载 group、plain/tls 模式选择和 TLS upgrade。
+- `handshake.Repository`、`handshake.FrameReader`、`protocol/errors.FrameWriter`、`handshake.TLSCertificateProvider` 成为 transport negotiation 的最小 seam。
+- `handshake.ControlTLSStore` 持有 control listener TLS 证书运行态，root `Server` 不再直接维护 TLS 证书锁和证书字段。
+- 根包 `tls.go` 压缩为 facade/adapter：`ConfigureControlTLS`、`ClearControlTLS` 仍保持对 app/api 的稳定入口，`negotiateTransport`、`selectTransportSecurityMode`、`upgradeControlConnToTLS` 只委托子包。
+- 新增 TLS required / unsupported / unavailable 选择逻辑单测，保持原有错误码优先级：证书不可用优先返回 `transport_tls_unavailable`，证书可用但客户端不支持 TLS 返回 `transport_tls_unsupported`。
+
 验收：
 
 - TLS required / unsupported / unavailable 测试通过。
 - `tls.go` 从根包移除或只剩 facade adapter。
+- `go test ./internal/control/...`
+- `go test ./internal/app ./internal/api/...`
 
 ### 第 5 阶段：拆 auth challenge service
 
