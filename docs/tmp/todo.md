@@ -958,7 +958,7 @@ type RuntimeServeDeps interface {
 - `PlanSessionRuntimeStart` / `ApplySessionRuntimeStartPlan` 拆成 planner deps 和 apply deps，listener start 路径不再通过 scan/recovery 聚合接口取能力。
 - runtime conflict 检测去掉 `RuntimeOperator` 入参，只使用 `RuntimeGroupData` 显式数据，保持 conflict 逻辑为纯计算。
 
-### 第 14 阶段：拆 observe projection
+### 第 14 阶段：拆 observe projection（已完成）
 
 - 新建 `internal/control/runtime/observe` 或 `internal/control/observe` 子包。
 - 下沉：
@@ -976,6 +976,13 @@ type RuntimeServeDeps interface {
 
 - `ObserveState` 变成 facade 方法。
 - projection 可以用构造数据单测。
+
+完成内容：
+
+- 新建 `internal/control/runtime/observe`，集中承载 server observed state builder、生命周期/login gate projection、session/listener/missing listener/connection/tunnel projection 聚合和 deterministic sorting。
+- 下沉 tunnel final status projection：启用、禁用、配置冲突、异常，以及 runtime issue kind 分类：effective_ip_invalid、effective_ip_not_local、runtime_bind_conflict、runtime_bind_error。
+- 根包 `ObserveState` 压缩为 facade：只读取 lifecycle snapshot、supervisor snapshot、group runtime list 和 runtime issue snapshot，然后委托 observe builder。
+- 新增 observe 包构造数据单测，覆盖生命周期、session/listener/connection 排序、静态冲突、禁用 tunnel、runtime issue kind 和 missing listener projection。
 
 ### 第 15 阶段：收口根包 facade
 

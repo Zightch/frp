@@ -9,6 +9,7 @@ import (
 	"time"
 
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
+	controlobserve "github.com/zightch/frp/frps/internal/control/runtime/observe"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
@@ -252,8 +253,8 @@ func TestRuntimeSnapshotIndexBuildsSessionTunnelAndConnectionTargets(t *testing.
 		[]GroupRuntime{group},
 		map[int64]string{8: "bind failed"},
 		map[int64]struct{}{7: {}},
-		observedTunnelStatus,
-		runtimeIssueKind,
+		controlobserve.TunnelStatus,
+		controlobserve.RuntimeIssueKind,
 	)
 	if len(targetTunnels) != 2 {
 		t.Fatalf("expected two runtime tunnel targets, got %#v", targetTunnels)
