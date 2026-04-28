@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/clock"
+	controlprotocolerrors "github.com/zightch/frp/frps/internal/control/protocol/errors"
+	controlframeio "github.com/zightch/frp/frps/internal/control/protocol/frameio"
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/storage"
@@ -286,7 +288,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	conn, clientID, err := s.negotiateTransport(conn)
 	if err != nil {
-		level, reason := connectionErrorDetails(err)
+		level, reason := controlprotocolerrors.ConnectionDetails(err)
 		logConnection(logger, level, "frpc control transport negotiation failed", err)
 		logger.Info("frpc control connection closed", "reason", reason)
 		return
@@ -294,7 +296,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	session, agent, err := s.authenticate(conn, clientID, logger)
 	if err != nil {
-		level, reason := connectionErrorDetails(err)
+		level, reason := controlprotocolerrors.ConnectionDetails(err)
 		logConnection(logger, level, "frpc control login failed", err)
 		logger.Info("frpc control connection closed", "reason", reason)
 		return
@@ -322,7 +324,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	err = s.runSession(conn, logger, session, agent)
 	if err != nil {
-		level, reason := connectionErrorDetails(err)
+		level, reason := controlprotocolerrors.ConnectionDetails(err)
 		logConnection(logger, level, "frpc control session ended", err)
 		logger.Info("frpc control connection closed", "reason", reason)
 		return
@@ -407,79 +409,45 @@ func (s *Server) readFrame(conn net.Conn) (protocol.Frame, error) {
 }
 
 func (s *Server) readFrameWithTimeout(conn net.Conn, timeout time.Duration) (protocol.Frame, error) {
-	frameBytes, err := s.frames.ReadFrame(conn, timeout, s.frameContext(conn, nil))
-	if err != nil {
-		return protocol.Frame{}, err
-	}
-	return protocol.ParseFrame(frameBytes)
+	return controlframeio.ReadFrame(s.frames, conn, timeout, s.frameContext(conn, nil))
 }
 
 func (s *Server) readFrameWithSessionTimeout(conn net.Conn, session *sessionState, timeout time.Duration) (protocol.Frame, error) {
-	frameBytes, err := s.frames.ReadFrame(conn, timeout, s.frameContext(conn, session))
-	if err != nil {
-		return protocol.Frame{}, err
-	}
-	return protocol.ParseFrame(frameBytes)
+	return controlframeio.ReadFrame(s.frames, conn, timeout, s.frameContext(conn, session))
 }
 
 func (s *Server) writeFrame(conn net.Conn, frame protocol.Frame) error {
-	return s.writeFrameWithContext(conn, frame, s.frameContext(conn, nil))
+	return s.frameWriter(conn, nil).WriteFrame(frame)
 }
 
-func (s *Server) writeFrameWithContext(conn net.Conn, frame protocol.Frame, frameContext transport.FrameContext) error {
-	frameBytes, err := frame.MarshalBinary()
-	if err != nil {
-		return err
+func (s *Server) frameWriter(conn net.Conn, session *sessionState) controlframeio.Writer {
+	return controlframeio.Writer{
+		Frames:       s.frames,
+		Conn:         conn,
+		WriteTimeout: s.options.WriteTimeout,
+		Context:      s.frameContext(conn, session),
 	}
-	return s.frames.WriteFrame(conn, frameBytes, s.options.WriteTimeout, frameContext)
 }
 
-func (s *Server) frameContext(conn net.Conn, session *sessionState) transport.FrameContext {
-	frameContext := transport.FrameContext{
-		Side:   transport.FrameSideServer,
-		ConnID: transport.ConnectionID(conn),
-	}
+func (s *Server) frameContext(conn net.Conn, session *sessionState) controlframeio.Context {
+	context := controlframeio.SessionContext{}
 	if session != nil {
-		frameContext.GroupID = session.CurrentGroupID()
-		frameContext.SessionID = session.ID
+		context.GroupID = session.CurrentGroupID()
+		context.SessionID = session.ID
 	}
-	return frameContext
+	return controlframeio.ServerContext(conn, context)
 }
 
 func (s *Server) replyProtocolError(conn net.Conn, frame protocol.Frame, err error) error {
-	protocolErr := protocol.AsProtocolError(err)
-	if protocolErr == nil {
-		return err
-	}
-	if writeErr := s.writeError(conn, frame.RequestID, frame.StreamID, protocolErr.Code, false, protocolErr.Message); writeErr != nil {
-		return errors.Join(err, writeErr)
-	}
-	return err
+	return controlprotocolerrors.ReplyProtocolError(s.frameWriter(conn, nil), frame, err)
 }
 
 func (s *Server) replyError(conn net.Conn, requestID, streamID uint32, code uint16, format string, args ...any) error {
-	err := protocol.NewError(code, format, args...)
-	if writeErr := s.writeError(conn, requestID, streamID, code, false, err.Message); writeErr != nil {
-		return errors.Join(err, writeErr)
-	}
-	return err
+	return controlprotocolerrors.ReplyError(s.frameWriter(conn, nil), requestID, streamID, code, format, args...)
 }
 
 func (s *Server) writeError(conn net.Conn, requestID, streamID uint32, code uint16, retryable bool, message string) error {
-	body, err := protocol.MarshalErrorBody(protocol.ErrorBody{
-		ErrorCode: code,
-		Retryable: retryable,
-		Message:   message,
-	})
-	if err != nil {
-		return err
-	}
-	return s.writeFrame(conn, protocol.Frame{
-		Type:      protocol.TypeError,
-		RequestID: requestID,
-		StreamID:  streamID,
-		Body:      body,
-	})
+	return controlprotocolerrors.WriteError(s.frameWriter(conn, nil), requestID, streamID, code, retryable, message)
 }
 
 var _ controlruntime.RuntimeOperator = (*Server)(nil)

@@ -44,6 +44,34 @@ recovery、listener 和数据面调用。该接口不再扩张；新增 runtime 
 `RuntimeScannerDeps`，TCP/UDP 数据面只依赖 `RuntimeServeDeps`，listener start/probe
 拆到独立 runtime listener 能力，最终删除 `RuntimeOperator`。
 
+## Protocol Frame IO
+
+第三阶段后，控制连接的帧读写细节下沉到 `control/protocol/frameio`：
+
+- 构造服务端 `transport.FrameContext`
+- 按 timeout 读取并解析 `protocol.Frame`
+- marshal 并写出 `protocol.Frame`
+- 通过 `frameio.Writer` 给上层提供最小写帧 seam
+
+根 `control` 仍保留 `readFrame` / `writeFrame` 等适配方法，以便握手、auth、
+session loop 和 runtime IO 分阶段迁移。session 写锁仍在根包 session 适配层持有，
+锁内只委托 `frameio.Writer` 写帧；runtime IO 仍先检查 config version 和 runtime
+锁，再委托同一个 writer。
+
+## Protocol Errors
+
+协议错误回复和连接关闭原因映射下沉到 `control/protocol/errors`：
+
+- `ReplyProtocolError`
+- `ReplyError`
+- `WriteError`
+- `ConnectionDetails`
+- `IsExpectedConnectionClose`
+- `ConnectionReason`
+
+该包只依赖最小 `FrameWriter` 接口，不依赖 `Server` 或 `sessionState`。这保证错误
+回复可以复用 control frame 写锁，也能在后续 handshake/auth/dispatch 子包中直接使用。
+
 ## 传输层
 
 - `pkg/transport` 负责长度前缀收发

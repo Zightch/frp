@@ -10,6 +10,7 @@ import (
 	"time"
 
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
+	controlprotocolerrors "github.com/zightch/frp/frps/internal/control/protocol/errors"
 	controlrepo "github.com/zightch/frp/frps/internal/control/repo"
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
@@ -440,27 +441,40 @@ func (s *Server) shutdownSession(session *sessionState) {
 	}
 }
 
+type sessionFrameWriter struct {
+	server  *Server
+	conn    net.Conn
+	session *sessionState
+}
+
+func (w sessionFrameWriter) WriteFrame(frame protocol.Frame) error {
+	return w.server.writeFrameWithSession(w.conn, w.session, frame)
+}
+
+func (s *Server) sessionFrameWriter(conn net.Conn, session *sessionState) sessionFrameWriter {
+	return sessionFrameWriter{
+		server:  s,
+		conn:    conn,
+		session: session,
+	}
+}
+
 func (s *Server) writeFrameWithSession(conn net.Conn, session *sessionState, frame protocol.Frame) error {
 	session.WriteMu.Lock()
 	defer session.WriteMu.Unlock()
-	return s.writeFrameWithContext(conn, frame, s.frameContext(conn, session))
+	return s.frameWriter(conn, session).WriteFrame(frame)
 }
 func (s *Server) writeFramesWithSession(conn net.Conn, session *sessionState, frames ...protocol.Frame) error {
 	session.WriteMu.Lock()
 	defer session.WriteMu.Unlock()
-	for _, frame := range frames {
-		if err := s.writeFrameWithContext(conn, frame, s.frameContext(conn, session)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.frameWriter(conn, session).WriteFrames(frames...)
 }
 func (s *Server) writeRuntimeFrameWithSession(conn net.Conn, session *sessionState, configVersion uint64, frame protocol.Frame) error {
 	if !session.lockRuntimeIOWrite(configVersion) {
 		return errRuntimeIOStopped
 	}
 	defer session.unlockRuntimeIOWrite()
-	return s.writeFrameWithContext(conn, frame, s.frameContext(conn, session))
+	return s.frameWriter(conn, session).WriteFrame(frame)
 }
 
 func (s *Server) writeRuntimeFramesWithSession(conn net.Conn, session *sessionState, configVersion uint64, frames ...protocol.Frame) error {
@@ -468,47 +482,18 @@ func (s *Server) writeRuntimeFramesWithSession(conn net.Conn, session *sessionSt
 		return errRuntimeIOStopped
 	}
 	defer session.unlockRuntimeIOWrite()
-	for _, frame := range frames {
-		if err := s.writeFrameWithContext(conn, frame, s.frameContext(conn, session)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.frameWriter(conn, session).WriteFrames(frames...)
 }
 
 func (s *Server) replyProtocolErrorWithSession(conn net.Conn, session *sessionState, frame protocol.Frame, err error) error {
-	protocolErr := protocol.AsProtocolError(err)
-	if protocolErr == nil {
-		return err
-	}
-	if writeErr := s.writeErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocolErr.Code, false, protocolErr.Message); writeErr != nil {
-		return errors.Join(err, writeErr)
-	}
-	return err
+	return controlprotocolerrors.ReplyProtocolError(s.sessionFrameWriter(conn, session), frame, err)
 }
 func (s *Server) replyErrorWithSession(conn net.Conn, session *sessionState, requestID, streamID uint32, code uint16, format string, args ...any) error {
-	err := protocol.NewError(code, format, args...)
-	if writeErr := s.writeErrorWithSession(conn, session, requestID, streamID, code, false, err.Message); writeErr != nil {
-		return errors.Join(err, writeErr)
-	}
-	return err
+	return controlprotocolerrors.ReplyError(s.sessionFrameWriter(conn, session), requestID, streamID, code, format, args...)
 }
 
 func (s *Server) writeErrorWithSession(conn net.Conn, session *sessionState, requestID, streamID uint32, code uint16, retryable bool, message string) error {
-	body, err := protocol.MarshalErrorBody(protocol.ErrorBody{
-		ErrorCode: code,
-		Retryable: retryable,
-		Message:   message,
-	})
-	if err != nil {
-		return err
-	}
-	return s.writeFrameWithSession(conn, session, protocol.Frame{
-		Type:      protocol.TypeError,
-		RequestID: requestID,
-		StreamID:  streamID,
-		Body:      body,
-	})
+	return controlprotocolerrors.WriteError(s.sessionFrameWriter(conn, session), requestID, streamID, code, retryable, message)
 }
 
 var (

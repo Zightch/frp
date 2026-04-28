@@ -671,7 +671,7 @@ type RuntimeServeDeps interface {
 - `go test ./internal/app ./internal/api/...`
 - `internal/app` tests 仍可通过 `control.GroupRuntime` alias 编译。
 
-### 第 3 阶段：拆 frame IO 和 protocol error
+### 第 3 阶段：拆 frame IO 和 protocol error（已完成）
 
 - 新建 `internal/control/protocol/frameio`。
 - 下沉：
@@ -684,6 +684,14 @@ type RuntimeServeDeps interface {
   - protocol error reply
   - error body marshal
   - connection reason mapping
+
+完成内容：
+
+- `internal/control/protocol/frameio` 持有 server frame context 构造、read frame with timeout、write frame with timeout。
+- `frameio.Writer` 成为根包和协议错误包之间的写帧 seam，frame marshal/write 细节不再留在 `server.go`。
+- `internal/control/protocol/errors` 持有 protocol error reply、error body marshal、连接关闭原因映射。
+- session-aware error reply 通过 `sessionFrameWriter` 继续复用 `writeFrameWithSession`，保留 control frame 写锁。
+- runtime IO 写入仍先进入 `lockRuntimeIOWrite`，再委托 `frameio.Writer`，保持 runtime IO 锁顺序。
 
 验收：
 
