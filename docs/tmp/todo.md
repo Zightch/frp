@@ -723,7 +723,7 @@ type RuntimeServeDeps interface {
 - `go test ./internal/control/...`
 - `go test ./internal/app ./internal/api/...`
 
-### 第 5 阶段：拆 auth challenge service
+### 第 5 阶段：拆 auth challenge service（已完成）
 
 - 新建 `internal/control/protocol/auth`。
 - 下沉：
@@ -734,10 +734,20 @@ type RuntimeServeDeps interface {
   - auth begin/finish frame 校验
 - auth service 输出“已认证 group + session attach request”，不要直接构造完整 server runtime。
 
+完成内容：
+
+- `internal/control/protocol/auth` 持有 auth.begin/auth.finish 帧校验、auth.challenge 写出、challenge issue/consume/purge 和 group enabled 二次校验。
+- `auth.ChallengeService` 接管 challenge 运行态，root `Server` 不再直接维护 `challengeMu`、`challenges`、`nextChallengeID`。
+- `auth.Authenticate` 通过 `Repository`、`FrameReader`、`FrameWriter`、`ChallengeService` 这些最小 seam 完成协议认证，返回已认证 `GroupRuntime` 和 finish request id。
+- 根包 `auth.go` 只保留登录后的 session/runtime/supervisor 拼装；`issueChallenge` 和 `consumeChallenge` 暂留兼容 adapter，内部委托 `auth.ChallengeService`。
+- 新增 auth 子包单测，覆盖 challenge replay、expired、mismatch 后标记 used、auth.begin client mismatch、auth.finish stream id 校验，以及不启动完整 Server 的认证成功路径。
+
 验收：
 
 - auth 单测可以不启动完整 Server。
 - challenge replay / expired / mismatch 行为保持不变。
+- `go test ./internal/control/...`
+- `go test ./internal/app ./internal/api/...`
 
 ### 第 6 阶段：拆 concrete session runtime state
 

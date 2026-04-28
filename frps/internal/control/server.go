@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/clock"
+	controlauth "github.com/zightch/frp/frps/internal/control/protocol/auth"
 	controlprotocolerrors "github.com/zightch/frp/frps/internal/control/protocol/errors"
 	controlframeio "github.com/zightch/frp/frps/internal/control/protocol/frameio"
 	controlhandshake "github.com/zightch/frp/frps/internal/control/protocol/handshake"
@@ -69,8 +70,7 @@ type Server struct {
 	scanWG              sync.WaitGroup
 	shutdownCh          chan struct{}
 
-	challengeMu sync.Mutex
-	challenges  map[uint32]*authChallenge
+	authChallenges *controlauth.ChallengeService
 
 	initialRuntimeScanMu   sync.Mutex
 	initialRuntimeScanDone bool
@@ -78,8 +78,7 @@ type Server struct {
 	runtimeScanStateMu     sync.Mutex
 	runtimeScanInFlight    bool
 
-	nextChallengeID atomic.Uint32
-	nextSessionID   atomic.Uint64
+	nextSessionID atomic.Uint64
 
 	controlTLS *controlhandshake.ControlTLSStore
 
@@ -138,8 +137,11 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		activeConn:    make(map[net.Conn]struct{}),
 		runtimeIssues: controlruntime.NewIssueStore(),
 		shutdownCh:    make(chan struct{}),
-		challenges:    make(map[uint32]*authChallenge),
-		controlTLS:    controlhandshake.NewControlTLSStore(),
+		authChallenges: controlauth.NewChallengeService(controlauth.ChallengeServiceOptions{
+			Clock: options.Clock,
+			TTL:   options.ChallengeTTL,
+		}),
+		controlTLS: controlhandshake.NewControlTLSStore(),
 	}
 	server.supervisor = NewSupervisor(serverActionExecutor{server: server})
 	return server
