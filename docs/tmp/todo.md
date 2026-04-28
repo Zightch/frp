@@ -1052,6 +1052,18 @@ type RuntimeServeDeps interface {
 - `control/wiring` 可以依赖所有子包；其他子包不反向依赖 `wiring`。
 - 默认测试已覆盖 facade alias 后的 app/api 编译链路和 wiring 白盒测试。
 
+### 待跟进：testhooks 隐藏场景与 1ce6212e 对比
+
+- 已在本地补充详细记录：`docs/tmp/control-regression-1ce6212e.md`。
+- 当前 `go test -tags testhooks ./internal/control/wiring` 可以编译并运行，但部分 refresh / runtime scan / recovery 竞争窗口场景失败。
+- 对比基线 `1ce6212e` 上，默认测试通过；但 `go test -mod=mod -tags testhooks ./internal/control` 不是绿色基线，单测会先失败在 scripted FrameIO 测试写法：`write frame: scripted conn raw io is unsupported; use FrameIO`。
+- 因此隐藏场景失败不能直接判定为 facade / wiring 迁移引入的功能回归；它是一组长期未纳入默认验收、需要单独对齐 FrameIO 与 recovery 语义的场景。
+- 对外入口对比发现一个兼容缺口：`1ce6212e` 根包导出了 `control.Logger`，facade 收口后遗漏该 alias；当前已补回 `type Logger = wiring.Logger`。
+- 默认对照结果：
+  - `1ce6212e`：`go test -mod=mod ./internal/control/...`、`go test -mod=mod ./internal/app ./internal/api/...`、`go test -mod=mod ./...` 均通过。
+  - 当前版本：`go test ./internal/control/...`、`go test ./internal/app ./internal/api/...`、`go test ./...` 均通过。
+- 当前没有发现 app/api 可见功能损失；剩余风险集中在 `testhooks` 隐藏竞争场景，需要单独决策是更新测试预期，还是恢复“pending refresh 强制关闭旧 session / scan recovery 必发 config.push”等旧测试语义。
+
 ## 风险点和约束
 
 - 不要一次性大搬迁所有文件；测试体量大，容易把行为回归藏在移动噪声里。

@@ -10,6 +10,7 @@ import (
 type (
 	Options                 = wiring.Options
 	Server                  = wiring.Server
+	Logger                  = wiring.Logger
 	Repository              = wiring.Repository
 	SQLRepository           = wiring.SQLRepository
 	GroupRuntime            = wiring.GroupRuntime
