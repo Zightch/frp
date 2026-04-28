@@ -1022,6 +1022,36 @@ type RuntimeServeDeps interface {
 - 根包单个非测试实现文件已压缩到小型拼装层，协议、session FSM、supervisor、executor、runtime state、listener、TCP/UDP 数据面、scan/recovery/observe 的实际逻辑继续由子包承载。
 - 技术文档已同步：`RuntimeOperator` 聚合接口已经删除，后续只能通过小 capability seam 接入 runtime 能力。
 
+### 第 16 阶段：最终 facade 收口（已完成）
+
+- 新建并接入 `frps/internal/control/wiring/` 作为最终 assembly 层。
+- 根 `frps/internal/control/` 当前只剩 `facade.go`，通过 type alias / wrapper 暴露：
+  - `Options`
+  - `Server`
+  - `NewServer`
+  - repository / listener / bind 兼容 alias
+  - `NewRepository`
+  - `NewNetListenerFactory`
+  - `NewScriptedListenerFactory`
+- 原根包生产实现文件和默认白盒场景测试已整体迁入 `control/wiring`：
+  - lifecycle / connection / frame adapter
+  - auth / tls / configsync adapter
+  - runtime start / scan / capabilities / issue adapter
+  - data plane adapter
+  - runtime executor / action executor adapter
+  - supervisor / session runtime state wrapper
+- app/api 仍只依赖 `frps/internal/control`，不直接依赖 `control/wiring`。
+- 默认验收通过：
+  - `go test ./internal/control/...`
+  - `go test ./internal/app ./internal/api/...`
+  - `go test ./...`
+
+验收状态：
+
+- 根包没有业务实现文件，只保留 facade。
+- `control/wiring` 可以依赖所有子包；其他子包不反向依赖 `wiring`。
+- 默认测试已覆盖 facade alias 后的 app/api 编译链路和 wiring 白盒测试。
+
 ## 风险点和约束
 
 - 不要一次性大搬迁所有文件；测试体量大，容易把行为回归藏在移动噪声里。

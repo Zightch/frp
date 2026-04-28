@@ -2,9 +2,10 @@
 
 ## 拆分目标边界
 
-当前控制面后续只保留一个稳定入口：`frps/internal/control`。这个根包面向
-`internal/app` 和 `internal/api`，职责应收敛到 facade：`Options`、`Server`、
-`NewServer`、生命周期方法、运行态刷新、观测查询，以及控制面 TLS 配置入口。
+当前控制面只保留一个稳定入口：`frps/internal/control`。这个根包面向
+`internal/app` 和 `internal/api`，职责已经收敛到 facade：`Options`、`Server`、
+`NewServer`、生命周期方法、运行态刷新、观测查询，以及控制面 TLS 配置入口都通过
+type alias / wrapper 暴露。
 
 `frps/internal/controlv2` 已经删除。新增控制面能力必须回到 `control` 这条主线，
 通过子包逐层拆分，而不是继续形成双轨实现。
@@ -16,17 +17,18 @@
 - `control/runtime/*`：具体运行态状态、listener 启停、TCP/UDP 数据面、runtime scan、recovery、conflict、issues、observe projection。
 - `control/domain/*`：`GroupRuntime`、`ConfigSnapshot`、desired/applied snapshot 转换、tunnel helper 和版本语义。
 - `control/repo/*`：SQL 查询、row decode、持久化配置到 domain runtime model 的投影。
-- 根 `control`：只保留 `Options`、`Server`、`NewServer`、app/api 入口方法、兼容 alias 和业务拼装 adapter。
+- `control/wiring/*`：业务拼装层，组合 repo、protocol、session、runtime、observer、scanner，并承载白盒场景测试。
+- 根 `control`：只保留 app/api 稳定入口和兼容 alias，不承载业务拼装实现。
 
 根包后续不应直接实现 frame handler、listener serve loop、runtime scan 算法或
-recovery 策略。现在根包的大文件已经收口为小型 facade/adapter 文件，实际协议、
-session、runtime 逻辑由子包承载。发现循环依赖时，优先下沉 domain model 或提取
-更小 capability，不要用 `any` 或 placeholder type 扩大边界。
+recovery 策略。现在根包只有 `facade.go`，实际协议、session、runtime 和 assembly
+逻辑由子包承载。发现循环依赖时，优先下沉 domain model 或提取更小 capability，
+不要用 `any` 或 placeholder type 扩大边界。
 
 ## Runtime Capability 边界
 
 `control/runtime.RuntimeOperator` 聚合接口已经删除。scan、recovery、listener start
-和数据面现在通过小能力接口接入根包拼装层；新增 runtime 依赖必须继续落到小 seam，
+和数据面现在通过小能力接口接入 `control/wiring` 拼装层；新增 runtime 依赖必须继续落到小 seam，
 不能重新引入跨扫描、恢复、listener、serve、repo、scheduler 的大接口。
 
 当前主要 seam 包括：
@@ -63,10 +65,10 @@ audited recovery 只依赖 session registry / executor provider 能力。
 - marshal 并写出 `protocol.Frame`
 - 通过 `frameio.Writer` 给上层提供最小写帧 seam
 
-根 `control` 仍保留 `readFrame` / `writeFrame` 等适配方法，以便握手、auth、
-session loop 和 runtime IO 分阶段迁移。session 写锁仍在根包 session 适配层持有，
-锁内只委托 `frameio.Writer` 写帧；runtime IO 仍先检查 config version 和 runtime
-锁，再委托同一个 writer。
+`control/wiring` 保留 `readFrame` / `writeFrame` 等适配方法来连接握手、auth、
+session loop 和 runtime IO。session 写锁仍在 wiring 的 session 适配层持有，锁内
+只委托 `frameio.Writer` 写帧；runtime IO 仍先检查 config version 和 runtime 锁，
+再委托同一个 writer。
 
 ## Protocol Errors
 
