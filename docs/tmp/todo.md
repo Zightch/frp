@@ -858,7 +858,7 @@ type RuntimeServeDeps interface {
 - 新 TCP 包通过最小 seam 依赖 session runtime state、runtime/control frame writer、clock、logger，不直接依赖完整 `Server`。
 - 新增 TCP 数据面单测，覆盖 stream.open 构造与连接元数据、stream.opened ready signal、stream.data 写 public conn、public read EOF 发送 stream.close。
 
-### 第 10 阶段：拆 UDP 数据面
+### 第 10 阶段：拆 UDP 数据面（已完成）
 
 - 新建 `internal/control/runtime/serve/udp`。
 - 移动：
@@ -874,6 +874,13 @@ type RuntimeServeDeps interface {
 
 - UDP idle cleanup 可以用 manual scheduler 单测。
 - UDP path 不再需要完整 Server。
+
+完成内容：
+
+- 新建 `internal/control/runtime/serve/udp`，承载 UDP listener read loop、public UDP datagram forward、frpc -> public UDP data、udp.close handler、udp.close 发送和 idle cleanup。
+- UDP public session 创建、client addr projection、UDP addr clone 和 datagram frame 构造下沉到 UDP 数据面包。
+- `wire.go` / `runtime.go` 中 UDP 主路径压缩为 adapter，继续保留同包测试兼容 wrapper。
+- 新增 UDP 数据面单测，覆盖 UDP open/data frame 构造与 session 复用、frpc UDP data 写回 public listener、missing session close、manual scheduler 驱动 idle cleanup。
 
 ### 第 11 阶段：拆 supervisor
 

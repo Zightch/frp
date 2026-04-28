@@ -650,27 +650,7 @@ func (s *Server) serveTunnelListener(serve tunnelRuntimeServeContext, listener n
 }
 
 func (s *Server) serveUDPTunnelListener(serve tunnelRuntimeServeContext, listener UDPListener) {
-	buffer := make([]byte, protocol.MaxDataBodyLen)
-	for {
-		n, clientAddr, err := listener.ReadFromUDP(buffer)
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			serve.logger.Warn("udp tunnel read failed", "tunnel_id", serve.tunnel.TunnelID, "error", err)
-			continue
-		}
-		payload := append([]byte(nil), buffer[:n]...)
-		if err := s.handlePublicUDPDatagram(serve, listener, clientAddr, payload); err != nil {
-			serve.logger.Warn(
-				"udp tunnel forward failed",
-				"tunnel_id", serve.tunnel.TunnelID,
-				"remote_port", serve.remotePort,
-				"client_addr", clientAddr.String(),
-				"error", err,
-			)
-		}
-	}
+	s.udpHandler().ServeUDPTunnelListener(udpServeContext(serve), listener)
 }
 
 func (s *Server) runtimeSnapshotIndex() controlruntime.RuntimeSnapshotIndex {

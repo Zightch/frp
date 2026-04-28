@@ -3,7 +3,6 @@ package control
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"time"
@@ -11,6 +10,7 @@ import (
 	controlprotocolerrors "github.com/zightch/frp/frps/internal/control/protocol/errors"
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controltcp "github.com/zightch/frp/frps/internal/control/runtime/serve/tcp"
+	controludp "github.com/zightch/frp/frps/internal/control/runtime/serve/udp"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -124,53 +124,15 @@ func (s *sessionState) preparePublicStreamOpen(configVersion uint64, tunnel prot
 }
 
 func (s *sessionState) preparePublicUDPDatagramForward(configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, listener UDPListener, clientAddr *net.UDPAddr, payload []byte, now time.Time) (sessionUDPDatagramForwardOperation, error) {
-	udpSession := newPublicUDPSession(s.NextTunnelStreamID(), tunnel, remotePort, listener, clientAddr, now)
-	udpSession, created := s.bindPublicUDPSession(udpSession, configVersion)
-	if udpSession == nil {
-		return sessionUDPDatagramForwardOperation{blocked: true}, nil
-	}
-	if !created {
-		udpSession.Touch(now)
-		return sessionUDPDatagramForwardOperation{
-			udpSession: udpSession,
-			frames: []protocol.Frame{
-				{
-					Type:     protocol.TypeUDPData,
-					StreamID: udpSession.SessionID,
-					Body:     payload,
-				},
-			},
-		}, nil
-	}
-
-	requestID := s.NextRequestID()
-	openBody, err := protocol.MarshalUDPOpen(protocol.UDPOpen{
-		TunnelID:      tunnel.TunnelID,
-		RemotePort:    udpSession.RemotePort,
-		ClientAddr:    udpSession.ClientAddr,
-		IdleTimeoutMs: uint32(udpSession.IdleTimeout / time.Millisecond),
-	})
+	op, err := controludp.PrepareDatagramForward(s, defaultUDPIdleTimeout, configVersion, tunnel, remotePort, listener, clientAddr, payload, now)
 	if err != nil {
-		s.closePublicUDPSession(udpSession.SessionID)
 		return sessionUDPDatagramForwardOperation{}, err
 	}
-
 	return sessionUDPDatagramForwardOperation{
-		created:    true,
-		udpSession: udpSession,
-		frames: []protocol.Frame{
-			{
-				Type:      protocol.TypeUDPOpen,
-				RequestID: requestID,
-				StreamID:  udpSession.SessionID,
-				Body:      openBody,
-			},
-			{
-				Type:     protocol.TypeUDPData,
-				StreamID: udpSession.SessionID,
-				Body:     payload,
-			},
-		},
+		blocked:    op.Blocked,
+		created:    op.Created,
+		udpSession: op.UDPSession,
+		frames:     op.Frames,
 	}, nil
 }
 
@@ -220,119 +182,52 @@ func tcpServeContext(serve tunnelRuntimeServeContext) controltcp.ServeContext {
 	}
 }
 
+func (s *Server) udpHandler() controludp.Handler {
+	return controludp.Handler{
+		Clock:       s.clock,
+		Scheduler:   s.scheduler,
+		IdleTimeout: defaultUDPIdleTimeout,
+		IdleSweep:   defaultUDPIdleSweep,
+		RuntimeWriteStopped: func(err error) bool {
+			return errors.Is(err, errRuntimeIOStopped)
+		},
+	}
+}
+
+func udpServeContext(serve tunnelRuntimeServeContext) controludp.ServeContext {
+	return controludp.ServeContext{
+		Logger:        serve.logger,
+		Session:       serve.session,
+		RuntimeWriter: serve.runtimeIO,
+		ControlWriter: serve.runtimeIO.controlFrameWriter(),
+		ConfigVersion: serve.runtimeIO.configVersion,
+		Tunnel:        serve.tunnel,
+		RemotePort:    serve.remotePort,
+	}
+}
+
 func (s *Server) handleUDPData(conn net.Conn, session *sessionState, frame protocol.Frame) error {
-	if frame.RequestID != 0 {
-		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "udp.data requestId must be zero")
-	}
-	if frame.StreamID == 0 {
-		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "udp.data streamId must be non-zero")
-	}
-	if len(frame.Body) > protocol.MaxDataBodyLen {
-		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "udp.data body exceeds %d bytes", protocol.MaxDataBodyLen)
-	}
-
-	udpSession := session.publicUDPSession(frame.StreamID)
-	if udpSession == nil {
-		return s.sendUDPClose(conn, session, frame.StreamID, protocol.CloseReasonProtocolError, "udp session not found")
-	}
-
-	if _, err := udpSession.Listener.WriteToUDP(frame.Body, udpSession.PublicAddr); err != nil {
-		if session.closePublicUDPSession(frame.StreamID) {
-			return s.sendUDPClose(conn, session, frame.StreamID, protocol.CloseReasonWriteError, err.Error())
-		}
-		return nil
-	}
-	udpSession.Touch(s.clock.Now())
-	return nil
+	return s.udpHandler().HandleUDPData(s.sessionFrameWriter(conn, session), session, frame)
 }
 
 func (s *Server) handleUDPClose(session *sessionState, frame protocol.Frame) error {
-	if frame.RequestID != 0 {
-		return fmt.Errorf("udp.close requestId must be zero")
-	}
-	if frame.StreamID == 0 {
-		return fmt.Errorf("udp.close streamId must be non-zero")
-	}
-	if _, err := protocol.UnmarshalUDPClose(frame.Body); err != nil {
-		return err
-	}
-	session.closePublicUDPSession(frame.StreamID)
-	return nil
+	return s.udpHandler().HandleUDPClose(session, frame)
 }
 
 func (s *Server) sendUDPClose(conn net.Conn, session *sessionState, sessionID uint32, reasonCode uint16, message string) error {
-	body, err := protocol.MarshalUDPClose(protocol.UDPClose{
-		ReasonCode: reasonCode,
-		Initiator:  protocol.InitiatorFRPS,
-		Message:    message,
-	})
-	if err != nil {
-		return err
-	}
-	return s.writeFrameWithSession(conn, session, protocol.Frame{
-		Type:     protocol.TypeUDPClose,
-		StreamID: sessionID,
-		Body:     body,
-	})
+	return controludp.SendUDPClose(s.sessionFrameWriter(conn, session), sessionID, reasonCode, message)
 }
 
 func (s *Server) serveUDPIdleCleanup(conn net.Conn, logger Logger, session *sessionState) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		<-session.DoneCh()
-		cancel()
-	}()
-
-	task := s.scheduler.Every(ctx, "control.udp_idle_cleanup", defaultUDPIdleSweep, func(ctx context.Context, now time.Time) {
-		if err := s.cleanupIdlePublicUDPSessions(conn, logger, session, now.UTC()); err != nil {
-			logger.Warn("udp session idle cleanup failed", "error", err)
-		}
-	})
-	<-task.Done()
+	s.udpHandler().ServeIdleCleanup(context.Background(), s.sessionFrameWriter(conn, session), logger, session)
 }
 
 func (s *Server) cleanupIdlePublicUDPSessions(conn net.Conn, logger Logger, session *sessionState, now time.Time) error {
-	idleSessions := session.takeIdlePublicUDPSessions(now)
-	for _, udpSession := range idleSessions {
-		if err := s.sendUDPClose(conn, session, udpSession.SessionID, protocol.CloseReasonIdleTimeout, "udp session idle timeout"); err != nil {
-			return err
-		}
-		logger.Info(
-			"udp session closed for idle timeout",
-			"session_id", udpSession.SessionID,
-			"tunnel_id", udpSession.TunnelID,
-			"client_addr", udpSession.PublicAddr.String(),
-		)
-	}
-	return nil
+	return s.udpHandler().CleanupIdleSessions(s.sessionFrameWriter(conn, session), logger, session, now)
 }
 
 func (s *Server) handlePublicUDPDatagram(serve tunnelRuntimeServeContext, listener UDPListener, clientAddr *net.UDPAddr, payload []byte) error {
-	now := s.clock.Now()
-	forwardOp, err := serve.session.preparePublicUDPDatagramForward(serve.runtimeIO.configVersion, serve.tunnel, serve.remotePort, listener, clientAddr, payload, now)
-	if err != nil {
-		return err
-	}
-	if forwardOp.blocked {
-		return nil
-	}
-	err = serve.runtimeIO.writeFrames(forwardOp.frames...)
-	if err != nil {
-		if forwardOp.created {
-			serve.session.closePublicUDPSession(forwardOp.udpSession.SessionID)
-		}
-		if errors.Is(err, errRuntimeIOStopped) {
-			return nil
-		}
-		return err
-	}
-
-	if forwardOp.created {
-		serve.logger.Info("udp session opened", "session_id", forwardOp.udpSession.SessionID, "tunnel_id", serve.tunnel.TunnelID, "client_addr", clientAddr.String())
-	}
-	return nil
+	return s.udpHandler().HandlePublicDatagram(udpServeContext(serve), listener, clientAddr, payload)
 }
 
 func (s *sessionState) bindPublicUDPSession(udpSession *publicUDPSession, configVersion uint64) (*publicUDPSession, bool) {
@@ -352,29 +247,11 @@ func (s *sessionState) takeIdlePublicUDPSessions(now time.Time) []*publicUDPSess
 }
 
 func newPublicUDPSession(sessionID uint32, tunnel protocol.TunnelEntry, remotePort uint16, listener UDPListener, clientAddr *net.UDPAddr, now time.Time) *publicUDPSession {
-	udpSession := &publicUDPSession{
-		SessionID:   sessionID,
-		TunnelID:    tunnel.TunnelID,
-		RemotePort:  remotePort,
-		ClientAddr:  sockAddrFromNetAddr(clientAddr),
-		PublicAddr:  cloneUDPAddr(clientAddr),
-		Listener:    listener,
-		OpenedAtMs:  uint64(now.UTC().UnixMilli()),
-		IdleTimeout: defaultUDPIdleTimeout,
-	}
-	udpSession.Touch(now)
-	return udpSession
+	return controludp.NewPublicSession(sessionID, tunnel, remotePort, listener, clientAddr, defaultUDPIdleTimeout, now)
 }
 
 func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
-	if addr == nil {
-		return nil
-	}
-	return &net.UDPAddr{
-		IP:   append(net.IP(nil), addr.IP...),
-		Port: addr.Port,
-		Zone: addr.Zone,
-	}
+	return controludp.CloneUDPAddr(addr)
 }
 
 func sockAddrFromNetAddr(addr net.Addr) protocol.SockAddr {
