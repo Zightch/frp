@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
+	controlconfigsync "github.com/zightch/frp/frps/internal/control/protocol/configsync"
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -162,20 +163,12 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 		snapshot := controlruntime.ConfigSnapshotFromDesired(typed.Snapshot)
 		group.Snapshot = snapshot
 
-		body, err := protocol.MarshalConfigPush(protocol.ConfigPush{
-			ConfigVersion: snapshot.Version,
-			GeneratedAtMs: snapshot.GeneratedAtMs,
-			Tunnels:       snapshot.Tunnels,
-		})
+		frame, err := controlconfigsync.BuildPushFrame(typed.RequestID, snapshot)
 		if err != nil {
 			return []controlsession.Event{controlsession.ProtocolErrorDetected{Reason: err.Error()}}
 		}
 
-		if err := e.server.writeFrameWithSession(runtime.conn, runtime.session, protocol.Frame{
-			Type:      protocol.TypeConfigPush,
-			RequestID: typed.RequestID,
-			Body:      body,
-		}); err != nil {
+		if err := e.server.writeFrameWithSession(runtime.conn, runtime.session, frame); err != nil {
 			_ = runtime.conn.Close()
 			return []controlsession.Event{controlsession.ControlConnClosed{Reason: err.Error()}}
 		}

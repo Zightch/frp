@@ -6,10 +6,10 @@ import (
 	"errors"
 	"log/slog"
 	"net"
-	"strings"
 	"time"
 
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
+	controlconfigsync "github.com/zightch/frp/frps/internal/control/protocol/configsync"
 	controlprotocolerrors "github.com/zightch/frp/frps/internal/control/protocol/errors"
 	controlrepo "github.com/zightch/frp/frps/internal/control/repo"
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
@@ -373,8 +373,8 @@ func (s *Server) writeErrorWithSession(conn net.Conn, session *sessionState, req
 
 var (
 	errConfigUpdateInFlight  = errors.New("config update already in flight")
-	errUnexpectedConfigAck   = errors.New("unexpected config ack")
-	errConfigVersionMismatch = errors.New("config version mismatch")
+	errUnexpectedConfigAck   = controlconfigsync.ErrUnexpectedAck
+	errConfigVersionMismatch = controlconfigsync.ErrVersionMismatch
 )
 
 type sessionRuntimeStartTarget struct {
@@ -423,34 +423,15 @@ type tunnelRuntimeServeContext struct {
 }
 
 func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *sessionState, agent *controlsession.Agent, frame protocol.Frame) error {
-	// Validate frame fields
-	if frame.RequestID == 0 {
-		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "config.ack requestId must be non-zero")
-	}
-	if frame.StreamID != 0 {
-		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "config.ack streamId must be zero")
-	}
 	pendingRequestID, expectedVersion := session.ConfigAckState()
-	if pendingRequestID == 0 || frame.RequestID != pendingRequestID {
-		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unexpected config.ack requestId %d", frame.RequestID)
-	}
-
-	// Parse and validate payload
-	ack, err := protocol.UnmarshalConfigAck(frame.Body)
+	ack, err := controlconfigsync.DecodeAckFrame(frame, controlconfigsync.AckState{
+		PendingRequestID: pendingRequestID,
+		ExpectedVersion:  expectedVersion,
+	})
 	if err != nil {
 		return s.replyProtocolErrorWithSession(conn, session, frame, err)
 	}
-	if ack.ConfigVersion != expectedVersion {
-		return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeProtocolBadBody, "config.ack version mismatch: got %d want %d", ack.ConfigVersion, expectedVersion)
-	}
-	if ack.Status == protocol.StatusError {
-		return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeConfigApplyFailed, "client rejected config version %d: %s", ack.ConfigVersion, strings.TrimSpace(ack.Message))
-	}
-	if ack.Status != protocol.StatusOK {
-		return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeProtocolBadBody, "unsupported config.ack status %d", ack.Status)
-	}
 
-	// Accept the ack
 	currentGroup := session.CurrentGroup()
 	isInitialStartup := session.LastAckedConfigVersion() == 0
 	testhooks.Point("control.config_ack.before_accept",
@@ -464,17 +445,17 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		return s.handleConfigAckAcceptError(conn, session, frame, ack, err)
 	}
 
-	// Validate initial startup
 	if isInitialStartup {
-		if _, err := s.resolveGroupEffectiveIP(appliedConfig.Group); err != nil {
-			reason := controlruntime.BuildGroupEffectiveIPRuntimeReason(appliedConfig.Group, err)
-			for _, tunnel := range controlruntime.EnabledTunnels(appliedConfig.Snapshot) {
-				s.recordTunnelRuntimeIssueForConfig(tunnel.TunnelID, appliedConfig.Snapshot.Version, reason)
-			}
-			if reason, ok := controlruntime.BuildInitialStartupRejectedReason(appliedConfig.Group, err); ok {
-				return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeConfigApplyFailed, "%s", reason)
-			}
-			return err
+		err := controlconfigsync.ValidateInitialRuntime(controlconfigsync.InitialRuntimeValidationOptions{
+			Group:                 appliedConfig.Group,
+			Snapshot:              appliedConfig.Snapshot,
+			ResolveEffectiveIP:    s.resolveGroupEffectiveIP,
+			RecordRuntimeIssue:    s.recordTunnelRuntimeIssueForConfig,
+			RuntimeReason:         controlruntime.BuildGroupEffectiveIPRuntimeReason,
+			StartupRejectedReason: controlruntime.BuildInitialStartupRejectedReason,
+		})
+		if err != nil {
+			return s.replyProtocolErrorWithSession(conn, session, frame, err)
 		}
 	}
 
@@ -492,15 +473,11 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 }
 
 func (s *Server) handleConfigAckAcceptError(conn net.Conn, session *sessionState, frame protocol.Frame, ack protocol.ConfigAck, err error) error {
-	switch {
-	case errors.Is(err, errUnexpectedConfigAck):
-		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unexpected config.ack requestId %d", frame.RequestID)
-	case errors.Is(err, errConfigVersionMismatch):
-		_, expectedVersion := session.ConfigAckState()
-		return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeProtocolBadBody, "config.ack version mismatch: got %d want %d", ack.ConfigVersion, expectedVersion)
-	default:
-		return err
+	_, expectedVersion := session.ConfigAckState()
+	if mapped, ok := controlconfigsync.MapAcceptError(err, frame.RequestID, ack, expectedVersion); ok {
+		return s.replyProtocolErrorWithSession(conn, session, frame, mapped)
 	}
+	return err
 }
 
 func (s *Server) pushConfig(conn net.Conn, session *sessionState) error {
@@ -509,11 +486,7 @@ func (s *Server) pushConfig(conn net.Conn, session *sessionState) error {
 }
 
 func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group GroupRuntime, snapshot ConfigSnapshot) error {
-	body, err := protocol.MarshalConfigPush(protocol.ConfigPush{
-		ConfigVersion: snapshot.Version,
-		GeneratedAtMs: snapshot.GeneratedAtMs,
-		Tunnels:       snapshot.Tunnels,
-	})
+	body, err := controlconfigsync.BuildPushBody(snapshot)
 	if err != nil {
 		return err
 	}
@@ -521,6 +494,7 @@ func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group Gr
 	if err != nil {
 		return err
 	}
+	frame := controlconfigsync.NewPushFrame(pushOp.RequestID, body)
 	testhooks.Point(
 		"control.config_push.before_write",
 		testhooks.F("group_id", pushOp.Group.ID),
@@ -529,11 +503,7 @@ func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group Gr
 		testhooks.F("config_version", pushOp.Snapshot.Version),
 		testhooks.F("tunnel_count", len(pushOp.Snapshot.Tunnels)),
 	)
-	if err := s.writeFrameWithSession(conn, session, protocol.Frame{
-		Type:      protocol.TypeConfigPush,
-		RequestID: pushOp.RequestID,
-		Body:      body,
-	}); err != nil {
+	if err := s.writeFrameWithSession(conn, session, frame); err != nil {
 		return err
 	}
 	testhooks.Point(
@@ -557,11 +527,29 @@ func (s *Server) RefreshGroup(groupID int64) {
 		return
 	}
 
-	active, ok := s.activeSession(groupID)
-	if !ok || active == nil || active.session == nil {
+	active, ok := s.refreshGroupActiveSession(groupID)
+	if !ok {
+		return
+	}
+	group, ok := s.loadLatestRefreshGroup(groupID, active)
+	if !ok {
 		return
 	}
 
+	group = s.computeRuntimeRefreshGroup(group)
+	s.updateActiveSessionDesiredRuntime(active, group)
+	s.notifyDesiredRuntimeRefresh(groupID, group)
+}
+
+func (s *Server) refreshGroupActiveSession(groupID int64) (*activeSession, bool) {
+	active, ok := s.activeSession(groupID)
+	if !ok || active == nil || active.session == nil {
+		return nil, false
+	}
+	return active, true
+}
+
+func (s *Server) loadLatestRefreshGroup(groupID int64, active *activeSession) (GroupRuntime, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.options.ReadTimeout)
 	group, err := s.repo.LoadGroupRuntimeByID(ctx, groupID)
 	cancel()
@@ -573,11 +561,18 @@ func (s *Server) RefreshGroup(groupID int64) {
 		default:
 			s.logger.Warn("refresh proxy group runtime failed", "group_id", groupID, "session_id", active.session.ID, "error", err)
 		}
-		return
+		return GroupRuntime{}, false
 	}
+	return group, true
+}
 
+func (s *Server) computeRuntimeRefreshGroup(group GroupRuntime) GroupRuntime {
 	snapshot, _, _ := s.runtimeRefreshSnapshot(group, controlruntime.RuntimeSnapshotForGroup(group))
 	group.Snapshot = snapshot
+	return group
+}
+
+func (s *Server) updateActiveSessionDesiredRuntime(active *activeSession, group GroupRuntime) {
 	currentGroup, currentSnapshot := active.session.CurrentGroupAndSnapshot()
 	if currentGroup.EffectiveIP == group.EffectiveIP && controlruntime.SamePushedConfigSnapshot(currentSnapshot, group.Snapshot) {
 		active.session.ReplaceGroupRuntime(group)
@@ -592,6 +587,9 @@ func (s *Server) RefreshGroup(groupID int64) {
 		active.session.Recovery = controlruntime.PendingRecoveryModeForSnapshot(group.Snapshot)
 		active.session.ControlMu.Unlock()
 	}
+}
+
+func (s *Server) notifyDesiredRuntimeRefresh(groupID int64, group GroupRuntime) {
 	s.supervisor.UpdateDesiredRuntime(groupID, controlruntime.DesiredRuntimeFromGroup(group))
 }
 

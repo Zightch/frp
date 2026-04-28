@@ -779,7 +779,7 @@ type RuntimeServeDeps interface {
 - `go test ./internal/control/...`
 - `go test ./internal/app ./internal/api/...`
 
-### 第 7 阶段：拆 config sync
+### 第 7 阶段：拆 config sync（已完成）
 
 - 新建 `internal/control/protocol/configsync`。
 - 下沉：
@@ -798,6 +798,14 @@ type RuntimeServeDeps interface {
 
 - `handleConfigAck` 不再同时承担 frame 校验、状态变更、runtime 校验、agent enqueue。
 - refresh 相关场景测试通过。
+
+完成内容：
+
+- 新建 `internal/control/protocol/configsync`，集中承载 `config.push` body/frame 构造、`config.ack` frame 校验、ack accept 错误映射和 initial startup runtime 校验编排。
+- `handleConfigAck` 压缩为：读取 pending ack state、委托协议校验、提交 session state、委托启动期 runtime 校验、通知 agent。
+- `pushReloadConfig` 和 executor 的 `ActionPushConfig` 复用 configsync 的 push 构造逻辑；`pushReloadConfig` 保持“先 marshal、再 pending mutation”的原行为顺序。
+- `RefreshGroup` 拆为活动会话查找、最新 group 加载、runtime refresh snapshot 计算、active session desired 更新、supervisor 通知五段私有编排函数。
+- 新增 configsync 单测覆盖 push 构造、ack 请求/stream/version/status 校验、accept 错误映射和启动期 runtime issue 记录。
 
 ### 第 8 阶段：拆 listener start/probe/close
 
