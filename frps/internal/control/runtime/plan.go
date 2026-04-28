@@ -25,7 +25,7 @@ func CollectRuntimeIssueClearTunnelIDs(tunnels []protocol.TunnelEntry, activeTun
 }
 
 // PlanSessionRuntimeStart creates a plan for starting a session runtime.
-func PlanSessionRuntimeStart(op RuntimeOperator, target SessionRuntimeStartTarget) SessionRuntimeStartPlan {
+func PlanSessionRuntimeStart(op RuntimeStartPlannerDeps, target SessionRuntimeStartTarget) SessionRuntimeStartPlan {
 	plan := SessionRuntimeStartPlan{
 		Group:    target.Group(),
 		Snapshot: target.Snapshot(),
@@ -52,12 +52,14 @@ func PlanSessionRuntimeStart(op RuntimeOperator, target SessionRuntimeStartTarge
 		return plan
 	}
 	plan.BindIP = bindIP
-	plan.ConflictIssues = DetectRuntimePortConflictIssues(op, target.Group(), bindIP, plan.TargetTunnels)
+	groupData := RuntimeGroupDataFromGroup(target.Group(), plan.TargetTunnels)
+	activeGroups := RuntimeGroupDataFromSnapshots(op.ActiveRuntimeGroups(nil))
+	plan.ConflictIssues = DetectRuntimePortConflictIssuesWithData(groupData, bindIP, plan.TargetTunnels, activeGroups)
 	return plan
 }
 
 // ApplySessionRuntimeStartPlan applies the session runtime start plan.
-func ApplySessionRuntimeStartPlan(op RuntimeOperator, target SessionRuntimeStartTarget, plan SessionRuntimeStartPlan) error {
+func ApplySessionRuntimeStartPlan(op RuntimeStartApplyDeps, target SessionRuntimeStartTarget, plan SessionRuntimeStartPlan) error {
 	if plan.Blocked {
 		return nil
 	}

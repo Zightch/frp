@@ -16,7 +16,7 @@ type ReconcileRequested = controlsession.ReconcileRequested
 // It attempts to bind the tunnel's ports to check if they can be listened on.
 // Returns an empty string if no issues are found, or a reason string if issues exist.
 func ProbeTunnelRuntimeIssue(
-	op RuntimeOperator,
+	op ListenerStarter,
 	groupID int64,
 	bindIP string,
 	tunnel protocol.TunnelEntry,
@@ -28,7 +28,7 @@ func ProbeTunnelRuntimeIssue(
 }
 
 // ProbeTunnelRuntimeIssueWithData probes for runtime issues using explicit data.
-// This is useful for testing or when the RuntimeOperator interface is not available.
+// This is useful for testing or when the listener starter seam is not available.
 func ProbeTunnelRuntimeIssueWithData(
 	groupID int64,
 	bindIP string,
@@ -43,7 +43,7 @@ func ProbeTunnelRuntimeIssueWithData(
 
 // RequestAuditedSessionRuntimeRecovery requests recovery for a session's tunnels.
 // It dispatches events to close bindings that are missing listeners, or requests a reconcile event.
-func RequestAuditedSessionRuntimeRecovery(op RuntimeOperator, sessionID uint64, targetTunnels []protocol.TunnelEntry) error {
+func RequestAuditedSessionRuntimeRecovery(op RuntimeAuditedSessionRecoveryDeps, sessionID uint64, targetTunnels []protocol.TunnelEntry) error {
 	if op == nil || sessionID == 0 || len(targetTunnels) == 0 {
 		return nil
 	}

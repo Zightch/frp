@@ -936,7 +936,7 @@ type RuntimeServeDeps interface {
 - `runtimeExecutor` 实现 executor runtime seam，暴露 desired group、active tunnel ids、freeze/drain/reset 等最小 runtime 操作。
 - binding failure/outcome mapping 下沉到 executor 包，并新增单测覆盖 effective IP 错误映射、端口冲突、默认 listener start failure、active binding 和 runtime issue projection。
 
-### 第 13 阶段：拆 runtime scan/recovery 接口
+### 第 13 阶段：拆 runtime scan/recovery 接口（已完成）
 
 - 把 `RuntimeOperator` 拆成小接口。
 - `scan` 只依赖 scanner deps。
@@ -948,6 +948,15 @@ type RuntimeServeDeps interface {
 
 - `runtime/interface.go` 不再是 300 行级别巨型接口文件。
 - 不再出现 placeholder type 和 `any` 作为主要边界。
+
+完成内容：
+
+- 删除 `control/runtime.RuntimeOperator` 聚合接口，`runtime/interface.go` 不再承载跨扫描、恢复、listener、serve、repo、scheduler 的大接口。
+- `runtime/capabilities.go` 拆出实际使用的小 seam：readiness、issue writer、IP resolver、listener probe/starter、active session finder、active runtime group provider、snapshot provider、session event/state/executor provider、scan coordinator、repository/logger/scheduler provider、runtime start planner/apply deps、serve deps。
+- `StartRuntimeIssuePolling` 和 `ScanNonListeningTunnelRuntimeIssues` 改为依赖 `RuntimeScannerDeps`；`ScanGroupRuntimeIssues` 改为只依赖 `RuntimeIPResolver`、`RuntimeListenerProbe` 和显式 active runtime group data。
+- `RecoverScannedActiveSessionTunnels` 改为依赖扫描恢复最小 seam，`RequestAuditedSessionRuntimeRecovery` 改为依赖 audited recovery session registry seam，`AwaitAuditedSessionRecovery` 改为只依赖 runtime executor provider。
+- `PlanSessionRuntimeStart` / `ApplySessionRuntimeStartPlan` 拆成 planner deps 和 apply deps，listener start 路径不再通过 scan/recovery 聚合接口取能力。
+- runtime conflict 检测去掉 `RuntimeOperator` 入参，只使用 `RuntimeGroupData` 显式数据，保持 conflict 逻辑为纯计算。
 
 ### 第 14 阶段：拆 observe projection
 

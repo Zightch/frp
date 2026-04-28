@@ -155,7 +155,14 @@ func BuildInitialStartupRejectedReason(group GroupRuntime, err error) (string, b
 
 // ScanGroupRuntimeIssues scans for runtime issues in the given group's target tunnels.
 // It returns a map of tunnel IDs to their issue strings.
-func ScanGroupRuntimeIssues(op RuntimeOperator, group GroupRuntime, staticConflictIDs map[int64]struct{}, targetTunnels []protocol.TunnelEntry) map[uint32]string {
+func ScanGroupRuntimeIssues(
+	resolver RuntimeIPResolver,
+	prober RuntimeListenerProbe,
+	group GroupRuntime,
+	staticConflictIDs map[int64]struct{},
+	targetTunnels []protocol.TunnelEntry,
+	activeGroups []RuntimeGroupData,
+) map[uint32]string {
 	if !group.Enabled {
 		return nil
 	}
@@ -164,7 +171,7 @@ func ScanGroupRuntimeIssues(op RuntimeOperator, group GroupRuntime, staticConfli
 		return nil
 	}
 
-	bindIP, err := op.ResolveGroupEffectiveIP(group)
+	bindIP, err := resolver.ResolveGroupEffectiveIP(group)
 	if err != nil {
 		reason := BuildGroupEffectiveIPRuntimeReason(group, err)
 		issues := make(map[uint32]string, len(targetTunnels))
@@ -177,7 +184,8 @@ func ScanGroupRuntimeIssues(op RuntimeOperator, group GroupRuntime, staticConfli
 		return issues
 	}
 
-	issues := DetectRuntimePortConflictIssues(op, group, bindIP, targetTunnels)
+	groupData := RuntimeGroupDataFromGroup(group, targetTunnels)
+	issues := DetectRuntimePortConflictIssuesWithData(groupData, bindIP, targetTunnels, activeGroups)
 	if len(issues) == 0 {
 		issues = make(map[uint32]string)
 	}
@@ -189,7 +197,7 @@ func ScanGroupRuntimeIssues(op RuntimeOperator, group GroupRuntime, staticConfli
 		if strings.TrimSpace(issues[tunnel.TunnelID]) != "" {
 			continue
 		}
-		if reason := op.ProbeTunnelRuntimeIssue(group.ID, bindIP, tunnel); reason != "" {
+		if reason := prober.ProbeTunnelRuntimeIssue(group.ID, bindIP, tunnel); reason != "" {
 			issues[tunnel.TunnelID] = reason
 		}
 	}
@@ -267,8 +275,7 @@ func ScanGroupRuntimeIssuesWithData(
 }
 
 // StartRuntimeIssuePolling starts the runtime issue polling loop.
-// It uses the RuntimeOperator interface to perform periodic scans.
-func StartRuntimeIssuePolling(op RuntimeOperator, parent context.Context) {
+func StartRuntimeIssuePolling(op RuntimeScannerDeps, parent context.Context) {
 	if op == nil || op.IsShuttingDown() {
 		return
 	}
@@ -289,8 +296,7 @@ func StartRuntimeIssuePolling(op RuntimeOperator, parent context.Context) {
 }
 
 // ScanNonListeningTunnelRuntimeIssues scans for runtime issues in all groups.
-// It uses the RuntimeOperator interface to access the repository and manage scan state.
-func ScanNonListeningTunnelRuntimeIssues(op RuntimeOperator, ctx context.Context) error {
+func ScanNonListeningTunnelRuntimeIssues(op RuntimeScannerDeps, ctx context.Context) error {
 	if op == nil {
 		return nil
 	}
@@ -324,7 +330,8 @@ func ScanNonListeningTunnelRuntimeIssues(op RuntimeOperator, ctx context.Context
 
 	for _, group := range groups {
 		targetTunnels := viewIndex.SelectNonListeningEnabledTunnels(group)
-		issues := ScanGroupRuntimeIssues(op, group, staticConflictIDs, targetTunnels)
+		activeGroups := RuntimeGroupDataFromSnapshots(op.ActiveRuntimeGroups(nil))
+		issues := ScanGroupRuntimeIssues(op, op, group, staticConflictIDs, targetTunnels, activeGroups)
 		testhooks.Point("runtime.scan.before_group_recover",
 			testhooks.F("group_id", group.ID),
 			testhooks.F("target_tunnel_count", len(targetTunnels)),
@@ -334,7 +341,7 @@ func ScanNonListeningTunnelRuntimeIssues(op RuntimeOperator, ctx context.Context
 		}
 		refreshedViewIndex := op.RuntimeSnapshotIndex()
 		refreshedTargetTunnels := refreshedViewIndex.SelectNonListeningEnabledTunnels(group)
-		preserveHealthyIssues := PreserveScannedHealthyRuntimeIssuesUntilRecovery(op, refreshedViewIndex, group, refreshedTargetTunnels, staticConflictIDs, issues)
+		preserveHealthyIssues := PreserveScannedHealthyRuntimeIssuesUntilRecovery(refreshedViewIndex, group, refreshedTargetTunnels, staticConflictIDs, issues)
 		op.ApplyScannedTunnelRuntimeIssues(group.Snapshot, staticConflictIDs, issues, preserveHealthyIssues)
 	}
 
@@ -343,8 +350,7 @@ func ScanNonListeningTunnelRuntimeIssues(op RuntimeOperator, ctx context.Context
 }
 
 // RecoverScannedActiveSessionTunnels attempts to recover active session tunnels that are not listening.
-// It uses the RuntimeOperator interface to access session state and perform recovery.
-func RecoverScannedActiveSessionTunnels(op RuntimeOperator, viewIndex RuntimeSnapshotIndex, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) error {
+func RecoverScannedActiveSessionTunnels(op RuntimeScannedSessionRecoveryDeps, viewIndex RuntimeSnapshotIndex, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) error {
 	if op == nil || group.ID <= 0 || len(targetTunnels) == 0 {
 		return nil
 	}
@@ -391,9 +397,8 @@ func RecoverScannedActiveSessionTunnels(op RuntimeOperator, viewIndex RuntimeSna
 }
 
 // PreserveScannedHealthyRuntimeIssuesUntilRecovery preserves healthy runtime issues until recovery.
-// It uses the RuntimeOperator interface to access session state and determine preservation.
-func PreserveScannedHealthyRuntimeIssuesUntilRecovery(op RuntimeOperator, viewIndex RuntimeSnapshotIndex, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) map[uint32]struct{} {
-	if op == nil || group.ID <= 0 || len(targetTunnels) == 0 {
+func PreserveScannedHealthyRuntimeIssuesUntilRecovery(viewIndex RuntimeSnapshotIndex, group GroupRuntime, targetTunnels []protocol.TunnelEntry, staticConflictIDs map[int64]struct{}, issues map[uint32]string) map[uint32]struct{} {
+	if group.ID <= 0 || len(targetTunnels) == 0 {
 		return nil
 	}
 

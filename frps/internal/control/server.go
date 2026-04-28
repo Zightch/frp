@@ -452,9 +452,10 @@ func (s *Server) writeError(conn net.Conn, requestID, streamID uint32, code uint
 	return controlprotocolerrors.WriteError(s.frameWriter(conn, nil), requestID, streamID, code, retryable, message)
 }
 
-var _ controlruntime.RuntimeOperator = (*Server)(nil)
 var _ controlruntime.RuntimeScannerDeps = (*Server)(nil)
+var _ controlruntime.RuntimeStartDeps = (*Server)(nil)
 var _ controlruntime.RuntimeServeDeps = (*Server)(nil)
+var _ controlruntime.RuntimeAuditedSessionRecoveryDeps = (*Server)(nil)
 
 // Interface implementation - accessor methods for runtime package seams.
 func (s *Server) IsShuttingDown() bool            { return s.isShuttingDown() }
@@ -495,46 +496,46 @@ func (s *Server) ApplyScannedTunnelRuntimeIssues(snapshot controlruntime.ConfigS
 	s.applyScannedTunnelRuntimeIssues(snapshot, staticConflictIDs, issues, preserved)
 }
 
-// ResolveGroupEffectiveIP implements controlruntime.RuntimeOperator.
+// ResolveGroupEffectiveIP implements the runtime IP resolver seam.
 func (s *Server) ResolveGroupEffectiveIP(group controlruntime.GroupRuntime) (string, error) {
 	return s.resolveGroupEffectiveIP(group)
 }
 
-// StartTunnelListeners implements controlruntime.RuntimeOperator.
+// StartTunnelListeners implements the listener starter seam.
 func (s *Server) StartTunnelListeners(opCtx controlruntime.TunnelListenerOperationContext) (controlruntime.TunnelListenerBatch, error) {
 	return s.startTunnelListeners(opCtx)
 }
 
-// ProbeTunnelRuntimeIssue implements controlruntime.RuntimeOperator.
+// ProbeTunnelRuntimeIssue implements the listener probe seam.
 func (s *Server) ProbeTunnelRuntimeIssue(groupID int64, bindIP string, tunnel protocol.TunnelEntry) string {
 	return s.probeTunnelRuntimeIssue(groupID, bindIP, tunnel)
 }
 
-// ShutdownSession implements controlruntime.RuntimeOperator.
+// ShutdownSession implements the runtime data-plane seam.
 func (s *Server) ShutdownSession(session controlruntime.SessionRuntimeStartTarget) {
 	if adapter, ok := session.(sessionRuntimeStartTargetAdapter); ok {
 		s.shutdownSession(adapter.getSession())
 	}
 }
 
-// ServeUDPIdleCleanup implements controlruntime.RuntimeOperator.
+// ServeUDPIdleCleanup implements the runtime data-plane seam.
 func (s *Server) ServeUDPIdleCleanup(conn net.Conn, logger controlruntime.Logger, session controlruntime.SessionRuntimeStartTarget) {
 	if adapter, ok := session.(sessionRuntimeStartTargetAdapter); ok {
 		s.serveUDPIdleCleanup(conn, logger, adapter.getSession())
 	}
 }
 
-// ServeTunnelListener implements controlruntime.RuntimeOperator.
+// ServeTunnelListener implements the runtime data-plane seam.
 func (s *Server) ServeTunnelListener(serve controlruntime.TunnelRuntimeServeContext, listener net.Listener) {
 	s.serveTunnelListener(convertServeContext(serve), listener)
 }
 
-// ServeUDPTunnelListener implements controlruntime.RuntimeOperator.
+// ServeUDPTunnelListener implements the runtime data-plane seam.
 func (s *Server) ServeUDPTunnelListener(serve controlruntime.TunnelRuntimeServeContext, listener controlruntime.UDPListener) {
 	s.serveUDPTunnelListener(convertServeContext(serve), listener)
 }
 
-// NewTunnelRuntimeServeContext implements controlruntime.RuntimeOperator.
+// NewTunnelRuntimeServeContext implements the runtime serve context factory seam.
 func (s *Server) NewTunnelRuntimeServeContext(opCtx controlruntime.TunnelListenerOperationContext, target controlruntime.SessionRuntimeStartTarget, remotePort uint16) controlruntime.TunnelRuntimeServeContext {
 	session := target.(sessionRuntimeStartTargetAdapter).getSession()
 	return controlruntime.TunnelRuntimeServeContext{
@@ -551,12 +552,12 @@ type sessionRuntimeStartTargetAdapter interface {
 	getSession() *sessionState
 }
 
-// RequestAuditedSessionRuntimeRecovery implements controlruntime.RuntimeOperator.
+// RequestAuditedSessionRuntimeRecovery implements the audited recovery requester seam.
 func (s *Server) RequestAuditedSessionRuntimeRecovery(sessionID uint64, targetTunnels []protocol.TunnelEntry) error {
 	return s.requestAuditedSessionRuntimeRecovery(sessionID, targetTunnels)
 }
 
-// RuntimeExecutor implements controlruntime.RuntimeOperator.
+// RuntimeExecutor implements the runtime executor provider seam.
 func (s *Server) RuntimeExecutor(sessionID uint64) *controlruntime.RuntimeExecutor {
 	runtime := s.runtimeExecutor(sessionID)
 	if runtime == nil {
@@ -571,7 +572,7 @@ func (s *Server) RuntimeExecutor(sessionID uint64) *controlruntime.RuntimeExecut
 	}
 }
 
-// DispatchBySessionID implements controlruntime.RuntimeOperator.
+// DispatchBySessionID implements the session event dispatcher seam.
 func (s *Server) DispatchBySessionID(sessionID uint64, event controlruntime.Event) bool {
 	if s == nil || s.supervisor == nil {
 		return false
@@ -579,7 +580,7 @@ func (s *Server) DispatchBySessionID(sessionID uint64, event controlruntime.Even
 	return s.supervisor.DispatchBySessionID(sessionID, event)
 }
 
-// ApplyActiveSessionConfigRecovery implements controlruntime.RuntimeOperator.
+// ApplyActiveSessionConfigRecovery implements the desired updater seam.
 func (s *Server) ApplyActiveSessionConfigRecovery(groupID int64, group controlruntime.GroupRuntime) error {
 	active, ok := s.activeSession(groupID)
 	if !ok || active == nil || active.session == nil {
@@ -599,7 +600,7 @@ func (s *Server) ApplyActiveSessionConfigRecovery(groupID int64, group controlru
 	return nil
 }
 
-// SessionState implements controlruntime.RuntimeOperator.
+// SessionState implements the session state provider seam.
 func (s *Server) SessionState(sessionID uint64) (controlruntime.SessionState, bool) {
 	if s == nil || s.supervisor == nil {
 		return controlruntime.SessionState{}, false
@@ -607,7 +608,7 @@ func (s *Server) SessionState(sessionID uint64) (controlruntime.SessionState, bo
 	return s.supervisor.SessionState(sessionID)
 }
 
-// ApplySessionEvent implements controlruntime.RuntimeOperator.
+// ApplySessionEvent implements the session event applier seam.
 func (s *Server) ApplySessionEvent(sessionID uint64, event controlruntime.Event) {
 	if s == nil {
 		return

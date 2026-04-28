@@ -660,7 +660,7 @@ func (s *Server) runtimeSnapshotIndex() controlruntime.RuntimeSnapshotIndex {
 	return controlruntime.NewRuntimeSnapshotIndex(s.supervisor.Snapshot(nil).sessions)
 }
 
-// RuntimeSnapshotIndex implements controlruntime.RuntimeOperator.
+// RuntimeSnapshotIndex implements the runtime snapshot provider seam.
 func (s *Server) RuntimeSnapshotIndex() controlruntime.RuntimeSnapshotIndex {
 	return s.runtimeSnapshotIndex()
 }
@@ -673,7 +673,7 @@ func (s *Server) scanNonListeningTunnelRuntimeIssues(ctx context.Context) error 
 	return controlruntime.ScanNonListeningTunnelRuntimeIssues(s, ctx)
 }
 
-// BeginRuntimeScanRound implements controlruntime.RuntimeOperator.
+// BeginRuntimeScanRound implements the runtime scan coordinator seam.
 func (s *Server) BeginRuntimeScanRound() bool {
 	if s == nil {
 		return false
@@ -688,7 +688,7 @@ func (s *Server) BeginRuntimeScanRound() bool {
 	return true
 }
 
-// FinishRuntimeScanRound implements controlruntime.RuntimeOperator.
+// FinishRuntimeScanRound implements the runtime scan coordinator seam.
 func (s *Server) FinishRuntimeScanRound() {
 	if s == nil {
 		return
@@ -711,7 +711,7 @@ func (s *Server) probeTunnelRuntimeIssue(groupID int64, bindIP string, tunnel pr
 	return controlruntime.ProbeTunnelRuntimeIssue(s, groupID, bindIP, tunnel)
 }
 
-// SetRuntimeScanCancel implements controlruntime.RuntimeOperator.
+// SetRuntimeScanCancel implements the runtime scan coordinator seam.
 func (s *Server) SetRuntimeScanCancel(cancel context.CancelFunc) {
 	if s == nil {
 		return

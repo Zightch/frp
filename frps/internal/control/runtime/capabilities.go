@@ -39,21 +39,67 @@ type RuntimeListenerProbe interface {
 	ProbeTunnelRuntimeIssue(groupID int64, bindIP string, tunnel protocol.TunnelEntry) string
 }
 
-// RuntimeSessionRegistry exposes active session and runtime snapshots.
-type RuntimeSessionRegistry interface {
+// RuntimeActiveSessionFinder exposes active session lookup by group.
+type RuntimeActiveSessionFinder interface {
 	ActiveSession(groupID int64) (*ActiveSession, bool)
+}
+
+// RuntimeActiveGroupProvider exposes currently listening runtime groups.
+type RuntimeActiveGroupProvider interface {
 	ActiveRuntimeGroups(exclude SessionStateProjectionTarget) []RuntimeGroupSnapshot
+}
+
+// RuntimeSnapshotProvider exposes the runtime snapshot index.
+type RuntimeSnapshotProvider interface {
 	RuntimeSnapshotIndex() RuntimeSnapshotIndex
+}
+
+// RuntimeSessionStateProvider exposes projected session state by session ID.
+type RuntimeSessionStateProvider interface {
 	SessionState(sessionID uint64) (SessionState, bool)
+}
+
+// RuntimeSessionEventDispatcher dispatches events to live session agents.
+type RuntimeSessionEventDispatcher interface {
 	DispatchBySessionID(sessionID uint64, event Event) bool
+}
+
+// RuntimeSessionEventApplier applies an event to concrete session state.
+type RuntimeSessionEventApplier interface {
 	ApplySessionEvent(sessionID uint64, event Event)
 }
 
-// RuntimeRecoveryCoordinator owns recovery requests that mutate live sessions.
-type RuntimeRecoveryCoordinator interface {
+// RuntimeAuditedRecoveryRequester requests audited listener recovery for a session.
+type RuntimeAuditedRecoveryRequester interface {
 	RequestAuditedSessionRuntimeRecovery(sessionID uint64, targetTunnels []protocol.TunnelEntry) error
+}
+
+// RuntimeDesiredUpdater applies recovered desired runtime state to a live session.
+type RuntimeDesiredUpdater interface {
 	ApplyActiveSessionConfigRecovery(groupID int64, group GroupRuntime) error
+}
+
+// RuntimeExecutorProvider exposes runtime executor state for recovery waits.
+type RuntimeExecutorProvider interface {
 	RuntimeExecutor(sessionID uint64) *RuntimeExecutor
+}
+
+// RuntimeScannedSessionRecoveryDeps are the side effects needed by scan-triggered recovery.
+type RuntimeScannedSessionRecoveryDeps interface {
+	RuntimeReadiness
+	RuntimeIPResolver
+	RuntimeActiveSessionFinder
+	RuntimeAuditedRecoveryRequester
+	RuntimeDesiredUpdater
+	RuntimeLoggerProvider
+}
+
+// RuntimeAuditedSessionRecoveryDeps are the registry operations needed by audited recovery.
+type RuntimeAuditedSessionRecoveryDeps interface {
+	RuntimeSessionStateProvider
+	RuntimeSessionEventApplier
+	RuntimeSessionEventDispatcher
+	RuntimeExecutorProvider
 }
 
 // RuntimeScanCoordinator serializes scan rounds and owns polling lifecycle.
@@ -98,17 +144,37 @@ type RuntimeDataPlaneServicer interface {
 	ServeUDPTunnelListener(serve TunnelRuntimeServeContext, listener UDPListener)
 }
 
-// RuntimeScannerDeps is the target dependency seam for scan and recovery code.
-type RuntimeScannerDeps interface {
+// RuntimeStartPlannerDeps are the read dependencies needed to plan listener startup.
+type RuntimeStartPlannerDeps interface {
+	RuntimeReadiness
+	RuntimeIPResolver
+	RuntimeActiveGroupProvider
+}
+
+// RuntimeStartApplyDeps are the side-effect dependencies needed to apply a start plan.
+type RuntimeStartApplyDeps interface {
 	RuntimeReadiness
 	RuntimeIssueWriter
-	RuntimeIPResolver
+	ListenerStarter
+	RuntimeServeContextFactory
+	RuntimeDataPlaneServicer
+}
+
+// RuntimeStartDeps groups runtime start planning and application capabilities.
+type RuntimeStartDeps interface {
+	RuntimeStartPlannerDeps
+	RuntimeStartApplyDeps
+}
+
+// RuntimeScannerDeps is the target dependency seam for scan and recovery code.
+type RuntimeScannerDeps interface {
+	RuntimeIssueWriter
 	RuntimeListenerProbe
-	RuntimeSessionRegistry
-	RuntimeRecoveryCoordinator
+	RuntimeActiveGroupProvider
+	RuntimeSnapshotProvider
+	RuntimeScannedSessionRecoveryDeps
 	RuntimeScanCoordinator
 	RuntimeRepositoryProvider
-	RuntimeLoggerProvider
 	RuntimeSchedulerProvider
 }
 

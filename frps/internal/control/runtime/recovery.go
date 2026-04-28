@@ -40,7 +40,7 @@ func ActiveRuntimeTunnelIDsFromSession(session SessionStateProjectionTarget) map
 
 // AwaitAuditedSessionRecovery waits for the session to recover the specified tunnels.
 // It polls the session's active tunnel IDs until the deadline is reached.
-func AwaitAuditedSessionRecovery(op RuntimeOperator, sessionID uint64, targetTunnelIDs map[uint32]struct{}) {
+func AwaitAuditedSessionRecovery(op RuntimeExecutorProvider, sessionID uint64, targetTunnelIDs map[uint32]struct{}) {
 	if op == nil || len(targetTunnelIDs) == 0 {
 		return
 	}

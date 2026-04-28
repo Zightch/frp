@@ -1,13 +1,9 @@
 package runtime
 
 import (
-	"context"
 	"log/slog"
 	"net"
-	"sync"
-	"time"
 
-	"github.com/zightch/frp/frps/internal/clock"
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
 	controlrepo "github.com/zightch/frp/frps/internal/control/repo"
 	controllistener "github.com/zightch/frp/frps/internal/control/runtime/listener"
@@ -15,60 +11,6 @@ import (
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 )
-
-// RuntimeOperator 是迁移期遗留聚合接口。
-//
-// 不要继续向这里追加方法；新增 runtime 能力应先落到 capabilities.go 中的
-// 小接口，再逐步把调用点从 RuntimeOperator 收敛到最小依赖。
-type RuntimeOperator interface {
-	// 状态检查
-	IsShuttingDown() bool
-
-	// 网络/IP 解析
-	ResolveGroupEffectiveIP(group GroupRuntime) (string, error)
-
-	// 会话管理
-	ActiveSession(groupID int64) (*ActiveSession, bool)
-	ActiveRuntimeGroups(exclude SessionStateProjectionTarget) []RuntimeGroupSnapshot
-
-	// Issue 记录
-	RecordTunnelRuntimeIssueForConfig(tunnelID uint32, configVersion uint64, reason string)
-	ClearUnknownTunnelRuntimeIssues(knownTunnelIDs map[int64]struct{})
-	ApplyScannedTunnelRuntimeIssues(snapshot ConfigSnapshot, staticConflictIDs map[int64]struct{}, issues map[uint32]string, preserved map[uint32]struct{})
-
-	// 监听器操作
-	StartTunnelListeners(opCtx TunnelListenerOperationContext) (TunnelListenerBatch, error)
-	ProbeTunnelRuntimeIssue(groupID int64, bindIP string, tunnel protocol.TunnelEntry) string
-	// NewTunnelRuntimeServeContext creates a serve context for a tunnel runtime.
-	NewTunnelRuntimeServeContext(opCtx TunnelListenerOperationContext, session SessionRuntimeStartTarget, remotePort uint16) TunnelRuntimeServeContext
-
-	// 会话生命周期
-	ShutdownSession(session SessionRuntimeStartTarget)
-	ServeUDPIdleCleanup(conn net.Conn, logger Logger, session SessionRuntimeStartTarget)
-	ServeTunnelListener(serve TunnelRuntimeServeContext, listener net.Listener)
-	ServeUDPTunnelListener(serve TunnelRuntimeServeContext, listener UDPListener)
-
-	// 扫描协调
-	BeginRuntimeScanRound() bool
-	FinishRuntimeScanRound()
-	RuntimeSnapshotIndex() RuntimeSnapshotIndex
-	SetRuntimeScanCancel(cancel context.CancelFunc)
-
-	// 恢复操作
-	RequestAuditedSessionRuntimeRecovery(sessionID uint64, targetTunnels []protocol.TunnelEntry) error
-	RuntimeExecutor(sessionID uint64) *RuntimeExecutor
-	DispatchBySessionID(sessionID uint64, event Event) bool
-	ApplyActiveSessionConfigRecovery(groupID int64, group GroupRuntime) error
-	SessionState(sessionID uint64) (SessionState, bool)
-	ApplySessionEvent(sessionID uint64, event Event)
-
-	// 基础设施
-	Logger() *slog.Logger
-	Repo() Repository
-	Scheduler() clock.Scheduler
-	ScanWG() *sync.WaitGroup
-	RuntimeScanPoll() time.Duration
-}
 
 // SessionState 是 controlsession.SessionState 的别名
 type SessionState = controlsession.SessionState

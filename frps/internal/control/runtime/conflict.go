@@ -124,8 +124,30 @@ type RuntimeGroupData struct {
 	Tunnels     []protocol.TunnelEntry
 }
 
+// RuntimeGroupDataFromGroup builds conflict detection data for a group.
+func RuntimeGroupDataFromGroup(group GroupRuntime, tunnels []protocol.TunnelEntry) RuntimeGroupData {
+	return RuntimeGroupData{
+		GroupID:     group.ID,
+		GroupName:   group.Name,
+		EffectiveIP: group.EffectiveIP,
+		Tunnels:     tunnels,
+	}
+}
+
+// RuntimeGroupDataFromSnapshots builds conflict detection data from runtime snapshots.
+func RuntimeGroupDataFromSnapshots(snapshots []RuntimeGroupSnapshot) []RuntimeGroupData {
+	if len(snapshots) == 0 {
+		return nil
+	}
+	groups := make([]RuntimeGroupData, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		groups = append(groups, RuntimeGroupDataFromGroup(snapshot.Group, snapshot.Snapshot.Tunnels))
+	}
+	return groups
+}
+
 // DetectRuntimePortConflictIssuesWithData detects runtime port conflict issues for the given tunnels.
-// It takes explicit runtime group data instead of a RuntimeOperator interface.
+// It takes explicit runtime group data instead of a runtime capability interface.
 // It returns a map of tunnel IDs to their conflict reason strings.
 func DetectRuntimePortConflictIssuesWithData(group RuntimeGroupData, bindIP string, tunnels []protocol.TunnelEntry, activeGroups []RuntimeGroupData) map[uint32]string {
 	claims, owners, targetOrder := BuildRuntimeClaims(group.GroupID, group.GroupName, tunnels, bindIP)
@@ -139,51 +161,6 @@ func DetectRuntimePortConflictIssuesWithData(group RuntimeGroupData, bindIP stri
 			continue
 		}
 		otherClaims, otherOwners, _ := BuildRuntimeClaims(active.GroupID, active.GroupName, active.Tunnels, otherBindIP)
-		claims = append(claims, otherClaims...)
-		for ownerID, owner := range otherOwners {
-			owners[ownerID] = owner
-		}
-	}
-
-	conflicts := ports.DetectConflicts(claims)
-	if len(conflicts) == 0 {
-		return nil
-	}
-
-	issues := make(map[uint32]string)
-	for _, tunnelID := range targetOrder {
-		conflict, ok := conflicts[int64(tunnelID)]
-		if !ok {
-			continue
-		}
-		target, ok := owners[int64(tunnelID)]
-		if !ok {
-			continue
-		}
-		other, ok := owners[conflict.OtherOwnerID]
-		if !ok {
-			continue
-		}
-		reason := BuildRuntimeConflictReason(target, other, conflict)
-		issues[tunnelID] = reason
-	}
-	return issues
-}
-
-// DetectRuntimePortConflictIssues detects runtime port conflict issues for the given tunnels.
-// It returns a map of tunnel IDs to their conflict reason strings.
-func DetectRuntimePortConflictIssues(op RuntimeOperator, group GroupRuntime, bindIP string, tunnels []protocol.TunnelEntry) map[uint32]string {
-	claims, owners, targetOrder := BuildRuntimeClaims(group.ID, group.Name, tunnels, bindIP)
-	if len(targetOrder) == 0 {
-		return nil
-	}
-
-	for _, active := range op.ActiveRuntimeGroups(nil) {
-		otherBindIP, ok := NormalizeRuntimeListenIP(active.Group.EffectiveIP)
-		if !ok {
-			continue
-		}
-		otherClaims, otherOwners, _ := BuildRuntimeClaims(active.Group.ID, active.Group.Name, active.Snapshot.Tunnels, otherBindIP)
 		claims = append(claims, otherClaims...)
 		for ownerID, owner := range otherOwners {
 			owners[ownerID] = owner
