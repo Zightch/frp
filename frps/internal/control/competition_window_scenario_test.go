@@ -661,18 +661,20 @@ func TestServerUnregisterOldSessionKeepsReplacementSlotAndSession(t *testing.T) 
 	defer newClient.Close()
 	defer newServer.Close()
 
-	server.registerActiveSession(oldServer, oldSession)
-	if !server.reserveGroupSlot(group.ID, oldSession.ID) {
+	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, oldServer, oldSession)
+	if !server.supervisor.ReserveGroupSlot(group.ID, oldSession.ID) {
 		t.Fatal("expected old session to reserve group slot")
 	}
 
-	server.registerActiveSession(newServer, newSession)
-	server.releaseGroupSlot(group.ID, oldSession.ID)
-	if !server.reserveGroupSlot(group.ID, newSession.ID) {
+	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, newServer, newSession)
+	server.supervisor.ReleaseGroupSlot(group.ID, oldSession.ID)
+	if !server.supervisor.ReserveGroupSlot(group.ID, newSession.ID) {
 		t.Fatal("expected replacement session to reserve group slot")
 	}
 
-	server.unregisterActiveSession(oldSession)
+	controlruntime.DetachRuntime(server.supervisor, oldSession.ID)
+	oldSession.applyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+	controlruntime.DispatchBySessionID(server.supervisor, oldSession.ID, controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 
 	state := server.ObserveState()
 	if got := state.GroupSlots[group.ID]; got != newSession.ID {

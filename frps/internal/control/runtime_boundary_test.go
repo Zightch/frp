@@ -8,13 +8,14 @@ import (
 	"testing"
 	"time"
 
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 func TestRuntimeIssueStoreKeepsNewerConfigVersion(t *testing.T) {
-	store := newRuntimeIssueStore()
+	store := controlruntime.NewIssueStore()
 
 	store.RecordForConfig(7, 2, "newer issue")
 	store.RecordForConfig(7, 1, "")
@@ -40,7 +41,7 @@ func TestSupervisorSnapshotBuildsSessionAndActiveRuntimeGroups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen tcp: %v", err)
 	}
-	defer closeStartedTunnelListeners([]net.Listener{listener}, nil)
+	defer controlruntime.CloseStartedTunnelListeners([]net.Listener{listener}, nil)
 
 	group := GroupRuntime{
 		ID:          1,
@@ -65,18 +66,18 @@ func TestSupervisorSnapshotBuildsSessionAndActiveRuntimeGroups(t *testing.T) {
 	}
 	group.Snapshot = snapshot
 	session := newSessionState(11, group, snapshot, 0)
-	session.runtimeMu.Lock()
-	session.runtime.listeners.started = true
-	session.runtime.generation = snapshot.Version
-	session.runtime.listeners.tcp[7] = []net.Listener{listener}
-	session.runtimeMu.Unlock()
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = snapshot.Version
+	session.Runtime.Listeners.TCP[7] = []net.Listener{listener}
+	session.RuntimeMu.Unlock()
 
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
 
 	state := controlsession.NewState(group.ID, session.ID)
-	desired := desiredRuntimeFromGroup(group)
+	desired := controlruntime.DesiredRuntimeFromGroup(group)
 	state.Desired = &desired
 	state.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: desired}
 
@@ -104,28 +105,27 @@ func TestSupervisorSnapshotBuildsSessionAndActiveRuntimeGroups(t *testing.T) {
 	if len(supervisorSnapshot.sessions) != 1 {
 		t.Fatalf("expected one runtime session snapshot, got %#v", supervisorSnapshot.sessions)
 	}
-	if supervisorSnapshot.sessions[0].runtime.Generation != snapshot.Version {
-		t.Fatalf("unexpected runtime generation in snapshot: %#v", supervisorSnapshot.sessions[0].runtime)
+	if supervisorSnapshot.sessions[0].Runtime.Generation != snapshot.Version {
+		t.Fatalf("unexpected runtime generation in snapshot: %#v", supervisorSnapshot.sessions[0].Runtime)
 	}
-	if _, ok := supervisorSnapshot.sessions[0].runtime.ActiveTunnelIDs[7]; !ok {
-		t.Fatalf("expected runtime snapshot to expose active tunnel ids, got %#v", supervisorSnapshot.sessions[0].runtime.ActiveTunnelIDs)
+	if _, ok := supervisorSnapshot.sessions[0].Runtime.ActiveTunnelIDs[7]; !ok {
+		t.Fatalf("expected runtime snapshot to expose active tunnel ids, got %#v", supervisorSnapshot.sessions[0].Runtime.ActiveTunnelIDs)
 	}
-	if len(supervisorSnapshot.sessions[0].runtime.AttachedListeners) != 1 {
-		t.Fatalf("expected runtime snapshot to expose attached listeners, got %#v", supervisorSnapshot.sessions[0].runtime.AttachedListeners)
+	if len(supervisorSnapshot.sessions[0].Runtime.AttachedListeners) != 1 {
+		t.Fatalf("expected runtime snapshot to expose attached listeners, got %#v", supervisorSnapshot.sessions[0].Runtime.AttachedListeners)
 	}
-	if supervisorSnapshot.sessions[0].runtime.AttachedListeners[0].Port != uint16(listener.Addr().(*net.TCPAddr).Port) {
-		t.Fatalf("unexpected attached listener port: %#v", supervisorSnapshot.sessions[0].runtime.AttachedListeners)
+	if supervisorSnapshot.sessions[0].Runtime.AttachedListeners[0].Port != uint16(listener.Addr().(*net.TCPAddr).Port) {
+		t.Fatalf("unexpected attached listener port: %#v", supervisorSnapshot.sessions[0].Runtime.AttachedListeners)
 	}
 
-	server := &Server{supervisor: supervisor}
-	activeGroups := server.activeRuntimeGroups(nil)
+	activeGroups := controlruntime.SupervisorActiveRuntimeGroups(supervisor, nil)
 	if len(activeGroups) != 1 {
 		t.Fatalf("expected one active runtime group, got %#v", activeGroups)
 	}
-	if activeGroups[0].group.ID != group.ID || len(activeGroups[0].snapshot.Tunnels) != 1 || activeGroups[0].snapshot.Tunnels[0].TunnelID != 7 {
+	if activeGroups[0].Group.ID != group.ID || len(activeGroups[0].Snapshot.Tunnels) != 1 || activeGroups[0].Snapshot.Tunnels[0].TunnelID != 7 {
 		t.Fatalf("unexpected active runtime group snapshot: %#v", activeGroups)
 	}
-	if groups := server.activeRuntimeGroups(session); len(groups) != 0 {
+	if groups := controlruntime.SupervisorActiveRuntimeGroups(supervisor, session); len(groups) != 0 {
 		t.Fatalf("expected excluded session to be absent from runtime groups, got %#v", groups)
 	}
 }
@@ -135,7 +135,7 @@ func TestRuntimeSnapshotIndexBuildsSessionTunnelAndConnectionTargets(t *testing.
 	if err != nil {
 		t.Fatalf("listen tcp: %v", err)
 	}
-	defer closeStartedTunnelListeners([]net.Listener{listener}, nil)
+	defer controlruntime.CloseStartedTunnelListeners([]net.Listener{listener}, nil)
 
 	activePort := uint16(listener.Addr().(*net.TCPAddr).Port)
 	missingPort := activePort + 1
@@ -166,11 +166,11 @@ func TestRuntimeSnapshotIndexBuildsSessionTunnelAndConnectionTargets(t *testing.
 	}
 	group.Snapshot = snapshot
 	session := newSessionState(11, group, snapshot, 0)
-	session.runtimeMu.Lock()
-	session.runtime.listeners.started = true
-	session.runtime.generation = snapshot.Version
-	session.runtime.listeners.tcp[7] = []net.Listener{listener}
-	session.runtimeMu.Unlock()
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = snapshot.Version
+	session.Runtime.Listeners.TCP[7] = []net.Listener{listener}
+	session.RuntimeMu.Unlock()
 
 	publicClient, publicServer := net.Pipe()
 	defer publicClient.Close()
@@ -192,7 +192,7 @@ func TestRuntimeSnapshotIndexBuildsSessionTunnelAndConnectionTargets(t *testing.
 	defer serverConn.Close()
 
 	state := controlsession.NewState(group.ID, session.ID)
-	desired := desiredRuntimeFromGroup(group)
+	desired := controlruntime.DesiredRuntimeFromGroup(group)
 	state.Desired = &desired
 	state.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: desired}
 
@@ -208,59 +208,61 @@ func TestRuntimeSnapshotIndexBuildsSessionTunnelAndConnectionTargets(t *testing.
 		t.Fatal("expected supervisor to attach session")
 	}
 
-	viewIndex := newRuntimeSnapshotIndex(supervisor.Snapshot(nil))
-	sessions := viewIndex.sessionsList()
+	viewIndex := controlruntime.NewRuntimeSnapshotIndex(supervisor.Snapshot(nil).sessions)
+	sessions := viewIndex.SessionsList()
 	if len(sessions) != 1 {
 		t.Fatalf("expected one runtime session target, got %#v", sessions)
 	}
 
 	sessionTarget := sessions[0]
-	if sessionTarget.id.GroupID != group.ID || sessionTarget.id.SessionID != session.ID {
-		t.Fatalf("unexpected session target identity: %#v", sessionTarget.id)
+	if sessionTarget.ID.GroupID != group.ID || sessionTarget.ID.SessionID != session.ID {
+		t.Fatalf("unexpected session target identity: %#v", sessionTarget.ID)
 	}
-	if selected, ok := viewIndex.sessionByID(sessionTarget.id); !ok || selected.id != sessionTarget.id {
+	if selected, ok := viewIndex.SessionByID(sessionTarget.ID); !ok || selected.ID != sessionTarget.ID {
 		t.Fatalf("expected runtime view to resolve session by stable id, got ok=%v target=%#v", ok, selected)
 	}
-	if sessionTarget.connID == "" {
+	if sessionTarget.ConnID == "" {
 		t.Fatalf("expected session target conn id, got %#v", sessionTarget)
 	}
-	if sessionTarget.activeStreamCount != 1 || sessionTarget.activeUDPSessionCount != 0 {
+	if sessionTarget.ActiveStreamCount != 1 || sessionTarget.ActiveUDPCount != 0 {
 		t.Fatalf("unexpected session target connection counters: %#v", sessionTarget)
 	}
-	if _, ok := sessionTarget.activeTunnelIDs[7]; !ok {
-		t.Fatalf("expected active tunnel ids to include tunnel 7, got %#v", sessionTarget.activeTunnelIDs)
+	if _, ok := sessionTarget.ActiveTunnelIDs[7]; !ok {
+		t.Fatalf("expected active tunnel ids to include tunnel 7, got %#v", sessionTarget.ActiveTunnelIDs)
 	}
-	if len(sessionTarget.listenersByTunnel[7]) != 1 {
-		t.Fatalf("expected attached listener target on tunnel 7, got %#v", sessionTarget.listenersByTunnel)
+	if len(sessionTarget.ListenersByTunnel[7]) != 1 {
+		t.Fatalf("expected attached listener target on tunnel 7, got %#v", sessionTarget.ListenersByTunnel)
 	}
-	missing := sessionTarget.missingByTunnel[8]
-	if missing.id.TunnelID != 8 || len(missing.missingPorts) != 1 || missing.missingPorts[0] != missingPort {
-		t.Fatalf("unexpected missing listener target: %#v", sessionTarget.missingByTunnel)
+	missing := sessionTarget.MissingByTunnel[8]
+	if missing.ID.TunnelID != 8 || len(missing.MissingPorts) != 1 || missing.MissingPorts[0] != missingPort {
+		t.Fatalf("unexpected missing listener target: %#v", sessionTarget.MissingByTunnel)
 	}
-	if len(sessionTarget.connections) != 1 {
-		t.Fatalf("expected one runtime connection target, got %#v", sessionTarget.connections)
+	if len(sessionTarget.Connections) != 1 {
+		t.Fatalf("expected one runtime connection target, got %#v", sessionTarget.Connections)
 	}
-	connection := sessionTarget.connections[0]
-	if connection.id.ConnectionID != streamOpen.streamID || connection.id.Kind != observedRuntimeConnectionKindTCPStream {
+	connection := sessionTarget.Connections[0]
+	if connection.ID.ConnectionID != streamOpen.streamID || connection.ID.Kind != observedRuntimeConnectionKindTCPStream {
 		t.Fatalf("unexpected runtime connection target identity: %#v", connection)
 	}
-	if connection.tunnelID != 7 || connection.remotePort != activePort || connection.clientAddr != "127.0.0.1:32000" {
+	if connection.TunnelID != 7 || connection.RemotePort != activePort || connection.ClientAddr != "127.0.0.1:32000" {
 		t.Fatalf("unexpected runtime connection target metadata: %#v", connection)
 	}
 
-	targetTunnels := viewIndex.selectTunnels(
+	targetTunnels := viewIndex.SelectTunnels(
 		[]GroupRuntime{group},
 		map[int64]string{8: "bind failed"},
 		map[int64]struct{}{7: {}},
+		observedTunnelStatus,
+		runtimeIssueKind,
 	)
 	if len(targetTunnels) != 2 {
 		t.Fatalf("expected two runtime tunnel targets, got %#v", targetTunnels)
 	}
 
-	var activeTunnelTarget runtimeTunnelTarget
-	var missingTunnelTarget runtimeTunnelTarget
+	var activeTunnelTarget controlruntime.RuntimeTunnelTarget
+	var missingTunnelTarget controlruntime.RuntimeTunnelTarget
 	for _, tunnel := range targetTunnels {
-		switch tunnel.id.TunnelID {
+		switch tunnel.ID.TunnelID {
 		case 7:
 			activeTunnelTarget = tunnel
 		case 8:
@@ -268,24 +270,24 @@ func TestRuntimeSnapshotIndexBuildsSessionTunnelAndConnectionTargets(t *testing.
 		}
 	}
 
-	if activeTunnelTarget.id.SessionID != session.ID || !activeTunnelTarget.staticConflict || len(activeTunnelTarget.listeners) != 1 {
+	if activeTunnelTarget.ID.SessionID != session.ID || !activeTunnelTarget.StaticConflict || len(activeTunnelTarget.Listeners) != 1 {
 		t.Fatalf("unexpected active tunnel target: %#v", activeTunnelTarget)
 	}
-	if missingTunnelTarget.id.SessionID != session.ID || missingTunnelTarget.runtimeIssue != "bind failed" || len(missingTunnelTarget.missingPorts) != 1 || missingTunnelTarget.missingPorts[0] != missingPort {
+	if missingTunnelTarget.ID.SessionID != session.ID || missingTunnelTarget.RuntimeIssue != "bind failed" || len(missingTunnelTarget.MissingPorts) != 1 || missingTunnelTarget.MissingPorts[0] != missingPort {
 		t.Fatalf("unexpected missing tunnel target: %#v", missingTunnelTarget)
 	}
 
-	nonListening := viewIndex.selectNonListeningEnabledTunnels(group)
+	nonListening := viewIndex.SelectNonListeningEnabledTunnels(group)
 	if len(nonListening) != 1 || nonListening[0].TunnelID != 8 {
 		t.Fatalf("expected only non-listening tunnel 8, got %#v", nonListening)
 	}
 
-	observed := sessionTarget.observedState()
+	observed := sessionTarget.ObservedState()
 	if observed.GroupID != group.ID || observed.SessionID != session.ID || observed.SnapshotVersion != snapshot.Version {
 		t.Fatalf("unexpected observed session state projection: %#v", observed)
 	}
-	if len(sessionTarget.observedListeners()) != 1 || len(sessionTarget.observedMissingListeners()) != 1 || len(sessionTarget.observedConnections()) != 1 {
-		t.Fatalf("expected observed projections to stay aligned with runtime target, got listeners=%#v missing=%#v connections=%#v", sessionTarget.observedListeners(), sessionTarget.observedMissingListeners(), sessionTarget.observedConnections())
+	if len(sessionTarget.ObservedListeners()) != 1 || len(sessionTarget.ObservedMissingListeners()) != 1 || len(sessionTarget.ObservedConnections()) != 1 {
+		t.Fatalf("expected observed projections to stay aligned with runtime target, got listeners=%#v missing=%#v connections=%#v", sessionTarget.ObservedListeners(), sessionTarget.ObservedMissingListeners(), sessionTarget.ObservedConnections())
 	}
 }
 
@@ -300,32 +302,32 @@ func TestRuntimeSnapshotBuildsProjectionFromSessionState(t *testing.T) {
 	group.Snapshot = snapshot
 
 	state := controlsession.NewState(group.ID, 11)
-	desired := desiredRuntimeFromGroup(group)
+	desired := controlruntime.DesiredRuntimeFromGroup(group)
 	state.Desired = &desired
-	applied := desiredRuntimeFromGroup(group)
+	applied := controlruntime.DesiredRuntimeFromGroup(group)
 	applied.Version = 7
 	applied.EffectiveIP = "127.0.0.2"
 	state.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: applied}
 
-	target := newRuntimeSessionTarget(runtimeSessionSnapshot{
-		groupID:      group.ID,
-		sessionID:    11,
-		desiredGroup: group,
-		recoveryMode: testsupport.RecoveryModePendingFullConfig,
-		state:        state,
+	target := controlruntime.NewRuntimeSessionTarget(controlruntime.SessionSnapshot{
+		GroupID:      group.ID,
+		SessionID:    11,
+		DesiredGroup: group,
+		RecoveryMode: testsupport.RecoveryModePendingFullConfig,
+		State:        state,
 	})
 
-	if target.snapshot.Version != 7 {
-		t.Fatalf("expected runtime view to prefer applied snapshot, got %#v", target.snapshot)
+	if target.Snapshot.Version != 7 {
+		t.Fatalf("expected runtime view to prefer applied snapshot, got %#v", target.Snapshot)
 	}
-	if target.effectiveIP != "127.0.0.2" {
+	if target.EffectiveIP != "127.0.0.2" {
 		t.Fatalf("expected runtime view to prefer applied effective ip, got %#v", target)
 	}
-	if target.lastAckedConfigVersion != 7 {
+	if target.LastAckedVersion != 7 {
 		t.Fatalf("expected runtime view to prefer applied last acked version, got %#v", target)
 	}
-	if target.pending != nil {
-		t.Fatalf("expected runtime view to clear pending config when session state has none, got %#v", target.pending)
+	if target.Pending != nil {
+		t.Fatalf("expected runtime view to clear pending config when session state has none, got %#v", target.Pending)
 	}
 }
 
@@ -336,7 +338,7 @@ func TestSessionConfigApplyTracksPendingAndAppliedRecoveryModes(t *testing.T) {
 
 	initialState := controlsession.NewState(group.ID, session.ID)
 	group.Snapshot = snapshot
-	desired := desiredRuntimeFromGroup(group)
+	desired := controlruntime.DesiredRuntimeFromGroup(group)
 	initialState.Desired = &desired
 	initialState.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: desired}
 	initialState.Conn = controlsession.ControlConnState{Attached: true, ConnID: "test-conn"}
@@ -354,21 +356,21 @@ func TestSessionConfigApplyTracksPendingAndAppliedRecoveryModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare config push: %v", err)
 	}
-	if pushOp.requestID == 0 {
+	if pushOp.RequestID == 0 {
 		t.Fatal("expected non-zero request id")
 	}
-	if got := session.recoveryModeValue(); got != testsupport.RecoveryModePendingFullConfig {
+	if got := session.RecoveryModeValue(); got != testsupport.RecoveryModePendingFullConfig {
 		t.Fatalf("expected pending full-config recovery mode, got %s", got)
 	}
 
-	applied, err := session.acceptConfigAck(pushOp.requestID, fullSnapshot.Version)
+	applied, err := session.acceptConfigAck(pushOp.RequestID, fullSnapshot.Version)
 	if err != nil {
 		t.Fatalf("accept config ack: %v", err)
 	}
-	if applied.recoveryMode != testsupport.RecoveryModeRunning {
-		t.Fatalf("expected running recovery mode after ack, got %s", applied.recoveryMode)
+	if applied.RecoveryMode != testsupport.RecoveryModeRunning {
+		t.Fatalf("expected running recovery mode after ack, got %s", applied.RecoveryMode)
 	}
-	if got := session.recoveryModeValue(); got != testsupport.RecoveryModeRunning {
+	if got := session.RecoveryModeValue(); got != testsupport.RecoveryModeRunning {
 		t.Fatalf("expected running recovery mode on session, got %s", got)
 	}
 
@@ -377,18 +379,18 @@ func TestSessionConfigApplyTracksPendingAndAppliedRecoveryModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare empty config push: %v", err)
 	}
-	if got := session.recoveryModeValue(); got != testsupport.RecoveryModePendingEmptyConfig {
+	if got := session.RecoveryModeValue(); got != testsupport.RecoveryModePendingEmptyConfig {
 		t.Fatalf("expected pending empty-config recovery mode, got %s", got)
 	}
 
-	emptyApplied, err := session.acceptConfigAck(emptyPush.requestID, emptySnapshot.Version)
+	emptyApplied, err := session.acceptConfigAck(emptyPush.RequestID, emptySnapshot.Version)
 	if err != nil {
 		t.Fatalf("accept empty config ack: %v", err)
 	}
-	if emptyApplied.recoveryMode != testsupport.RecoveryModeEmptyConfig {
-		t.Fatalf("expected empty-config recovery mode after ack, got %s", emptyApplied.recoveryMode)
+	if emptyApplied.RecoveryMode != testsupport.RecoveryModeEmptyConfig {
+		t.Fatalf("expected empty-config recovery mode after ack, got %s", emptyApplied.RecoveryMode)
 	}
-	if got := session.recoveryModeValue(); got != testsupport.RecoveryModeEmptyConfig {
+	if got := session.RecoveryModeValue(); got != testsupport.RecoveryModeEmptyConfig {
 		t.Fatalf("expected empty-config recovery mode on session, got %s", got)
 	}
 }
@@ -398,7 +400,7 @@ func TestServerPlanSessionRuntimeStartSeparatesActiveAndPendingTunnels(t *testin
 	if err != nil {
 		t.Fatalf("listen active tunnel: %v", err)
 	}
-	defer closeStartedTunnelListeners([]net.Listener{activeListener}, nil)
+	defer controlruntime.CloseStartedTunnelListeners([]net.Listener{activeListener}, nil)
 
 	activePort := uint16(activeListener.Addr().(*net.TCPAddr).Port)
 	session := newSessionState(
@@ -414,11 +416,11 @@ func TestServerPlanSessionRuntimeStartSeparatesActiveAndPendingTunnels(t *testin
 		},
 		0,
 	)
-	session.runtimeMu.Lock()
-	session.runtime.listeners.started = true
-	session.runtime.generation = 4
-	session.runtime.listeners.tcp[7] = []net.Listener{activeListener}
-	session.runtimeMu.Unlock()
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = 4
+	session.Runtime.Listeners.TCP[7] = []net.Listener{activeListener}
+	session.RuntimeMu.Unlock()
 
 	server := NewServer(
 		Options{WriteTimeout: 0},
@@ -426,21 +428,21 @@ func TestServerPlanSessionRuntimeStartSeparatesActiveAndPendingTunnels(t *testin
 		"test-server",
 	)
 
-	plan := server.planSessionRuntimeStart(newSessionRuntimeStartTarget(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), session))
-	if !plan.activeRuntime {
+	plan := controlruntime.PlanSessionRuntimeStart(server, newSessionRuntimeStartTarget(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), session))
+	if !plan.ActiveRuntime {
 		t.Fatal("expected plan to mark active runtime")
 	}
-	if plan.bindIP != "127.0.0.1" {
-		t.Fatalf("unexpected bind ip: %q", plan.bindIP)
+	if plan.BindIP != "127.0.0.1" {
+		t.Fatalf("unexpected bind ip: %q", plan.BindIP)
 	}
-	if len(plan.targetTunnels) != 1 || plan.targetTunnels[0].TunnelID != 8 {
-		t.Fatalf("unexpected start targets: %#v", plan.targetTunnels)
+	if len(plan.TargetTunnels) != 1 || plan.TargetTunnels[0].TunnelID != 8 {
+		t.Fatalf("unexpected start targets: %#v", plan.TargetTunnels)
 	}
-	if len(plan.clearIssueTunnelIDs) != 2 {
-		t.Fatalf("unexpected clear-issue tunnel ids: %#v", plan.clearIssueTunnelIDs)
+	if len(plan.ClearIssueTunnelIDs) != 2 {
+		t.Fatalf("unexpected clear-issue tunnel ids: %#v", plan.ClearIssueTunnelIDs)
 	}
-	if plan.clearIssueTunnelIDs[0] != 6 || plan.clearIssueTunnelIDs[1] != 7 {
-		t.Fatalf("unexpected clear-issue ordering: %#v", plan.clearIssueTunnelIDs)
+	if plan.ClearIssueTunnelIDs[0] != 6 || plan.ClearIssueTunnelIDs[1] != 7 {
+		t.Fatalf("unexpected clear-issue ordering: %#v", plan.ClearIssueTunnelIDs)
 	}
 }
 
@@ -450,10 +452,10 @@ func TestSessionPreparePublicStreamOpenBuildsFrameAndTracksConnectionMetadata(t 
 	defer publicServer.Close()
 
 	session := newSessionState(11, GroupRuntime{ID: 1, Name: "group-a"}, ConfigSnapshot{Version: 2}, 0)
-	session.runtimeMu.Lock()
-	session.runtime.listeners.started = true
-	session.runtime.generation = 2
-	session.runtimeMu.Unlock()
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = 2
+	session.RuntimeMu.Unlock()
 
 	now := time.Unix(1_700_000_000, 0).UTC()
 	streamConn := &connWithRemoteAddr{
@@ -526,10 +528,10 @@ func TestSessionPreparePublicUDPDatagramForwardReusesSessionAndTracksConnectionM
 	defer listener.Close()
 
 	session := newSessionState(11, GroupRuntime{ID: 1, Name: "group-a"}, ConfigSnapshot{Version: 4}, 0)
-	session.runtimeMu.Lock()
-	session.runtime.listeners.started = true
-	session.runtime.generation = 4
-	session.runtimeMu.Unlock()
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = 4
+	session.RuntimeMu.Unlock()
 
 	clientAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53000}
 	tunnel := protocol.TunnelEntry{
@@ -564,8 +566,8 @@ func TestSessionPreparePublicUDPDatagramForwardReusesSessionAndTracksConnectionM
 	if secondForward.blocked || secondForward.created {
 		t.Fatalf("expected existing udp session reuse, got %#v", secondForward)
 	}
-	if secondForward.udpSession == nil || secondForward.udpSession.sessionID != firstForward.udpSession.sessionID {
-		t.Fatalf("expected reused udp session id %d, got %#v", firstForward.udpSession.sessionID, secondForward.udpSession)
+	if secondForward.udpSession == nil || secondForward.udpSession.SessionID != firstForward.udpSession.SessionID {
+		t.Fatalf("expected reused udp session id %d, got %#v", firstForward.udpSession.SessionID, secondForward.udpSession)
 	}
 	if len(secondForward.frames) != 1 || secondForward.frames[0].Type != protocol.TypeUDPData || string(secondForward.frames[0].Body) != "again" {
 		t.Fatalf("unexpected reused udp.data frame: %#v", secondForward.frames)
@@ -582,7 +584,7 @@ func TestSessionPreparePublicUDPDatagramForwardReusesSessionAndTracksConnectionM
 	if connection.Kind != observedRuntimeConnectionKindUDPSession || connection.Protocol != "udp" {
 		t.Fatalf("unexpected observed udp connection: %#v", connection)
 	}
-	if connection.ConnectionID != firstForward.udpSession.sessionID || connection.TunnelID != tunnel.TunnelID || connection.RemotePort != remotePort {
+	if connection.ConnectionID != firstForward.udpSession.SessionID || connection.TunnelID != tunnel.TunnelID || connection.RemotePort != remotePort {
 		t.Fatalf("unexpected observed udp identity: %#v", connection)
 	}
 	if connection.ClientAddr != "127.0.0.1:53000" {

@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
@@ -54,20 +55,20 @@ func (r *runtimeExecutor) desiredGroupRuntime() GroupRuntime {
 	return r.desiredGroup
 }
 
-func (r *runtimeExecutor) snapshot(state controlsession.SessionState) runtimeSessionSnapshot {
+func (r *runtimeExecutor) snapshot(state controlsession.SessionState) controlruntime.SessionSnapshot {
 	if r == nil {
-		return runtimeSessionSnapshot{}
+		return controlruntime.SessionSnapshot{}
 	}
 
 	_, runtimeState := r.session.observeState()
-	return runtimeSessionSnapshot{
-		groupID:      r.groupID,
-		sessionID:    state.SessionID,
-		conn:         r.conn,
-		desiredGroup: r.desiredGroupRuntime(),
-		recoveryMode: r.session.recoveryModeValue(),
-		state:        state,
-		runtime:      runtimeState,
+	return controlruntime.SessionSnapshot{
+		GroupID:      r.groupID,
+		SessionID:    state.SessionID,
+		Conn:         r.conn,
+		DesiredGroup: r.desiredGroupRuntime(),
+		RecoveryMode: r.session.RecoveryModeValue(),
+		State:        state,
+		Runtime:      runtimeState,
 	}
 }
 
@@ -158,7 +159,7 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 
 	case controlsession.ActionPushConfig:
 		group := runtime.desiredGroupRuntime()
-		snapshot := configSnapshotFromDesired(typed.Snapshot)
+		snapshot := controlruntime.ConfigSnapshotFromDesired(typed.Snapshot)
 		group.Snapshot = snapshot
 
 		body, err := protocol.MarshalConfigPush(protocol.ConfigPush{
@@ -216,13 +217,13 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 	case controlsession.ActionPrepareBindings:
 		group := runtime.desiredGroupRuntime()
 		group.EffectiveIP = typed.EffectiveIP
-		group.Snapshot = configSnapshotFromDesired(typed.Snapshot)
+		group.Snapshot = controlruntime.ConfigSnapshotFromDesired(typed.Snapshot)
 		bindIP, err := e.server.resolveGroupEffectiveIP(group)
 		if err != nil {
 			return []controlsession.Event{
 				controlsession.BindingsPreparationFailed{
 					Reason:  blockReasonForRuntimeError(err),
-					Message: buildGroupEffectiveIPRuntimeReason(group, err),
+					Message: controlruntime.BuildGroupEffectiveIPRuntimeReason(group, err),
 				},
 			}
 		}
@@ -236,11 +237,11 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 		if err := e.server.ensureTunnelListeners(runtime.conn, runtime.logger, runtime.session); err != nil {
 			return bindingFailureEvents(typed.Keys, err)
 		}
-		return bindingOutcomeEvents(state, typed.Keys, runtime.session.activeRuntimeTunnelIDs(), e.server.TunnelRuntimeIssues())
+		return bindingOutcomeEvents(state, typed.Keys, runtime.session.ActiveRuntimeTunnelIDs(), e.server.TunnelRuntimeIssues())
 
 	case controlsession.ActionStopBindings:
 		listeners, udpListeners, streams, udpSessions := runtime.session.freezeTunnelRuntime()
-		closeStartedTunnelListeners(listeners, udpListeners)
+		controlruntime.CloseStartedTunnelListeners(listeners, udpListeners)
 		runtime.storeDrained(streams, udpSessions)
 		return nil
 
@@ -251,8 +252,8 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 					runtime.logger.Warn("stream drain close failed", "stream_id", streamID, "error", err)
 				}
 			}
-			stream.signalReady(net.ErrClosed)
-			stream.close()
+			stream.SignalReady(net.ErrClosed)
+			stream.Close()
 		}
 		return nil
 
@@ -261,9 +262,9 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 			if udpSession == nil {
 				continue
 			}
-			if err := e.server.sendUDPClose(runtime.conn, runtime.session, udpSession.sessionID, protocol.CloseReasonAdminTerminated, typed.Reason); err != nil {
+			if err := e.server.sendUDPClose(runtime.conn, runtime.session, udpSession.SessionID, protocol.CloseReasonAdminTerminated, typed.Reason); err != nil {
 				if runtime.logger != nil {
-					runtime.logger.Warn("udp drain close failed", "udp_session_id", udpSession.sessionID, "error", err)
+					runtime.logger.Warn("udp drain close failed", "udp_session_id", udpSession.SessionID, "error", err)
 				}
 			}
 		}
@@ -283,12 +284,12 @@ func (e serverActionExecutor) Execute(_ context.Context, state controlsession.Se
 }
 
 func blockReasonForRuntimeError(err error) controlsession.BlockReason {
-	var effectiveIPErr *groupEffectiveIPStartError
+	var effectiveIPErr *controlruntime.GroupEffectiveIPStartError
 	if errors.As(err, &effectiveIPErr) {
 		switch effectiveIPErr.Kind {
-		case groupEffectiveIPStartErrorInvalid:
+		case controlruntime.GroupEffectiveIPStartErrorInvalid:
 			return controlsession.BlockReasonEffectiveIPInvalid
-		case groupEffectiveIPStartErrorNotLocal:
+		case controlruntime.GroupEffectiveIPStartErrorNotLocal:
 			return controlsession.BlockReasonEffectiveIPNotLocal
 		}
 	}

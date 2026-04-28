@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -39,7 +40,9 @@ func (s *Server) negotiateTransport(conn net.Conn) (net.Conn, [16]byte, error) {
 		return nil, [16]byte{}, s.replyProtocolError(conn, frame, err)
 	}
 
-	group, err := s.loadGroupRuntimeByClientID(hello.ClientID)
+	ctx, cancel := context.WithTimeout(context.Background(), s.options.ReadTimeout)
+	group, err := s.repo.LoadGroupRuntimeByClientID(ctx, hello.ClientID)
+	cancel()
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrGroupNotFound):

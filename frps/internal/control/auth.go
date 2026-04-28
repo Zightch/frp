@@ -10,6 +10,7 @@ import (
 	"net"
 	"time"
 
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
@@ -51,7 +52,9 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 		return nil, nil, s.replyError(conn, frame.RequestID, 0, protocol.ErrorCodeAuthInvalidClient, "auth.begin client_id does not match transport.client_hello")
 	}
 
-	group, err := s.loadGroupRuntimeByClientID(begin.ClientID)
+	ctx, cancel := context.WithTimeout(context.Background(), s.options.ReadTimeout)
+	group, err := s.repo.LoadGroupRuntimeByClientID(ctx, begin.ClientID)
+	cancel()
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrGroupNotFound):
@@ -109,7 +112,9 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 		return nil, nil, s.replyProtocolError(conn, frame, err)
 	}
 
-	group, err = s.loadGroupRuntimeByClientID(begin.ClientID)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), s.options.ReadTimeout)
+	group, err = s.repo.LoadGroupRuntimeByClientID(ctx2, begin.ClientID)
+	cancel2()
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrGroupNotFound):
@@ -125,11 +130,11 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 	session := newSessionState(
 		s.nextSessionID.Add(1),
 		group,
-		runtimeSnapshotForGroup(group),
-		sessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
+		controlruntime.RuntimeSnapshotForGroup(group),
+		controlruntime.SessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
 	)
 	initial := controlsession.NewState(group.ID, session.ID)
-	desired := desiredRuntimeFromGroup(group)
+	desired := controlruntime.DesiredRuntimeFromGroup(group)
 	initial.Desired = &desired
 
 	runtime := &runtimeExecutor{
@@ -148,10 +153,10 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 		HelloRequestID: frame.RequestID,
 	}
 	session.applyControlEvent(attachEvent)
-	session.controlMu.Lock()
-	session.pending = group
-	session.recovery = pendingRecoveryModeForSnapshot(group.Snapshot)
-	session.controlMu.Unlock()
+	session.ControlMu.Lock()
+	session.Pending = group
+	session.Recovery = controlruntime.PendingRecoveryModeForSnapshot(group.Snapshot)
+	session.ControlMu.Unlock()
 	if !agent.Enqueue(attachEvent) {
 		s.supervisor.DetachRuntime(session.ID)
 		return nil, nil, fmt.Errorf("control session attach failed")

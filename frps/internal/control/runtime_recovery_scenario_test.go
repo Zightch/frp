@@ -1333,14 +1333,14 @@ func (r *scriptedRuntimeRepository) LoadGroupRuntimeByClientID(_ context.Context
 	if r.loadErr != nil {
 		return GroupRuntime{}, r.loadErr
 	}
-	return r.currentGroup(), nil
+	return r.CurrentGroup(), nil
 }
 
 func (r *scriptedRuntimeRepository) LoadGroupRuntimeByID(_ context.Context, _ int64) (GroupRuntime, error) {
 	if r.loadErr != nil {
 		return GroupRuntime{}, r.loadErr
 	}
-	return r.currentGroup(), nil
+	return r.CurrentGroup(), nil
 }
 
 func (r *scriptedRuntimeRepository) ListGroupRuntimes(ctx context.Context) ([]GroupRuntime, error) {
@@ -1348,7 +1348,7 @@ func (r *scriptedRuntimeRepository) ListGroupRuntimes(ctx context.Context) ([]Gr
 		return nil, r.loadErr
 	}
 
-	group := r.currentGroup()
+	group := r.CurrentGroup()
 	if r.listStarted != nil {
 		select {
 		case r.listStarted <- struct{}{}:

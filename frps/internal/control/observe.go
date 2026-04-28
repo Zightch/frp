@@ -2,11 +2,10 @@ package control
 
 import (
 	"context"
-	"net"
 	"sort"
-	"strconv"
 	"strings"
 
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 )
@@ -32,7 +31,7 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 	if s.supervisor != nil {
 		supervisorSnapshot = s.supervisor.Snapshot(nil)
 	}
-	viewIndex := newRuntimeSnapshotIndex(supervisorSnapshot)
+	viewIndex := controlruntime.NewRuntimeSnapshotIndex(supervisorSnapshot.sessions)
 	runtimeIssues := s.TunnelRuntimeIssues()
 
 	state := testsupport.ServerObservedState{
@@ -42,17 +41,23 @@ func (s *Server) ObserveState() testsupport.ServerObservedState {
 		GroupSlots:             supervisorSnapshot.groupSlots,
 	}
 
-	for _, session := range viewIndex.sessionsList() {
-		state.Sessions = append(state.Sessions, session.observedState())
-		state.Listeners = append(state.Listeners, session.observedListeners()...)
-		state.MissingListeners = append(state.MissingListeners, session.observedMissingListeners()...)
-		state.Connections = append(state.Connections, session.observedConnections()...)
+	for _, session := range viewIndex.SessionsList() {
+		state.Sessions = append(state.Sessions, session.ObservedState())
+		state.Listeners = append(state.Listeners, session.ObservedListeners()...)
+		state.MissingListeners = append(state.MissingListeners, session.ObservedMissingListeners()...)
+		state.Connections = append(state.Connections, session.ObservedConnections()...)
 	}
 
 	groups := s.observeGroups()
-	staticConflictIDs := detectConfiguredConflictTunnelIDs(groups)
-	for _, tunnel := range viewIndex.selectTunnels(groups, runtimeIssues, staticConflictIDs) {
-		state.Tunnels = append(state.Tunnels, tunnel.observedState())
+	tunnelsByGroup := make(map[int64][]protocol.TunnelEntry)
+	effectiveIPsByGroup := make(map[int64]string)
+	for _, group := range groups {
+		tunnelsByGroup[group.ID] = group.Snapshot.Tunnels
+		effectiveIPsByGroup[group.ID] = group.EffectiveIP
+	}
+	staticConflictIDs := controlruntime.DetectConfiguredConflictTunnelIDs(tunnelsByGroup, effectiveIPsByGroup)
+	for _, tunnel := range viewIndex.SelectTunnels(groups, runtimeIssues, staticConflictIDs, observedTunnelStatus, runtimeIssueKind) {
+		state.Tunnels = append(state.Tunnels, tunnel.ObservedState())
 	}
 
 	sort.Slice(state.Sessions, func(i, j int) bool {
@@ -111,18 +116,6 @@ func (s *Server) observeGroups() []GroupRuntime {
 		return nil
 	}
 	return groups
-}
-
-func listenerAddr(addr net.Addr) (string, uint16) {
-	if addr == nil {
-		return "", 0
-	}
-	host, portText, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return addr.String(), 0
-	}
-	port, _ := strconv.Atoi(portText)
-	return host, uint16(port)
 }
 
 func observedTunnelStatus(tunnel protocol.TunnelEntry, staticConflict bool, runtimeReason string) (string, string) {

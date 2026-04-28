@@ -140,8 +140,8 @@ func TestServerRejectsDuplicateConfigAckAfterStartupAcceptance(t *testing.T) {
 		t.Fatalf("expected active session after startup ack")
 	}
 	waitForIdleConfig(t, active.session)
-	if active.session.lastAckedConfigVersion() != configPush.ConfigVersion {
-		t.Fatalf("expected startup ack to advance version, got %d", active.session.lastAckedConfigVersion())
+	if active.session.LastAckedConfigVersion() != configPush.ConfigVersion {
+		t.Fatalf("expected startup ack to advance version, got %d", active.session.LastAckedConfigVersion())
 	}
 
 	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)

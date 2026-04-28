@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -87,11 +88,11 @@ func TestServerEnsureTunnelListenersRecordsAndClearsRuntimeIssueOnBindFailure(t 
 	if reason := issues[8]; reason != "" {
 		t.Fatalf("unexpected runtime issue for healthy tunnel: %#v", issues)
 	}
-	if len(session.runtime.listeners.tcp[7]) != 0 {
-		t.Fatalf("unexpected listeners started for blocked tunnel: %#v", session.runtime.listeners.tcp[7])
+	if len(session.Runtime.Listeners.TCP[7]) != 0 {
+		t.Fatalf("unexpected listeners started for blocked tunnel: %#v", session.Runtime.Listeners.TCP[7])
 	}
-	if len(session.runtime.listeners.tcp[8]) != 1 {
-		t.Fatalf("expected healthy tunnel listener to start, got %#v", session.runtime.listeners.tcp[8])
+	if len(session.Runtime.Listeners.TCP[8]) != 1 {
+		t.Fatalf("expected healthy tunnel listener to start, got %#v", session.Runtime.Listeners.TCP[8])
 	}
 
 	_ = blocker.Close()
@@ -102,11 +103,11 @@ func TestServerEnsureTunnelListenersRecordsAndClearsRuntimeIssueOnBindFailure(t 
 	if issues := server.TunnelRuntimeIssues(); len(issues) != 0 {
 		t.Fatalf("expected runtime issues to clear after successful listener start: %#v", issues)
 	}
-	if len(session.runtime.listeners.tcp[7]) != 1 {
-		t.Fatalf("expected recovered tunnel listener to start, got %#v", session.runtime.listeners.tcp[7])
+	if len(session.Runtime.Listeners.TCP[7]) != 1 {
+		t.Fatalf("expected recovered tunnel listener to start, got %#v", session.Runtime.Listeners.TCP[7])
 	}
-	if len(session.runtime.listeners.tcp[8]) != 1 {
-		t.Fatalf("expected healthy tunnel listener to remain active, got %#v", session.runtime.listeners.tcp[8])
+	if len(session.Runtime.Listeners.TCP[8]) != 1 {
+		t.Fatalf("expected healthy tunnel listener to remain active, got %#v", session.Runtime.Listeners.TCP[8])
 	}
 }
 
@@ -159,8 +160,12 @@ func TestServerEnsureTunnelListenersDetectsRuntimeConflictWithActiveGroup(t *tes
 	if err := server.ensureTunnelListeners(otherServerConn, slog.New(slog.NewTextHandler(io.Discard, nil)), otherSession); err != nil {
 		t.Fatalf("start active group listeners: %v", err)
 	}
-	server.registerActiveSession(otherServerConn, otherSession)
-	defer server.unregisterActiveSession(otherSession)
+	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, otherServerConn, otherSession)
+	defer func() {
+		controlruntime.DetachRuntime(server.supervisor, otherSession.ID)
+		otherSession.applyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+		controlruntime.DispatchBySessionID(server.supervisor, otherSession.ID, controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+	}()
 
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -209,11 +214,11 @@ func TestServerEnsureTunnelListenersDetectsRuntimeConflictWithActiveGroup(t *tes
 	if reason := issues[9]; reason != "" {
 		t.Fatalf("unexpected runtime issue for healthy tunnel: %#v", issues)
 	}
-	if len(currentSession.runtime.listeners.tcp[7]) != 0 {
-		t.Fatalf("unexpected listeners started for conflicted tunnel: %#v", currentSession.runtime.listeners.tcp[7])
+	if len(currentSession.Runtime.Listeners.TCP[7]) != 0 {
+		t.Fatalf("unexpected listeners started for conflicted tunnel: %#v", currentSession.Runtime.Listeners.TCP[7])
 	}
-	if len(currentSession.runtime.listeners.tcp[9]) != 1 {
-		t.Fatalf("expected healthy tunnel listener to start, got %#v", currentSession.runtime.listeners.tcp[9])
+	if len(currentSession.Runtime.Listeners.TCP[9]) != 1 {
+		t.Fatalf("expected healthy tunnel listener to start, got %#v", currentSession.Runtime.Listeners.TCP[9])
 	}
 }
 
@@ -434,7 +439,7 @@ func TestServerScanNonListeningTunnelRuntimeIssuesScansActivePartialGroupAndReco
 		Snapshot:    group.Snapshot,
 	}
 	state := controlsession.NewState(sessionGroup.ID, session.ID)
-	desired := desiredRuntimeFromGroup(sessionGroup)
+	desired := controlruntime.DesiredRuntimeFromGroup(sessionGroup)
 	state.Desired = &desired
 	state.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: desired}
 	state.Conn = controlsession.ControlConnState{Attached: true, ConnID: "test-conn"}
@@ -446,14 +451,18 @@ func TestServerScanNonListeningTunnelRuntimeIssuesScansActivePartialGroupAndReco
 	if err := server.ensureTunnelListeners(serverConn, slog.New(slog.NewTextHandler(io.Discard, nil)), session); err != nil {
 		t.Fatalf("ensure tunnel listeners with partial bind failure: %v", err)
 	}
-	server.registerActiveSession(serverConn, session)
-	defer server.unregisterActiveSession(session)
+	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, serverConn, session)
+	defer func() {
+		controlruntime.DetachRuntime(server.supervisor, session.ID)
+		session.applyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+		controlruntime.DispatchBySessionID(server.supervisor, session.ID, controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+	}()
 
-	if len(session.runtime.listeners.tcp[7]) != 0 {
-		t.Fatalf("unexpected listeners started for blocked tunnel: %#v", session.runtime.listeners.tcp[7])
+	if len(session.Runtime.Listeners.TCP[7]) != 0 {
+		t.Fatalf("unexpected listeners started for blocked tunnel: %#v", session.Runtime.Listeners.TCP[7])
 	}
-	if len(session.runtime.listeners.tcp[8]) != 1 {
-		t.Fatalf("expected healthy tunnel listener to start, got %#v", session.runtime.listeners.tcp[8])
+	if len(session.Runtime.Listeners.TCP[8]) != 1 {
+		t.Fatalf("expected healthy tunnel listener to start, got %#v", session.Runtime.Listeners.TCP[8])
 	}
 
 	server.recordTunnelRuntimeIssue(7, "")
@@ -467,8 +476,8 @@ func TestServerScanNonListeningTunnelRuntimeIssuesScansActivePartialGroupAndReco
 	if reason := server.TunnelRuntimeIssues()[7]; !strings.Contains(reason, "端口冲突") {
 		t.Fatalf("expected polling to re-detect blocked tunnel issue, got %#v", server.TunnelRuntimeIssues())
 	}
-	if len(session.runtime.listeners.tcp[7]) != 0 {
-		t.Fatalf("unexpected listeners started for still-blocked tunnel: %#v", session.runtime.listeners.tcp[7])
+	if len(session.Runtime.Listeners.TCP[7]) != 0 {
+		t.Fatalf("unexpected listeners started for still-blocked tunnel: %#v", session.Runtime.Listeners.TCP[7])
 	}
 
 	_ = blocker.Close()
@@ -479,11 +488,11 @@ func TestServerScanNonListeningTunnelRuntimeIssuesScansActivePartialGroupAndReco
 	if issues := server.TunnelRuntimeIssues(); len(issues) != 0 {
 		t.Fatalf("expected runtime issues to clear after active-group recovery: %#v", issues)
 	}
-	if len(session.runtime.listeners.tcp[7]) != 1 {
-		t.Fatalf("expected polling to recover blocked tunnel listener, got %#v", session.runtime.listeners.tcp[7])
+	if len(session.Runtime.Listeners.TCP[7]) != 1 {
+		t.Fatalf("expected polling to recover blocked tunnel listener, got %#v", session.Runtime.Listeners.TCP[7])
 	}
-	if len(session.runtime.listeners.tcp[8]) != 1 {
-		t.Fatalf("expected healthy tunnel listener to remain active, got %#v", session.runtime.listeners.tcp[8])
+	if len(session.Runtime.Listeners.TCP[8]) != 1 {
+		t.Fatalf("expected healthy tunnel listener to remain active, got %#v", session.Runtime.Listeners.TCP[8])
 	}
 }
 

@@ -2,15 +2,15 @@ package control
 
 import (
 	"context"
-	"net"
 	"sync"
 
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
-	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 type Supervisor struct {
+	controlruntime.Supervisor // embed runtime.Supervisor for interface satisfaction
+
 	executor controlsession.Executor
 
 	mu               sync.RWMutex
@@ -25,17 +25,7 @@ type Supervisor struct {
 
 type supervisorSnapshot struct {
 	groupSlots map[int64]uint64
-	sessions   []runtimeSessionSnapshot
-}
-
-type runtimeSessionSnapshot struct {
-	groupID      int64
-	sessionID    uint64
-	conn         net.Conn
-	desiredGroup GroupRuntime
-	recoveryMode testsupport.RecoveryMode
-	state        controlsession.SessionState
-	runtime      controlruntime.ObservedState
+	sessions   []controlruntime.SessionSnapshot
 }
 
 func NewSupervisor(executor controlsession.Executor) *Supervisor {
@@ -104,6 +94,23 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 		}
 	}()
 	return agent
+}
+
+// AttachRuntimeSession implements controlruntime.SupervisorOperator.
+// It converts a RuntimeExecutor to a runtimeExecutor and attaches the session.
+func (s *Supervisor) AttachRuntimeSession(parent context.Context, state controlsession.SessionState, runtime *controlruntime.RuntimeExecutor) *controlsession.Agent {
+	if s == nil || runtime == nil {
+		return nil
+	}
+	// Convert RuntimeExecutor to runtimeExecutor
+	localRuntime := &runtimeExecutor{
+		groupID:      runtime.GroupID,
+		conn:         runtime.Conn,
+		logger:       runtime.Logger,
+		session:      runtime.Session.(*sessionState),
+		desiredGroup: runtime.DesiredGroup,
+	}
+	return s.AttachSession(parent, state, localRuntime)
 }
 
 func (s *Supervisor) DispatchBySessionID(sessionID uint64, event controlsession.Event) bool {
@@ -195,7 +202,7 @@ func (s *Supervisor) DetachRuntime(sessionID uint64) {
 	s.mu.Unlock()
 }
 
-func (s *Supervisor) ActiveSession(groupID int64) (*activeSession, bool) {
+func (s *Supervisor) activeSession(groupID int64) (*activeSession, bool) {
 	if s == nil || groupID <= 0 {
 		return nil, false
 	}
@@ -210,6 +217,44 @@ func (s *Supervisor) ActiveSession(groupID int64) (*activeSession, bool) {
 		conn:    runtime.conn,
 		session: runtime.session,
 	}, true
+}
+
+// ActiveSession implements controlruntime.SupervisorOperator.
+// It returns the active session for a group as a runtime.ActiveSession.
+func (s *Supervisor) ActiveSession(groupID int64) (*controlruntime.ActiveSession, bool) {
+	active, ok := s.activeSession(groupID)
+	if !ok {
+		return nil, false
+	}
+	return &controlruntime.ActiveSession{
+		Conn:    active.conn,
+		Session: &active.session.Control,
+	}, true
+}
+
+// ActiveRuntimeGroups implements controlruntime.SupervisorOperator.
+// It returns all active runtime groups, optionally excluding a specific session.
+func (s *Supervisor) ActiveRuntimeGroups(exclude any) []controlruntime.RuntimeGroupSnapshot {
+	var excludeSession *sessionState
+	if exclude != nil {
+		if ss, ok := exclude.(*sessionState); ok {
+			excludeSession = ss
+		}
+	}
+	snapshot := s.Snapshot(excludeSession)
+	if len(snapshot.sessions) == 0 {
+		return nil
+	}
+
+	result := make([]controlruntime.RuntimeGroupSnapshot, 0, len(snapshot.sessions))
+	for _, session := range snapshot.sessions {
+		group, ok := session.ActiveRuntimeGroup()
+		if !ok {
+			continue
+		}
+		result = append(result, group)
+	}
+	return result
 }
 
 func (s *Supervisor) ReserveGroupSlot(groupID int64, sessionID uint64) bool {
@@ -272,7 +317,7 @@ func (s *Supervisor) Snapshot(exclude *sessionState) supervisorSnapshot {
 	}
 	s.mu.RUnlock()
 
-	snapshots := make([]runtimeSessionSnapshot, 0, len(entries))
+	snapshots := make([]controlruntime.SessionSnapshot, 0, len(entries))
 	for _, entry := range entries {
 		if entry.agent == nil || entry.runtime == nil {
 			if entry.runtime == nil {

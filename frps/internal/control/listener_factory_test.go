@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/internal/clock"
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
@@ -31,11 +32,11 @@ func TestStartTunnelListenersUsesInjectedListenerFactory(t *testing.T) {
 		RemoteEnd:   7000,
 	}
 
-	started, err := server.startTunnelListeners(newTunnelRuntimeStartContext(1, 2, tunnel, "127.0.0.1"))
+	started, err := server.startTunnelListeners(controlruntime.NewTunnelRuntimeStartContext(1, 2, tunnel, "127.0.0.1"))
 	if err != nil {
 		t.Fatalf("start tunnel listeners: %v", err)
 	}
-	defer closeStartedTunnelListeners(started.tcpListeners, started.udpListeners)
+	defer controlruntime.CloseStartedTunnelListeners(started.TCPListeners, started.UDPListeners)
 
 	calls := factory.Calls()
 	if len(calls) != 1 {

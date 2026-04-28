@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
+	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/transport"
@@ -345,7 +347,7 @@ func TestServerForwardsTCPStream(t *testing.T) {
 	})
 
 	if _, err := publicConn.Write([]byte("hello")); err != nil {
-		t.Fatalf("write public conn: %v", err)
+		t.Fatalf("write public Conn: %v", err)
 	}
 
 	streamDataFrame := readMessage(t, clientConn)
@@ -364,7 +366,7 @@ func TestServerForwardsTCPStream(t *testing.T) {
 
 	var response [5]byte
 	if _, err := io.ReadFull(publicConn, response[:]); err != nil {
-		t.Fatalf("read public conn: %v", err)
+		t.Fatalf("read public Conn: %v", err)
 	}
 	if string(response[:]) != "world" {
 		t.Fatalf("unexpected public response: %q", string(response[:]))
@@ -593,7 +595,7 @@ func TestServerCleansUpIdleUDPSessionAndNotifiesClient(t *testing.T) {
 	if udpSession == nil {
 		t.Fatal("expected udp session to exist")
 	}
-	udpSession.touch(time.Now().Add(-defaultUDPIdleTimeout - 2*time.Second))
+	udpSession.Touch(time.Now().Add(-defaultUDPIdleTimeout - 2*time.Second))
 
 	closeFrame, err := readMessageWithin(clientConn, 2*time.Second)
 	if err != nil {
@@ -669,7 +671,7 @@ func TestServerEnsureTunnelListenersUsesGroupEffectiveIP(t *testing.T) {
 		t.Fatalf("ensure tunnel listeners: %v", err)
 	}
 
-	listeners := session.runtime.listeners.tcp[7]
+	listeners := session.Runtime.Listeners.TCP[7]
 	if len(listeners) != 1 {
 		t.Fatalf("unexpected listener count: %d", len(listeners))
 	}
@@ -2598,18 +2600,18 @@ func TestServerRefreshGroupRebindsListenersWhenOnlyEffectiveIPChanges(t *testing
 		t.Fatalf("expected no config.push after effective_ip refresh, got %v", err)
 	}
 
-	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	currentGroup, currentSnapshot := active.session.CurrentGroupAndSnapshot()
 	if currentGroup.EffectiveIP != system.AnyIPv4 {
 		t.Fatalf("unexpected effective_ip after local rebind: %q", currentGroup.EffectiveIP)
 	}
 	if currentSnapshot.Version != 1 {
 		t.Fatalf("expected snapshot version to remain unchanged, got %d", currentSnapshot.Version)
 	}
-	if pendingRequestID, _ := active.session.configAckState(); pendingRequestID != 0 {
+	if pendingRequestID, _ := active.session.ConfigAckState(); pendingRequestID != 0 {
 		t.Fatalf("expected no pending config request after local rebind, got %d", pendingRequestID)
 	}
 
-	tcpListeners := active.session.runtime.listeners.tcp[7]
+	tcpListeners := active.session.Runtime.Listeners.TCP[7]
 	if len(tcpListeners) != 1 {
 		t.Fatalf("unexpected tcp listener count after rebind: %d", len(tcpListeners))
 	}
@@ -2621,7 +2623,7 @@ func TestServerRefreshGroupRebindsListenersWhenOnlyEffectiveIPChanges(t *testing
 		t.Fatalf("unexpected rebound tcp listener host: %q", boundHost)
 	}
 
-	udpListeners := active.session.runtime.listeners.udp[8]
+	udpListeners := active.session.Runtime.Listeners.UDP[8]
 	if len(udpListeners) != 1 {
 		t.Fatalf("unexpected udp listener count after rebind: %d", len(udpListeners))
 	}
@@ -2880,7 +2882,7 @@ func TestServerRefreshGroupPushesEmptyConfigWhenEffectiveIPBecomesNotCurrentLoca
 		t.Fatal("expected active session to remain after empty config refresh")
 	}
 
-	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	currentGroup, currentSnapshot := active.session.CurrentGroupAndSnapshot()
 	if currentGroup.EffectiveIP != "127.0.0.2" {
 		t.Fatalf("unexpected effective_ip after empty config refresh: %q", currentGroup.EffectiveIP)
 	}
@@ -2890,10 +2892,10 @@ func TestServerRefreshGroupPushesEmptyConfigWhenEffectiveIPBecomesNotCurrentLoca
 	if len(currentSnapshot.Tunnels) != 0 {
 		t.Fatalf("expected empty snapshot after invalid effective_ip refresh, got %d tunnels", len(currentSnapshot.Tunnels))
 	}
-	if pendingRequestID, _ := active.session.configAckState(); pendingRequestID != 0 {
+	if pendingRequestID, _ := active.session.ConfigAckState(); pendingRequestID != 0 {
 		t.Fatalf("expected no pending config request after empty config refresh, got %d", pendingRequestID)
 	}
-	if listeners := active.session.runtime.listeners.tcp[7]; len(listeners) != 0 {
+	if listeners := active.session.Runtime.Listeners.TCP[7]; len(listeners) != 0 {
 		t.Fatalf("expected no active listeners after empty config refresh, got %d", len(listeners))
 	}
 	if reason := server.TunnelRuntimeIssues()[7]; !strings.Contains(reason, "当前不存在于本机") {
@@ -3043,7 +3045,7 @@ func TestServerScanNonListeningTunnelRuntimeIssuesRepushesConfigAfterEffectiveIP
 	}
 
 	waitForIdleConfig(t, active.session)
-	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	currentGroup, currentSnapshot := active.session.CurrentGroupAndSnapshot()
 	if currentGroup.EffectiveIP != "127.0.0.2" {
 		t.Fatalf("unexpected effective_ip after empty config refresh: %q", currentGroup.EffectiveIP)
 	}
@@ -3091,9 +3093,9 @@ func TestServerScanNonListeningTunnelRuntimeIssuesRepushesConfigAfterEffectiveIP
 	waitForIdleConfig(t, active.session)
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		active.session.runtimeMu.Lock()
-		listenerCount := len(active.session.runtime.listeners.tcp[7])
-		active.session.runtimeMu.Unlock()
+		active.session.RuntimeMu.Lock()
+		listenerCount := len(active.session.Runtime.Listeners.TCP[7])
+		active.session.RuntimeMu.Unlock()
 		if listenerCount == 1 {
 			break
 		}
@@ -3103,7 +3105,7 @@ func TestServerScanNonListeningTunnelRuntimeIssuesRepushesConfigAfterEffectiveIP
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	currentGroup, currentSnapshot = active.session.currentGroupAndSnapshot()
+	currentGroup, currentSnapshot = active.session.CurrentGroupAndSnapshot()
 	if currentGroup.EffectiveIP != "127.0.0.2" {
 		t.Fatalf("unexpected effective_ip after recovered config push: %q", currentGroup.EffectiveIP)
 	}
@@ -3232,8 +3234,12 @@ func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConfli
 	if err := server.ensureTunnelListeners(otherServerConn, slog.New(slog.NewTextHandler(io.Discard, nil)), otherSession); err != nil {
 		t.Fatalf("start active group listeners: %v", err)
 	}
-	server.registerActiveSession(otherServerConn, otherSession)
-	defer server.unregisterActiveSession(otherSession)
+	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, otherServerConn, otherSession)
+	defer func() {
+		controlruntime.DetachRuntime(server.supervisor, otherSession.ID)
+		otherSession.applyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+		controlruntime.DispatchBySessionID(server.supervisor, otherSession.ID, controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+	}()
 
 	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
 	defer clientConn.Close()
@@ -3256,14 +3262,14 @@ func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConfli
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if len(active.session.runtime.listeners.tcp[7]) == 1 && len(active.session.runtime.listeners.tcp[9]) == 1 {
+		if len(active.session.Runtime.Listeners.TCP[7]) == 1 && len(active.session.Runtime.Listeners.TCP[9]) == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf(
 				"unexpected initial listener counts: tunnel7=%d tunnel9=%d",
-				len(active.session.runtime.listeners.tcp[7]),
-				len(active.session.runtime.listeners.tcp[9]),
+				len(active.session.Runtime.Listeners.TCP[7]),
+				len(active.session.Runtime.Listeners.TCP[9]),
 			)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -3285,20 +3291,20 @@ func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConfli
 
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		if len(active.session.runtime.listeners.tcp[7]) == 0 && len(active.session.runtime.listeners.tcp[9]) == 1 {
+		if len(active.session.Runtime.Listeners.TCP[7]) == 0 && len(active.session.Runtime.Listeners.TCP[9]) == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf(
 				"unexpected listener counts after conflicting rebind: tunnel7=%d tunnel9=%d",
-				len(active.session.runtime.listeners.tcp[7]),
-				len(active.session.runtime.listeners.tcp[9]),
+				len(active.session.Runtime.Listeners.TCP[7]),
+				len(active.session.Runtime.Listeners.TCP[9]),
 			)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	currentGroup, currentSnapshot := active.session.currentGroupAndSnapshot()
+	currentGroup, currentSnapshot := active.session.CurrentGroupAndSnapshot()
 	if currentGroup.EffectiveIP != system.AnyIPv4 {
 		t.Fatalf("unexpected effective_ip after conflicting rebind: %q", currentGroup.EffectiveIP)
 	}
@@ -3366,18 +3372,18 @@ func TestServerFreezeGroupRuntimeDropsBufferedTCPData(t *testing.T) {
 
 	streamID := uint32(7)
 	stream := &publicStream{
-		configVersion: 1,
-		conn:          publicServer,
-		ready:         make(chan error, 1),
+		ConfigVersion: 1,
+		Conn:          publicServer,
+		Ready:         make(chan error, 1),
 	}
 
-	session.runtimeMu.Lock()
-	session.runtime.listeners.started = true
-	session.runtime.generation = 1
-	session.runtime.streams[streamID] = stream
-	session.runtimeMu.Unlock()
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = 1
+	session.Runtime.Streams[streamID] = stream
+	session.RuntimeMu.Unlock()
 
-	session.writeMu.Lock()
+	session.WriteMu.Lock()
 
 	copyDone := make(chan struct{})
 	go func() {
@@ -3390,9 +3396,9 @@ func TestServerFreezeGroupRuntimeDropsBufferedTCPData(t *testing.T) {
 	}
 
 	listeners, udpListeners, streams, _ := session.freezeTunnelRuntime()
-	closeStartedTunnelListeners(listeners, udpListeners)
+	controlruntime.CloseStartedTunnelListeners(listeners, udpListeners)
 
-	session.writeMu.Unlock()
+	session.WriteMu.Unlock()
 
 	closeDone := make(chan error, 1)
 	go func() {
@@ -3401,8 +3407,8 @@ func TestServerFreezeGroupRuntimeDropsBufferedTCPData(t *testing.T) {
 				closeDone <- err
 				return
 			}
-			capturedStream.signalReady(net.ErrClosed)
-			capturedStream.close()
+			capturedStream.SignalReady(net.ErrClosed)
+			capturedStream.Close()
 		}
 		closeDone <- nil
 	}()
@@ -3467,14 +3473,14 @@ func TestServerFreezeGroupRuntimeDropsBufferedUDPData(t *testing.T) {
 	clientAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53000}
 	udpSession := newPublicUDPSession(9, tunnel, remotePort, listener, clientAddr, time.Now().UTC())
 
-	session.runtimeMu.Lock()
-	session.runtime.listeners.started = true
-	session.runtime.generation = 1
-	session.runtime.udp.sessions[udpSession.sessionID] = udpSession
-	session.runtime.udp.keys[udpSession.key()] = udpSession.sessionID
-	session.runtimeMu.Unlock()
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = 1
+	session.Runtime.UDP.Sessions[udpSession.SessionID] = udpSession
+	session.Runtime.UDP.Keys[udpSession.Key()] = udpSession.SessionID
+	session.RuntimeMu.Unlock()
 
-	session.writeMu.Lock()
+	session.WriteMu.Lock()
 
 	forwardDone := make(chan error, 1)
 	go func() {
@@ -3493,14 +3499,14 @@ func TestServerFreezeGroupRuntimeDropsBufferedUDPData(t *testing.T) {
 	}()
 
 	listeners, udpListeners, _, udpSessions := session.freezeTunnelRuntime()
-	closeStartedTunnelListeners(listeners, udpListeners)
+	controlruntime.CloseStartedTunnelListeners(listeners, udpListeners)
 
-	session.writeMu.Unlock()
+	session.WriteMu.Unlock()
 
 	closeDone := make(chan error, 1)
 	go func() {
 		for _, capturedUDPSession := range udpSessions {
-			if err := server.sendUDPClose(controlServer, session, capturedUDPSession.sessionID, protocol.CloseReasonAdminTerminated, "reload in progress"); err != nil {
+			if err := server.sendUDPClose(controlServer, session, capturedUDPSession.SessionID, protocol.CloseReasonAdminTerminated, "reload in progress"); err != nil {
 				closeDone <- err
 				return
 			}
@@ -3599,7 +3605,7 @@ func TestServerRefreshGroupKeepsSessionAliveAfterKeyResetUntilNextLogin(t *testi
 	}
 	assertSessionHeartbeatStillWorks(t, clientConn)
 
-	activeGroup := active.session.currentGroup()
+	activeGroup := active.session.CurrentGroup()
 	if activeGroup.ClientSecretHash != rotatedHash {
 		t.Fatal("expected active session runtime to refresh to the rotated client secret hash")
 	}
@@ -4064,7 +4070,7 @@ func waitForIdleConfig(t *testing.T, session *sessionState) {
 
 	deadline := time.Now().Add(time.Second)
 	for {
-		pendingRequestID, _ := session.configAckState()
+		pendingRequestID, _ := session.ConfigAckState()
 		if pendingRequestID == 0 {
 			return
 		}
