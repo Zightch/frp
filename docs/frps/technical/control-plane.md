@@ -1,5 +1,49 @@
 # frps 控制面技术设计
 
+## 拆分目标边界
+
+当前控制面后续只保留一个稳定入口：`frps/internal/control`。这个根包面向
+`internal/app` 和 `internal/api`，职责应收敛到 facade：`Options`、`Server`、
+`NewServer`、生命周期方法、运行态刷新、观测查询，以及控制面 TLS 配置入口。
+
+`frps/internal/controlv2` 只能作为迁移中间态存在，不再承载新功能。新增控制面能力
+必须回到 `control` 这条主线，通过子包逐层拆分，而不是继续形成双轨实现。
+
+目标包边界如下：
+
+- `control/protocol/*`：frpc 控制连接的 frame IO、错误回复、transport/auth handshake、dispatch、config sync、heartbeat、stream 和 UDP frame 语义。
+- `control/session/*`：纯会话状态机、agent、supervisor、action executor seam。
+- `control/runtime/*`：具体运行态状态、listener 启停、TCP/UDP 数据面、runtime scan、recovery、conflict、issues、observe projection。
+- `control/domain/*`：`GroupRuntime`、`ConfigSnapshot`、desired/applied snapshot 转换、tunnel helper 和版本语义。
+- `control/repo/*`：SQL 查询、row decode、持久化配置到 domain runtime model 的投影。
+- `control/wiring/*`：把 repo、protocol、session、runtime、observer、scanner 拼成最终业务对象。
+
+根包后续不应直接实现 frame handler、listener serve loop、runtime scan 算法或
+recovery 策略。发现循环依赖时，优先下沉 domain model 或提取更小 capability，
+不要用 `any` 或 placeholder type 扩大边界。
+
+## RuntimeOperator 冻结规则
+
+`control/runtime.RuntimeOperator` 当前仍是迁移期聚合接口，用来承接既有 scan、
+recovery、listener 和数据面调用。该接口不再扩张；新增 runtime 依赖必须先落到小
+能力接口，再逐步改造调用点。
+
+当前第一批 compile-only seam 包括：
+
+- `RuntimeReadiness`
+- `RuntimeIssueWriter`
+- `RuntimeIPResolver`
+- `ListenerStarter`
+- `RuntimeSessionRegistry`
+- `RuntimeRecoveryCoordinator`
+- `RuntimeScanCoordinator`
+- `RuntimeScannerDeps`
+- `RuntimeServeDeps`
+
+这些 seam 先只建立编译边界，不改变现有业务路径。后续迁移时，scan 只依赖
+`RuntimeScannerDeps`，TCP/UDP 数据面只依赖 `RuntimeServeDeps`，listener start/probe
+拆到独立 runtime listener 能力，最终删除 `RuntimeOperator`。
+
 ## 传输层
 
 - `pkg/transport` 负责长度前缀收发

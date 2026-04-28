@@ -482,10 +482,15 @@ func (s *Server) writeError(conn net.Conn, requestID, streamID uint32, code uint
 	})
 }
 
-// Interface implementation - accessor methods for RuntimeOperator
+var _ controlruntime.RuntimeOperator = (*Server)(nil)
+var _ controlruntime.RuntimeScannerDeps = (*Server)(nil)
+var _ controlruntime.RuntimeServeDeps = (*Server)(nil)
+
+// Interface implementation - accessor methods for runtime package seams.
 func (s *Server) IsShuttingDown() bool            { return s.isShuttingDown() }
 func (s *Server) Logger() *slog.Logger            { return s.logger }
 func (s *Server) Repo() controlruntime.Repository { return s.repo }
+func (s *Server) Clock() clock.Clock              { return s.clock }
 func (s *Server) Scheduler() clock.Scheduler      { return s.scheduler }
 func (s *Server) ScanWG() *sync.WaitGroup         { return &s.scanWG }
 func (s *Server) RuntimeScanPoll() time.Duration  { return s.options.RuntimeScanPoll }

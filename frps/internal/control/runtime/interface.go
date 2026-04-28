@@ -15,8 +15,10 @@ import (
 	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
-// RuntimeOperator 定义 runtime 方法所需的依赖。
-// Server 将实现此接口，供 runtime/ 包的函数使用。
+// RuntimeOperator 是迁移期遗留聚合接口。
+//
+// 不要继续向这里追加方法；新增 runtime 能力应先落到 capabilities.go 中的
+// 小接口，再逐步把调用点从 RuntimeOperator 收敛到最小依赖。
 type RuntimeOperator interface {
 	// 状态检查
 	IsShuttingDown() bool
