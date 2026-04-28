@@ -646,18 +646,7 @@ func (s *Server) resolveGroupEffectiveIP(group GroupRuntime) (string, error) {
 }
 
 func (s *Server) serveTunnelListener(serve tunnelRuntimeServeContext, listener net.Listener) {
-	for {
-		publicConn, err := listener.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			serve.logger.Warn("tcp tunnel accept failed", "tunnel_id", serve.tunnel.TunnelID, "error", err)
-			continue
-		}
-
-		go s.handlePublicConnection(serve, publicConn)
-	}
+	s.tcpHandler().ServeTunnelListener(tcpServeContext(serve), listener)
 }
 
 func (s *Server) serveUDPTunnelListener(serve tunnelRuntimeServeContext, listener UDPListener) {

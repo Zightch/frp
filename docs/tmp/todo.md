@@ -833,7 +833,7 @@ type RuntimeServeDeps interface {
 - 根包 `Server.startTunnelListeners` 压缩为 assembly adapter，只注入 listener factory 和 TLS config loader。
 - 新增 listener 包单测，覆盖 TCP/UDP start、range 中途失败自动清理、probe 复用同一 starter。
 
-### 第 9 阶段：拆 TCP 数据面
+### 第 9 阶段：拆 TCP 数据面（已完成）
 
 - 新建 `internal/control/runtime/serve/tcp`。
 - 移动：
@@ -850,6 +850,13 @@ type RuntimeServeDeps interface {
 
 - TCP 数据面只依赖 session runtime state、frame writer、clock、logger。
 - `wire.go` 中 TCP 相关逻辑清空或只剩 adapter。
+
+完成内容：
+
+- 新建 `internal/control/runtime/serve/tcp`，承载 TCP listener accept loop、public TCP connection open、stream.opened/data/close handler、public -> frpc copy loop、stream.close 发送、`WriteConnFull` 和 TCP sock addr projection。
+- `wire.go` 中 TCP 主逻辑压缩为 adapter，继续保留同包测试需要的兼容 wrapper；UDP 逻辑暂留待第10阶段。
+- 新 TCP 包通过最小 seam 依赖 session runtime state、runtime/control frame writer、clock、logger，不直接依赖完整 `Server`。
+- 新增 TCP 数据面单测，覆盖 stream.open 构造与连接元数据、stream.opened ready signal、stream.data 写 public conn、public read EOF 发送 stream.close。
 
 ### 第 10 阶段：拆 UDP 数据面
 

@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
-	"strconv"
 	"time"
 
 	controlprotocolerrors "github.com/zightch/frp/frps/internal/control/protocol/errors"
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
+	controltcp "github.com/zightch/frp/frps/internal/control/runtime/serve/tcp"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -93,6 +92,14 @@ func (w sessionRuntimeIOWriter) writeFrames(frames ...protocol.Frame) error {
 	return w.server.writeRuntimeFramesWithSession(w.conn, w.session, w.configVersion, frames...)
 }
 
+func (w sessionRuntimeIOWriter) controlFrameWriter() sessionFrameWriter {
+	return sessionFrameWriter{
+		server:  w.server,
+		conn:    w.conn,
+		session: w.session,
+	}
+}
+
 // WriteFrame implements controlruntime.RuntimeIOWriter.
 func (w sessionRuntimeIOWriter) WriteFrame(frame protocol.Frame) error {
 	return w.writeFrame(frame)
@@ -104,33 +111,15 @@ func (w sessionRuntimeIOWriter) WriteFrames(frames ...protocol.Frame) error {
 }
 
 func (s *sessionState) preparePublicStreamOpen(configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, publicConn net.Conn, now time.Time) (sessionStreamOpenOperation, error) {
-	streamID := s.NextTunnelStreamID()
-	requestID := s.NextRequestID()
-	stream := newPublicStream(configVersion, tunnel, remotePort, requestID, publicConn, now)
-	if !s.addPublicStream(streamID, stream, configVersion) {
-		return sessionStreamOpenOperation{blocked: true}, nil
-	}
-
-	body, err := protocol.MarshalStreamOpen(protocol.StreamOpen{
-		TunnelID:   tunnel.TunnelID,
-		RemotePort: remotePort,
-		ClientAddr: stream.ClientAddr,
-		OpenedAtMs: stream.OpenedAtMs,
-	})
+	op, err := controltcp.PreparePublicStreamOpen(s, configVersion, tunnel, remotePort, publicConn, now)
 	if err != nil {
-		s.closePublicStream(streamID)
 		return sessionStreamOpenOperation{}, err
 	}
-
 	return sessionStreamOpenOperation{
-		streamID: streamID,
-		stream:   stream,
-		openFrame: protocol.Frame{
-			Type:      protocol.TypeStreamOpen,
-			RequestID: requestID,
-			StreamID:  streamID,
-			Body:      body,
-		},
+		blocked:   op.Blocked,
+		streamID:  op.StreamID,
+		stream:    op.Stream,
+		openFrame: op.OpenFrame,
 	}, nil
 }
 
@@ -186,184 +175,49 @@ func (s *sessionState) preparePublicUDPDatagramForward(configVersion uint64, tun
 }
 
 func (s *Server) handlePublicConnection(serve tunnelRuntimeServeContext, publicConn net.Conn) {
-	openOp, err := serve.session.preparePublicStreamOpen(serve.runtimeIO.configVersion, serve.tunnel, serve.remotePort, publicConn, s.clock.Now().UTC())
-	if err != nil {
-		_ = publicConn.Close()
-		return
-	}
-	if openOp.blocked {
-		_ = publicConn.Close()
-		return
-	}
-
-	if err := serve.runtimeIO.writeFrame(openOp.openFrame); err != nil {
-		serve.session.closePublicStream(openOp.streamID)
-		return
-	}
-
-	select {
-	case openErr := <-openOp.stream.Ready:
-		if openErr != nil {
-			serve.logger.Warn("stream open rejected", "stream_id", openOp.streamID, "tunnel_id", serve.tunnel.TunnelID, "error", openErr)
-			serve.session.closePublicStream(openOp.streamID)
-			return
-		}
-	case <-time.After(s.options.WriteTimeout):
-		_ = s.sendStreamClose(serve.runtimeIO.conn, serve.session, openOp.streamID, protocol.CloseReasonIdleTimeout, "stream open timeout")
-		serve.session.closePublicStream(openOp.streamID)
-		return
-	}
-
-	go s.copyPublicToClient(serve.runtimeIO, openOp.streamID, openOp.stream)
+	s.tcpHandler().HandlePublicConnection(tcpServeContext(serve), publicConn)
 }
 
 func (s *Server) handleStreamOpened(conn net.Conn, session *sessionState, frame protocol.Frame) error {
-	if frame.RequestID == 0 {
-		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "stream.opened requestId must be non-zero")
-	}
-	if frame.StreamID == 0 {
-		return s.replyErrorWithSession(conn, session, frame.RequestID, 0, protocol.ErrorCodeProtocolBadBody, "stream.opened streamId must be non-zero")
-	}
-
-	opened, err := protocol.UnmarshalStreamOpened(frame.Body)
-	if err != nil {
-		return s.replyProtocolErrorWithSession(conn, session, frame, err)
-	}
-
-	stream := session.publicStream(frame.StreamID)
-	if stream == nil {
-		return s.sendStreamClose(conn, session, frame.StreamID, protocol.CloseReasonProtocolError, "stream not found")
-	}
-	if frame.RequestID != stream.OpenRequestID {
-		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unexpected stream.opened requestId %d", frame.RequestID)
-	}
-
-	switch opened.Status {
-	case protocol.StatusOK:
-		stream.SignalReady(nil)
-	case protocol.StatusError:
-		stream.SignalReady(fmt.Errorf("%s", opened.Message))
-	default:
-		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "unsupported stream.opened status %d", opened.Status)
-	}
-
-	return nil
+	return s.tcpHandler().HandleStreamOpened(s.sessionFrameWriter(conn, session), session, frame)
 }
 
 func (s *Server) handleStreamData(conn net.Conn, session *sessionState, frame protocol.Frame) error {
-	if frame.RequestID != 0 {
-		return s.replyErrorWithSession(conn, session, frame.RequestID, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "stream.data requestId must be zero")
-	}
-	if frame.StreamID == 0 {
-		return s.replyErrorWithSession(conn, session, 0, frame.StreamID, protocol.ErrorCodeProtocolBadBody, "stream.data streamId must be non-zero")
-	}
-
-	stream := session.publicStream(frame.StreamID)
-	if stream == nil {
-		return s.sendStreamClose(conn, session, frame.StreamID, protocol.CloseReasonProtocolError, "stream not found")
-	}
-
-	if err := writeConnFull(stream.Conn, frame.Body); err != nil {
-		if session.closePublicStream(frame.StreamID) {
-			return s.sendStreamClose(conn, session, frame.StreamID, protocol.CloseReasonWriteError, err.Error())
-		}
-		return nil
-	}
-	stream.Touch(s.clock.Now())
-	return nil
+	return s.tcpHandler().HandleStreamData(s.sessionFrameWriter(conn, session), session, frame)
 }
 
 func (s *Server) handleStreamClose(session *sessionState, frame protocol.Frame) error {
-	if frame.RequestID != 0 {
-		return fmt.Errorf("stream.close requestId must be zero")
-	}
-	if frame.StreamID == 0 {
-		return fmt.Errorf("stream.close streamId must be non-zero")
-	}
-	if _, err := protocol.UnmarshalStreamClose(frame.Body); err != nil {
-		return err
-	}
-	session.closePublicStream(frame.StreamID)
-	return nil
+	return s.tcpHandler().HandleStreamClose(session, frame)
 }
 
 func (s *Server) sendStreamClose(conn net.Conn, session *sessionState, streamID uint32, reasonCode uint16, message string) error {
-	body, err := protocol.MarshalStreamClose(protocol.StreamClose{
-		ReasonCode: reasonCode,
-		Initiator:  protocol.InitiatorFRPS,
-		Message:    message,
-	})
-	if err != nil {
-		return err
-	}
-	return s.writeFrameWithSession(conn, session, protocol.Frame{
-		Type:     protocol.TypeStreamClose,
-		StreamID: streamID,
-		Body:     body,
-	})
+	return controltcp.SendStreamClose(s.sessionFrameWriter(conn, session), streamID, reasonCode, message)
 }
 
 func (s *Server) copyPublicToClient(runtimeIO sessionRuntimeIOWriter, streamID uint32, stream *publicStream) {
-	buffer := make([]byte, protocol.MaxDataBodyLen)
-	for {
-		n, err := stream.Conn.Read(buffer)
-		if n > 0 {
-			payload := append([]byte(nil), buffer[:n]...)
-			writeErr := runtimeIO.writeFrame(protocol.Frame{
-				Type:     protocol.TypeStreamData,
-				StreamID: streamID,
-				Body:     payload,
-			})
-			if writeErr != nil {
-				if !errors.Is(writeErr, errRuntimeIOStopped) {
-					runtimeIO.session.closePublicStream(streamID)
-				}
-				return
-			}
-			stream.Touch(s.clock.Now())
-		}
+	s.tcpHandler().CopyPublicToClient(runtimeIO, runtimeIO.controlFrameWriter(), runtimeIO.session, streamID, stream)
+}
 
-		if err == nil {
-			continue
-		}
-
-		reasonCode := protocol.CloseReasonReadError
-		message := err.Error()
-		if errors.Is(err, io.EOF) {
-			reasonCode = protocol.CloseReasonEOF
-			message = "eof"
-		}
-		if runtimeIO.session.closePublicStream(streamID) {
-			_ = s.sendStreamClose(runtimeIO.conn, runtimeIO.session, streamID, reasonCode, message)
-		}
-		return
+func (s *Server) tcpHandler() controltcp.Handler {
+	return controltcp.Handler{
+		Clock:        s.clock,
+		WriteTimeout: s.options.WriteTimeout,
+		RuntimeWriteStopped: func(err error) bool {
+			return errors.Is(err, errRuntimeIOStopped)
+		},
 	}
 }
 
-func newPublicStream(configVersion uint64, tunnel protocol.TunnelEntry, remotePort uint16, openRequestID uint32, publicConn net.Conn, now time.Time) *publicStream {
-	stream := &publicStream{
-		ConfigVersion: configVersion,
-		Conn:          publicConn,
-		Tunnel:        tunnel,
-		RemotePort:    remotePort,
-		ClientAddr:    sockAddrFromNetAddr(publicConn.RemoteAddr()),
-		OpenedAtMs:    uint64(now.UTC().UnixMilli()),
-		OpenRequestID: openRequestID,
-		Ready:         make(chan error, 1),
+func tcpServeContext(serve tunnelRuntimeServeContext) controltcp.ServeContext {
+	return controltcp.ServeContext{
+		Logger:        serve.logger,
+		Session:       serve.session,
+		RuntimeWriter: serve.runtimeIO,
+		ControlWriter: serve.runtimeIO.controlFrameWriter(),
+		ConfigVersion: serve.runtimeIO.configVersion,
+		Tunnel:        serve.tunnel,
+		RemotePort:    serve.remotePort,
 	}
-	stream.Touch(now)
-	return stream
-}
-
-func writeConnFull(conn net.Conn, payload []byte) error {
-	for len(payload) > 0 {
-		n, err := conn.Write(payload)
-		if err != nil {
-			return err
-		}
-		payload = payload[n:]
-	}
-	return nil
 }
 
 func (s *Server) handleUDPData(conn net.Conn, session *sessionState, frame protocol.Frame) error {
@@ -524,36 +378,9 @@ func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
 }
 
 func sockAddrFromNetAddr(addr net.Addr) protocol.SockAddr {
-	if addr == nil {
-		return protocol.SockAddr{}
-	}
-	switch typed := addr.(type) {
-	case *net.TCPAddr:
-		return protocol.SockAddr{IP: append(net.IP(nil), typed.IP...), Port: uint16(typed.Port)}
-	case *net.UDPAddr:
-		return protocol.SockAddr{IP: append(net.IP(nil), typed.IP...), Port: uint16(typed.Port)}
-	default:
-		host, portText, err := net.SplitHostPort(addr.String())
-		if err != nil {
-			return protocol.SockAddr{}
-		}
-		port, err := strconv.Atoi(portText)
-		if err != nil {
-			return protocol.SockAddr{}
-		}
-		return protocol.SockAddr{IP: net.ParseIP(host), Port: uint16(port)}
-	}
+	return controltcp.SockAddrFromNetAddr(addr)
 }
 
 func sockAddrString(addr protocol.SockAddr) string {
-	if len(addr.IP) == 0 && addr.Port == 0 {
-		return ""
-	}
-	ip := addr.IP
-	if ip4 := ip.To4(); ip4 != nil {
-		ip = ip4
-	} else if ip16 := ip.To16(); ip16 != nil {
-		ip = ip16
-	}
-	return net.JoinHostPort(ip.String(), strconv.Itoa(int(addr.Port)))
+	return controltcp.SockAddrString(addr)
 }
