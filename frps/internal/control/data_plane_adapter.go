@@ -3,41 +3,14 @@ package control
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net"
 	"time"
 
-	controlprotocolerrors "github.com/zightch/frp/frps/internal/control/protocol/errors"
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controltcp "github.com/zightch/frp/frps/internal/control/runtime/serve/tcp"
 	controludp "github.com/zightch/frp/frps/internal/control/runtime/serve/udp"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
-
-type Logger interface {
-	Info(msg string, args ...any)
-	Warn(msg string, args ...any)
-}
-
-func (s *Server) registerConn(conn net.Conn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.activeConn[conn] = struct{}{}
-}
-
-func (s *Server) unregisterConn(conn net.Conn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.activeConn, conn)
-}
-
-func logConnection(logger *slog.Logger, level slog.Level, message string, err error) {
-	if controlprotocolerrors.IsExpectedConnectionClose(err) {
-		logger.Log(context.Background(), slog.LevelInfo, message, "error", err)
-		return
-	}
-	logger.Log(context.Background(), level, message, "error", err)
-}
 
 const (
 	observedRuntimeConnectionKindTCPStream  = "tcp_stream"
@@ -100,12 +73,10 @@ func (w sessionRuntimeIOWriter) controlFrameWriter() sessionFrameWriter {
 	}
 }
 
-// WriteFrame implements controlruntime.RuntimeIOWriter.
 func (w sessionRuntimeIOWriter) WriteFrame(frame protocol.Frame) error {
 	return w.writeFrame(frame)
 }
 
-// WriteFrames implements controlruntime.RuntimeIOWriter.
 func (w sessionRuntimeIOWriter) WriteFrames(frames ...protocol.Frame) error {
 	return w.writeFrames(frames...)
 }
@@ -228,22 +199,6 @@ func (s *Server) cleanupIdlePublicUDPSessions(conn net.Conn, logger Logger, sess
 
 func (s *Server) handlePublicUDPDatagram(serve tunnelRuntimeServeContext, listener UDPListener, clientAddr *net.UDPAddr, payload []byte) error {
 	return s.udpHandler().HandlePublicDatagram(udpServeContext(serve), listener, clientAddr, payload)
-}
-
-func (s *sessionState) bindPublicUDPSession(udpSession *publicUDPSession, configVersion uint64) (*publicUDPSession, bool) {
-	return s.BindPublicUDPSession(udpSession, configVersion)
-}
-
-func (s *sessionState) publicUDPSession(sessionID uint32) *publicUDPSession {
-	return s.PublicUDPSession(sessionID)
-}
-
-func (s *sessionState) closePublicUDPSession(sessionID uint32) bool {
-	return s.ClosePublicUDPSession(sessionID)
-}
-
-func (s *sessionState) takeIdlePublicUDPSessions(now time.Time) []*publicUDPSession {
-	return s.TakeIdlePublicUDPSessions(now)
 }
 
 func newPublicUDPSession(sessionID uint32, tunnel protocol.TunnelEntry, remotePort uint16, listener UDPListener, clientAddr *net.UDPAddr, now time.Time) *publicUDPSession {

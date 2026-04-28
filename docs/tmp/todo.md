@@ -1007,6 +1007,21 @@ type RuntimeServeDeps interface {
 - 根包没有大型业务实现文件。
 - docs 更新到新结构。
 
+完成内容：
+
+- `frps/internal/controlv2/` 当前已无代码实体，仓库代码引用只剩历史/规划文档引用。
+- 根包保留稳定入口 `Options`、`Server`、`NewServer`、`RefreshGroup`、`ObserveState`、`ConfigureControlTLS`、`ClearControlTLS` 和兼容 alias。
+- 删除根包大型业务文件 `runtime.go`、`wire.go`、`executor.go`，改拆为小型 facade/assembly adapter：
+  - `options.go` / `aliases.go` / `server.go`
+  - `lifecycle.go` / `connection.go` / `frame_adapter.go`
+  - `session_state.go` / `session_frame_adapter.go` / `session_shutdown.go`
+  - `configsync_adapter.go` / `refresh.go`
+  - `runtime_start_adapter.go` / `runtime_scan_adapter.go` / `runtime_capabilities.go` / `runtime_issues.go`
+  - `data_plane_adapter.go` / `runtime_executor.go` / `action_executor_adapter.go`
+- `auth.go`、`tls.go` 继续作为根包 facade/adapter，但删除了无引用的 challenge/TLS 兼容私有 wrapper。
+- 根包单个非测试实现文件已压缩到小型拼装层，协议、session FSM、supervisor、executor、runtime state、listener、TCP/UDP 数据面、scan/recovery/observe 的实际逻辑继续由子包承载。
+- 技术文档已同步：`RuntimeOperator` 聚合接口已经删除，后续只能通过小 capability seam 接入 runtime 能力。
+
 ## 风险点和约束
 
 - 不要一次性大搬迁所有文件；测试体量大，容易把行为回归藏在移动噪声里。

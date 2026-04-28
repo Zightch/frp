@@ -9,7 +9,6 @@ import (
 	controlauth "github.com/zightch/frp/frps/internal/control/protocol/auth"
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
-	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
 func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *slog.Logger) (*sessionState, *controlsession.Agent, error) {
@@ -63,12 +62,4 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 	}
 
 	return session, agent, nil
-}
-
-func (s *Server) issueChallenge(clientSecretHash [32]byte) (protocol.AuthChallenge, error) {
-	return s.authChallenges.Issue(clientSecretHash)
-}
-
-func (s *Server) consumeChallenge(challengeID uint32, response [32]byte) error {
-	return s.authChallenges.Consume(challengeID, response)
 }

@@ -1,7 +1,6 @@
 package control
 
 import (
-	"crypto/tls"
 	"fmt"
 	"net"
 
@@ -19,10 +18,6 @@ func (s *Server) negotiateTransport(conn net.Conn) (net.Conn, [16]byte, error) {
 		Clock:        s.clock,
 		Certificates: s.controlTLS,
 	})
-}
-
-func (s *Server) selectTransportSecurityMode(group GroupRuntime, supportedModes uint8) (uint8, error) {
-	return controlhandshake.SelectTransportSecurityMode(group, supportedModes, s.controlTLS)
 }
 
 func (s *Server) ConfigureControlTLS(binding *entrycerts.ResolvedBinding) error {
@@ -45,20 +40,6 @@ func (s *Server) ClearControlTLS() error {
 		s.controlTLS.Clear()
 	}
 	return nil
-}
-
-func (s *Server) currentControlTLSCertificate() (*tls.Certificate, bool) {
-	if s == nil {
-		return nil, false
-	}
-	if s.controlTLS == nil {
-		return nil, false
-	}
-	return s.controlTLS.CurrentCertificate()
-}
-
-func (s *Server) upgradeControlConnToTLS(conn net.Conn) (net.Conn, error) {
-	return controlhandshake.UpgradeControlConnToTLS(conn, s.clock, s.options.ReadTimeout, s.controlTLS)
 }
 
 func (s *Server) ensureControlTLSStore() *controlhandshake.ControlTLSStore {
