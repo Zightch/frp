@@ -6,7 +6,6 @@ import (
 	"net"
 
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
-	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -67,13 +66,6 @@ func (s *Server) updateActiveSessionDesiredRuntime(active *activeSession, group 
 	}
 	if runtime := s.runtimeExecutor(active.session.ID); runtime != nil {
 		runtime.setDesiredGroup(group)
-	}
-	next := active.session.applyControlEvent(controlsession.DesiredRuntimeUpdated{Snapshot: controlruntime.DesiredRuntimeFromGroup(group)})
-	if next.Pending != nil {
-		active.session.ControlMu.Lock()
-		active.session.Pending = group
-		active.session.Recovery = controlruntime.PendingRecoveryModeForSnapshot(group.Snapshot)
-		active.session.ControlMu.Unlock()
 	}
 }
 

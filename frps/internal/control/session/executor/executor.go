@@ -12,6 +12,7 @@ import (
 	controlconfigsync "github.com/zightch/frp/frps/internal/control/protocol/configsync"
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
+	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
@@ -33,6 +34,8 @@ type Runtime interface {
 	TakeDrainedStreams() map[uint32]*controlruntime.Stream
 	TakeDrainedUDPSessions() []*controlruntime.UDPSession
 	AllowTunnelRuntimeStart()
+	PrepareConfigPush(requestID uint32, group controlruntime.GroupRuntime, snapshot controlruntime.ConfigSnapshot)
+	SessionID() uint64
 }
 
 type RuntimeDrain struct {
@@ -60,6 +63,10 @@ type BindingStarter interface {
 	RuntimeIssues() map[int64]string
 }
 
+type EventDispatcher interface {
+	DispatchBySessionID(sessionID uint64, event controlsession.Event) bool
+}
+
 type StreamCloser interface {
 	SendStreamClose(runtime Runtime, streamID uint32, reasonCode uint16, message string) error
 }
@@ -76,6 +83,7 @@ type Options struct {
 	StreamCloser      StreamCloser
 	UDPCloser         UDPCloser
 	Clock             Clock
+	Events            EventDispatcher
 	HeartbeatInterval time.Duration
 	Version           string
 }
@@ -113,6 +121,7 @@ func New(options Options) Executor {
 		bindPreparer: BindingPreparer{Resolver: options.Resolver},
 		bindStarter: BindingStartHandler{
 			Starter: options.BindingStarter,
+			Events:  options.Events,
 		},
 		runtimeStopper: RuntimeStopper{},
 		streamDrainer:  StreamDrainer{Closer: options.StreamCloser},
@@ -198,7 +207,22 @@ type ConfigPusher struct {
 }
 
 func (h ConfigPusher) Handle(runtime Runtime, action controlsession.ActionPushConfig) []controlsession.Event {
-	frame, err := controlconfigsync.BuildPushFrame(action.RequestID, controlruntime.ConfigSnapshotFromDesired(action.Snapshot))
+	snapshot := controlruntime.ConfigSnapshotFromDesired(action.Snapshot)
+	group := runtime.DesiredGroup()
+	group.Snapshot = snapshot
+
+	runtime.PrepareConfigPush(action.RequestID, group, snapshot)
+
+	sessionID := runtime.SessionID()
+	testhooks.Point("control.config_push.before_write",
+		testhooks.F("group_id", group.ID),
+		testhooks.F("session_id", sessionID),
+		testhooks.F("request_id", action.RequestID),
+		testhooks.F("config_version", snapshot.Version),
+		testhooks.F("tunnel_count", len(snapshot.Tunnels)),
+	)
+
+	frame, err := controlconfigsync.BuildPushFrame(action.RequestID, snapshot)
 	if err != nil {
 		return protocolError(err)
 	}
@@ -208,6 +232,14 @@ func (h ConfigPusher) Handle(runtime Runtime, action controlsession.ActionPushCo
 	if err := h.Frames.WriteFrame(runtime, frame); err != nil {
 		return closeControlConn(runtime, err)
 	}
+
+	testhooks.Point("control.config_push.after_write",
+		testhooks.F("group_id", group.ID),
+		testhooks.F("session_id", sessionID),
+		testhooks.F("request_id", action.RequestID),
+		testhooks.F("config_version", snapshot.Version),
+		testhooks.F("tunnel_count", len(snapshot.Tunnels)),
+	)
 	return nil
 }
 
@@ -291,16 +323,32 @@ func (h BindingPreparer) Handle(runtime Runtime, action controlsession.ActionPre
 
 type BindingStartHandler struct {
 	Starter BindingStarter
+	Events  EventDispatcher
 }
 
 func (h BindingStartHandler) Handle(runtime Runtime, state controlsession.SessionState, action controlsession.ActionStartBindings) []controlsession.Event {
 	if h.Starter == nil {
 		return nil
 	}
-	if err := h.Starter.StartBindings(runtime); err != nil {
-		return BindingFailureEvents(action.Keys, err)
+	if h.Events == nil {
+		if err := h.Starter.StartBindings(runtime); err != nil {
+			return BindingFailureEvents(action.Keys, err, action.Epoch)
+		}
+		return BindingOutcomeEvents(state, action.Keys, runtime.ActiveRuntimeTunnelIDs(), h.Starter.RuntimeIssues(), action.Epoch)
 	}
-	return BindingOutcomeEvents(state, action.Keys, runtime.ActiveRuntimeTunnelIDs(), h.Starter.RuntimeIssues())
+	sessionID := runtime.SessionID()
+	go func() {
+		var events []controlsession.Event
+		if err := h.Starter.StartBindings(runtime); err != nil {
+			events = BindingFailureEvents(action.Keys, err, action.Epoch)
+		} else {
+			events = BindingOutcomeEvents(state, action.Keys, runtime.ActiveRuntimeTunnelIDs(), h.Starter.RuntimeIssues(), action.Epoch)
+		}
+		for _, event := range events {
+			h.Events.DispatchBySessionID(sessionID, event)
+		}
+	}()
+	return nil
 }
 
 type RuntimeStopper struct{}
@@ -399,13 +447,18 @@ func BlockReasonForRuntimeError(err error) controlsession.BlockReason {
 	}
 }
 
-func BindingFailureEvents(keys []controlsession.BindingKey, err error) []controlsession.Event {
+func BindingFailureEvents(keys []controlsession.BindingKey, err error, epochs ...uint64) []controlsession.Event {
 	reason := BlockReasonForRuntimeError(err)
 	message := err.Error()
+	var epoch uint64
+	if len(epochs) != 0 {
+		epoch = epochs[0]
+	}
 	events := make([]controlsession.Event, 0, len(keys))
 	for _, key := range keys {
 		events = append(events, controlsession.BindingStartFailed{
 			Key:     key,
+			Epoch:   epoch,
 			Reason:  reason,
 			Message: message,
 		})
@@ -413,12 +466,16 @@ func BindingFailureEvents(keys []controlsession.BindingKey, err error) []control
 	return events
 }
 
-func BindingOutcomeEvents(state controlsession.SessionState, keys []controlsession.BindingKey, activeTunnelIDs map[uint32]struct{}, issues map[int64]string) []controlsession.Event {
+func BindingOutcomeEvents(state controlsession.SessionState, keys []controlsession.BindingKey, activeTunnelIDs map[uint32]struct{}, issues map[int64]string, epochs ...uint64) []controlsession.Event {
+	var epoch uint64
+	if len(epochs) != 0 {
+		epoch = epochs[0]
+	}
 	events := make([]controlsession.Event, 0, len(keys))
 	for _, key := range keys {
 		tunnelID := TunnelIDForBinding(state, key)
 		if _, ok := activeTunnelIDs[tunnelID]; ok {
-			events = append(events, controlsession.BindingStarted{Key: key})
+			events = append(events, controlsession.BindingStarted{Key: key, Epoch: epoch})
 			continue
 		}
 
@@ -428,6 +485,7 @@ func BindingOutcomeEvents(state controlsession.SessionState, keys []controlsessi
 		}
 		events = append(events, controlsession.BindingStartFailed{
 			Key:     key,
+			Epoch:   epoch,
 			Reason:  BlockReasonForRuntimeError(errors.New(message)),
 			Message: message,
 		})

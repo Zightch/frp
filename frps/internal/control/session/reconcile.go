@@ -12,18 +12,28 @@ func Reconcile(state SessionState) (SessionState, []Action) {
 
 	desired := *next.Desired
 	if next.Applied == nil || !snapshotsEqual(next.Applied.Snapshot, desired) {
+		actions := make([]Action, 0, 4)
+		if next.Applied != nil {
+			oldEpoch := next.Epoch
+			next.Epoch++
+			next.RuntimePhase = RuntimePhaseRecovering
+			actions = append(actions,
+				ActionStopBindings{Keys: bindingKeys(next.Bindings), Epoch: oldEpoch},
+				ActionDrainStreams{Reason: "config update pending"},
+				ActionDrainUDPSessions{Reason: "config update pending"},
+			)
+		}
 		requestID := nextRequestID(&next)
 		next.Pending = &PendingConfigPush{
 			RequestID: requestID,
 			Snapshot:  desired,
 		}
 		next.Phase = SessionPhaseSyncingConfig
-		return next, []Action{
-			ActionPushConfig{
-				RequestID: requestID,
-				Snapshot:  desired,
-			},
-		}
+		actions = append(actions, ActionPushConfig{
+			RequestID: requestID,
+			Snapshot:  desired,
+		})
+		return next, actions
 	}
 
 	if !desiredHasEnabledTunnels(next.Applied.Snapshot) {

@@ -51,11 +51,6 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 		ConnID:         conn.RemoteAddr().String(),
 		HelloRequestID: result.FinishRequestID,
 	}
-	session.applyControlEvent(attachEvent)
-	session.ControlMu.Lock()
-	session.Pending = group
-	session.Recovery = controlruntime.PendingRecoveryModeForSnapshot(group.Snapshot)
-	session.ControlMu.Unlock()
 	if !agent.Enqueue(attachEvent) {
 		s.supervisor.DetachRuntime(session.ID)
 		return nil, nil, fmt.Errorf("control session attach failed")

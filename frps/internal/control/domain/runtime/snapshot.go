@@ -79,9 +79,11 @@ func SameTunnelEntries(left, right []protocol.TunnelEntry) bool {
 
 // SameTunnelEntry checks if two tunnel entries are the same.
 func SameTunnelEntry(left, right protocol.TunnelEntry) bool {
+	leftFlags := left.TunnelFlags &^ protocol.TunnelFlagRange
+	rightFlags := right.TunnelFlags &^ protocol.TunnelFlagRange
 	return left.TunnelID == right.TunnelID &&
 		left.Protocol == right.Protocol &&
-		left.TunnelFlags == right.TunnelFlags &&
+		leftFlags == rightFlags &&
 		left.RemoteStart == right.RemoteStart &&
 		left.RemoteEnd == right.RemoteEnd &&
 		SameHost(left.LocalHost, right.LocalHost) &&

@@ -31,16 +31,72 @@ func (s *sessionState) controlState() controlsession.SessionState {
 }
 
 func (s *sessionState) setControlState(state controlsession.SessionState) {
+	s.syncControlState(state, GroupRuntime{})
+}
+
+func mergeObservedGroupRuntime(current GroupRuntime, desired GroupRuntime, snapshot ConfigSnapshot, effectiveIP string) GroupRuntime {
+	group := current
+	if desired.ID != 0 {
+		group = desired
+	}
+	if group.ID == 0 {
+		group = current
+	}
+	group.Snapshot = snapshot
+	if effectiveIP != "" {
+		group.EffectiveIP = effectiveIP
+	}
+	return group
+}
+
+func (s *sessionState) syncControlState(state controlsession.SessionState, desiredGroup GroupRuntime) {
 	s.ControlMu.Lock()
+	defer s.ControlMu.Unlock()
+
 	s.Control = controlsession.Clone(state)
-	s.ControlMu.Unlock()
+
+	currentGroup := s.Group
+	if currentGroup.ID == 0 && desiredGroup.ID != 0 {
+		currentGroup = desiredGroup
+	}
+	if state.Applied != nil {
+		s.Group = mergeObservedGroupRuntime(
+			currentGroup,
+			desiredGroup,
+			controlruntime.ConfigSnapshotFromDesired(state.Applied.Snapshot),
+			state.Applied.Snapshot.EffectiveIP,
+		)
+	} else if state.Desired != nil {
+		s.Group = mergeObservedGroupRuntime(
+			currentGroup,
+			desiredGroup,
+			controlruntime.ConfigSnapshotFromDesired(*state.Desired),
+			state.Desired.EffectiveIP,
+		)
+	}
+	if s.Group.ID == 0 {
+		s.Group = currentGroup
+	}
+
+	if state.Pending != nil {
+		s.Pending = mergeObservedGroupRuntime(
+			s.Group,
+			desiredGroup,
+			controlruntime.ConfigSnapshotFromDesired(state.Pending.Snapshot),
+			state.Pending.Snapshot.EffectiveIP,
+		)
+		s.Recovery = controlruntime.PendingRecoveryModeForSnapshot(s.Pending.Snapshot)
+		return
+	}
+
+	s.Pending = GroupRuntime{}
+	s.Recovery = controlruntime.AppliedRecoveryModeForSnapshot(s.Group.Snapshot)
 }
 
 func (s *sessionState) applyControlEvent(event controlsession.Event) controlsession.SessionState {
-	s.ControlMu.Lock()
-	defer s.ControlMu.Unlock()
-	s.Control = controlsession.Advance(s.Control, event)
-	return controlsession.Clone(s.Control)
+	next := controlsession.Advance(s.controlState(), event)
+	s.syncControlState(next, GroupRuntime{})
+	return controlsession.Clone(next)
 }
 
 func (s *sessionState) resetRuntimeGenerationIfIdle() {
@@ -146,15 +202,11 @@ func (s *sessionState) acceptConfigAck(requestID uint32, version uint64) (sessio
 	if version != state.Pending.Snapshot.Version {
 		return sessionConfigApplyResult{}, errConfigVersionMismatch
 	}
-	next := s.applyControlEvent(controlsession.ConfigAckReceived{
+	s.applyControlEvent(controlsession.ConfigAckReceived{
 		RequestID:     requestID,
 		ConfigVersion: version,
 	})
 	s.ControlMu.Lock()
-	s.Group = s.Pending
-	s.Group.Snapshot = controlruntime.ConfigSnapshotFromDesired(next.Applied.Snapshot)
-	s.Pending = GroupRuntime{}
-	s.Recovery = controlruntime.AppliedRecoveryModeForSnapshot(s.Group.Snapshot)
 	group := s.Group
 	recovery := s.Recovery
 	s.ControlMu.Unlock()

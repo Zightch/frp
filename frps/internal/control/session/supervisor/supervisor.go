@@ -17,6 +17,10 @@ type Runtime interface {
 	RuntimeSnapshot(state controlsession.SessionState) controlruntime.SessionSnapshot
 }
 
+type runtimeStateObserver interface {
+	SyncControlState(state controlsession.SessionState)
+}
+
 // Snapshot is the supervisor's externally observable registry state.
 type Snapshot struct {
 	GroupSlots map[int64]uint64
@@ -65,7 +69,20 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 		parent = context.Background()
 	}
 
-	agent := controlsession.NewAgent(initial, s.executor)
+	var agent *controlsession.Agent
+	observer := func(state controlsession.SessionState) {
+		if runtimeObserver, ok := runtime.(runtimeStateObserver); ok {
+			runtimeObserver.SyncControlState(state)
+		}
+
+		s.mu.Lock()
+		if current := s.bySession[state.SessionID]; current == nil || current == agent {
+			s.stateBySession[state.SessionID] = state
+		}
+		s.mu.Unlock()
+	}
+
+	agent = controlsession.NewAgentWithObserver(initial, s.executor, observer)
 	ctx, cancel := context.WithCancel(parent)
 
 	s.mu.Lock()
@@ -82,6 +99,8 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 	s.groupSlots[initial.GroupID] = initial.SessionID
 	s.cancelByID[initial.SessionID] = cancel
 	s.mu.Unlock()
+
+	observer(initial)
 
 	go func() {
 		agent.Run(ctx)
@@ -152,15 +171,17 @@ func (s *Supervisor) SessionState(sessionID uint64) (controlsession.SessionState
 		return controlsession.SessionState{}, false
 	}
 	s.mu.RLock()
+	runtime := s.runtimeBySession[sessionID]
 	agent := s.bySession[sessionID]
+	state, ok := s.stateBySession[sessionID]
 	s.mu.RUnlock()
-	if agent == nil {
-		s.mu.RLock()
-		state, ok := s.stateBySession[sessionID]
-		s.mu.RUnlock()
-		return state, ok
+	if runtime != nil {
+		return runtime.RuntimeSnapshot(state).State, true
 	}
-	return agent.State(), true
+	if agent != nil {
+		return agent.State(), true
+	}
+	return state, ok
 }
 
 func (s *Supervisor) Runtime(sessionID uint64) Runtime {

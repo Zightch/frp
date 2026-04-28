@@ -11,6 +11,7 @@ type Executor interface {
 
 type Agent struct {
 	executor Executor
+	observe  func(SessionState)
 
 	events chan Event
 	done   chan struct{}
@@ -20,8 +21,13 @@ type Agent struct {
 }
 
 func NewAgent(initial SessionState, executor Executor) *Agent {
+	return NewAgentWithObserver(initial, executor, nil)
+}
+
+func NewAgentWithObserver(initial SessionState, executor Executor, observe func(SessionState)) *Agent {
 	return &Agent{
 		executor: executor,
+		observe:  observe,
 		events:   make(chan Event, 64),
 		done:     make(chan struct{}),
 		state:    cloneState(initial),
@@ -103,8 +109,12 @@ func (a *Agent) State() SessionState {
 
 func (a *Agent) setState(state SessionState) {
 	a.mu.Lock()
-	a.state = cloneState(state)
+	next := cloneState(state)
+	a.state = next
 	a.mu.Unlock()
+	if a.observe != nil {
+		a.observe(next)
+	}
 }
 
 func (a *Agent) apply(ctx context.Context, event Event) {

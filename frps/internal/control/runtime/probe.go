@@ -60,11 +60,16 @@ func RequestAuditedSessionRuntimeRecovery(op RuntimeAuditedSessionRecoveryDeps, 
 
 	dispatched := false
 	if state.RuntimePhase == RuntimePhaseActive {
+		closedTunnelIDs := make(map[uint32]struct{})
 		for key := range state.Bindings {
 			tunnelID := TunnelIDForBinding(state, key)
 			if _, ok := targetTunnelIDs[tunnelID]; !ok {
 				continue
 			}
+			if _, seen := closedTunnelIDs[tunnelID]; seen {
+				continue
+			}
+			closedTunnelIDs[tunnelID] = struct{}{}
 			event := BindingClosed{
 				Key:    key,
 				Reason: "runtime audit detected missing listener",

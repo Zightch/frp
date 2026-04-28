@@ -31,6 +31,7 @@ func newServerActionExecutor(server *Server) serverActionExecutor {
 			Frames:            serverActionFrameSender{server: server},
 			Resolver:          serverActionResolver{server: server},
 			BindingStarter:    serverActionBindingStarter{server: server},
+			Events:            serverActionEventDispatcher{server: server},
 			StreamCloser:      serverActionStreamCloser{server: server},
 			UDPCloser:         serverActionUDPCloser{server: server},
 			Clock:             server.clock,
@@ -99,6 +100,17 @@ func (s serverActionBindingStarter) RuntimeIssues() map[int64]string {
 		return nil
 	}
 	return s.server.TunnelRuntimeIssues()
+}
+
+type serverActionEventDispatcher struct {
+	server *Server
+}
+
+func (d serverActionEventDispatcher) DispatchBySessionID(sessionID uint64, event controlsession.Event) bool {
+	if d.server == nil || d.server.supervisor == nil {
+		return false
+	}
+	return d.server.supervisor.DispatchBySessionID(sessionID, event)
 }
 
 type serverActionStreamCloser struct {

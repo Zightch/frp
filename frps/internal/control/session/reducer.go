@@ -20,6 +20,21 @@ func Reduce(state SessionState, event Event) (SessionState, []Action) {
 
 	case DesiredRuntimeUpdated:
 		snapshot := typed.Snapshot
+		if next.Pending != nil && !snapshotsEqual(next.Pending.Snapshot, snapshot) {
+			next.Desired = &snapshot
+			if next.Applied == nil && !desiredHasEnabledTunnels(next.Pending.Snapshot) {
+				return next, nil
+			}
+			next.Phase = SessionPhaseDraining
+			next.BlockReason = BlockReasonSessionReplaced
+			next.Conn.Closing = true
+			return next, []Action{
+				ActionStopBindings{Keys: bindingKeys(next.Bindings), Epoch: next.Epoch},
+				ActionDrainStreams{Reason: "config update replaced pending session"},
+				ActionDrainUDPSessions{Reason: "config update replaced pending session"},
+				ActionCloseControlConn{Reason: "config update replaced pending session"},
+			}
+		}
 		next.Desired = &snapshot
 		return next, []Action{
 			ActionRequestReconcile{Reason: "desired_runtime_updated"},
@@ -117,6 +132,9 @@ func Reduce(state SessionState, event Event) (SessionState, []Action) {
 		}
 
 	case BindingStarted:
+		if typed.Epoch != 0 && typed.Epoch != next.Epoch {
+			return next, nil
+		}
 		binding := next.Bindings[typed.Key]
 		binding.Key = typed.Key
 		binding.Epoch = next.Epoch
@@ -135,6 +153,9 @@ func Reduce(state SessionState, event Event) (SessionState, []Action) {
 		return next, nil
 
 	case BindingStartFailed:
+		if typed.Epoch != 0 && typed.Epoch != next.Epoch {
+			return next, nil
+		}
 		binding := next.Bindings[typed.Key]
 		binding.Key = typed.Key
 		binding.Epoch = next.Epoch

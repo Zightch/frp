@@ -91,25 +91,9 @@ func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group Gr
 		return err
 	}
 	frame := controlconfigsync.NewPushFrame(pushOp.RequestID, body)
-	testhooks.Point(
-		"control.config_push.before_write",
-		testhooks.F("group_id", pushOp.Group.ID),
-		testhooks.F("session_id", session.ID),
-		testhooks.F("request_id", pushOp.RequestID),
-		testhooks.F("config_version", pushOp.Snapshot.Version),
-		testhooks.F("tunnel_count", len(pushOp.Snapshot.Tunnels)),
-	)
 	if err := s.writeFrameWithSession(conn, session, frame); err != nil {
 		return err
 	}
-	testhooks.Point(
-		"control.config_push.after_write",
-		testhooks.F("group_id", pushOp.Group.ID),
-		testhooks.F("session_id", session.ID),
-		testhooks.F("request_id", pushOp.RequestID),
-		testhooks.F("config_version", pushOp.Snapshot.Version),
-		testhooks.F("tunnel_count", len(pushOp.Snapshot.Tunnels)),
-	)
 	return nil
 }
 

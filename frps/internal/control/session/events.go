@@ -105,13 +105,15 @@ type BindingsPreparationFailed struct {
 func (BindingsPreparationFailed) sessionEvent() {}
 
 type BindingStarted struct {
-	Key BindingKey
+	Key   BindingKey
+	Epoch uint64
 }
 
 func (BindingStarted) sessionEvent() {}
 
 type BindingStartFailed struct {
 	Key     BindingKey
+	Epoch   uint64
 	Reason  BlockReason
 	Message string
 }

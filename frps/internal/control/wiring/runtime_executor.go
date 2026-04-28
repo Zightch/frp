@@ -64,6 +64,13 @@ func (r *runtimeExecutor) DesiredGroup() controlruntime.GroupRuntime {
 	return r.desiredGroupRuntime()
 }
 
+func (r *runtimeExecutor) SyncControlState(state controlsession.SessionState) {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.syncControlState(state, r.desiredGroupRuntime())
+}
+
 func (r *runtimeExecutor) ActiveRuntimeTunnelIDs() map[uint32]struct{} {
 	if r == nil || r.session == nil {
 		return nil
@@ -103,6 +110,24 @@ func (r *runtimeExecutor) AllowTunnelRuntimeStart() {
 	r.session.allowTunnelRuntimeStart()
 }
 
+func (r *runtimeExecutor) PrepareConfigPush(requestID uint32, group controlruntime.GroupRuntime, snapshot controlruntime.ConfigSnapshot) {
+	if r == nil || r.session == nil {
+		return
+	}
+	recoveryMode := controlruntime.PendingRecoveryModeForSnapshot(snapshot)
+	r.session.ControlMu.Lock()
+	r.session.Pending = GroupRuntime{ID: group.ID, Name: group.Name, EffectiveIP: group.EffectiveIP, Snapshot: snapshot}
+	r.session.Recovery = recoveryMode
+	r.session.ControlMu.Unlock()
+}
+
+func (r *runtimeExecutor) SessionID() uint64 {
+	if r == nil || r.session == nil {
+		return 0
+	}
+	return r.session.ID
+}
+
 func (r *runtimeExecutor) RuntimeGroupID() int64 {
 	if r == nil {
 		return 0
@@ -128,19 +153,20 @@ func (r *runtimeExecutor) RuntimeSnapshot(state controlsession.SessionState) con
 	return r.snapshot(state)
 }
 
-func (r *runtimeExecutor) snapshot(state controlsession.SessionState) controlruntime.SessionSnapshot {
+func (r *runtimeExecutor) snapshot(_ controlsession.SessionState) controlruntime.SessionSnapshot {
 	if r == nil {
 		return controlruntime.SessionSnapshot{}
 	}
 
 	_, runtimeState := r.session.observeState()
+	projected := controlruntime.ProjectedSessionState(r.session, r.conn)
 	return controlruntime.SessionSnapshot{
 		GroupID:      r.groupID,
-		SessionID:    state.SessionID,
+		SessionID:    projected.SessionID,
 		Conn:         r.conn,
 		DesiredGroup: r.desiredGroupRuntime(),
 		RecoveryMode: r.session.RecoveryModeValue(),
-		State:        state,
+		State:        projected,
 		Runtime:      runtimeState,
 	}
 }
