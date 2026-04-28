@@ -144,7 +144,7 @@ type SupervisorOperator interface {
 
 	// Session access
 	ActiveSession(groupID int64) (*ActiveSession, bool)
-	ActiveRuntimeGroups(exclude any) []RuntimeGroupSnapshot
+	ActiveRuntimeGroups(exclude SessionStateProjectionTarget) []RuntimeGroupSnapshot
 	SessionState(sessionID uint64) (controlsession.SessionState, bool)
 
 	// Session lifecycle

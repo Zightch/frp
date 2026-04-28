@@ -29,9 +29,7 @@ type RuntimeOperator interface {
 
 	// 会话管理
 	ActiveSession(groupID int64) (*ActiveSession, bool)
-	// ActiveRuntimeGroups returns all active runtime groups, optionally excluding a specific session.
-	// The exclude parameter is passed through to the supervisor and can be nil.
-	ActiveRuntimeGroups(exclude any) []RuntimeGroupSnapshot
+	ActiveRuntimeGroups(exclude SessionStateProjectionTarget) []RuntimeGroupSnapshot
 
 	// Issue 记录
 	RecordTunnelRuntimeIssueForConfig(tunnelID uint32, configVersion uint64, reason string)
@@ -44,9 +42,9 @@ type RuntimeOperator interface {
 	// NewTunnelRuntimeServeContext creates a serve context for a tunnel runtime.
 	NewTunnelRuntimeServeContext(opCtx TunnelListenerOperationContext, session SessionRuntimeStartTarget, remotePort uint16) TunnelRuntimeServeContext
 
-	// 会话生命周期 (using any to avoid circular type dependencies)
-	ShutdownSession(session any)
-	ServeUDPIdleCleanup(conn net.Conn, logger Logger, session any)
+	// 会话生命周期
+	ShutdownSession(session SessionRuntimeStartTarget)
+	ServeUDPIdleCleanup(conn net.Conn, logger Logger, session SessionRuntimeStartTarget)
 	ServeTunnelListener(serve TunnelRuntimeServeContext, listener net.Listener)
 	ServeUDPTunnelListener(serve TunnelRuntimeServeContext, listener UDPListener)
 
@@ -63,9 +61,6 @@ type RuntimeOperator interface {
 	ApplyActiveSessionConfigRecovery(groupID int64, group GroupRuntime) error
 	SessionState(sessionID uint64) (SessionState, bool)
 	ApplySessionEvent(sessionID uint64, event Event)
-
-	// Supervisor
-	Supervisor() *Supervisor
 
 	// 基础设施
 	Logger() *slog.Logger
@@ -90,7 +85,7 @@ type ActiveSession struct {
 // TunnelRuntimeServeContext 定义隧道运行时服务上下文
 type TunnelRuntimeServeContext struct {
 	Logger     Logger
-	Session    any // *sessionState from control package
+	Session    SessionRuntimeStartTarget
 	RuntimeIO  RuntimeIOWriter
 	Tunnel     protocol.TunnelEntry
 	RemotePort uint16
@@ -123,31 +118,8 @@ type RuntimeExecutor struct {
 	GroupID      int64
 	Conn         net.Conn
 	Logger       *slog.Logger
-	Session      any // *sessionState from control package
+	Session      SessionStateProjectionTarget
 	DesiredGroup GroupRuntime
-}
-
-// Supervisor 定义主管
-// Note: The actual implementation is in the control package's Supervisor.
-// The Server.Supervisor() method will return the control package's Supervisor.
-type Supervisor struct {
-	_ struct{} // placeholder to make it a distinct type
-}
-
-// SessionState returns the session state for the given session ID.
-// This method is provided for the SupervisorOperator interface.
-func (s *Supervisor) SessionState(sessionID uint64) (SessionState, bool) {
-	// The actual implementation is in control.Supervisor, which is accessed
-	// through the Server.Supervisor() method
-	return SessionState{}, false
-}
-
-// DispatchBySessionID dispatches an event to the session with the given ID.
-// This method is provided for the SupervisorOperator interface.
-func (s *Supervisor) DispatchBySessionID(sessionID uint64, event Event) bool {
-	// The actual implementation is in control.Supervisor, which is accessed
-	// through the Server.Supervisor() method
-	return false
 }
 
 // Event 是 controlsession.Event 的别名

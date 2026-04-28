@@ -464,37 +464,12 @@ func (s *Server) Clock() clock.Clock              { return s.clock }
 func (s *Server) Scheduler() clock.Scheduler      { return s.scheduler }
 func (s *Server) ScanWG() *sync.WaitGroup         { return &s.scanWG }
 func (s *Server) RuntimeScanPoll() time.Duration  { return s.options.RuntimeScanPoll }
-func (s *Server) Supervisor() *controlruntime.Supervisor {
-	if s.supervisor == nil {
-		return nil
-	}
-	return &s.supervisor.Supervisor
-}
 
-// ActiveRuntimeGroups returns all active runtime groups, excluding the specified session if any.
-// Note: The exclude parameter is typed as 'any' for the interface flexibility.
-// If exclude is nil, no filtering is done.
-func (s *Server) ActiveRuntimeGroups(exclude any) []controlruntime.RuntimeGroupSnapshot {
+func (s *Server) ActiveRuntimeGroups(exclude controlruntime.SessionStateProjectionTarget) []controlruntime.RuntimeGroupSnapshot {
 	if s == nil || s.supervisor == nil {
 		return nil
 	}
-
-	// We need to get the snapshot without filtering since we can't convert SessionState to sessionState
-	// The exclude parameter is ignored for this implementation
-	snapshot := s.supervisor.Snapshot(nil)
-	if len(snapshot.sessions) == 0 {
-		return nil
-	}
-
-	result := make([]controlruntime.RuntimeGroupSnapshot, 0, len(snapshot.sessions))
-	for _, session := range snapshot.sessions {
-		group, ok := session.ActiveRuntimeGroup()
-		if !ok {
-			continue
-		}
-		result = append(result, group)
-	}
-	return result
+	return s.supervisor.ActiveRuntimeGroups(exclude)
 }
 
 // ActiveSession returns the active session for the given group ID.
@@ -536,18 +511,16 @@ func (s *Server) ProbeTunnelRuntimeIssue(groupID int64, bindIP string, tunnel pr
 }
 
 // ShutdownSession implements controlruntime.RuntimeOperator.
-func (s *Server) ShutdownSession(session any) {
-	if concrete, ok := session.(*sessionState); ok {
-		s.shutdownSession(concrete)
+func (s *Server) ShutdownSession(session controlruntime.SessionRuntimeStartTarget) {
+	if adapter, ok := session.(sessionRuntimeStartTargetAdapter); ok {
+		s.shutdownSession(adapter.getSession())
 	}
 }
 
 // ServeUDPIdleCleanup implements controlruntime.RuntimeOperator.
-func (s *Server) ServeUDPIdleCleanup(conn net.Conn, logger controlruntime.Logger, session any) {
+func (s *Server) ServeUDPIdleCleanup(conn net.Conn, logger controlruntime.Logger, session controlruntime.SessionRuntimeStartTarget) {
 	if adapter, ok := session.(sessionRuntimeStartTargetAdapter); ok {
 		s.serveUDPIdleCleanup(conn, logger, adapter.getSession())
-	} else if concrete, ok := session.(*sessionState); ok {
-		s.serveUDPIdleCleanup(conn, logger, concrete)
 	}
 }
 

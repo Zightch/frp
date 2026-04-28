@@ -2,25 +2,14 @@ package control
 
 import (
 	"context"
-	"sync"
 
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
+	controlsupervisor "github.com/zightch/frp/frps/internal/control/session/supervisor"
 )
 
 type Supervisor struct {
-	controlruntime.Supervisor // embed runtime.Supervisor for interface satisfaction
-
-	executor controlsession.Executor
-
-	mu               sync.RWMutex
-	byGroup          map[int64]*controlsession.Agent
-	bySession        map[uint64]*controlsession.Agent
-	runtimeByGroup   map[int64]*runtimeExecutor
-	runtimeBySession map[uint64]*runtimeExecutor
-	stateBySession   map[uint64]controlsession.SessionState
-	groupSlots       map[int64]uint64
-	cancelByID       map[uint64]context.CancelFunc
+	registry *controlsupervisor.Supervisor
 }
 
 type supervisorSnapshot struct {
@@ -29,332 +18,144 @@ type supervisorSnapshot struct {
 }
 
 func NewSupervisor(executor controlsession.Executor) *Supervisor {
-	return &Supervisor{
-		executor:         executor,
-		byGroup:          make(map[int64]*controlsession.Agent),
-		bySession:        make(map[uint64]*controlsession.Agent),
-		runtimeByGroup:   make(map[int64]*runtimeExecutor),
-		runtimeBySession: make(map[uint64]*runtimeExecutor),
-		stateBySession:   make(map[uint64]controlsession.SessionState),
-		groupSlots:       make(map[int64]uint64),
-		cancelByID:       make(map[uint64]context.CancelFunc),
-	}
+	return &Supervisor{registry: controlsupervisor.New(executor)}
 }
 
 func (s *Supervisor) AttachSession(parent context.Context, initial controlsession.SessionState, runtime *runtimeExecutor) *controlsession.Agent {
-	if s == nil {
+	if s == nil || s.registry == nil {
 		return nil
 	}
-	if parent == nil {
-		parent = context.Background()
-	}
-
-	agent := controlsession.NewAgent(initial, s.executor)
-	ctx, cancel := context.WithCancel(parent)
-
-	s.mu.Lock()
-	if existing := s.byGroup[initial.GroupID]; existing != nil {
-		_ = existing.Enqueue(controlsession.SessionTakeoverRequested{ReplacementSessionID: initial.SessionID})
-	}
-	s.byGroup[initial.GroupID] = agent
-	s.bySession[initial.SessionID] = agent
-	if runtime != nil {
-		s.runtimeByGroup[initial.GroupID] = runtime
-		s.runtimeBySession[initial.SessionID] = runtime
-	}
-	s.stateBySession[initial.SessionID] = initial
-	s.groupSlots[initial.GroupID] = initial.SessionID
-	s.cancelByID[initial.SessionID] = cancel
-	s.mu.Unlock()
-
-	go func() {
-		agent.Run(ctx)
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.byGroup[initial.GroupID] == agent {
-			delete(s.byGroup, initial.GroupID)
-		}
-		if s.bySession[initial.SessionID] == agent {
-			delete(s.bySession, initial.SessionID)
-		}
-		if runtime != nil {
-			if s.runtimeByGroup[initial.GroupID] == runtime {
-				delete(s.runtimeByGroup, initial.GroupID)
-			}
-			if s.runtimeBySession[initial.SessionID] == runtime {
-				delete(s.runtimeBySession, initial.SessionID)
-			}
-		}
-		delete(s.stateBySession, initial.SessionID)
-		if s.groupSlots[initial.GroupID] == initial.SessionID {
-			delete(s.groupSlots, initial.GroupID)
-		}
-		if _, ok := s.cancelByID[initial.SessionID]; ok {
-			delete(s.cancelByID, initial.SessionID)
-		}
-	}()
-	return agent
+	return s.registry.AttachSession(parent, initial, runtime)
 }
 
-// AttachRuntimeSession implements controlruntime.SupervisorOperator.
-// It converts a RuntimeExecutor to a runtimeExecutor and attaches the session.
+// AttachRuntimeSession implements controlruntime.SupervisorOperator for projected runtime tests.
 func (s *Supervisor) AttachRuntimeSession(parent context.Context, state controlsession.SessionState, runtime *controlruntime.RuntimeExecutor) *controlsession.Agent {
 	if s == nil || runtime == nil {
 		return nil
 	}
-	// Convert RuntimeExecutor to runtimeExecutor
+	session, ok := runtime.Session.(*sessionState)
+	if !ok || session == nil {
+		return nil
+	}
 	localRuntime := &runtimeExecutor{
 		groupID:      runtime.GroupID,
 		conn:         runtime.Conn,
 		logger:       runtime.Logger,
-		session:      runtime.Session.(*sessionState),
+		session:      session,
 		desiredGroup: runtime.DesiredGroup,
 	}
 	return s.AttachSession(parent, state, localRuntime)
 }
 
 func (s *Supervisor) DispatchBySessionID(sessionID uint64, event controlsession.Event) bool {
-	if s == nil {
+	if s == nil || s.registry == nil {
 		return false
 	}
-	s.mu.RLock()
-	agent := s.bySession[sessionID]
-	s.mu.RUnlock()
-	if agent == nil {
-		return false
-	}
-	return agent.Enqueue(event)
+	return s.registry.DispatchBySessionID(sessionID, event)
 }
 
 func (s *Supervisor) UpdateDesiredRuntime(groupID int64, snapshot controlsession.DesiredRuntimeSnapshot) bool {
-	if s == nil {
+	if s == nil || s.registry == nil {
 		return false
 	}
-	s.mu.RLock()
-	agent := s.byGroup[groupID]
-	s.mu.RUnlock()
-	if agent == nil {
-		return false
-	}
-	return agent.Enqueue(controlsession.DesiredRuntimeUpdated{Snapshot: snapshot})
+	return s.registry.UpdateDesiredRuntime(groupID, snapshot)
 }
 
 func (s *Supervisor) NotifyNetworkChange() {
-	if s == nil {
+	if s == nil || s.registry == nil {
 		return
 	}
-
-	s.mu.RLock()
-	agents := make([]*controlsession.Agent, 0, len(s.bySession))
-	for _, agent := range s.bySession {
-		agents = append(agents, agent)
-	}
-	s.mu.RUnlock()
-
-	for _, agent := range agents {
-		_ = agent.Enqueue(controlsession.NetworkSnapshotChanged{})
-	}
+	s.registry.NotifyNetworkChange()
 }
 
 func (s *Supervisor) SessionState(sessionID uint64) (controlsession.SessionState, bool) {
-	if s == nil {
+	if s == nil || s.registry == nil {
 		return controlsession.SessionState{}, false
 	}
-	s.mu.RLock()
-	agent := s.bySession[sessionID]
-	s.mu.RUnlock()
-	if agent == nil {
-		s.mu.RLock()
-		state, ok := s.stateBySession[sessionID]
-		s.mu.RUnlock()
-		return state, ok
-	}
-	return agent.State(), true
+	return s.registry.SessionState(sessionID)
 }
 
 func (s *Supervisor) RuntimeExecutor(sessionID uint64) *runtimeExecutor {
-	if s == nil || sessionID == 0 {
+	if s == nil || s.registry == nil || sessionID == 0 {
 		return nil
 	}
-	s.mu.RLock()
-	runtime := s.runtimeBySession[sessionID]
-	s.mu.RUnlock()
+	runtime, _ := s.registry.Runtime(sessionID).(*runtimeExecutor)
 	return runtime
 }
 
 func (s *Supervisor) DetachRuntime(sessionID uint64) {
-	if s == nil || sessionID == 0 {
+	if s == nil || s.registry == nil {
 		return
 	}
-
-	s.mu.Lock()
-	runtime := s.runtimeBySession[sessionID]
-	if runtime != nil {
-		delete(s.runtimeBySession, sessionID)
-		if s.runtimeByGroup[runtime.groupID] == runtime {
-			delete(s.runtimeByGroup, runtime.groupID)
-		}
-		if s.groupSlots[runtime.groupID] == sessionID {
-			delete(s.groupSlots, runtime.groupID)
-		}
-	}
-	delete(s.stateBySession, sessionID)
-	s.mu.Unlock()
+	s.registry.DetachRuntime(sessionID)
 }
 
 func (s *Supervisor) activeSession(groupID int64) (*activeSession, bool) {
-	if s == nil || groupID <= 0 {
+	if s == nil || s.registry == nil || groupID <= 0 {
 		return nil, false
 	}
 
-	s.mu.RLock()
-	runtime := s.runtimeByGroup[groupID]
-	s.mu.RUnlock()
-	if runtime == nil || runtime.conn == nil || runtime.session == nil {
-		return nil, false
-	}
-	return &activeSession{
-		conn:    runtime.conn,
-		session: runtime.session,
-	}, true
-}
-
-// ActiveSession implements controlruntime.SupervisorOperator.
-// It returns the active session for a group as a runtime.ActiveSession.
-func (s *Supervisor) ActiveSession(groupID int64) (*controlruntime.ActiveSession, bool) {
-	active, ok := s.activeSession(groupID)
+	active, ok := s.registry.ActiveRuntime(groupID)
 	if !ok {
 		return nil, false
 	}
-	return &controlruntime.ActiveSession{
-		Conn:    active.conn,
-		Session: &active.session.Control,
+	session, ok := active.Session.(*sessionState)
+	if !ok || session == nil {
+		return nil, false
+	}
+	return &activeSession{
+		conn:    active.Conn,
+		session: session,
 	}, true
 }
 
-// ActiveRuntimeGroups implements controlruntime.SupervisorOperator.
-// It returns all active runtime groups, optionally excluding a specific session.
-func (s *Supervisor) ActiveRuntimeGroups(exclude any) []controlruntime.RuntimeGroupSnapshot {
-	var excludeSession *sessionState
-	if exclude != nil {
-		if ss, ok := exclude.(*sessionState); ok {
-			excludeSession = ss
-		}
+func (s *Supervisor) ActiveSession(groupID int64) (*controlruntime.ActiveSession, bool) {
+	if s == nil || s.registry == nil {
+		return nil, false
 	}
-	snapshot := s.Snapshot(excludeSession)
-	if len(snapshot.sessions) == 0 {
+	return s.registry.ActiveSession(groupID)
+}
+
+func (s *Supervisor) ActiveRuntimeGroups(exclude controlruntime.SessionStateProjectionTarget) []controlruntime.RuntimeGroupSnapshot {
+	if s == nil || s.registry == nil {
 		return nil
 	}
-
-	result := make([]controlruntime.RuntimeGroupSnapshot, 0, len(snapshot.sessions))
-	for _, session := range snapshot.sessions {
-		group, ok := session.ActiveRuntimeGroup()
-		if !ok {
-			continue
-		}
-		result = append(result, group)
-	}
-	return result
+	return s.registry.ActiveRuntimeGroups(exclude)
 }
 
 func (s *Supervisor) ReserveGroupSlot(groupID int64, sessionID uint64) bool {
-	if s == nil || groupID <= 0 || sessionID == 0 {
+	if s == nil || s.registry == nil {
 		return false
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.groupSlots[groupID]; ok {
-		return false
-	}
-	s.groupSlots[groupID] = sessionID
-	return true
+	return s.registry.ReserveGroupSlot(groupID, sessionID)
 }
 
 func (s *Supervisor) ReleaseGroupSlot(groupID int64, sessionID uint64) {
-	if s == nil || groupID <= 0 || sessionID == 0 {
+	if s == nil || s.registry == nil {
 		return
 	}
-
-	s.mu.Lock()
-	if s.groupSlots[groupID] == sessionID {
-		delete(s.groupSlots, groupID)
-	}
-	s.mu.Unlock()
+	s.registry.ReleaseGroupSlot(groupID, sessionID)
 }
 
 func (s *Supervisor) Snapshot(exclude *sessionState) supervisorSnapshot {
-	if s == nil {
+	if s == nil || s.registry == nil {
 		return supervisorSnapshot{}
 	}
 
-	s.mu.RLock()
-	groupSlots := make(map[int64]uint64, len(s.groupSlots))
-	for groupID, sessionID := range s.groupSlots {
-		groupSlots[groupID] = sessionID
+	var excludeTarget controlruntime.SessionStateProjectionTarget
+	if exclude != nil {
+		excludeTarget = exclude
 	}
-	entries := make([]struct {
-		groupID int64
-		agent   *controlsession.Agent
-		state   controlsession.SessionState
-		runtime *runtimeExecutor
-	}, 0, len(s.runtimeBySession))
-	for sessionID, runtime := range s.runtimeBySession {
-		if runtime == nil || runtime.session == nil || runtime.session == exclude {
-			continue
-		}
-		entries = append(entries, struct {
-			groupID int64
-			agent   *controlsession.Agent
-			state   controlsession.SessionState
-			runtime *runtimeExecutor
-		}{
-			groupID: runtime.groupID,
-			agent:   s.bySession[sessionID],
-			state:   s.stateBySession[sessionID],
-			runtime: runtime,
-		})
-	}
-	s.mu.RUnlock()
-
-	snapshots := make([]controlruntime.SessionSnapshot, 0, len(entries))
-	for _, entry := range entries {
-		if entry.agent == nil || entry.runtime == nil {
-			if entry.runtime == nil {
-				continue
-			}
-			snapshots = append(snapshots, entry.runtime.snapshot(entry.state))
-			continue
-		}
-		snapshots = append(snapshots, entry.runtime.snapshot(entry.agent.State()))
-	}
-
+	snapshot := s.registry.Snapshot(excludeTarget)
 	return supervisorSnapshot{
-		groupSlots: groupSlots,
-		sessions:   snapshots,
+		groupSlots: snapshot.GroupSlots,
+		sessions:   snapshot.Sessions,
 	}
 }
 
 func (s *Supervisor) Shutdown() {
-	if s == nil {
+	if s == nil || s.registry == nil {
 		return
 	}
-
-	s.mu.Lock()
-	cancels := make([]context.CancelFunc, 0, len(s.cancelByID))
-	agents := make([]*controlsession.Agent, 0, len(s.bySession))
-	for _, cancel := range s.cancelByID {
-		cancels = append(cancels, cancel)
-	}
-	for _, agent := range s.bySession {
-		agents = append(agents, agent)
-	}
-	s.mu.Unlock()
-
-	for _, agent := range agents {
-		agent.Stop()
-	}
-	for _, cancel := range cancels {
-		cancel()
-	}
+	s.registry.Shutdown()
 }

@@ -56,6 +56,31 @@ func (r *runtimeExecutor) desiredGroupRuntime() GroupRuntime {
 	return r.desiredGroup
 }
 
+func (r *runtimeExecutor) RuntimeGroupID() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.groupID
+}
+
+func (r *runtimeExecutor) RuntimeConn() net.Conn {
+	if r == nil {
+		return nil
+	}
+	return r.conn
+}
+
+func (r *runtimeExecutor) RuntimeSession() controlruntime.SessionStateProjectionTarget {
+	if r == nil || r.session == nil {
+		return nil
+	}
+	return r.session
+}
+
+func (r *runtimeExecutor) RuntimeSnapshot(state controlsession.SessionState) controlruntime.SessionSnapshot {
+	return r.snapshot(state)
+}
+
 func (r *runtimeExecutor) snapshot(state controlsession.SessionState) controlruntime.SessionSnapshot {
 	if r == nil {
 		return controlruntime.SessionSnapshot{}

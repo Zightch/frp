@@ -42,7 +42,7 @@ type RuntimeListenerProbe interface {
 // RuntimeSessionRegistry exposes active session and runtime snapshots.
 type RuntimeSessionRegistry interface {
 	ActiveSession(groupID int64) (*ActiveSession, bool)
-	ActiveRuntimeGroups(exclude any) []RuntimeGroupSnapshot
+	ActiveRuntimeGroups(exclude SessionStateProjectionTarget) []RuntimeGroupSnapshot
 	RuntimeSnapshotIndex() RuntimeSnapshotIndex
 	SessionState(sessionID uint64) (SessionState, bool)
 	DispatchBySessionID(sessionID uint64, event Event) bool
@@ -92,8 +92,8 @@ type RuntimeServeContextFactory interface {
 
 // RuntimeDataPlaneServicer owns TCP/UDP data-plane goroutine entry points.
 type RuntimeDataPlaneServicer interface {
-	ShutdownSession(session any)
-	ServeUDPIdleCleanup(conn net.Conn, logger Logger, session any)
+	ShutdownSession(session SessionRuntimeStartTarget)
+	ServeUDPIdleCleanup(conn net.Conn, logger Logger, session SessionRuntimeStartTarget)
 	ServeTunnelListener(serve TunnelRuntimeServeContext, listener net.Listener)
 	ServeUDPTunnelListener(serve TunnelRuntimeServeContext, listener UDPListener)
 }

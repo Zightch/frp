@@ -21,7 +21,7 @@ func SupervisorActiveSession(op SupervisorOperator, groupID int64) (*ActiveSessi
 }
 
 // SupervisorActiveRuntimeGroups returns all active runtime groups, optionally excluding a specific session.
-func SupervisorActiveRuntimeGroups(op SupervisorOperator, exclude any) []RuntimeGroupSnapshot {
+func SupervisorActiveRuntimeGroups(op SupervisorOperator, exclude SessionStateProjectionTarget) []RuntimeGroupSnapshot {
 	return op.ActiveRuntimeGroups(exclude)
 }
 

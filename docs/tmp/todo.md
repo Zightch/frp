@@ -882,7 +882,7 @@ type RuntimeServeDeps interface {
 - `wire.go` / `runtime.go` 中 UDP 主路径压缩为 adapter，继续保留同包测试兼容 wrapper。
 - 新增 UDP 数据面单测，覆盖 UDP open/data frame 构造与 session 复用、frpc UDP data 写回 public listener、missing session close、manual scheduler 驱动 idle cleanup。
 
-### 第 11 阶段：拆 supervisor
+### 第 11 阶段：拆 supervisor（已完成）
 
 - 新建 `internal/control/session/supervisor`。
 - 移动：
@@ -898,6 +898,16 @@ type RuntimeServeDeps interface {
 
 - runtime 包不再通过 `any` 获取 supervisor。
 - takeover、shutdown、active session 测试通过。
+
+完成内容：
+
+- 新建 `internal/control/session/supervisor`，集中承载 group/session agent registry、runtime registry、group slot、cancel registry、snapshot builder 和 active session lookup。
+- 根包 `Supervisor` 压缩为兼容适配层，只负责把现有私有 `runtimeExecutor` / `sessionState` 接到新 supervisor registry。
+- `runtimeExecutor` 实现 supervisor runtime handle seam，snapshot 构造由新 supervisor 包统一编排。
+- 删除 `control/runtime` 中的 placeholder `Supervisor`，移除 `RuntimeOperator.Supervisor()`。
+- supervisor 相关 `ActiveRuntimeGroups` / `RuntimeExecutor.Session` 边界改为 typed `SessionStateProjectionTarget`，不再使用 `any` 传递 session。
+- runtime data-plane 的 session 生命周期 seam 改为 `SessionRuntimeStartTarget`，顺手收掉剩余 session `any` 适配。
+- 新增 `session/supervisor` 单测覆盖 group slot、active session、snapshot exclude、takeover 和 shutdown。
 
 ### 第 12 阶段：拆 executor capabilities
 

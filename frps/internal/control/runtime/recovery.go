@@ -23,13 +23,16 @@ func TunnelIDForBinding(state controlsession.SessionState, key controlsession.Bi
 	return 0
 }
 
+type activeRuntimeTunnelIDProvider interface {
+	ActiveRuntimeTunnelIDs() map[uint32]struct{}
+}
+
 // ActiveRuntimeTunnelIDsFromSession extracts active runtime tunnel IDs from a session.
-// The session parameter must have ActiveRuntimeTunnelIDs() method.
-func ActiveRuntimeTunnelIDsFromSession(session any) map[uint32]struct{} {
+func ActiveRuntimeTunnelIDsFromSession(session SessionStateProjectionTarget) map[uint32]struct{} {
 	if session == nil {
 		return nil
 	}
-	if ace, ok := session.(interface{ ActiveRuntimeTunnelIDs() map[uint32]struct{} }); ok {
+	if ace, ok := session.(activeRuntimeTunnelIDProvider); ok {
 		return ace.ActiveRuntimeTunnelIDs()
 	}
 	return nil
