@@ -4,8 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/zightch/frp/frps/internal/proxygroups"
-	"github.com/zightch/frp/frps/pkg/protocol"
+	controldomainruntime "github.com/zightch/frp/frps/internal/control/domain/runtime"
 )
 
 var ErrGroupNotFound = errors.New("proxy group not found")
@@ -16,18 +15,5 @@ type Repository interface {
 	ListGroupRuntimes(ctx context.Context) ([]GroupRuntime, error)
 }
 
-type GroupRuntime struct {
-	ID                       int64
-	Name                     string
-	Enabled                  bool
-	EffectiveIP              string
-	ControlTransportSecurity proxygroups.ControlTransportSecurity
-	ClientSecretHash         [32]byte
-	Snapshot                 ConfigSnapshot
-}
-
-type ConfigSnapshot struct {
-	Version       uint64
-	GeneratedAtMs uint64
-	Tunnels       []protocol.TunnelEntry
-}
+type GroupRuntime = controldomainruntime.GroupRuntime
+type ConfigSnapshot = controldomainruntime.ConfigSnapshot

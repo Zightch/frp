@@ -317,9 +317,10 @@ internal/control            # 对外 facade，只暴露 Server / Options / Refre
   - tunnel TLS usage map
   - snapshot version / generated_at 计算
   - DB enum decode
-- 当前问题：
-  - `GroupRuntime` 目前在 `repo`，但它已经是 control domain model，被 `control`、`runtime`、`app` tests 消费。
-  - 后续应考虑把模型放到 `domain/runtime`，repo 只负责 SQL projection。
+- 第二阶段进展：
+  - `GroupRuntime` 和 `ConfigSnapshot` 已落到 `internal/control/domain/runtime`。
+  - `repo` 通过 type alias 返回 domain model，职责收敛为 SQL projection。
+  - 旧 `control` 和 `control/runtime` API 暂保留 alias/delegate，避免上层一次性迁移。
 
 ### 观测输出
 
@@ -642,7 +643,7 @@ type RuntimeServeDeps interface {
 - 文档能说明每个组件归属。
 - 新增代码不引入 controlv2 新功能。
 
-### 第 2 阶段：下沉 domain model
+### 第 2 阶段：下沉 domain model（已完成）
 
 - 新建 `internal/control/domain/runtime`。
 - 移动或别名：
@@ -654,6 +655,15 @@ type RuntimeServeDeps interface {
   - protocol name/value helpers
 - `repo` 改为返回 domain model。
 - 根 `control` 保留 aliases，避免外部一次性全改。
+
+完成内容：
+
+- `internal/control/domain/runtime` 持有 `GroupRuntime`、`ConfigSnapshot`。
+- snapshot conversion、enabled tunnel helper、same snapshot helper、protocol name/value helper 已下沉到 domain runtime。
+- `repo.Repository` 仍保持原签名形态，但返回类型实际是 domain runtime alias。
+- `control/runtime` 仅保留兼容 wrapper，内部委托 domain runtime。
+- `runtime/scan` 不再为了 domain 类型导入 `repo`。
+- `internal/app` 仍可通过 `control.GroupRuntime` 和 `control.ConfigSnapshot` 编译。
 
 验收：
 

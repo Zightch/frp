@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
+	controldomainruntime "github.com/zightch/frp/frps/internal/control/domain/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -59,17 +60,7 @@ type RuntimeGroupSnapshot struct {
 
 // FilterTunnelsByID filters tunnels by the given tunnel IDs.
 func FilterTunnelsByID(tunnels []protocol.TunnelEntry, tunnelIDs map[uint32]struct{}) []protocol.TunnelEntry {
-	if len(tunnelIDs) == 0 {
-		return nil
-	}
-	filtered := make([]protocol.TunnelEntry, 0, len(tunnels))
-	for _, tunnel := range tunnels {
-		if _, ok := tunnelIDs[tunnel.TunnelID]; !ok {
-			continue
-		}
-		filtered = append(filtered, tunnel)
-	}
-	return filtered
+	return controldomainruntime.FilterTunnelsByID(tunnels, tunnelIDs)
 }
 
 // ActiveRuntimeTunnelIDs returns the active runtime tunnel IDs for the session.

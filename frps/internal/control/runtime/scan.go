@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	controlrepo "github.com/zightch/frp/frps/internal/control/repo"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
@@ -15,7 +14,7 @@ import (
 // ShouldRecoverScannedActiveSessionConfig determines whether the active session config should be recovered.
 // Recovery is needed when the current snapshot has no tunnels but the next snapshot has tunnels,
 // and the snapshots are different.
-func ShouldRecoverScannedActiveSessionConfig(currentSnapshot, nextSnapshot controlrepo.ConfigSnapshot, sameRuntime bool) bool {
+func ShouldRecoverScannedActiveSessionConfig(currentSnapshot, nextSnapshot ConfigSnapshot, sameRuntime bool) bool {
 	if sameRuntime {
 		return false
 	}
@@ -60,7 +59,7 @@ func PreserveHealthyScannedTunnels(targetTunnels []protocol.TunnelEntry, staticC
 }
 
 // CollectKnownTunnelIDs collects all tunnel IDs from the given group runtimes.
-func CollectKnownTunnelIDs(groups []controlrepo.GroupRuntime) map[int64]struct{} {
+func CollectKnownTunnelIDs(groups []GroupRuntime) map[int64]struct{} {
 	known := make(map[int64]struct{})
 	for _, group := range groups {
 		for _, tunnel := range group.Snapshot.Tunnels {
@@ -114,7 +113,7 @@ func (e *GroupEffectiveIPStartError) Unwrap() error {
 }
 
 // BuildGroupEffectiveIPRuntimeReason builds a runtime reason string from a group effective IP error.
-func BuildGroupEffectiveIPRuntimeReason(group controlrepo.GroupRuntime, err error) string {
+func BuildGroupEffectiveIPRuntimeReason(group GroupRuntime, err error) string {
 	var effectiveIPErr *GroupEffectiveIPStartError
 	if errors.As(err, &effectiveIPErr) {
 		switch effectiveIPErr.Kind {
@@ -138,7 +137,7 @@ func BuildGroupEffectiveIPRuntimeReason(group controlrepo.GroupRuntime, err erro
 
 // BuildInitialStartupRejectedReason builds a rejected reason string for initial startup failure.
 // Returns the reason string and a boolean indicating if the error should be treated as a rejected reason.
-func BuildInitialStartupRejectedReason(group controlrepo.GroupRuntime, err error) (string, bool) {
+func BuildInitialStartupRejectedReason(group GroupRuntime, err error) (string, bool) {
 	var effectiveIPErr *GroupEffectiveIPStartError
 	if !errors.As(err, &effectiveIPErr) {
 		return "", false

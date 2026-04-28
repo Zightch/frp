@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 
+	controldomainruntime "github.com/zightch/frp/frps/internal/control/domain/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/transport"
 )
@@ -153,10 +154,5 @@ type SupervisorOperator interface {
 
 // DesiredRuntimeFromObservedSnapshot creates a desired runtime snapshot from the observed effective IP and config snapshot.
 func DesiredRuntimeFromObservedSnapshot(effectiveIP string, snapshot ConfigSnapshot) controlsession.DesiredRuntimeSnapshot {
-	return controlsession.DesiredRuntimeSnapshot{
-		Version:       snapshot.Version,
-		GeneratedAtMs: snapshot.GeneratedAtMs,
-		EffectiveIP:   effectiveIP,
-		Tunnels:       DesiredTunnelsFromConfig(snapshot.Tunnels),
-	}
+	return controldomainruntime.DesiredRuntimeFromSnapshot(effectiveIP, snapshot)
 }

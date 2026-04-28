@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	controldomainruntime "github.com/zightch/frp/frps/internal/control/domain/runtime"
 	"github.com/zightch/frp/frps/internal/settings/entrycerts"
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
@@ -29,14 +30,11 @@ func NewSQLRepository(store *storage.SQL) *SQLRepository {
 }
 
 func decodeTunnelProtocol(value string) (uint8, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "tcp":
-		return protocol.ProtocolTCP, nil
-	case "udp":
-		return protocol.ProtocolUDP, nil
-	default:
+	proto := controldomainruntime.ProtocolValue(value)
+	if proto == 0 {
 		return 0, fmt.Errorf("unsupported tunnel protocol %q", value)
 	}
+	return proto, nil
 }
 
 func decodeTunnelTLSMode(value string) (uint8, error) {

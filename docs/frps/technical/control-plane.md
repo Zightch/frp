@@ -101,7 +101,7 @@ frps -> start listeners
 
 ## `ConfigSnapshot`
 
-当前 `ConfigSnapshot` 由仓储层投影生成：
+当前 `ConfigSnapshot` 定义在 `control/domain/runtime`，由仓储层投影生成：
 
 - `Version`
 - `GeneratedAtMs`
@@ -112,6 +112,10 @@ frps -> start listeners
 - 首次登录与在线热重载复用同一快照路径
 - `config.ack` 成功后才启动或重启 listener
 - 管理面写库成功且命中运行态字段时，如果分组在线，会触发整组补推
+
+第二阶段后，`repo` 只负责把 SQL row decode 为 domain runtime model；根
+`control` 和旧 `control/runtime` 继续通过 alias/delegate 暴露兼容 API，避免
+`internal/app` 和 `internal/api` 一次性迁移。
 
 ## 在线热重载
 

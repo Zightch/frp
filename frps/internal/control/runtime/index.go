@@ -3,6 +3,7 @@ package runtime
 import (
 	"strings"
 
+	controldomainruntime "github.com/zightch/frp/frps/internal/control/domain/runtime"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
@@ -342,27 +343,10 @@ func (t RuntimeTunnelTarget) ObservedState() testsupport.TunnelObservedState {
 
 // EnabledTunnels returns only the enabled tunnels from a snapshot.
 func EnabledTunnels(snapshot ConfigSnapshot) []protocol.TunnelEntry {
-	enabled := make([]protocol.TunnelEntry, 0, len(snapshot.Tunnels))
-	for _, tunnel := range snapshot.Tunnels {
-		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
-			continue
-		}
-		enabled = append(enabled, tunnel)
-	}
-	return enabled
+	return controldomainruntime.EnabledTunnels(snapshot)
 }
 
 // SelectNonListeningEnabledTunnels returns enabled tunnels that are not in the active tunnel IDs set.
 func SelectNonListeningEnabledTunnels(tunnels []protocol.TunnelEntry, activeTunnelIDs map[uint32]struct{}) []protocol.TunnelEntry {
-	selected := make([]protocol.TunnelEntry, 0, len(tunnels))
-	for _, tunnel := range tunnels {
-		if tunnel.TunnelFlags&protocol.TunnelFlagEnabled == 0 {
-			continue
-		}
-		if _, active := activeTunnelIDs[tunnel.TunnelID]; active {
-			continue
-		}
-		selected = append(selected, tunnel)
-	}
-	return selected
+	return controldomainruntime.SelectNonListeningEnabledTunnels(tunnels, activeTunnelIDs)
 }
