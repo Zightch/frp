@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -174,6 +175,229 @@ func TestServerScenarioLateDelayedAckFromClosedSessionDoesNotPolluteReplacementS
 		t.Fatalf("expected delayed old config.ack to stay undeliverable after replacement, got %d", released)
 	}
 	assertNoExtraScriptedControlFrame(t, newClient, "expected no old-session config.ack to leak into replacement session")
+	assertScriptedHeartbeatStillWorks(t, newClient)
+
+	_ = newClient.Close()
+	select {
+	case <-newDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement session did not exit")
+	}
+}
+
+func TestServerScenarioRefreshConfigPushWriteFailureDoesNotLeakPendingIntoReplacementSession(t *testing.T) {
+	controller := testhooks.NewController()
+	controller.AddBarrier("control.config_push.before_write", 2)
+	restoreHooks := testhooks.Install(controller)
+	defer restoreHooks()
+
+	tokenID, tokenHash := fixedTestToken()
+	host := mustParseTestHost(t, "127.0.0.1")
+
+	initialKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: uint16(freeTCPPort(t))}
+	replacementKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: uint16(freeTCPPortExcept(t, int(initialKey.Port)))}
+	listenerFactory := NewScriptedListenerFactory()
+	frameIO := transport.NewScriptedFrameIO()
+	frameIO.AddRule(transport.ScriptedRule{
+		ConnID:     "old-session",
+		Direction:  sharedtestsupport.FrameDirectionServerToClient,
+		FrameType:  protocol.TypeConfigPush,
+		Occurrence: 2,
+		Action:     sharedtestsupport.FrameActionError,
+		Err:        net.ErrClosed,
+	})
+
+	repo := &scriptedRuntimeRepository{
+		group: GroupRuntime{
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: initialKey.Port,
+						RemoteEnd:   initialKey.Port,
+						LocalHost:   host,
+						LocalStart:  2200,
+						LocalEnd:    2200,
+					},
+				},
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository:      repo,
+			Network:         staticSnapshotReader{snapshot: localIPv4Snapshot("127.0.0.1")},
+			ListenerFactory: listenerFactory,
+			FrameIO:         frameIO,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	oldClient, oldDone, initialFrame := authenticateScriptedServerSession(t, server, frameIO, "old-session", tokenID, tokenHash)
+	defer oldClient.Close()
+
+	initialPush, err := protocol.UnmarshalConfigPush(initialFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	oldClient.writeConfigAck(t, initialFrame.RequestID, initialPush.ConfigVersion)
+
+	runningState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		return session != nil &&
+			session.Pending == nil &&
+			session.SnapshotVersion == 1 &&
+			session.LastAckedConfigVersion == 1 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModeRunning &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 1 &&
+			handleCountForPort(observed, initialKey) == 1 &&
+			handleCountForPort(observed, replacementKey) == 0
+	})
+	oldSession := requireObservedSession(t, runningState.Server, repo.group.ID)
+	if runningState.Server.GroupSlots[repo.group.ID] != oldSession.SessionID {
+		t.Fatalf("expected running old session to own group slot before refresh write failure, got %#v", runningState.Server.GroupSlots)
+	}
+
+	repo.SetGroup(GroupRuntime{
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
+		Snapshot: ConfigSnapshot{
+			Version:       2,
+			GeneratedAtMs: 200,
+			Tunnels: []protocol.TunnelEntry{
+				{
+					TunnelID:    7,
+					Protocol:    protocol.ProtocolTCP,
+					TunnelFlags: protocol.TunnelFlagEnabled,
+					RemoteStart: replacementKey.Port,
+					RemoteEnd:   replacementKey.Port,
+					LocalHost:   host,
+					LocalStart:  2200,
+					LocalEnd:    2200,
+				},
+			},
+		},
+	})
+
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		server.RefreshGroup(repo.group.ID)
+	}()
+
+	pushHit := waitForTestHookHit(t, controller, "control.config_push.before_write", 2)
+	if got := pushHit.Fields["config_version"]; got != uint64(2) {
+		t.Fatalf("expected refresh write-failure window to stage config version 2, got %#v", pushHit.Fields)
+	}
+	if got := pushHit.Fields["tunnel_count"]; got != 1 {
+		t.Fatalf("expected refresh write-failure window to stage one tunnel, got %#v", pushHit.Fields)
+	}
+
+	pendingState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		return session != nil &&
+			session.Pending != nil &&
+			session.Pending.Version == 2 &&
+			session.Pending.TunnelCount == 1 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModePendingFullConfig &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, initialKey) == 0 &&
+			handleCountForPort(observed, replacementKey) == 0
+	})
+	pendingSession := requireObservedSession(t, pendingState.Server, repo.group.ID)
+	if pendingSession.SessionID != oldSession.SessionID {
+		t.Fatalf("expected failed refresh pending state to stay on original session, got %#v", pendingSession)
+	}
+
+	if !controller.Release("control.config_push.before_write", 2) {
+		t.Fatal("release config_push.before_write[2] failed")
+	}
+
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not return after config.push write failure")
+	}
+
+	select {
+	case <-oldDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("old session did not exit after config.push write failure")
+	}
+
+	beforeCloseHit := waitForTestHookHit(t, controller, "control.listener.before_close", 1)
+	afterCloseHit := waitForTestHookHit(t, controller, "control.listener.after_close", 1)
+	expectedAddr := net.JoinHostPort(initialKey.IP, strconv.Itoa(int(initialKey.Port)))
+	if got := beforeCloseHit.Fields["protocol"]; got != "tcp" {
+		t.Fatalf("expected refresh failure close hook to target tcp listener, got %#v", beforeCloseHit.Fields)
+	}
+	if got := beforeCloseHit.Fields["addr"]; got != expectedAddr {
+		t.Fatalf("expected refresh failure close hook to target %s, got %#v", expectedAddr, beforeCloseHit.Fields)
+	}
+	if got := afterCloseHit.Fields["addr"]; got != expectedAddr {
+		t.Fatalf("expected refresh failure after_close hook to target %s, got %#v", expectedAddr, afterCloseHit.Fields)
+	}
+
+	stoppedState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		return len(observed.Server.Sessions) == 0 &&
+			len(observed.Server.GroupSlots) == 0 &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, initialKey) == 0 &&
+			handleCountForPort(observed, replacementKey) == 0
+	})
+	if len(stoppedState.Server.Listeners) != 0 {
+		t.Fatalf("expected no listeners after refresh write failure closed old session, got %#v", stoppedState.Server.Listeners)
+	}
+
+	newClient, newDone, replacementFrame := authenticateScriptedServerSession(t, server, frameIO, "new-session", tokenID, tokenHash)
+	defer newClient.Close()
+
+	replacementPush, err := protocol.UnmarshalConfigPush(replacementFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal replacement config.push: %v", err)
+	}
+	if replacementPush.ConfigVersion != 2 || len(replacementPush.Tunnels) != 1 || replacementPush.Tunnels[0].RemoteStart != replacementKey.Port {
+		t.Fatalf("unexpected replacement config.push after refresh write failure: %#v", replacementPush)
+	}
+	newClient.writeConfigAck(t, replacementFrame.RequestID, replacementPush.ConfigVersion)
+
+	finalState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		return session != nil &&
+			session.Pending == nil &&
+			session.SnapshotVersion == 2 &&
+			session.LastAckedConfigVersion == 2 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModeRunning &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 1 &&
+			handleCountForPort(observed, initialKey) == 0 &&
+			handleCountForPort(observed, replacementKey) == 1
+	})
+	finalSession := requireObservedSession(t, finalState.Server, repo.group.ID)
+	if finalSession.SessionID == oldSession.SessionID {
+		t.Fatalf("expected replacement session after refresh write failure, got %#v", finalSession)
+	}
+	if finalSession.Pending != nil {
+		t.Fatalf("expected no stale pending config after refresh write failure replacement, got %#v", finalSession)
+	}
+	if finalState.Server.GroupSlots[repo.group.ID] != finalSession.SessionID {
+		t.Fatalf("expected replacement session to own group slot after refresh write failure, got %#v", finalState.Server.GroupSlots)
+	}
+
+	assertNoExtraScriptedControlFrame(t, newClient, "expected failed old config.push not to leak any extra frame into replacement session")
 	assertScriptedHeartbeatStillWorks(t, newClient)
 
 	_ = newClient.Close()
@@ -768,6 +992,167 @@ func TestServerScenarioReleasingBlockedStartupBindAfterClientDisconnectLeavesNoL
 		t.Fatalf("expected no listener leak after client disconnect race, got %#v", finalState.Server.Listeners)
 	}
 	assertNoListenerHandles(t, finalState, listenKey)
+}
+
+func TestServerScenarioReleasingBlockedStartupBindAfterReplacementTakeoverDoesNotAttachStaleListener(t *testing.T) {
+	controller := testhooks.NewController()
+	controller.AddBarrier("control.listener.before_bind", 1)
+	restoreHooks := testhooks.Install(controller)
+	defer restoreHooks()
+
+	tokenID, tokenHash := fixedTestToken()
+	host := mustParseTestHost(t, "127.0.0.1")
+
+	initialKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: uint16(freeTCPPort(t))}
+	replacementKey := ListenKey{Protocol: "tcp", IP: "127.0.0.1", Port: uint16(freeTCPPortExcept(t, int(initialKey.Port)))}
+	listenerFactory := NewScriptedListenerFactory()
+	repo := &scriptedRuntimeRepository{
+		group: GroupRuntime{
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolTCP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: initialKey.Port,
+						RemoteEnd:   initialKey.Port,
+						LocalHost:   host,
+						LocalStart:  2200,
+						LocalEnd:    2200,
+					},
+				},
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository:      repo,
+			Network:         staticSnapshotReader{snapshot: localIPv4Snapshot("127.0.0.1")},
+			ListenerFactory: listenerFactory,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	oldConn, oldDone, initialFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer oldConn.Close()
+
+	initialPush, err := protocol.UnmarshalConfigPush(initialFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal initial config.push: %v", err)
+	}
+	writeConfigAck(t, oldConn, initialFrame.RequestID, initialPush.ConfigVersion)
+
+	bindHit := waitForTestHookHit(t, controller, "control.listener.before_bind", 1)
+	if got := bindHit.Fields["kind"]; got != "runtime_start" {
+		t.Fatalf("expected blocked startup bind to come from runtime_start, got %#v", bindHit.Fields)
+	}
+	if got := bindHit.Fields["port"]; got != initialKey.Port {
+		t.Fatalf("expected blocked startup bind to target old port %d, got %#v", initialKey.Port, bindHit.Fields)
+	}
+
+	repo.SetGroup(GroupRuntime{
+		ID:               1,
+		Name:             "group-a",
+		Enabled:          true,
+		EffectiveIP:      "127.0.0.1",
+		ClientSecretHash: tokenHash,
+		Snapshot: ConfigSnapshot{
+			Version:       2,
+			GeneratedAtMs: 200,
+			Tunnels: []protocol.TunnelEntry{
+				{
+					TunnelID:    7,
+					Protocol:    protocol.ProtocolTCP,
+					TunnelFlags: protocol.TunnelFlagEnabled,
+					RemoteStart: replacementKey.Port,
+					RemoteEnd:   replacementKey.Port,
+					LocalHost:   host,
+					LocalStart:  2200,
+					LocalEnd:    2200,
+				},
+			},
+		},
+	})
+
+	newConn, newDone, replacementFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer newConn.Close()
+
+	select {
+	case <-oldDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("old blocked-bind session did not exit after replacement takeover")
+	}
+
+	replacementPush, err := protocol.UnmarshalConfigPush(replacementFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal replacement config.push: %v", err)
+	}
+	if replacementPush.ConfigVersion != 2 || len(replacementPush.Tunnels) != 1 || replacementPush.Tunnels[0].RemoteStart != replacementKey.Port {
+		t.Fatalf("unexpected replacement config.push while old bind remains blocked: %#v", replacementPush)
+	}
+	writeConfigAck(t, newConn, replacementFrame.RequestID, replacementPush.ConfigVersion)
+
+	replacementBindHit := waitForTestHookHit(t, controller, "control.listener.before_bind", 2)
+	if got := replacementBindHit.Fields["kind"]; got != "runtime_start" {
+		t.Fatalf("expected replacement bind to come from runtime_start, got %#v", replacementBindHit.Fields)
+	}
+	if got := replacementBindHit.Fields["port"]; got != replacementKey.Port {
+		t.Fatalf("expected replacement bind to target replacement port %d, got %#v", replacementKey.Port, replacementBindHit.Fields)
+	}
+
+	replacementState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		return session != nil &&
+			session.Pending == nil &&
+			session.SnapshotVersion == 2 &&
+			session.LastAckedConfigVersion == 2 &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModeRunning &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 1 &&
+			handleCountForPort(observed, initialKey) == 0 &&
+			handleCountForPort(observed, replacementKey) == 1
+	})
+	replacementSession := requireObservedSession(t, replacementState.Server, repo.group.ID)
+	if replacementState.Server.GroupSlots[repo.group.ID] != replacementSession.SessionID {
+		t.Fatalf("expected replacement session to own group slot before releasing old blocked bind, got %#v", replacementState.Server.GroupSlots)
+	}
+
+	if !controller.Release("control.listener.before_bind", 1) {
+		t.Fatal("release old blocked startup bind failed")
+	}
+
+	finalState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		return session != nil &&
+			session.SessionID == replacementSession.SessionID &&
+			session.Pending == nil &&
+			session.SnapshotVersion == 2 &&
+			session.LastAckedConfigVersion == 2 &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 1 &&
+			handleCountForPort(observed, initialKey) == 0 &&
+			handleCountForPort(observed, replacementKey) == 1
+	})
+	if len(finalState.Server.Sessions) != 1 || finalState.Server.Sessions[0].SessionID != replacementSession.SessionID {
+		t.Fatalf("expected stale old bind outcome not to replace active session, got %#v", finalState.Server.Sessions)
+	}
+
+	assertNoExtraControlFrame(t, newConn, "expected releasing old blocked bind not to leak stale frame into replacement session")
+	assertHeartbeatStillWorks(t, newConn)
+
+	_ = newConn.Close()
+	select {
+	case <-newDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement session did not exit")
+	}
 }
 
 func TestServerScenarioReleasingBlockedStartupBindAfterDisableRefreshDoesNotAttachStaleListener(t *testing.T) {

@@ -103,6 +103,51 @@ func TestStarterClosesStartedListenersOnLaterFailure(t *testing.T) {
 	}
 }
 
+func TestStarterClosesStartedUDPListenersOnLaterResolveFailure(t *testing.T) {
+	factory := controlbind.NewScriptedListenerFactory()
+	factory.AddFailure(controlbind.ScriptedListenerFailure{
+		Op:   "resolve_udp",
+		Kind: controlbind.BindKindRuntimeStart,
+		Key: controlbind.ListenKey{
+			Protocol: "udp",
+			IP:       "127.0.0.1",
+			Port:     7002,
+		},
+		Err: errors.New("injected udp resolve failure"),
+	})
+	starter := NewStarter(StarterOptions{Factory: factory})
+
+	tunnel := protocol.TunnelEntry{
+		TunnelID:    8,
+		Protocol:    protocol.ProtocolUDP,
+		TunnelFlags: protocol.TunnelFlagEnabled,
+		RemoteStart: 7000,
+		RemoteEnd:   7002,
+	}
+
+	if _, err := starter.StartTunnelListeners(NewTunnelRuntimeStartContext(1, 2, tunnel, "127.0.0.1")); err == nil {
+		t.Fatal("expected udp resolve failure")
+	}
+
+	state := factory.ObserveState()
+	if len(state.Handles) != 0 {
+		t.Fatalf("expected partial udp listener cleanup after later resolve failure, got %#v", state.Handles)
+	}
+
+	calls := factory.Calls()
+	if len(calls) != 5 {
+		t.Fatalf("expected two successful udp start steps plus failing resolve, got %#v", calls)
+	}
+	if calls[0].Op != "resolve_udp" || calls[1].Op != "listen_udp" ||
+		calls[2].Op != "resolve_udp" || calls[3].Op != "listen_udp" ||
+		calls[4].Op != "resolve_udp" {
+		t.Fatalf("unexpected udp call order: %#v", calls)
+	}
+	if calls[4].Bind.Key.Port != 7002 {
+		t.Fatalf("expected final failing udp resolve on port 7002, got %#v", calls[4])
+	}
+}
+
 func TestStarterLoadsTCPListenerTLSBeforeBind(t *testing.T) {
 	factory := controlbind.NewScriptedListenerFactory()
 	starter := NewStarter(StarterOptions{

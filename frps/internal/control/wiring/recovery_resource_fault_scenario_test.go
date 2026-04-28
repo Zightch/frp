@@ -14,6 +14,7 @@ import (
 
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
 	"github.com/zightch/frp/frps/internal/system"
+	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	sharedtestsupport "github.com/zightch/frp/frps/pkg/testsupport"
 )
@@ -458,6 +459,151 @@ func TestServerScenarioKeepsSessionAliveWhenUDPRecoveryBindFailsWithPermissionDe
 	if issues := server.TunnelRuntimeIssues(); len(issues) != 0 {
 		t.Fatalf("expected udp permission runtime issue to clear after recovery, got %#v", issues)
 	}
+
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server connection did not exit")
+	}
+}
+
+func TestServerScenarioKeepsSessionAliveWhenUDPResolveFailsRightAfterStartupAck(t *testing.T) {
+	controller := testhooks.NewController()
+	controller.AddBarrier("control.listener.before_resolve_udp", 1)
+	restoreHooks := testhooks.Install(controller)
+	defer restoreHooks()
+
+	tokenID, tokenHash := fixedTestToken()
+	host := mustParseTestHost(t, "127.0.0.1")
+
+	listenKey := ListenKey{Protocol: "udp", IP: "127.0.0.1", Port: uint16(freeUDPPort(t))}
+	listenerFactory := NewScriptedListenerFactory()
+	listenerFactory.AddFailure(ScriptedListenerFailure{
+		Op:         "resolve_udp",
+		Kind:       BindKindRuntimeStart,
+		Key:        listenKey,
+		Occurrence: 1,
+		Err:        syscall.EACCES,
+	})
+
+	repo := &mutableRepository{
+		group: GroupRuntime{
+			ID:               1,
+			Name:             "group-a",
+			Enabled:          true,
+			EffectiveIP:      "127.0.0.1",
+			ClientSecretHash: tokenHash,
+			Snapshot: ConfigSnapshot{
+				Version:       1,
+				GeneratedAtMs: 100,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:    7,
+						Protocol:    protocol.ProtocolUDP,
+						TunnelFlags: protocol.TunnelFlagEnabled,
+						RemoteStart: listenKey.Port,
+						RemoteEnd:   listenKey.Port,
+						LocalHost:   host,
+						LocalStart:  2200,
+						LocalEnd:    2200,
+					},
+				},
+			},
+		},
+	}
+
+	server := NewServer(
+		Options{
+			Repository:      repo,
+			Network:         staticSnapshotReader{snapshot: localIPv4Snapshot("127.0.0.1")},
+			ListenerFactory: listenerFactory,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
+	defer clientConn.Close()
+
+	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal config.push: %v", err)
+	}
+	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+
+	resolveHit := waitForTestHookHit(t, controller, "control.listener.before_resolve_udp", 1)
+	if got := resolveHit.Fields["kind"]; got != "runtime_start" {
+		t.Fatalf("expected startup udp resolve hook to come from runtime_start, got %#v", resolveHit.Fields)
+	}
+	if got := resolveHit.Fields["port"]; got != listenKey.Port {
+		t.Fatalf("expected startup udp resolve hook to target port %d, got %#v", listenKey.Port, resolveHit.Fields)
+	}
+
+	preFaultState := sharedtestsupport.ObservedState{Server: server.ObserveState()}
+	preFaultSession := requireObservedSession(t, preFaultState.Server, repo.group.ID)
+	if preFaultSession.Pending != nil {
+		t.Fatalf("expected pending config to clear before udp resolve begins, got %#v", preFaultSession.Pending)
+	}
+	if preFaultSession.LastAckedConfigVersion != 1 {
+		t.Fatalf("expected startup ack to be accepted before udp resolve fault, got %#v", preFaultSession)
+	}
+
+	if !controller.Release("control.listener.before_resolve_udp", 1) {
+		t.Fatal("release control.listener.before_resolve_udp[1] failed")
+	}
+
+	expectedReason := controlruntime.BuildTunnelListenerStartReason(protocol.ProtocolUDP, listenKey.IP, listenKey.Port, syscall.EACCES)
+	failedState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			tunnel != nil &&
+			tunnel.RuntimeIssue == expectedReason &&
+			tunnel.FinalStatus == "异常" &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 0 &&
+			handleCountForPort(observed, listenKey) == 0
+	})
+
+	failedSession := requireObservedSession(t, failedState.Server, repo.group.ID)
+	if failedSession.Pending != nil {
+		t.Fatalf("expected no pending config after udp resolve fault, got %#v", failedSession.Pending)
+	}
+	if failedState.Server.GroupSlots[repo.group.ID] != failedSession.SessionID {
+		t.Fatalf("expected active session to retain group slot after udp resolve fault, got %#v", failedState.Server.GroupSlots)
+	}
+	if issues := server.TunnelRuntimeIssues(); issues[7] != expectedReason {
+		t.Fatalf("expected udp resolve runtime issue to stay visible, got %#v", issues)
+	}
+
+	assertHeartbeatStillWorks(t, clientConn)
+	assertNoExtraControlFrame(t, clientConn, "expected no config frame during same-snapshot udp resolve recovery")
+
+	if err := server.scanNonListeningTunnelRuntimeIssues(context.Background()); err != nil {
+		t.Fatalf("scan runtime issues after udp resolve fault clears: %v", err)
+	}
+
+	recoveredResolveHit := waitForTestHookHit(t, controller, "control.listener.before_resolve_udp", 2)
+	if got := recoveredResolveHit.Fields["port"]; got != listenKey.Port {
+		t.Fatalf("expected recovery udp resolve hook to target port %d, got %#v", listenKey.Port, recoveredResolveHit.Fields)
+	}
+
+	recoveredState := waitForObservedState(t, server, listenerFactory, func(observed sharedtestsupport.ObservedState) bool {
+		session := findObservedSession(observed.Server, repo.group.ID)
+		tunnel := findObservedTunnel(observed.Server, repo.group.ID, 7)
+		return session != nil &&
+			tunnel != nil &&
+			strings.TrimSpace(tunnel.RuntimeIssue) == "" &&
+			tunnel.FinalStatus == "启用" &&
+			session.RecoveryMode == sharedtestsupport.RecoveryModeRunning &&
+			countObservedListeners(observed.Server, repo.group.ID, 7) == 1 &&
+			handleCountForPort(observed, listenKey) == 1
+	})
+
+	if issues := server.TunnelRuntimeIssues(); len(issues) != 0 {
+		t.Fatalf("expected udp resolve runtime issue to clear after recovery, got %#v", issues)
+	}
+	assertSingleListenerHandles(t, recoveredState, listenKey)
 
 	_ = clientConn.Close()
 	select {
