@@ -10,6 +10,7 @@ import (
 	"github.com/zightch/frp/frps/internal/clock"
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
 	controlrepo "github.com/zightch/frp/frps/internal/control/repo"
+	controllistener "github.com/zightch/frp/frps/internal/control/runtime/listener"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
@@ -95,35 +96,15 @@ type TunnelRuntimeServeContext struct {
 	RemotePort uint16
 }
 
-// TunnelListenerBatch 定义隧道监听器批次
-type TunnelListenerBatch struct {
-	TCPListeners []net.Listener
-	TCPRuntimes  []TCPTunnelListener
-	UDPListeners []UDPListener
-	UDPRuntimes  []UDPTunnelListener
-}
-
-// TCPTunnelListener 定义 TCP 隧道监听器
-type TCPTunnelListener struct {
-	ConfigVersion uint64
-	Tunnel        protocol.TunnelEntry
-	RemotePort    uint16
-	Listener      net.Listener
-}
-
-// UDPTunnelListener 定义 UDP 隧道监听器
-type UDPTunnelListener struct {
-	ConfigVersion uint64
-	Tunnel        protocol.TunnelEntry
-	RemotePort    uint16
-	Listener      UDPListener
-}
+type TunnelListenerBatch = controllistener.TunnelListenerBatch
+type TCPTunnelListener = controllistener.TCPTunnelListener
+type UDPTunnelListener = controllistener.UDPTunnelListener
 
 // BindKind 是 controlbind.BindKind 的别名
 type BindKind = controlbind.BindKind
 
 // UDPListener 是 controlbind.UDPListener 的别名
-type UDPListener = controlbind.UDPListener
+type UDPListener = controllistener.UDPListener
 
 // Logger 定义日志接口
 type Logger interface {

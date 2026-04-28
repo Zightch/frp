@@ -807,7 +807,7 @@ type RuntimeServeDeps interface {
 - `RefreshGroup` 拆为活动会话查找、最新 group 加载、runtime refresh snapshot 计算、active session desired 更新、supervisor 通知五段私有编排函数。
 - 新增 configsync 单测覆盖 push 构造、ack 请求/stream/version/status 校验、accept 错误映射和启动期 runtime issue 记录。
 
-### 第 8 阶段：拆 listener start/probe/close
+### 第 8 阶段：拆 listener start/probe/close（已完成）
 
 - 新建 `internal/control/runtime/listener`。
 - 移动：
@@ -824,6 +824,14 @@ type RuntimeServeDeps interface {
 
 - listener start 可以用 fake listener factory 单测，不依赖完整 Server。
 - probe 和 start 共用同一 listener starter。
+
+完成内容：
+
+- 新建 `internal/control/runtime/listener`，承载 listener operation context、listener batch、TCP/UDP listener runtime model、start/probe/close 和监听器 testhook。
+- 新建 `internal/control/runtime/listener/tls`，承载 tunnel listener TLS 配置读取，`bind` 包不再承担证书业务。
+- `control/runtime` 保留兼容 alias/delegate，现有 scanner、plan、server RuntimeOperator 边界不需要一次性迁移。
+- 根包 `Server.startTunnelListeners` 压缩为 assembly adapter，只注入 listener factory 和 TLS config loader。
+- 新增 listener 包单测，覆盖 TCP/UDP start、range 中途失败自动清理、probe 复用同一 starter。
 
 ### 第 9 阶段：拆 TCP 数据面
 

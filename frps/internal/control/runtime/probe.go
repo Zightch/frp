@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	controllistener "github.com/zightch/frp/frps/internal/control/runtime/listener"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
@@ -23,23 +24,7 @@ func ProbeTunnelRuntimeIssue(
 	if op == nil {
 		return ""
 	}
-
-	opCtx := NewTunnelRuntimeProbeContext(groupID, tunnel, bindIP)
-	switch tunnel.Protocol {
-	case protocol.ProtocolTCP:
-		listeners, err := op.StartTunnelListeners(opCtx)
-		if err != nil {
-			return BuildTunnelListenerStartReason(opCtx.Tunnel.Protocol, opCtx.BindIP, 0, err)
-		}
-		CloseStartedTunnelListeners(listeners.TCPListeners, nil)
-	case protocol.ProtocolUDP:
-		listeners, err := op.StartTunnelListeners(opCtx)
-		if err != nil {
-			return BuildTunnelListenerStartReason(opCtx.Tunnel.Protocol, opCtx.BindIP, 0, err)
-		}
-		CloseStartedTunnelListeners(nil, listeners.UDPListeners)
-	}
-	return ""
+	return controllistener.ProbeTunnelRuntimeIssue(op, groupID, bindIP, tunnel)
 }
 
 // ProbeTunnelRuntimeIssueWithData probes for runtime issues using explicit data.
@@ -53,23 +38,7 @@ func ProbeTunnelRuntimeIssueWithData(
 	if startListeners == nil {
 		return ""
 	}
-
-	opCtx := NewTunnelRuntimeProbeContext(groupID, tunnel, bindIP)
-	switch tunnel.Protocol {
-	case protocol.ProtocolTCP:
-		listeners, err := startListeners(opCtx)
-		if err != nil {
-			return BuildTunnelListenerStartReason(opCtx.Tunnel.Protocol, opCtx.BindIP, 0, err)
-		}
-		CloseStartedTunnelListeners(listeners.TCPListeners, nil)
-	case protocol.ProtocolUDP:
-		listeners, err := startListeners(opCtx)
-		if err != nil {
-			return BuildTunnelListenerStartReason(opCtx.Tunnel.Protocol, opCtx.BindIP, 0, err)
-		}
-		CloseStartedTunnelListeners(nil, listeners.UDPListeners)
-	}
-	return ""
+	return controllistener.ProbeTunnelRuntimeIssueWithData(groupID, bindIP, tunnel, startListeners)
 }
 
 // RequestAuditedSessionRuntimeRecovery requests recovery for a session's tunnels.

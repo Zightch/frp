@@ -1,13 +1,11 @@
 package runtime
 
 import (
-	"errors"
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
-	"syscall"
 
+	controllistener "github.com/zightch/frp/frps/internal/control/runtime/listener"
 	"github.com/zightch/frp/frps/internal/ports"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
@@ -64,25 +62,12 @@ func BuildRuntimeConflictReason(target, other RuntimeClaimOwner, conflict ports.
 
 // BuildTunnelListenerStartReason builds a human-readable reason string for a tunnel listener start failure.
 func BuildTunnelListenerStartReason(protocolValue uint8, effectiveIP string, remotePort uint16, cause error) string {
-	addr := net.JoinHostPort(effectiveIP, strconv.Itoa(int(remotePort)))
-	if IsListenPortConflictError(cause) {
-		return fmt.Sprintf("%s 监听 %s 端口冲突，无法启动", strings.ToUpper(ProtocolName(protocolValue)), addr)
-	}
-	return fmt.Sprintf("%s 监听 %s 启动失败: %v", strings.ToUpper(ProtocolName(protocolValue)), addr, cause)
+	return controllistener.BuildTunnelListenerStartReason(protocolValue, effectiveIP, remotePort, cause)
 }
 
 // IsListenPortConflictError checks if the error indicates a port conflict.
 func IsListenPortConflictError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, syscall.EADDRINUSE) {
-		return true
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "address already in use") ||
-		strings.Contains(message, "only one usage of each socket address") ||
-		strings.Contains(message, "10048")
+	return controllistener.IsListenPortConflictError(err)
 }
 
 // FormatConflictEffectiveIPs formats the effective IPs for a conflict message.
