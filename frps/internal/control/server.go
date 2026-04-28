@@ -143,7 +143,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 		}),
 		controlTLS: controlhandshake.NewControlTLSStore(),
 	}
-	server.supervisor = NewSupervisor(serverActionExecutor{server: server})
+	server.supervisor = NewSupervisor(newServerActionExecutor(server))
 	return server
 }
 

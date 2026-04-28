@@ -909,7 +909,7 @@ type RuntimeServeDeps interface {
 - runtime data-plane 的 session 生命周期 seam 改为 `SessionRuntimeStartTarget`，顺手收掉剩余 session `any` 适配。
 - 新增 `session/supervisor` 单测覆盖 group slot、active session、snapshot exclude、takeover 和 shutdown。
 
-### 第 12 阶段：拆 executor capabilities
+### 第 12 阶段：拆 executor capabilities（已完成）
 
 - 新建 `internal/control/session/executor`。
 - 将当前 `serverActionExecutor` 拆成多个 handler：
@@ -926,6 +926,15 @@ type RuntimeServeDeps interface {
 
 - action executor 不再直接依赖完整 `Server`。
 - binding failure/outcome mapping 有独立测试。
+
+完成内容：
+
+- 新建 `internal/control/session/executor`，把 session action dispatch 从根包 `serverActionExecutor` 下沉到独立 action executor。
+- 拆出 hello sender、config pusher、config error sender、heartbeat pong sender、binding preparer、binding starter、runtime stopper、stream/UDP drainer、runtime resetter 和 control closer。
+- 新 executor 通过 `RuntimeProvider`、`FrameSender`、`EffectiveIPResolver`、`BindingStarter`、`StreamCloser`、`UDPCloser`、`Clock` 小接口组合能力，不再持有完整 `Server`。
+- 根包 `serverActionExecutor` 改为 thin adapter，只持有 `controlsession.Executor`；`Server` 只在组装处注入各个小能力适配器。
+- `runtimeExecutor` 实现 executor runtime seam，暴露 desired group、active tunnel ids、freeze/drain/reset 等最小 runtime 操作。
+- binding failure/outcome mapping 下沉到 executor 包，并新增单测覆盖 effective IP 错误映射、端口冲突、默认 listener start failure、active binding 和 runtime issue projection。
 
 ### 第 13 阶段：拆 runtime scan/recovery 接口
 
