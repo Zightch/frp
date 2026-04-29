@@ -636,14 +636,13 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
             """
             INSERT INTO proxy_groups (
                 name,
-                token_id,
-                token_hash,
+                client_id,
+                client_secret_hash,
                 effective_ip,
                 enabled,
-                rate_limit,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "perf-group",
@@ -651,7 +650,6 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 token.token_hash,
                 "0.0.0.0",
                 1,
-                0,
                 created_at,
                 created_at,
             ),

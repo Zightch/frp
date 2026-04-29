@@ -2379,7 +2379,7 @@ func insertProxyGroup(t *testing.T, store *storage.SQL, id int64, name, tokenID,
 	t.Helper()
 	now := schemaTimestamp()
 	if _, err := store.Exec(
-		`INSERT INTO proxy_groups (id, name, client_id, client_secret_hash, effective_ip, enabled, rate_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		`INSERT INTO proxy_groups (id, name, client_id, client_secret_hash, effective_ip, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		id,
 		name,
 		tokenID,

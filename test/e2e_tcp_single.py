@@ -612,10 +612,9 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports, scenari
                 client_secret_hash,
                 effective_ip,
                 enabled,
-                rate_limit,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "e2e-group",
@@ -623,7 +622,6 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports, scenari
                 token.token_hash,
                 "0.0.0.0",
                 group_enabled,
-                0,
                 created_at,
                 created_at,
             ),

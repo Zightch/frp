@@ -691,10 +691,9 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 client_secret_hash,
                 effective_ip,
                 enabled,
-                rate_limit,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "e2e-group",
@@ -702,7 +701,6 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports) -> None
                 token.token_hash,
                 "0.0.0.0",
                 1,
-                0,
                 created_at,
                 created_at,
             ),

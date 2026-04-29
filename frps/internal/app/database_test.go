@@ -128,7 +128,6 @@ CREATE TABLE proxy_groups (
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	control_transport_security TEXT NOT NULL DEFAULT 'plain',
-	rate_limit INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 )`)
@@ -204,7 +203,6 @@ CREATE TABLE proxy_groups (
 	effective_ip TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	control_transport_security TEXT NOT NULL DEFAULT 'plain',
-	rate_limit INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );

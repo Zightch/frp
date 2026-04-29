@@ -230,7 +230,6 @@ erDiagram
         text effective_ip
         integer enabled
         text control_transport_security
-        integer rate_limit
         text created_at
         text updated_at
     }
@@ -256,7 +255,7 @@ erDiagram
 
 - 关系图表达的是当前代码中的逻辑关联，schema 中未声明外键约束。
 - `proxy_groups` 和 `tunnels` 是当前 WebUI 和控制面共同使用的核心表。
-- `proxy_groups.rate_limit` 仍然存在于当前 schema，但只是早期遗留占位字段，未进入真实执行链路，也不再代表正式设计方向；已确认的后续限速模型见 [限速策略组设计](frps/design/rate-policy-groups.md)。
+- 当前已确认的后续限速模型见 [限速策略组设计](frps/design/rate-policy-groups.md)；旧的 `proxy_groups.rate_limit` 字段已经从正式 schema 中移除。
 - 抓包控制如果后续引入，应放在运行时配置层而不是关系图里的持久化表。
 - 当前代码不维护 `schema_migrations` 或独立 schema 版本记录；启动时只校验当前代码依赖的业务表，额外残留表不参与业务关系图。
 

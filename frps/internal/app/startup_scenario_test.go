@@ -477,7 +477,7 @@ func seedStartupScenarioDatabase(t *testing.T, dbPath string, blockedPort int) {
 	now := time.Now().UTC().Format("2006-01-02 15:04:05.000000")
 
 	if _, err := store.Exec(
-		`INSERT INTO proxy_groups (id, name, client_id, client_secret_hash, effective_ip, enabled, rate_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		`INSERT INTO proxy_groups (id, name, client_id, client_secret_hash, effective_ip, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		1,
 		"group-a",
 		clientID,

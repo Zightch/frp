@@ -79,10 +79,9 @@ INSERT INTO proxy_groups (
 	effective_ip,
 	enabled,
 	control_transport_security,
-	rate_limit,
 	created_at,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `,
 			normalized.Name,
 			clientID,
