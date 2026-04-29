@@ -7,6 +7,7 @@
 ## 1. 文档分工
 
 - `docs/workflow.md` 负责定义统一执行流程、`todo` 轮换规则、归档时机、`.gitignore` 检查和提交约定。
+- `docs/development-principles.md` 负责定义仓库级统一开发原则，不承接当前轮临时推进过程。
 - `docs/progress/README.md` 负责说明进度归档目录的使用方式和索引。
 - `docs/progress/*.md` 负责按日期承接跨轮历史进度、停止线、已完成项和已确认边界。
 - `docs/tmp/todo.md` 只负责当前轮未完成执行项，必须明确当前总目标、实现该目标的子步骤、当前轮边界，以及当前唯一下一步，不记录已完成内容。

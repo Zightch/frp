@@ -1,5 +1,7 @@
 # frps 开发入口
 
+统一开发原则见 [../../development-principles.md](../../development-principles.md)。
+
 ## 环境要求
 
 - Go `1.23+`

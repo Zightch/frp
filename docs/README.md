@@ -5,18 +5,20 @@
 建议按下面顺序阅读：
 
 1. [总体项目概述](project-overview.md)
-2. [工作流](workflow.md)
-3. [进度归档](progress/README.md)
-4. [仓库级回归入口](regression-entry.md)
-5. [frps/frpc 当前代码架构图](frps-frpc-current-architecture.md)
-6. [frps/frpc 协议文档](protocol.md)
-7. `frps` 子项目文档
-8. `frpc` 子项目文档
-9. [当前轮 Todo](tmp/todo.md)
+2. [开发原则](development-principles.md)
+3. [工作流](workflow.md)
+4. [进度归档](progress/README.md)
+5. [仓库级回归入口](regression-entry.md)
+6. [frps/frpc 当前代码架构图](frps-frpc-current-architecture.md)
+7. [frps/frpc 协议文档](protocol.md)
+8. `frps` 子项目文档
+9. `frpc` 子项目文档
+10. [当前轮 Todo](tmp/todo.md)
 
 ## 2. 平台级文档
 
 - [总体项目概述](project-overview.md)
+- [开发原则](development-principles.md)
 - [工作流](workflow.md)
 - [进度归档](progress/README.md)
 - [仓库级回归入口](regression-entry.md)
@@ -56,6 +58,7 @@
 ## 4. 文档边界
 
 - 总体项目概述负责描述平台级目标、统一术语和核心边界。
+- `development-principles.md` 负责定义仓库级统一开发原则，包括极简核心、激进更新、重构收束、测试和文档跟随约束。
 - `workflow.md` 负责定义统一执行流程、`todo` 轮换、归档时机和 `.gitignore` / 提交约定。
 - `regression-entry.md` 负责收口仓库级最小 Go / Python 回归入口，不展开子项目内部测试设计细节。
 - `progress/README.md` 负责说明进度归档目录和索引；`progress/*.md` 负责记录跨轮历史进度、当前停止线和已收口内容。

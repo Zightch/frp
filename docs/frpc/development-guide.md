@@ -1,8 +1,10 @@
 # frpc 开发文档
 
-## 1. 开发原则
+## 1. 统一开发原则
 
-开发 `frpc` 时优先守住两条边界：
+仓库级统一开发原则见 [../development-principles.md](../development-principles.md)。
+
+对 `frpc` 额外守住两条边界：
 
 - 客户端只做执行，不做策略决策。
 - 客户端只保留当前真实需要的最小状态。
