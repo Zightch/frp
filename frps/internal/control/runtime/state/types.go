@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"net"
 	"sort"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
 	controldomainruntime "github.com/zightch/frp/frps/internal/control/domain/runtime"
+	controlconfigsync "github.com/zightch/frp/frps/internal/control/protocol/configsync"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
@@ -19,6 +21,25 @@ const InitialServerRequestID = uint32(1 << 31)
 
 type GroupRuntime = controldomainruntime.GroupRuntime
 type ConfigSnapshot = controldomainruntime.ConfigSnapshot
+
+var (
+	ErrConfigUpdateInFlight  = errors.New("config update already in flight")
+	ErrUnexpectedConfigAck   = controlconfigsync.ErrUnexpectedAck
+	ErrConfigVersionMismatch = controlconfigsync.ErrVersionMismatch
+)
+
+type ConfigPushOperation struct {
+	RequestID    uint32
+	Group        GroupRuntime
+	Snapshot     ConfigSnapshot
+	RecoveryMode testsupport.RecoveryMode
+}
+
+type ConfigApplyResult struct {
+	Group        GroupRuntime
+	Snapshot     ConfigSnapshot
+	RecoveryMode testsupport.RecoveryMode
+}
 
 type ListenerState struct {
 	TCP     map[uint32][]net.Listener
@@ -47,11 +68,12 @@ type ConcreteSessionState struct {
 	NextStreamID        atomic.Uint32
 	ReadTimeout         time.Duration
 
-	ControlMu sync.Mutex
-	Control   controlsession.SessionState
-	Group     GroupRuntime
-	Pending   GroupRuntime
-	Recovery  testsupport.RecoveryMode
+	ControlMu    sync.Mutex
+	Control      controlsession.SessionState
+	DesiredGroup GroupRuntime
+	Group        GroupRuntime
+	Pending      GroupRuntime
+	Recovery     testsupport.RecoveryMode
 
 	WriteMu     sync.Mutex
 	RuntimeMu   sync.Mutex
@@ -122,6 +144,21 @@ type UDPSession struct {
 	OpenedAtMs       uint64
 	IdleTimeout      time.Duration
 	LastActiveUnixMs atomic.Int64
+}
+
+func mergeObservedGroupRuntime(current GroupRuntime, desired GroupRuntime, snapshot ConfigSnapshot, effectiveIP string) GroupRuntime {
+	group := current
+	if desired.ID != 0 {
+		group = desired
+	}
+	if group.ID == 0 {
+		group = current
+	}
+	group.Snapshot = snapshot
+	if effectiveIP != "" {
+		group.EffectiveIP = effectiveIP
+	}
+	return group
 }
 
 func (s *Stream) SignalReady(err error) {
@@ -312,6 +349,166 @@ func (s *ConcreteSessionState) IsDone() bool {
 	default:
 		return false
 	}
+}
+
+func (s *ConcreteSessionState) SessionID() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.ID
+}
+
+func (s *ConcreteSessionState) ControlState() controlsession.SessionState {
+	if s == nil {
+		return controlsession.SessionState{}
+	}
+	s.ControlMu.Lock()
+	defer s.ControlMu.Unlock()
+	return controlsession.Clone(s.Control)
+}
+
+func (s *ConcreteSessionState) syncControlStateLocked(state controlsession.SessionState) {
+	s.Control = controlsession.Clone(state)
+
+	desiredGroup := s.DesiredGroup
+	currentGroup := s.Group
+	if currentGroup.ID == 0 && desiredGroup.ID != 0 {
+		currentGroup = desiredGroup
+	}
+	if state.Applied != nil {
+		s.Group = mergeObservedGroupRuntime(
+			currentGroup,
+			desiredGroup,
+			controldomainruntime.ConfigSnapshotFromDesired(state.Applied.Snapshot),
+			state.Applied.Snapshot.EffectiveIP,
+		)
+	} else if state.Desired != nil {
+		s.Group = mergeObservedGroupRuntime(
+			currentGroup,
+			desiredGroup,
+			controldomainruntime.ConfigSnapshotFromDesired(*state.Desired),
+			state.Desired.EffectiveIP,
+		)
+	}
+	if s.Group.ID == 0 {
+		s.Group = currentGroup
+	}
+
+	if state.Pending != nil {
+		s.Pending = mergeObservedGroupRuntime(
+			s.Group,
+			desiredGroup,
+			controldomainruntime.ConfigSnapshotFromDesired(state.Pending.Snapshot),
+			state.Pending.Snapshot.EffectiveIP,
+		)
+		s.Recovery = controldomainruntime.PendingRecoveryModeForSnapshot(s.Pending.Snapshot)
+		return
+	}
+
+	s.Pending = GroupRuntime{}
+	s.Recovery = controldomainruntime.AppliedRecoveryModeForSnapshot(s.Group.Snapshot)
+}
+
+func (s *ConcreteSessionState) SyncControlState(state controlsession.SessionState) {
+	if s == nil {
+		return
+	}
+	s.ControlMu.Lock()
+	defer s.ControlMu.Unlock()
+	s.syncControlStateLocked(state)
+}
+
+func (s *ConcreteSessionState) SetControlState(state controlsession.SessionState) {
+	s.SyncControlState(state)
+}
+
+func (s *ConcreteSessionState) ApplyControlEvent(event controlsession.Event) controlsession.SessionState {
+	state := s.ControlState()
+	next := controlsession.Advance(state, event)
+	s.SyncControlState(next)
+	return controlsession.Clone(next)
+}
+
+func (s *ConcreteSessionState) DesiredGroupRuntime() GroupRuntime {
+	if s == nil {
+		return GroupRuntime{}
+	}
+	s.ControlMu.Lock()
+	defer s.ControlMu.Unlock()
+	return s.DesiredGroup
+}
+
+func (s *ConcreteSessionState) SetDesiredGroupRuntime(group GroupRuntime) {
+	if s == nil {
+		return
+	}
+	s.ControlMu.Lock()
+	defer s.ControlMu.Unlock()
+	s.DesiredGroup = group
+}
+
+func (s *ConcreteSessionState) PrepareConfigPush(group GroupRuntime, snapshot ConfigSnapshot) (ConfigPushOperation, error) {
+	state := s.ControlState()
+	if state.Pending != nil {
+		return ConfigPushOperation{}, ErrConfigUpdateInFlight
+	}
+
+	group.Snapshot = snapshot
+	s.SetDesiredGroupRuntime(group)
+	next := s.ApplyControlEvent(controlsession.DesiredRuntimeUpdated{
+		Snapshot: controldomainruntime.DesiredRuntimeFromGroup(group),
+	})
+	if next.Pending == nil {
+		return ConfigPushOperation{}, ErrConfigUpdateInFlight
+	}
+
+	recoveryMode := controldomainruntime.PendingRecoveryModeForSnapshot(snapshot)
+	return ConfigPushOperation{
+		RequestID:    next.Pending.RequestID,
+		Group:        group,
+		Snapshot:     snapshot,
+		RecoveryMode: recoveryMode,
+	}, nil
+}
+
+func (s *ConcreteSessionState) PreviewAcceptedConfig(requestID uint32, version uint64) (ConfigApplyResult, error) {
+	state := s.ControlState()
+	if state.Pending == nil || requestID != state.Pending.RequestID {
+		return ConfigApplyResult{}, ErrUnexpectedConfigAck
+	}
+	if version != state.Pending.Snapshot.Version {
+		return ConfigApplyResult{}, ErrConfigVersionMismatch
+	}
+
+	configState, _ := s.ObserveState()
+	group := configState.PendingGroup
+	if group.ID == 0 {
+		group = configState.Group
+		group.Snapshot = controldomainruntime.ConfigSnapshotFromDesired(state.Pending.Snapshot)
+		group.EffectiveIP = state.Pending.Snapshot.EffectiveIP
+	}
+	return ConfigApplyResult{
+		Group:        group,
+		Snapshot:     group.Snapshot,
+		RecoveryMode: configState.RecoveryMode,
+	}, nil
+}
+
+func (s *ConcreteSessionState) AcceptConfigAck(requestID uint32, version uint64) (ConfigApplyResult, error) {
+	if _, err := s.PreviewAcceptedConfig(requestID, version); err != nil {
+		return ConfigApplyResult{}, err
+	}
+	s.ApplyControlEvent(controlsession.ConfigAckReceived{
+		RequestID:     requestID,
+		ConfigVersion: version,
+	})
+
+	configState, _ := s.ObserveState()
+	return ConfigApplyResult{
+		Group:        configState.Group,
+		Snapshot:     configState.Group.Snapshot,
+		RecoveryMode: configState.RecoveryMode,
+	}, nil
 }
 
 func (s *ConcreteSessionState) NextRequestID() uint32 {
@@ -646,6 +843,7 @@ func (s *ConcreteSessionState) CurrentSnapshot() ConfigSnapshot {
 func (s *ConcreteSessionState) ReplaceGroupRuntime(group GroupRuntime) {
 	s.ControlMu.Lock()
 	defer s.ControlMu.Unlock()
+	s.DesiredGroup = group
 	s.Group = group
 }
 
@@ -695,16 +893,19 @@ func (s *ConcreteSessionState) RefreshPendingConfig(group GroupRuntime, snapshot
 		return false
 	}
 	group.Snapshot = snapshot
+	s.DesiredGroup = group
 	s.Pending = group
 	return true
 }
 
 func NewConcreteSessionState(id uint64, group GroupRuntime, snapshot ConfigSnapshot, readTimeout time.Duration) *ConcreteSessionState {
 	session := &ConcreteSessionState{
-		ID:          id,
-		ReadTimeout: readTimeout,
-		Group:       group,
+		ID:           id,
+		ReadTimeout:  readTimeout,
+		DesiredGroup: group,
+		Group:        group,
 	}
+	session.DesiredGroup.Snapshot = snapshot
 	session.Group.Snapshot = snapshot
 	session.Control = controlsession.NewState(group.ID, id)
 	desiredGroup := group

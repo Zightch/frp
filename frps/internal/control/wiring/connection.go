@@ -49,7 +49,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer s.unregisterRuntimeExecutor(session.ID)
 	defer func() {
 		if agent != nil {
-			session.applyControlEvent(controlsession.ControlConnClosed{Reason: "connection closed"})
+			session.ApplyControlEvent(controlsession.ControlConnClosed{Reason: "connection closed"})
 			_ = agent.Enqueue(controlsession.ControlConnClosed{Reason: "connection closed"})
 		}
 	}()

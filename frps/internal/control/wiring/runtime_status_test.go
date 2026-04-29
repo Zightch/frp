@@ -163,7 +163,7 @@ func TestServerEnsureTunnelListenersDetectsRuntimeConflictWithActiveGroup(t *tes
 	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, otherServerConn, otherSession)
 	defer func() {
 		controlruntime.DetachRuntime(server.supervisor, otherSession.ID)
-		otherSession.applyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+		otherSession.ApplyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 		controlruntime.DispatchBySessionID(server.supervisor, otherSession.ID, controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 	}()
 
@@ -445,7 +445,7 @@ func TestServerScanNonListeningTunnelRuntimeIssuesScansActivePartialGroupAndReco
 	state.Conn = controlsession.ControlConnState{Attached: true, ConnID: "test-conn"}
 	state.Phase = controlsession.SessionPhaseOnline
 	state.RuntimePhase = controlsession.RuntimePhaseBinding
-	session.setControlState(state)
+	session.SetControlState(state)
 	defer server.shutdownSession(session)
 
 	if err := server.ensureTunnelListeners(serverConn, slog.New(slog.NewTextHandler(io.Discard, nil)), session); err != nil {
@@ -454,7 +454,7 @@ func TestServerScanNonListeningTunnelRuntimeIssuesScansActivePartialGroupAndReco
 	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, serverConn, session)
 	defer func() {
 		controlruntime.DetachRuntime(server.supervisor, session.ID)
-		session.applyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+		session.ApplyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 		controlruntime.DispatchBySessionID(server.supervisor, session.ID, controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 	}()
 

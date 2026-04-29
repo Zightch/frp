@@ -37,11 +37,10 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 	initial.Desired = &desired
 
 	runtime := &runtimeExecutor{
-		groupID:      group.ID,
-		conn:         conn,
-		logger:       logger,
-		session:      session,
-		desiredGroup: group,
+		groupID: group.ID,
+		conn:    conn,
+		logger:  logger,
+		session: session,
 	}
 	agent := s.supervisor.AttachSession(context.Background(), initial, runtime)
 	if agent == nil {

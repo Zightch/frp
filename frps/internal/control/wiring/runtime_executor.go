@@ -17,7 +17,6 @@ type runtimeExecutor struct {
 	session *sessionState
 
 	mu              sync.Mutex
-	desiredGroup    GroupRuntime
 	drainedStreams  map[uint32]*publicStream
 	drainedSessions []*publicUDPSession
 }
@@ -36,16 +35,6 @@ func (s *Server) runtimeExecutor(sessionID uint64) *runtimeExecutor {
 	return s.supervisor.RuntimeExecutor(sessionID)
 }
 
-func (r *runtimeExecutor) desiredGroupRuntime() GroupRuntime {
-	if r == nil {
-		return GroupRuntime{}
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.desiredGroup
-}
-
 func (r *runtimeExecutor) Conn() net.Conn {
 	if r == nil {
 		return nil
@@ -61,14 +50,17 @@ func (r *runtimeExecutor) Logger() controlsessionexecutor.Logger {
 }
 
 func (r *runtimeExecutor) DesiredGroup() controlruntime.GroupRuntime {
-	return r.desiredGroupRuntime()
+	if r == nil || r.session == nil {
+		return controlruntime.GroupRuntime{}
+	}
+	return r.session.DesiredGroupRuntime()
 }
 
 func (r *runtimeExecutor) SyncControlState(state controlsession.SessionState) {
 	if r == nil || r.session == nil {
 		return
 	}
-	r.session.syncControlState(state, r.desiredGroupRuntime())
+	r.session.SyncControlState(state)
 }
 
 func (r *runtimeExecutor) ActiveRuntimeTunnelIDs() map[uint32]struct{} {
@@ -82,7 +74,7 @@ func (r *runtimeExecutor) FreezeTunnelRuntime() controlsessionexecutor.RuntimeDr
 	if r == nil || r.session == nil {
 		return controlsessionexecutor.RuntimeDrain{}
 	}
-	listeners, udpListeners, streams, udpSessions := r.session.freezeTunnelRuntime()
+	listeners, udpListeners, streams, udpSessions := r.session.FreezeTunnelRuntime()
 	return controlsessionexecutor.RuntimeDrain{
 		TCPListeners: listeners,
 		UDPListeners: udpListeners,
@@ -107,18 +99,7 @@ func (r *runtimeExecutor) AllowTunnelRuntimeStart() {
 	if r == nil || r.session == nil {
 		return
 	}
-	r.session.allowTunnelRuntimeStart()
-}
-
-func (r *runtimeExecutor) PrepareConfigPush(requestID uint32, group controlruntime.GroupRuntime, snapshot controlruntime.ConfigSnapshot) {
-	if r == nil || r.session == nil {
-		return
-	}
-	recoveryMode := controlruntime.PendingRecoveryModeForSnapshot(snapshot)
-	r.session.ControlMu.Lock()
-	r.session.Pending = GroupRuntime{ID: group.ID, Name: group.Name, EffectiveIP: group.EffectiveIP, Snapshot: snapshot}
-	r.session.Recovery = recoveryMode
-	r.session.ControlMu.Unlock()
+	r.session.AllowTunnelRuntimeStart()
 }
 
 func (r *runtimeExecutor) SessionID() uint64 {
@@ -158,27 +139,17 @@ func (r *runtimeExecutor) snapshot(_ controlsession.SessionState) controlruntime
 		return controlruntime.SessionSnapshot{}
 	}
 
-	_, runtimeState := r.session.observeState()
+	configState, runtimeState := r.session.ObserveState()
 	projected := controlruntime.ProjectedSessionState(r.session, r.conn)
 	return controlruntime.SessionSnapshot{
 		GroupID:      r.groupID,
 		SessionID:    projected.SessionID,
 		Conn:         r.conn,
-		DesiredGroup: r.desiredGroupRuntime(),
+		Config:       configState,
 		RecoveryMode: r.session.RecoveryModeValue(),
 		State:        projected,
 		Runtime:      runtimeState,
 	}
-}
-
-func (r *runtimeExecutor) setDesiredGroup(group GroupRuntime) {
-	if r == nil {
-		return
-	}
-
-	r.mu.Lock()
-	r.desiredGroup = group
-	r.mu.Unlock()
 }
 
 func (r *runtimeExecutor) storeDrained(streams map[uint32]*publicStream, udpSessions []*publicUDPSession) {

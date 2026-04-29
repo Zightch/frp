@@ -41,18 +41,18 @@ func (s *Server) writeFramesWithSession(conn net.Conn, session *sessionState, fr
 }
 
 func (s *Server) writeRuntimeFrameWithSession(conn net.Conn, session *sessionState, configVersion uint64, frame protocol.Frame) error {
-	if !session.lockRuntimeIOWrite(configVersion) {
+	if !session.LockRuntimeIOWrite(configVersion) {
 		return errRuntimeIOStopped
 	}
-	defer session.unlockRuntimeIOWrite()
+	defer session.UnlockRuntimeIOWrite()
 	return s.frameWriter(conn, session).WriteFrame(frame)
 }
 
 func (s *Server) writeRuntimeFramesWithSession(conn net.Conn, session *sessionState, configVersion uint64, frames ...protocol.Frame) error {
-	if !session.lockRuntimeIOWrite(configVersion) {
+	if !session.LockRuntimeIOWrite(configVersion) {
 		return errRuntimeIOStopped
 	}
-	defer session.unlockRuntimeIOWrite()
+	defer session.UnlockRuntimeIOWrite()
 	return s.frameWriter(conn, session).WriteFrames(frames...)
 }
 

@@ -57,11 +57,10 @@ type RuntimeIOWriter interface {
 
 // RuntimeExecutor 定义运行时执行器
 type RuntimeExecutor struct {
-	GroupID      int64
-	Conn         net.Conn
-	Logger       *slog.Logger
-	Session      SessionStateProjectionTarget
-	DesiredGroup GroupRuntime
+	GroupID int64
+	Conn    net.Conn
+	Logger  *slog.Logger
+	Session SessionStateProjectionTarget
 }
 
 // Event 是 controlsession.Event 的别名

@@ -591,7 +591,7 @@ func TestServerCleansUpIdleUDPSessionAndNotifiesClient(t *testing.T) {
 		t.Fatalf("expected udp.data, got %s", firstDataFrame.Type.String())
 	}
 
-	udpSession := session.publicUDPSession(openFrame.StreamID)
+	udpSession := session.PublicUDPSession(openFrame.StreamID)
 	if udpSession == nil {
 		t.Fatal("expected udp session to exist")
 	}
@@ -615,7 +615,7 @@ func TestServerCleansUpIdleUDPSessionAndNotifiesClient(t *testing.T) {
 	if udpClose.ReasonCode != protocol.CloseReasonIdleTimeout || udpClose.Message != "udp session idle timeout" {
 		t.Fatalf("unexpected udp.close body: %#v", udpClose)
 	}
-	if session.publicUDPSession(openFrame.StreamID) != nil {
+	if session.PublicUDPSession(openFrame.StreamID) != nil {
 		t.Fatal("expected udp session to be removed after idle cleanup")
 	}
 }
@@ -3237,7 +3237,7 @@ func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConfli
 	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, otherServerConn, otherSession)
 	defer func() {
 		controlruntime.DetachRuntime(server.supervisor, otherSession.ID)
-		otherSession.applyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+		otherSession.ApplyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 		controlruntime.DispatchBySessionID(server.supervisor, otherSession.ID, controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 	}()
 
@@ -3395,7 +3395,7 @@ func TestServerFreezeGroupRuntimeDropsBufferedTCPData(t *testing.T) {
 		t.Fatalf("write public payload: %v", err)
 	}
 
-	listeners, udpListeners, streams, _ := session.freezeTunnelRuntime()
+	listeners, udpListeners, streams, _ := session.FreezeTunnelRuntime()
 	controlruntime.CloseStartedTunnelListeners(listeners, udpListeners)
 
 	session.WriteMu.Unlock()
@@ -3498,7 +3498,7 @@ func TestServerFreezeGroupRuntimeDropsBufferedUDPData(t *testing.T) {
 		)
 	}()
 
-	listeners, udpListeners, _, udpSessions := session.freezeTunnelRuntime()
+	listeners, udpListeners, _, udpSessions := session.FreezeTunnelRuntime()
 	controlruntime.CloseStartedTunnelListeners(listeners, udpListeners)
 
 	session.WriteMu.Unlock()

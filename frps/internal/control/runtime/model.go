@@ -20,7 +20,7 @@ type SessionSnapshot struct {
 	GroupID      int64
 	SessionID    uint64
 	Conn         net.Conn
-	DesiredGroup GroupRuntime
+	Config       ObservedConfigState
 	RecoveryMode testsupport.RecoveryMode
 	State        controlsession.SessionState
 	Runtime      ObservedState
@@ -52,8 +52,8 @@ func (s SessionSnapshot) ActiveRuntimeGroup() (RuntimeGroupSnapshot, bool) {
 		return RuntimeGroupSnapshot{}, false
 	}
 
-	group := s.DesiredGroup
-	config := BuildRuntimeObservedConfig(s.State, group)
+	group := s.Config.Group
+	config := BuildRuntimeObservedConfig(s.Config)
 	snapshot := config.Snapshot
 	snapshot.Tunnels = FilterTunnelsByID(snapshot.Tunnels, activeTunnelIDs)
 	if len(snapshot.Tunnels) == 0 {

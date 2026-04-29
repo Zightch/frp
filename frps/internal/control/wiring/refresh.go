@@ -61,11 +61,9 @@ func (s *Server) computeRuntimeRefreshGroup(group GroupRuntime) GroupRuntime {
 
 func (s *Server) updateActiveSessionDesiredRuntime(active *activeSession, group GroupRuntime) {
 	currentGroup, currentSnapshot := active.session.CurrentGroupAndSnapshot()
+	active.session.SetDesiredGroupRuntime(group)
 	if currentGroup.EffectiveIP == group.EffectiveIP && controlruntime.SamePushedConfigSnapshot(currentSnapshot, group.Snapshot) {
 		active.session.ReplaceGroupRuntime(group)
-	}
-	if runtime := s.runtimeExecutor(active.session.ID); runtime != nil {
-		runtime.setDesiredGroup(group)
 	}
 }
 
@@ -74,7 +72,7 @@ func (s *Server) notifyDesiredRuntimeRefresh(groupID int64, group GroupRuntime) 
 }
 
 func (s *Server) freezeGroupRuntime(conn net.Conn, session *sessionState) error {
-	listeners, udpListeners, streams, udpSessions := session.freezeTunnelRuntime()
+	listeners, udpListeners, streams, udpSessions := session.FreezeTunnelRuntime()
 	controlruntime.CloseStartedTunnelListeners(listeners, udpListeners)
 
 	var freezeErr error
@@ -98,7 +96,7 @@ func (s *Server) rebindGroupRuntime(conn net.Conn, session *sessionState, group 
 		return err
 	}
 	session.ReplaceGroupRuntime(group)
-	session.allowTunnelRuntimeStart()
+	session.AllowTunnelRuntimeStart()
 	logger := s.logger.With(
 		"session_id", session.ID,
 		"group_id", group.ID,

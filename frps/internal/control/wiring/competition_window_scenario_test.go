@@ -898,7 +898,7 @@ func TestServerUnregisterOldSessionKeepsReplacementSlotAndSession(t *testing.T) 
 	}
 
 	controlruntime.DetachRuntime(server.supervisor, oldSession.ID)
-	oldSession.applyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
+	oldSession.ApplyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 	controlruntime.DispatchBySessionID(server.supervisor, oldSession.ID, controlsession.ControlConnClosed{Reason: "runtime unregistered"})
 
 	state := server.ObserveState()

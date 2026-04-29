@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	controldomainruntime "github.com/zightch/frp/frps/internal/control/domain/runtime"
-	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
 	"github.com/zightch/frp/frps/pkg/transport"
@@ -31,7 +30,7 @@ func NewRuntimeSnapshotIndex(sessions []SessionSnapshot) RuntimeSnapshotIndex {
 
 // NewRuntimeSessionTarget creates a new runtime session target from a session snapshot.
 func NewRuntimeSessionTarget(snapshot SessionSnapshot) RuntimeSessionTarget {
-	config := BuildRuntimeObservedConfig(snapshot.State, snapshot.DesiredGroup)
+	config := BuildRuntimeObservedConfig(snapshot.Config)
 	target := RuntimeSessionTarget{
 		ID: RuntimeSessionTargetID{
 			GroupID:   snapshot.GroupID,
@@ -98,27 +97,27 @@ func NewRuntimeSessionTarget(snapshot SessionSnapshot) RuntimeSessionTarget {
 	return target
 }
 
-// BuildRuntimeObservedConfig builds a runtime observed config from session state and desired group.
-func BuildRuntimeObservedConfig(state controlsession.SessionState, desiredGroup GroupRuntime) RuntimeObservedConfig {
+// BuildRuntimeObservedConfig builds a runtime observed config from observed session config state.
+func BuildRuntimeObservedConfig(configState ObservedConfigState) RuntimeObservedConfig {
 	config := RuntimeObservedConfig{
-		EffectiveIP: desiredGroup.EffectiveIP,
-		Snapshot:    desiredGroup.Snapshot,
+		EffectiveIP: configState.Group.EffectiveIP,
+		Snapshot:    configState.Group.Snapshot,
 	}
 
-	if state.Applied != nil {
-		config.Snapshot = ConfigSnapshotFromDesired(state.Applied.Snapshot)
-		config.EffectiveIP = state.Applied.Snapshot.EffectiveIP
-		config.LastAckedConfigVersion = state.Applied.Snapshot.Version
-	} else if state.Desired != nil {
-		config.Snapshot = ConfigSnapshotFromDesired(*state.Desired)
-		config.EffectiveIP = state.Desired.EffectiveIP
+	if configState.State.Applied != nil {
+		config.LastAckedConfigVersion = configState.State.Applied.Snapshot.Version
 	}
 
-	if state.Pending != nil {
+	if configState.State.Pending != nil {
+		pending := configState.PendingGroup
+		if pending.ID == 0 {
+			pending.Snapshot = ConfigSnapshotFromDesired(configState.State.Pending.Snapshot)
+			pending.EffectiveIP = configState.State.Pending.Snapshot.EffectiveIP
+		}
 		config.Pending = &RuntimePendingConfigTarget{
-			RequestID:   state.Pending.RequestID,
-			Snapshot:    ConfigSnapshotFromDesired(state.Pending.Snapshot),
-			EffectiveIP: state.Pending.Snapshot.EffectiveIP,
+			RequestID:   configState.State.Pending.RequestID,
+			Snapshot:    pending.Snapshot,
+			EffectiveIP: pending.EffectiveIP,
 		}
 	}
 

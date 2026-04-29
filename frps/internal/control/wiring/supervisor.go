@@ -38,11 +38,10 @@ func (s *Supervisor) AttachRuntimeSession(parent context.Context, state controls
 		return nil
 	}
 	localRuntime := &runtimeExecutor{
-		groupID:      runtime.GroupID,
-		conn:         runtime.Conn,
-		logger:       runtime.Logger,
-		session:      session,
-		desiredGroup: runtime.DesiredGroup,
+		groupID: runtime.GroupID,
+		conn:    runtime.Conn,
+		logger:  runtime.Logger,
+		session: session,
 	}
 	return s.AttachSession(parent, state, localRuntime)
 }

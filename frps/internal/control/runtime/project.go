@@ -105,11 +105,10 @@ func AttachProjectedRuntimeSession(parent context.Context, supervisor Supervisor
 	group, snapshot := session.CurrentGroupAndSnapshot()
 	group.Snapshot = snapshot
 	runtime := &RuntimeExecutor{
-		GroupID:      group.ID,
-		Conn:         conn,
-		Logger:       ScopedRuntimeLogger(baseLogger, session, group),
-		Session:      session,
-		DesiredGroup: group,
+		GroupID: group.ID,
+		Conn:    conn,
+		Logger:  ScopedRuntimeLogger(baseLogger, session, group),
+		Session: session,
 	}
 	return supervisor.AttachRuntimeSession(parent, ProjectedSessionState(session, conn), runtime)
 }

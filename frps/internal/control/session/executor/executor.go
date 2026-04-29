@@ -34,7 +34,6 @@ type Runtime interface {
 	TakeDrainedStreams() map[uint32]*controlruntime.Stream
 	TakeDrainedUDPSessions() []*controlruntime.UDPSession
 	AllowTunnelRuntimeStart()
-	PrepareConfigPush(requestID uint32, group controlruntime.GroupRuntime, snapshot controlruntime.ConfigSnapshot)
 	SessionID() uint64
 }
 
@@ -210,8 +209,6 @@ func (h ConfigPusher) Handle(runtime Runtime, action controlsession.ActionPushCo
 	snapshot := controlruntime.ConfigSnapshotFromDesired(action.Snapshot)
 	group := runtime.DesiredGroup()
 	group.Snapshot = snapshot
-
-	runtime.PrepareConfigPush(action.RequestID, group, snapshot)
 
 	sessionID := runtime.SessionID()
 	testhooks.Point("control.config_push.before_write",

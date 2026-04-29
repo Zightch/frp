@@ -74,7 +74,6 @@ func RequestAuditedSessionRuntimeRecovery(op RuntimeAuditedSessionRecoveryDeps, 
 				Key:    key,
 				Reason: "runtime audit detected missing listener",
 			}
-			op.ApplySessionEvent(sessionID, event)
 			dispatched = op.DispatchBySessionID(sessionID, event) || dispatched
 		}
 	}
@@ -85,8 +84,8 @@ func RequestAuditedSessionRuntimeRecovery(op RuntimeAuditedSessionRecoveryDeps, 
 	reconcileEvent := ReconcileRequested{
 		Reason: "runtime_audit_recover",
 	}
-	op.ApplySessionEvent(sessionID, reconcileEvent)
-	op.DispatchBySessionID(sessionID, reconcileEvent)
-	AwaitAuditedSessionRecovery(op, sessionID, targetTunnelIDs)
+	if op.DispatchBySessionID(sessionID, reconcileEvent) {
+		AwaitAuditedSessionRecovery(op, sessionID, targetTunnelIDs)
+	}
 	return nil
 }

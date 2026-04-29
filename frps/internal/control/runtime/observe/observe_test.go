@@ -41,10 +41,13 @@ func TestBuildProjectsAndSortsConstructedState(t *testing.T) {
 	}
 	sessions := []controlruntime.SessionSnapshot{
 		{
-			GroupID:      2,
-			SessionID:    20,
-			DesiredGroup: groups[0],
-			State:        controlsession.NewState(2, 20),
+			GroupID:   2,
+			SessionID: 20,
+			Config: controlruntime.ObservedConfigState{
+				State: controlsession.NewState(2, 20),
+				Group: groups[0],
+			},
+			State: controlsession.NewState(2, 20),
 			Runtime: controlruntime.ObservedState{
 				ListenersStarted: true,
 				Generation:       1,
@@ -58,10 +61,13 @@ func TestBuildProjectsAndSortsConstructedState(t *testing.T) {
 			},
 		},
 		{
-			GroupID:      1,
-			SessionID:    10,
-			DesiredGroup: groups[1],
-			State:        controlsession.NewState(1, 10),
+			GroupID:   1,
+			SessionID: 10,
+			Config: controlruntime.ObservedConfigState{
+				State: controlsession.NewState(1, 10),
+				Group: groups[1],
+			},
+			State: controlsession.NewState(1, 10),
 			Runtime: controlruntime.ObservedState{
 				ListenersStarted: true,
 				Generation:       2,

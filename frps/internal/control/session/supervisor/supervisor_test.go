@@ -141,13 +141,14 @@ func (r *testRuntime) RuntimeSession() controlruntime.SessionStateProjectionTarg
 	return r.session
 }
 func (r *testRuntime) RuntimeSnapshot(state controlsession.SessionState) controlruntime.SessionSnapshot {
+	configState, _ := r.session.ObserveState()
 	return controlruntime.SessionSnapshot{
-		GroupID:      r.groupID,
-		SessionID:    r.session.id,
-		Conn:         r.conn,
-		DesiredGroup: r.group,
-		State:        state,
-		Runtime:      r.runtimeState,
+		GroupID:   r.groupID,
+		SessionID: r.session.id,
+		Conn:      r.conn,
+		Config:    configState,
+		State:     state,
+		Runtime:   r.runtimeState,
 	}
 }
 

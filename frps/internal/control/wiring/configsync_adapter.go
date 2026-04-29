@@ -1,7 +1,6 @@
 package wiring
 
 import (
-	"errors"
 	"log/slog"
 	"net"
 
@@ -10,12 +9,6 @@ import (
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/internal/testhooks"
 	"github.com/zightch/frp/frps/pkg/protocol"
-)
-
-var (
-	errConfigUpdateInFlight  = errors.New("config update already in flight")
-	errUnexpectedConfigAck   = controlconfigsync.ErrUnexpectedAck
-	errConfigVersionMismatch = controlconfigsync.ErrVersionMismatch
 )
 
 func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *sessionState, agent *controlsession.Agent, frame protocol.Frame) error {
@@ -36,7 +29,7 @@ func (s *Server) handleConfigAck(conn net.Conn, logger *slog.Logger, session *se
 		testhooks.F("request_id", frame.RequestID),
 		testhooks.F("config_version", ack.ConfigVersion))
 
-	appliedConfig, err := session.acceptConfigAck(frame.RequestID, ack.ConfigVersion)
+	appliedConfig, err := session.PreviewAcceptedConfig(frame.RequestID, ack.ConfigVersion)
 	if err != nil {
 		return s.handleConfigAckAcceptError(conn, session, frame, ack, err)
 	}
@@ -86,7 +79,7 @@ func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group Gr
 	if err != nil {
 		return err
 	}
-	pushOp, err := session.prepareConfigPush(group, snapshot)
+	pushOp, err := session.PrepareConfigPush(group, snapshot)
 	if err != nil {
 		return err
 	}
@@ -95,9 +88,4 @@ func (s *Server) pushReloadConfig(conn net.Conn, session *sessionState, group Gr
 		return err
 	}
 	return nil
-}
-
-func (s *Server) applyAcceptedConfig(conn net.Conn, logger Logger, session *sessionState, _ sessionConfigApplyResult) error {
-	session.allowTunnelRuntimeStart()
-	return s.ensureTunnelListeners(conn, logger, session)
 }

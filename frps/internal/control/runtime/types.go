@@ -5,28 +5,20 @@ import (
 
 	controlruntimestate "github.com/zightch/frp/frps/internal/control/runtime/state"
 	"github.com/zightch/frp/frps/pkg/protocol"
-	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 // InitialServerRequestID is the initial server request ID constant.
 const InitialServerRequestID = controlruntimestate.InitialServerRequestID
 
-// ConfigPushOperation represents a pending config push operation.
-type ConfigPushOperation struct {
-	RequestID    uint32
-	Group        GroupRuntime
-	Snapshot     ConfigSnapshot
-	RecoveryMode testsupport.RecoveryMode
-}
-
-// ConfigApplyResult represents the result of applying a config.
-type ConfigApplyResult struct {
-	Group        GroupRuntime
-	Snapshot     ConfigSnapshot
-	RecoveryMode testsupport.RecoveryMode
-}
+var (
+	ErrConfigUpdateInFlight  = controlruntimestate.ErrConfigUpdateInFlight
+	ErrUnexpectedConfigAck   = controlruntimestate.ErrUnexpectedConfigAck
+	ErrConfigVersionMismatch = controlruntimestate.ErrConfigVersionMismatch
+)
 
 type (
+	ConfigPushOperation  = controlruntimestate.ConfigPushOperation
+	ConfigApplyResult    = controlruntimestate.ConfigApplyResult
 	ListenerState        = controlruntimestate.ListenerState
 	UDPState             = controlruntimestate.UDPState
 	RuntimeState         = controlruntimestate.RuntimeState

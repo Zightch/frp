@@ -85,10 +85,9 @@ func TestSupervisorSnapshotBuildsSessionAndActiveRuntimeGroups(t *testing.T) {
 	supervisor := NewSupervisor(controlsession.NoopExecutor{})
 	defer supervisor.Shutdown()
 	runtime := &runtimeExecutor{
-		groupID:      group.ID,
-		conn:         serverConn,
-		session:      session,
-		desiredGroup: group,
+		groupID: group.ID,
+		conn:    serverConn,
+		session: session,
 	}
 	if !supervisor.ReserveGroupSlot(group.ID, session.ID) {
 		t.Fatal("expected group slot reservation to succeed")
@@ -186,7 +185,7 @@ func TestRuntimeSnapshotIndexBuildsSessionTunnelAndConnectionTargets(t *testing.
 	if err != nil {
 		t.Fatalf("prepare public stream open: %v", err)
 	}
-	defer session.closePublicStream(streamOpen.streamID)
+	defer session.ClosePublicStream(streamOpen.streamID)
 
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
@@ -200,10 +199,9 @@ func TestRuntimeSnapshotIndexBuildsSessionTunnelAndConnectionTargets(t *testing.
 	supervisor := NewSupervisor(controlsession.NoopExecutor{})
 	defer supervisor.Shutdown()
 	runtime := &runtimeExecutor{
-		groupID:      group.ID,
-		conn:         serverConn,
-		session:      session,
-		desiredGroup: group,
+		groupID: group.ID,
+		conn:    serverConn,
+		session: session,
 	}
 	if agent := supervisor.AttachSession(context.Background(), state, runtime); agent == nil {
 		t.Fatal("expected supervisor to attach session")
@@ -311,9 +309,18 @@ func TestRuntimeSnapshotBuildsProjectionFromSessionState(t *testing.T) {
 	state.Applied = &controlsession.AppliedRuntimeSnapshot{Snapshot: applied}
 
 	target := controlruntime.NewRuntimeSessionTarget(controlruntime.SessionSnapshot{
-		GroupID:      group.ID,
-		SessionID:    11,
-		DesiredGroup: group,
+		GroupID:   group.ID,
+		SessionID: 11,
+		Config: controlruntime.ObservedConfigState{
+			State: state,
+			Group: GroupRuntime{
+				ID:          group.ID,
+				Name:        group.Name,
+				Enabled:     group.Enabled,
+				EffectiveIP: applied.EffectiveIP,
+				Snapshot:    controlruntime.ConfigSnapshotFromDesired(applied),
+			},
+		},
 		RecoveryMode: testsupport.RecoveryModePendingFullConfig,
 		State:        state,
 	})
@@ -345,7 +352,7 @@ func TestSessionConfigApplyTracksPendingAndAppliedRecoveryModes(t *testing.T) {
 	initialState.Conn = controlsession.ControlConnState{Attached: true, ConnID: "test-conn"}
 	initialState.Phase = controlsession.SessionPhaseOnline
 	initialState.RuntimePhase = controlsession.RuntimePhaseEmpty
-	session.setControlState(initialState)
+	session.SetControlState(initialState)
 
 	fullSnapshot := ConfigSnapshot{
 		Version: 2,
@@ -353,7 +360,7 @@ func TestSessionConfigApplyTracksPendingAndAppliedRecoveryModes(t *testing.T) {
 			{TunnelID: 7, Protocol: protocol.ProtocolTCP, TunnelFlags: protocol.TunnelFlagEnabled},
 		},
 	}
-	pushOp, err := session.prepareConfigPush(GroupRuntime{ID: 1, Name: "group-a"}, fullSnapshot)
+	pushOp, err := session.PrepareConfigPush(GroupRuntime{ID: 1, Name: "group-a"}, fullSnapshot)
 	if err != nil {
 		t.Fatalf("prepare config push: %v", err)
 	}
@@ -364,7 +371,7 @@ func TestSessionConfigApplyTracksPendingAndAppliedRecoveryModes(t *testing.T) {
 		t.Fatalf("expected pending full-config recovery mode, got %s", got)
 	}
 
-	applied, err := session.acceptConfigAck(pushOp.RequestID, fullSnapshot.Version)
+	applied, err := session.AcceptConfigAck(pushOp.RequestID, fullSnapshot.Version)
 	if err != nil {
 		t.Fatalf("accept config ack: %v", err)
 	}
@@ -376,7 +383,7 @@ func TestSessionConfigApplyTracksPendingAndAppliedRecoveryModes(t *testing.T) {
 	}
 
 	emptySnapshot := ConfigSnapshot{Version: 3}
-	emptyPush, err := session.prepareConfigPush(GroupRuntime{ID: 1, Name: "group-a"}, emptySnapshot)
+	emptyPush, err := session.PrepareConfigPush(GroupRuntime{ID: 1, Name: "group-a"}, emptySnapshot)
 	if err != nil {
 		t.Fatalf("prepare empty config push: %v", err)
 	}
@@ -384,7 +391,7 @@ func TestSessionConfigApplyTracksPendingAndAppliedRecoveryModes(t *testing.T) {
 		t.Fatalf("expected pending empty-config recovery mode, got %s", got)
 	}
 
-	emptyApplied, err := session.acceptConfigAck(emptyPush.RequestID, emptySnapshot.Version)
+	emptyApplied, err := session.AcceptConfigAck(emptyPush.RequestID, emptySnapshot.Version)
 	if err != nil {
 		t.Fatalf("accept empty config ack: %v", err)
 	}
@@ -477,7 +484,7 @@ func TestSessionPreparePublicStreamOpenBuildsFrameAndTracksConnectionMetadata(t 
 	if streamOpen.streamID == 0 || streamOpen.stream == nil {
 		t.Fatalf("unexpected stream open operation: %#v", streamOpen)
 	}
-	if session.publicStream(streamOpen.streamID) != streamOpen.stream {
+	if session.PublicStream(streamOpen.streamID) != streamOpen.stream {
 		t.Fatal("expected opened stream to be tracked on session")
 	}
 	if streamOpen.openFrame.Type != protocol.TypeStreamOpen || streamOpen.openFrame.StreamID != streamOpen.streamID || streamOpen.openFrame.RequestID == 0 {
@@ -498,7 +505,7 @@ func TestSessionPreparePublicStreamOpenBuildsFrameAndTracksConnectionMetadata(t 
 		t.Fatalf("unexpected stream.open opened_at_ms: %#v", streamOpenBody)
 	}
 
-	_, runtimeState := session.observeState()
+	_, runtimeState := session.ObserveState()
 	if runtimeState.ActiveStreamCount != 1 || runtimeState.ActiveUDPSessionCount != 0 {
 		t.Fatalf("unexpected runtime connection counts: %#v", runtimeState)
 	}
@@ -516,7 +523,7 @@ func TestSessionPreparePublicStreamOpenBuildsFrameAndTracksConnectionMetadata(t 
 		t.Fatalf("unexpected observed stream metadata: %#v", connection)
 	}
 
-	if !session.closePublicStream(streamOpen.streamID) {
+	if !session.ClosePublicStream(streamOpen.streamID) {
 		t.Fatal("expected stream close to succeed")
 	}
 }
@@ -574,7 +581,7 @@ func TestSessionPreparePublicUDPDatagramForwardReusesSessionAndTracksConnectionM
 		t.Fatalf("unexpected reused udp.data frame: %#v", secondForward.frames)
 	}
 
-	_, runtimeState := session.observeState()
+	_, runtimeState := session.ObserveState()
 	if runtimeState.ActiveStreamCount != 0 || runtimeState.ActiveUDPSessionCount != 1 {
 		t.Fatalf("unexpected runtime connection counts: %#v", runtimeState)
 	}

@@ -64,11 +64,6 @@ type RuntimeSessionEventDispatcher interface {
 	DispatchBySessionID(sessionID uint64, event Event) bool
 }
 
-// RuntimeSessionEventApplier applies an event to concrete session state.
-type RuntimeSessionEventApplier interface {
-	ApplySessionEvent(sessionID uint64, event Event)
-}
-
 // RuntimeAuditedRecoveryRequester requests audited listener recovery for a session.
 type RuntimeAuditedRecoveryRequester interface {
 	RequestAuditedSessionRuntimeRecovery(sessionID uint64, targetTunnels []protocol.TunnelEntry) error
@@ -97,7 +92,6 @@ type RuntimeScannedSessionRecoveryDeps interface {
 // RuntimeAuditedSessionRecoveryDeps are the registry operations needed by audited recovery.
 type RuntimeAuditedSessionRecoveryDeps interface {
 	RuntimeSessionStateProvider
-	RuntimeSessionEventApplier
 	RuntimeSessionEventDispatcher
 	RuntimeExecutorProvider
 }

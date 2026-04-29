@@ -32,7 +32,7 @@ func (t sessionRuntimeStartTarget) SessionActiveRuntimeTunnelIDs() map[uint32]st
 }
 
 func (t sessionRuntimeStartTarget) SessionResetRuntimeGenerationIfIdle() {
-	t.session.resetRuntimeGenerationIfIdle()
+	t.session.ResetRuntimeGenerationIfIdle()
 }
 
 func (t sessionRuntimeStartTarget) SessionSetRecoveryMode(mode testsupport.RecoveryMode) {
@@ -40,7 +40,7 @@ func (t sessionRuntimeStartTarget) SessionSetRecoveryMode(mode testsupport.Recov
 }
 
 func (t sessionRuntimeStartTarget) SessionAttachTunnelListeners(configVersion uint64, tunnelID uint32, tcpListeners []net.Listener, udpListeners []UDPListener) (bool, bool) {
-	return t.session.attachTunnelListeners(configVersion, tunnelID, tcpListeners, udpListeners)
+	return t.session.AttachTunnelListeners(configVersion, tunnelID, tcpListeners, udpListeners)
 }
 
 func (t sessionRuntimeStartTarget) SessionHasActiveRuntimeListeners() bool {

@@ -95,11 +95,10 @@ func (s *Server) RuntimeExecutor(sessionID uint64) *controlruntime.RuntimeExecut
 		return nil
 	}
 	return &controlruntime.RuntimeExecutor{
-		GroupID:      runtime.groupID,
-		Conn:         runtime.conn,
-		Logger:       runtime.logger,
-		Session:      runtime.session,
-		DesiredGroup: runtime.desiredGroup,
+		GroupID: runtime.groupID,
+		Conn:    runtime.conn,
+		Logger:  runtime.logger,
+		Session: runtime.session,
 	}
 }
 
@@ -115,9 +114,7 @@ func (s *Server) ApplyActiveSessionConfigRecovery(groupID int64, group controlru
 	if !ok || active == nil || active.session == nil {
 		return nil
 	}
-	if runtime := s.runtimeExecutor(active.session.ID); runtime != nil {
-		runtime.setDesiredGroup(group)
-	}
+	active.session.SetDesiredGroupRuntime(group)
 	s.supervisor.UpdateDesiredRuntime(groupID, controlruntime.DesiredRuntimeFromGroup(group))
 	return nil
 }
@@ -127,16 +124,6 @@ func (s *Server) SessionState(sessionID uint64) (controlruntime.SessionState, bo
 		return controlruntime.SessionState{}, false
 	}
 	return s.supervisor.SessionState(sessionID)
-}
-
-func (s *Server) ApplySessionEvent(sessionID uint64, event controlruntime.Event) {
-	if s == nil {
-		return
-	}
-	runtime := s.runtimeExecutor(sessionID)
-	if runtime != nil && runtime.session != nil {
-		runtime.session.applyControlEvent(event)
-	}
 }
 
 func convertServeContext(serve controlruntime.TunnelRuntimeServeContext) tunnelRuntimeServeContext {
