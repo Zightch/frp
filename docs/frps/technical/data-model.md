@@ -85,6 +85,7 @@
 
 - `listen_tls_mode = off | tls | mtls`
 - `backend_tls_mode = off | tls | mtls`
+- tunnel TLS 字段只对 `protocol=tcp` 且 `remote_type=single` 的隧道生效
 - `listen_tls_*` 只作用于外网客户端到 `frps` 隧道监听器
 - `backend_tls_*` 只作用于 `frpc` 到内网后端目标
 - `listen_tls_server_cert_asset_id`、`listen_tls_client_ca_asset_ids`、`backend_tls_client_cert_asset_id` 和 `backend_tls_ca_asset_ids` 是管理 API 字段；实际绑定存放在 `certificate_asset_usages`，不是 `tunnels` 表列

@@ -62,21 +62,17 @@ func normalizeAssetIDs(values []int64, field string) ([]int64, error) {
 }
 
 func (s *Service) validateTunnelTLS(ctx context.Context, tunnel normalizedTunnel) error {
-	if tunnel.Protocol != "tcp" {
-		if tunnel.ListenTLSMode != tunnelTLSModeOff {
-			return &Error{Status: 400, Message: "listen tls is only supported for tcp tunnels"}
-		}
-		if tunnel.BackendTLSMode != tunnelTLSModeOff {
-			return &Error{Status: 400, Message: "backend tls is only supported for tcp tunnels"}
-		}
-		return nil
-	}
-
 	if tunnel.ListenTLSMode == "" {
 		return &Error{Status: 400, Message: "listen_tls_mode must be off, tls, or mtls"}
 	}
 	if tunnel.BackendTLSMode == "" {
 		return &Error{Status: 400, Message: "backend_tls_mode must be off, tls, or mtls"}
+	}
+	if !tunnelSupportsTLS(tunnel) && tunnelHasTLSConfig(tunnel) {
+		return &Error{Status: 400, Message: "tunnel tls is only supported for single-port tcp tunnels"}
+	}
+	if !tunnelSupportsTLS(tunnel) {
+		return nil
 	}
 
 	if tunnel.ListenTLSServerCertAssetID != nil {
@@ -118,6 +114,23 @@ func (s *Service) validateTunnelTLS(ctx context.Context, tunnel normalizedTunnel
 	}
 
 	return nil
+}
+
+func tunnelSupportsTLS(tunnel normalizedTunnel) bool {
+	return tunnel.Protocol == "tcp" && tunnel.RemoteType == "single"
+}
+
+func tunnelHasTLSConfig(tunnel normalizedTunnel) bool {
+	return tunnel.ListenTLSMode != tunnelTLSModeOff ||
+		tunnel.ListenTLSLoadSystemCA ||
+		tunnel.ListenTLSServerCertAssetID != nil ||
+		len(tunnel.ListenTLSClientCAAssetIDs) > 0 ||
+		tunnel.BackendTLSMode != tunnelTLSModeOff ||
+		tunnel.BackendTLSServerName != "" ||
+		tunnel.BackendTLSLoadSystemCA ||
+		tunnel.BackendTLSInsecureSkipVerify ||
+		tunnel.BackendTLSClientCertAssetID != nil ||
+		len(tunnel.BackendTLSCAAssetIDs) > 0
 }
 
 func (s *Service) validateTunnelCertificateAsset(ctx context.Context, assetID int64, field string) error {

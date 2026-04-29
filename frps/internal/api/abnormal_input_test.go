@@ -156,6 +156,43 @@ func TestCreateTunnelRejectsInvalidInputMatrix(t *testing.T) {
 			wantStatus:  http.StatusConflict,
 			wantMessage: "tunnel name already exists in the selected proxy group",
 		},
+		{
+			name: "listen tls on tcp range tunnel",
+			body: map[string]any{
+				"group_id":        groupID,
+				"name":            "range-listen-tls",
+				"protocol":        "tcp",
+				"remote_type":     "range",
+				"remote_start":    20020,
+				"remote_end":      20021,
+				"local_host":      "127.0.0.1",
+				"local_start":     8100,
+				"local_end":       8101,
+				"listen_tls_mode": "tls",
+				"enabled":         true,
+			},
+			wantStatus:  http.StatusBadRequest,
+			wantMessage: "tunnel tls is only supported for single-port tcp tunnels",
+		},
+		{
+			name: "backend tls on udp tunnel",
+			body: map[string]any{
+				"group_id":                         groupID,
+				"name":                             "udp-backend-tls",
+				"protocol":                         "udp",
+				"remote_type":                      "single",
+				"remote_start":                     20022,
+				"remote_end":                       20022,
+				"local_host":                       "127.0.0.1",
+				"local_start":                      8102,
+				"local_end":                        8102,
+				"backend_tls_mode":                 "tls",
+				"backend_tls_insecure_skip_verify": true,
+				"enabled":                          true,
+			},
+			wantStatus:  http.StatusBadRequest,
+			wantMessage: "tunnel tls is only supported for single-port tcp tunnels",
+		},
 	}
 
 	for _, tc := range cases {

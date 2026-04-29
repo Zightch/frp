@@ -42,6 +42,8 @@
 
 隧道写接口当前直接承载 tunnel TLS 配置，不再额外拆分单独的 tunnel 证书绑定接口。
 
+Tunnel TLS 仅支持 `protocol=tcp` 且 `remote_type=single` 的单端口 TCP 隧道。
+
 `POST /api/v1/tunnels` 与 `PATCH /api/v1/tunnels/{id}` 当前支持的 TLS 字段：
 
 - `listen_tls_mode`

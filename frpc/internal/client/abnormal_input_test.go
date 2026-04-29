@@ -203,7 +203,28 @@ func TestClientApplyConfigPushRejectsInvalidSnapshotsWithoutAckOrRuntimeTeardown
 					},
 				},
 			},
-			wantMessage: "backend tls is only supported for tcp tunnels",
+			wantMessage: "backend tls is only supported for single-port tcp tunnels",
+		},
+		{
+			name: "backend tls on tcp range tunnel",
+			push: protocol.ConfigPush{
+				ConfigVersion: 2,
+				GeneratedAtMs: 200,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:       7,
+						Protocol:       protocol.ProtocolTCP,
+						TunnelFlags:    protocol.TunnelFlagEnabled | protocol.TunnelFlagRange,
+						RemoteStart:    20000,
+						RemoteEnd:      20001,
+						LocalHost:      mustHost(t, "127.0.0.1"),
+						LocalStart:     5000,
+						LocalEnd:       5001,
+						BackendTLSMode: protocol.TunnelTLSModeTLS,
+					},
+				},
+			},
+			wantMessage: "backend tls is only supported for single-port tcp tunnels",
 		},
 		{
 			name: "backend mtls missing client cert",

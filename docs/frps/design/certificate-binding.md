@@ -26,6 +26,7 @@
 - 不做旧协议兼容层。
 - 不做 SNI 多证书选择。
 - 不做 UDP tunnel TLS。
+- 不做 TCP range tunnel TLS；tunnel TLS 只收束在单端口 TCP 隧道。
 - 不做 tunnel 级独立资源接口；当前直接复用 `tunnels` 资源承载 TLS 配置。
 
 ## 3. 数据模型
@@ -220,13 +221,13 @@ CA 池规则：
 
 ### 7.1 监听侧
 
-- 只允许 `protocol=tcp`
+- 只允许 `protocol=tcp` 且 `remote_type=single`
 - `listen_tls_mode != off` 时必须绑定 `tunnel_listen_server_cert`
 - `listen_tls_mode = mtls` 时必须有客户端 CA 信任来源
 
 ### 7.2 Backend 侧
 
-- 只允许 `protocol=tcp`
+- 只允许 `protocol=tcp` 且 `remote_type=single`
 - `backend_tls_mode = mtls` 时必须绑定 `tunnel_backend_client_cert`
 - `backend_tls_mode != off` 且 `backend_tls_insecure_skip_verify=false` 时，必须存在服务端信任来源
 
@@ -256,4 +257,4 @@ CA 池规则：
 - 已支持 tunnel 级多 CA 池
 - 已支持 `frps` 监听侧 TLS / mTLS
 - 已支持 `frpc` backend 侧 TLS / mTLS / insecure skip verify
-- 当前仍不支持 UDP tunnel TLS、SNI 多证书、额外的 tunnel 级独立证书资源接口
+- 当前仍不支持 UDP tunnel TLS、TCP range tunnel TLS、SNI 多证书、额外的 tunnel 级独立证书资源接口

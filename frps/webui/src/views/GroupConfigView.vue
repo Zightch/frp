@@ -148,11 +148,14 @@ const frpcTLSUsage = computed(() =>
 
 const backendTLSWarning = computed(() => {
   if (!selectedGroup.value) return null
+  if (!tunnelFormSupportsTLS.value) return null
   if (selectedGroup.value.control_transport_security !== 'plain') return null
   if (tunnelForm.value.backend_tls_mode === 'off') return null
   if (!tunnelForm.value.backend_tls_client_cert_asset_id && tunnelForm.value.backend_tls_ca_asset_ids.length === 0) return null
   return '当前分组 control_transport_security=plain，backend TLS 证书或 CA 会通过明文控制连接下发给 frpc，建议改为 tls_required。'
 })
+
+const tunnelFormSupportsTLS = computed(() => supportsTunnelTLS(tunnelForm.value))
 
 // Lifecycle
 onMounted(async () => {
@@ -286,6 +289,10 @@ function formatLocalAddr(tunnel: Tunnel): string {
   return `${tunnel.local_host}:${port}`
 }
 
+function supportsTunnelTLS(tunnel: Pick<Tunnel, 'protocol' | 'remote_type'>): boolean {
+  return tunnel.protocol === 'tcp' && tunnel.remote_type === 'single'
+}
+
 // Certificate asset helpers
 function getServerCertificateOptions(): CertificateAsset[] {
   return certificateAssets.value.filter(
@@ -332,6 +339,34 @@ function createTunnelForm(): TunnelFormModel {
     // Common
     enabled: true
   }
+}
+
+function resetTunnelTLSFields() {
+  tunnelForm.value.listen_tls_mode = 'off'
+  tunnelForm.value.listen_tls_load_system_ca = false
+  tunnelForm.value.listen_tls_server_cert_asset_id = null
+  tunnelForm.value.listen_tls_client_ca_asset_ids = []
+  tunnelForm.value.backend_tls_mode = 'off'
+  tunnelForm.value.backend_tls_server_name = ''
+  tunnelForm.value.backend_tls_load_system_ca = true
+  tunnelForm.value.backend_tls_insecure_skip_verify = false
+  tunnelForm.value.backend_tls_client_cert_asset_id = null
+  tunnelForm.value.backend_tls_ca_asset_ids = []
+}
+
+function handleTunnelProtocolChange() {
+  if (!tunnelFormSupportsTLS.value) {
+    resetTunnelTLSFields()
+  }
+  validateTLSFields()
+}
+
+function handleTunnelRemoteTypeChange() {
+  if (!tunnelFormSupportsTLS.value) {
+    resetTunnelTLSFields()
+  }
+  validateTunnelPortFields()
+  validateTLSFields()
 }
 
 function createRequiredTextValidator(label: string) {
@@ -471,7 +506,7 @@ function validateTunnelPortFields() {
 
 // TLS validation functions
 function validateListenTLSMode() {
-  if (tunnelForm.value.protocol !== 'tcp') {
+  if (!tunnelFormSupportsTLS.value) {
     return Promise.resolve()
   }
   if (tunnelForm.value.listen_tls_mode === 'mtls') {
@@ -483,7 +518,7 @@ function validateListenTLSMode() {
 }
 
 function validateListenTLSServerCert() {
-  if (tunnelForm.value.protocol !== 'tcp') {
+  if (!tunnelFormSupportsTLS.value) {
     return Promise.resolve()
   }
   if (tunnelForm.value.listen_tls_mode !== 'off' && !tunnelForm.value.listen_tls_server_cert_asset_id) {
@@ -493,7 +528,7 @@ function validateListenTLSServerCert() {
 }
 
 function validateBackendTLSMode() {
-  if (tunnelForm.value.protocol !== 'tcp') {
+  if (!tunnelFormSupportsTLS.value) {
     return Promise.resolve()
   }
   if (tunnelForm.value.backend_tls_mode !== 'off' && !tunnelForm.value.backend_tls_insecure_skip_verify) {
@@ -505,7 +540,7 @@ function validateBackendTLSMode() {
 }
 
 function validateBackendTLSClientCert() {
-  if (tunnelForm.value.protocol !== 'tcp') {
+  if (!tunnelFormSupportsTLS.value) {
     return Promise.resolve()
   }
   if (tunnelForm.value.backend_tls_mode === 'mtls' && !tunnelForm.value.backend_tls_client_cert_asset_id) {
@@ -695,6 +730,7 @@ function buildTunnelPayload(groupId: number): TunnelPayload {
   const isRange = tunnelForm.value.remote_type === 'range'
   const remoteStart = tunnelForm.value.remote_start as number
   const localStart = tunnelForm.value.local_start as number
+  const supportsTLS = tunnelFormSupportsTLS.value
 
   const payload: TunnelPayload = {
     group_id: groupId,
@@ -706,15 +742,14 @@ function buildTunnelPayload(groupId: number): TunnelPayload {
     local_host: tunnelForm.value.local_host.trim(),
     local_start: localStart,
     local_end: isRange ? (tunnelForm.value.local_end as number) : localStart,
-    // Listen TLS
-    listen_tls_mode: tunnelForm.value.protocol === 'tcp' ? tunnelForm.value.listen_tls_mode : 'off',
-    backend_tls_mode: tunnelForm.value.protocol === 'tcp' ? tunnelForm.value.backend_tls_mode : 'off',
+    // Tunnel TLS is scoped to single-port TCP tunnels.
+    listen_tls_mode: supportsTLS ? tunnelForm.value.listen_tls_mode : 'off',
+    backend_tls_mode: supportsTLS ? tunnelForm.value.backend_tls_mode : 'off',
     // Common
     enabled: tunnelForm.value.enabled
   }
 
-  // Only include TLS fields for TCP protocol
-  if (payload.protocol === 'tcp') {
+  if (supportsTLS) {
     // Listen TLS
     if (payload.listen_tls_mode !== 'off') {
       payload.listen_tls_server_cert_asset_id = tunnelForm.value.listen_tls_server_cert_asset_id ?? undefined
@@ -1034,7 +1069,7 @@ function copyKey(value: string) {
                 </el-table-column>
                 <el-table-column label="TLS" width="80" align="center">
                   <template #default="{ row }">
-                    <template v-if="row.protocol === 'tcp' && (row.listen_tls_mode !== 'off' || row.backend_tls_mode !== 'off')">
+                    <template v-if="supportsTunnelTLS(row) && (row.listen_tls_mode !== 'off' || row.backend_tls_mode !== 'off')">
                       <el-tooltip placement="top">
                         <template #content>
                           <div v-if="row.listen_tls_mode !== 'off'">
@@ -1197,7 +1232,7 @@ function copyKey(value: string) {
           <el-input v-model="tunnelForm.name" placeholder="请输入隧道名称" />
         </el-form-item>
         <el-form-item label="协议" prop="protocol">
-          <el-select v-model="tunnelForm.protocol" class="full-width">
+          <el-select v-model="tunnelForm.protocol" class="full-width" @change="handleTunnelProtocolChange">
             <el-option label="TCP" value="tcp" />
             <el-option label="UDP" value="udp" />
           </el-select>
@@ -1206,7 +1241,7 @@ function copyKey(value: string) {
           <el-select
             v-model="tunnelForm.remote_type"
             class="full-width"
-            @change="validateTunnelPortFields"
+            @change="handleTunnelRemoteTypeChange"
           >
             <el-option label="单端口" value="single" />
             <el-option label="端口范围" value="range" />
@@ -1263,8 +1298,8 @@ function copyKey(value: string) {
           <el-switch v-model="tunnelForm.enabled" />
         </el-form-item>
 
-        <!-- TLS Configuration (TCP only) -->
-        <template v-if="tunnelForm.protocol === 'tcp'">
+        <!-- TLS Configuration (single-port TCP only) -->
+        <template v-if="tunnelFormSupportsTLS">
           <el-divider content-position="left">监听 TLS</el-divider>
           <el-form-item label="模式" prop="listen_tls_mode">
             <el-select v-model="tunnelForm.listen_tls_mode" class="full-width" @change="validateTLSFields">

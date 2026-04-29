@@ -274,6 +274,8 @@ interface Tunnel {
 
 ### Tunnel TLS 选项来源
 
+Tunnel TLS 表单仅在 `protocol='tcp'` 且 `remote_type='single'` 时展示；UDP 和端口范围隧道不提交 tunnel TLS 字段。
+
 隧道编辑表单后续接入时，证书选择不需要单独的新接口，直接复用：
 
 - `GET /api/v1/certificate-assets`

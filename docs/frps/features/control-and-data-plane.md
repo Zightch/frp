@@ -55,7 +55,7 @@ frps -> start listeners
 - `generatedAtMs`
 - `tunnels`
 
-当前 `tunnels` 快照除了基础端口映射，还会按需下发 backend TLS 信息：
+当前 `tunnels` 快照除了基础端口映射，还会按需为单端口 TCP 隧道下发 backend TLS 信息：
 
 - `backend_tls_mode`
 - `backend_tls_server_name`

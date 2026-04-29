@@ -72,7 +72,7 @@
 - `single` 模式要求本地和远端都为单端口
 - `range` 模式要求本地和远端跨度一致
 - `local_host` 必须是合法 IP 或 hostname
-- 隧道 TLS 当前只支持 `protocol=tcp`
+- 隧道 TLS 当前只支持 `protocol=tcp` 且 `remote_type=single`
 - `listen_tls_mode = off | tls | mtls`
 - `backend_tls_mode = off | tls | mtls`
 - `listen_tls_mode != off` 时必须绑定 `listen_tls_server_cert_asset_id`

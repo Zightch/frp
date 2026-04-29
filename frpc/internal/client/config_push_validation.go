@@ -66,8 +66,9 @@ func validateConfigPushTunnel(tunnel protocol.TunnelEntry) error {
 	default:
 		return fmt.Errorf("unsupported backend tls mode %d", tunnel.BackendTLSMode)
 	}
-	if tunnel.Protocol != protocol.ProtocolTCP && tunnel.BackendTLSMode != protocol.TunnelTLSModeOff {
-		return fmt.Errorf("backend tls is only supported for tcp tunnels")
+	if tunnel.BackendTLSMode != protocol.TunnelTLSModeOff &&
+		(tunnel.Protocol != protocol.ProtocolTCP || tunnel.TunnelFlags&protocol.TunnelFlagRange != 0) {
+		return fmt.Errorf("backend tls is only supported for single-port tcp tunnels")
 	}
 	if tunnel.BackendTLSMode == protocol.TunnelTLSModeMTLS {
 		if tunnel.BackendTLSClientCertPEM == "" || tunnel.BackendTLSClientKeyPEM == "" {
