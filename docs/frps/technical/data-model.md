@@ -7,7 +7,8 @@
 - 持久化配置
   - 数据库中的 `proxy_groups`、`tunnels`、`certificate_assets`、`certificate_asset_relations`、`certificate_asset_usages`
 - 运行时配置
-  - `internal/control/repository.go` 投影出来的 `GroupRuntime` / `ConfigSnapshot`
+  - `internal/control/repo` 从 SQL row 投影出来的 `GroupRuntime` / `ConfigSnapshot`
+  - `internal/control/domain/runtime` 定义运行时模型和 desired/applied snapshot 转换
   - `internal/certassets` 准备出来的系统 CA 和资产运行时
 
 ## `proxy_groups`
@@ -86,6 +87,7 @@
 - `backend_tls_mode = off | tls | mtls`
 - `listen_tls_*` 只作用于外网客户端到 `frps` 隧道监听器
 - `backend_tls_*` 只作用于 `frpc` 到内网后端目标
+- `listen_tls_server_cert_asset_id`、`listen_tls_client_ca_asset_ids`、`backend_tls_client_cert_asset_id` 和 `backend_tls_ca_asset_ids` 是管理 API 字段；实际绑定存放在 `certificate_asset_usages`，不是 `tunnels` 表列
 
 ## `certificate_assets`
 

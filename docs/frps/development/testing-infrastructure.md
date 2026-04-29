@@ -118,20 +118,20 @@ manual clock / scheduler 的时间语义固定如下：
 - 所有写入协议或运行时状态的时间戳都必须来自同一个 `clock.Now()`，包括 `config.generated_at`、`config.ack.applied_at`、heartbeat 时间戳、UDP `lastActive`、网络快照 `captured_at` 等，避免测试里一半是手动时间、一半是真实墙钟。
 - 需要超时 `context` 的路径，禁止继续直接调用 `context.WithTimeout`；改为走 clock-aware helper 或 scheduler 包装，让测试可在手动时间下触发超时。
 
-当前与端口冲突检查、热更新和会话恢复直接相关的第一批落点如下：
+当前与端口冲突检查、热更新和会话恢复直接相关的落点如下：
 
-- `frps/internal/control/runtime_scan.go`：`startRuntimeIssuePolling()` 的轮询周期先切到 manual ticker / scheduler，这是当前“未监听 tunnel 轮询恢复”最直接的时间入口。
+- `frps/internal/control/runtime/scan.go` 与 `frps/internal/control/wiring/runtime_scan_adapter.go`：runtime scan 轮询通过 scheduler 推进，这是“未监听 tunnel 轮询恢复”最直接的时间入口。
 - `frps/internal/system/network_snapshot.go`：`poll()` 的本机快照刷新周期切到同一套 scheduler，后续 `effective_ip` 变化、非法地址恢复、地址抖动场景都依赖它可手动推进。
 - `frpc/internal/client/client.go`：`Run()` 的重连 backoff 改成 manual timer，保证断线、踢下线、空配置保活后的重连测试不靠真实秒级等待。
 - `frpc/internal/client/session.go`：`heartbeatLoop()` 的周期发送改成 manual ticker；`frpc/internal/client/client.go` 的 `config.ack.applied_at` 也改走同一时钟。
-- `frps/internal/control/tcp_bridge.go`：等待 `stream.ready` 的打开超时改成 manual timer，保证“旧 session 晚到 / 新 session 接管 / stream open timeout”类场景可精确触发。
-- `frps/internal/control/udp.go`：UDP idle sweep、`lastActive` 更新时间统一走同一时钟，后续空闲清理与重入竞争才能稳定复现。
-- `frps/internal/control/repository.go`、`frps/internal/control/server.go`、`frps/internal/system/network_collect.go`：凡是会写入 `GeneratedAtMs`、heartbeat pong 时间戳、本机快照采集时间的地方，都要改为从注入时钟取值，避免版本号和状态戳在测试中漂移。
+- `frps/internal/control/runtime/serve/tcp/tcp.go` 与 `frps/internal/control/wiring/data_plane_adapter.go`：等待 `stream.ready` 的打开超时走可控时间，保证“旧 session 晚到 / 新 session 接管 / stream open timeout”类场景可精确触发。
+- `frps/internal/control/runtime/serve/udp/udp.go` 与 `frps/internal/control/wiring/data_plane_adapter.go`：UDP idle sweep、`lastActive` 更新时间统一走同一时钟，后续空闲清理与重入竞争才能稳定复现。
+- `frps/internal/control/repo/runtime.go`、`frps/internal/control/wiring/server.go`、`frps/internal/system/network_collect.go`：凡是会写入 `GeneratedAtMs`、heartbeat pong 时间戳、本机快照采集时间的地方，都要从注入时钟取值，避免版本号和状态戳在测试中漂移。
 
 当前先不把所有“带 timeout 的标准库调用”都强塞进 manual clock：
 
 - `frps/pkg/transport/transport.go` 的 `SetReadDeadline` / `SetWriteDeadline` 依赖底层 `net.Conn` 和内核时间；需要确定性测试时，应配套 fake conn / fake transport，而不是只改 `clock`。
-- `frps/internal/control/config.go`、`frps/internal/app/app.go` 里的 `context.WithTimeout`、HTTP shutdown timeout 等可以作为第二批接入点；等 fake transport / fake server harness 到位后再一起收口，避免只改一半接口。
+- `frps/internal/control/wiring/configsync_adapter.go`、`frps/internal/control/wiring/refresh.go`、`frps/internal/app/app.go` 里的 `context.WithTimeout`、HTTP shutdown timeout 等可以作为第二批接入点；等 fake transport / fake server harness 到位后再一起收口，避免只改一半接口。
 
 测试编排方式固定如下：
 
@@ -151,7 +151,7 @@ manual clock / scheduler 的时间语义固定如下：
 
 listener 相关测试统一按“正式启动路径和 runtime probe 路径共用同一套 bind seam”设计，避免一边 fake、一边还残留真实 `net.Listen`：
 
-- `frps/internal/control/listeners.go` 的 `startTunnelListeners()` 和 `closeStartedTunnelListeners()`，以及 `frps/internal/control/runtime_scan.go` 的 `probeTunnelRuntimeIssue()`，后续都必须改走同一个注入的 listener factory / binder。
+- `frps/internal/control/runtime/listener/*`、`frps/internal/control/bind/*` 和 `frps/internal/control/runtime/scan.go` 共用注入的 listener factory / binder。
 - 第一版注入点至少同时覆盖：
   - TCP `Listen`
   - UDP `ResolveUDPAddr + ListenUDP`
@@ -217,25 +217,31 @@ const (
   3. 用 manual `Advance(...)` 推进轮询或重试。
   4. 用 `WaitIdle()` 和状态断言收敛，再决定是否放行下一道 barrier。
 
-第一批需要打开 listener seam 的代码位置如下：
+当前 listener seam 的主要代码位置如下：
 
-- `frps/internal/control/listeners.go`
-  - `startTunnelListeners()`
-  - `closeStartedTunnelListeners()`
+- `frps/internal/control/runtime/listener/*`
+  - `StartTunnelListeners()`
+  - `CloseStartedTunnelListeners()`
+  - `ProbeTunnelRuntimeIssue()`
+- `frps/internal/control/wiring/runtime_start_adapter.go`
   - `ensureTunnelListeners()`
-- `frps/internal/control/runtime_scan.go`
+  - `startTunnelListeners()`
+- `frps/internal/control/runtime/scan.go`
+  - `ScanGroupRuntimeIssues()`
+  - `ScanNonListeningTunnelRuntimeIssues()`
+- `frps/internal/control/wiring/runtime_scan_adapter.go`
   - `probeTunnelRuntimeIssue()`
-  - `scanGroupRuntimeIssues()`
   - `recoverScannedActiveSessionTunnels()`
-- `frps/internal/control/session.go`
-  - `freezeTunnelRuntime()`
-  - `resetTunnelRuntime()`
+- `frps/internal/control/runtime/state/types.go`
+  - `FreezeTunnelRuntime()`
+  - `AllowTunnelRuntimeStart()`
+- `frps/internal/control/wiring/session_shutdown.go`
   - `shutdownSession()`
 
 其中职责边界固定如下：
 
 - `startTunnelListeners()` 和 `probeTunnelRuntimeIssue()` 只负责声明“我要按什么 key 绑定、这是 probe 还是 start”，不各自私下直接调用 `net.Listen`。
-- `closeStartedTunnelListeners()` 统一经由注入 listener handle 关闭，不能一部分走 fake、一部分还直接 `.Close()` 真 listener。
+- `CloseStartedTunnelListeners()` 统一经由注入 listener handle 关闭，不能一部分走 fake、一部分还直接 `.Close()` 真 listener。
 - `serveTunnelListener()` / `serveUDPTunnelListener()` 当前重点仍在 I/O；第一版 listener 故障注入不要求 fake 完整 accept/read 数据面，只要能稳定覆盖 bind/close 生命周期即可。
 
 必须直接可观测的测试态信息固定如下，后续测试不得只靠日志判断：
@@ -257,8 +263,8 @@ const (
 
 网络快照相关测试统一按“采集、发布、消费走同一套 fake snapshot seam”设计，避免 `Start()/poll()` 一套数据源、`resolveGroupEffectiveIP()` 又从另一套状态猜当前本机地址：
 
-- `frps/internal/system/network_snapshot.go` 后续需要把 `collector.Collect()`、轮询驱动、`storeSnapshot()` 发布边界统一收口到可注入 seam；测试既能决定“这一轮采集返回什么”，也能决定“采集结果何时对外可见”。
-- `frps/internal/control/listeners.go` 的 `resolveGroupEffectiveIP()`、`frps/internal/control/runtime_scan.go` 的 `scanGroupRuntimeIssues()` / `recoverScannedActiveSessionTunnels()`、`frps/internal/control/refresh.go` 的 `runtimeRefreshSnapshot()` / `RefreshGroup()` 都必须继续只消费同一个 `SnapshotReader.Current()` 视图，不能为了测试再额外偷读别的 fake 状态。
+- `frps/internal/system/network_snapshot.go` 把 `collector.Collect()`、轮询驱动、`storeSnapshot()` 发布边界统一收口到可注入 seam；测试既能决定“这一轮采集返回什么”，也能决定“采集结果何时对外可见”。
+- `frps/internal/control/wiring/runtime_start_adapter.go` 的 `resolveGroupEffectiveIP()`、`frps/internal/control/runtime/scan.go` 的 `ScanGroupRuntimeIssues()`、`frps/internal/control/wiring/runtime_scan_adapter.go` 的 `recoverScannedActiveSessionTunnels()`、`frps/internal/control/wiring/refresh.go` 的 `runtimeRefreshSnapshot()` / `RefreshGroup()` 都必须继续只消费同一个 `SnapshotReader.Current()` 视图，不能为了测试再额外偷读别的 fake 状态。
 - 第一版目标不是模拟整个 OS 网卡栈，而是稳定控制“当前 `frps` 认为哪些 IP 属于本机、这一认知何时切换、切换前后有没有错误或抖动”。
 
 第一版边界建议固定为“两层 provider + 一层发布控制”：
@@ -306,7 +312,7 @@ type Snapshot struct {
   4. 用 `Release()` 控制发布或读取时机。
   5. 用状态断言确认 runtime issue、pending config、listener 集合和 session 状态收敛，再进入下一步。
 
-第一批需要打开 snapshot seam 的代码位置如下：
+当前 snapshot seam 的主要代码位置如下：
 
 - `frps/internal/system/network_snapshot.go`
   - `Start()`
@@ -315,12 +321,14 @@ type Snapshot struct {
 - `frps/internal/system/network_collect.go`
   - platform collector 的 `Collect()`
   - `NormalizeListenIP()` / `IsSpecialListenIP()` 所在解析路径
-- `frps/internal/control/listeners.go`
+- `frps/internal/control/wiring/runtime_start_adapter.go`
   - `resolveGroupEffectiveIP()`
-- `frps/internal/control/runtime_scan.go`
-  - `scanGroupRuntimeIssues()`
+- `frps/internal/control/runtime/scan.go`
+  - `ScanGroupRuntimeIssues()`
+  - `ScanNonListeningTunnelRuntimeIssues()`
+- `frps/internal/control/wiring/runtime_scan_adapter.go`
   - `recoverScannedActiveSessionTunnels()`
-- `frps/internal/control/refresh.go`
+- `frps/internal/control/wiring/refresh.go`
   - `RefreshGroup()`
   - `runtimeRefreshSnapshot()`
 
@@ -344,7 +352,7 @@ type Snapshot struct {
 
 - 当前状态：已可用（最小实现）；已落地共享 `FrameIO` seam、scripted frame transport / conn pair、基础 delay/drop/duplicate/error 规则，以及服务端/客户端读写路径接线。更复杂的跨进程控制接口、半关闭细节和旧连接残帧剧本仍待增强。
 
-- `frps/internal/control/server.go` 的 `readFrameWithTimeout()` / `writeFrame()`、`frps/internal/control/auth.go` 的登录握手、`frps/internal/control/config.go` 的 `pushReloadConfig()` / `handleConfigAck()`，以及 `frpc/internal/client/client.go` 的 `readMessage()` / `writeMessage()`、`frpc/internal/client/login.go` 的 `login()`、`frpc/internal/client/session.go` 的 `readLoop()` / `heartbeatLoop()`，后续都必须继续通过同一条“frame 级”传输 seam 交互。
+- `frps/internal/control/wiring/frame_adapter.go`、`frps/internal/control/wiring/auth.go`、`frps/internal/control/wiring/configsync_adapter.go`、`frps/internal/control/wiring/refresh.go`，以及 `frpc/internal/client/client.go`、`frpc/internal/client/login.go`、`frpc/internal/client/session.go`，必须继续通过同一条“frame 级”传输 seam 交互。
 - 第一版目标不是把整个 TCP/IP 栈 fake 掉，而是稳定控制“哪一帧什么时候写出、什么时候被对端读到、是否被丢弃/延迟/重复/重排、连接何时半关闭或全关闭、旧连接残帧是否仍尝试到达”。
 - 只有把故障注入放在 frame transport / session harness 这一层，才能同时覆盖首登 `config.push`、热更新 `config.push`、`config.ack`、heartbeat、`stream.close` / `udp.close`、session replacement 和晚到错误回包；若只在 `handleConfigAck()` 或 `applyConfigPush()` 上层做 stub，会绕过真实 requestId、streamId、session 交接和写锁语义。
 
@@ -412,28 +420,31 @@ type FrameEvent struct {
   4. 按顺序 `Release()` 目标 barrier 或 delayed frame。
   5. 用状态观测断言 `pending config`、active session、listener 集合和最后生效快照已收敛，再进入下一步。
 
-第一批需要打开 transport/session seam 的代码位置如下：
+当前 transport/session seam 的主要代码位置如下：
 
-- `frps/internal/control/server.go`
+- `frps/internal/control/wiring/frame_adapter.go`
   - `readFrameWithTimeout()`
   - `writeFrame()`
+- `frps/internal/control/wiring/connection.go`
   - `runSession()`
   - `handleHeartbeatPing()`
-- `frps/internal/control/auth.go`
+- `frps/internal/control/wiring/auth.go`
   - `authenticate()`
-  - `reserveGroupSlot()`
-  - `releaseGroupSlot()`
-- `frps/internal/control/config.go`
+- `frps/internal/control/session/supervisor/supervisor.go`
+  - `ReserveGroupSlot()`
+  - `ReleaseGroupSlot()`
+- `frps/internal/control/wiring/configsync_adapter.go`
   - `pushConfig()`
   - `pushReloadConfig()`
   - `handleConfigAck()`
-- `frps/internal/control/session.go`
+- `frps/internal/control/wiring/session_frame_adapter.go`
   - `writeFrameWithSession()`
   - `writeRuntimeFrameWithSession()`
+- `frps/internal/control/wiring/session_shutdown.go`
   - `shutdownSession()`
-- `frps/internal/control/refresh.go`
-  - `registerActiveSession()`
-  - `unregisterActiveSession()`
+- `frps/internal/control/wiring/refresh.go`
+  - `refreshGroupActiveSession()`
+  - `updateActiveSessionDesiredRuntime()`
   - `RefreshGroup()`
 - `frpc/internal/client/client.go`
   - `Run()`
@@ -450,7 +461,7 @@ type FrameEvent struct {
 
 其中职责边界固定如下：
 
-- `server.go` / `client.go` 这一层只声明“我要读/写一帧、当前连接属于哪个 logical session、读取超时/写入错误如何上抛”，不私下直接调用另一套真实 `transport.ReadFrame/WriteFrame`。
+- `wiring` / `client` 这一层只声明“我要读/写一帧、当前连接属于哪个 logical session、读取超时/写入错误如何上抛”，不私下直接调用另一套真实 `transport.ReadFrame/WriteFrame`。
 - 登录握手、热更新推配置、heartbeat、session shutdown 必须继续共用同一 transport seam，不能登录路径一套 fake、运行态路径另一套 fake。
 - reconnect 不通过“修改同一 `net.Conn` 内部状态”模拟，而是由 harness 显式创建新 `ConnID` 并走一次真实的 `runOnce()/login()/registerActiveSession()` 入口；否则测不到旧 session 注销、新 session 接管和 group slot 交接边界。
 
@@ -518,7 +529,7 @@ type ObservedState struct {
 服务端第一批必须直接可观测的状态固定如下：
 
 - 启动门闩与外部可见性：
-  - `InitialRuntimeScanDone`：对应 `frps/internal/control/server.go` 的首轮扫描完成标志。
+  - `InitialRuntimeScanDone`：对应 `frps/internal/control/wiring/server.go` / `observe.go` 的首轮扫描完成标志。
   - `ControlListenerOpen`：控制端口是否已经真正进入监听。
   - `LoginGateOpen`：首个 `frpc` 登录是否已被允许进入认证流程；后续即使实现继续靠“监听未开放”达成，也要有结构化布尔位可断言。
   - `ManagementAPIVisible`：管理 API 是否已首次可见；这层状态要在 `frps/internal/app/app.go` 收口，不能只靠“端口能不能拨通”间接判断。
@@ -569,19 +580,23 @@ type ObservedState struct {
 - manual scheduler 负责推进“什么时候发生下一轮扫描 / heartbeat / backoff / poll”，但不直接替代业务状态观测。
 - 场景编排器负责在“放行某个 barrier 之后”拉取一份统一快照做断言，避免测试一边读服务端状态、一边读 fake 状态时跨过了两个不同时间点。
 
-第一批代码落点固定如下：
+当前代码落点固定如下：
 
 - `frps/internal/app/app.go`
   - 收口 `InitialRuntimeScanDone -> 控制端口开放 -> 管理 API 首次可见` 这条启动门闩状态。
-- `frps/internal/control/server.go`
-  - 收口 `initialRuntimeScanDone`、control listener 是否已开放、`sessions`、`groupSlots`、`tunnelRuntimeIssues`。
-- `frps/internal/control/session.go`
+- `frps/internal/control/wiring/server.go`
+  - 收口 `initialRuntimeScanDone`、control listener 是否已开放。
+- `frps/internal/control/session/supervisor/supervisor.go`
+  - 收口 `sessions`、`groupSlots` 和 session agent 状态。
+- `frps/internal/control/runtime/issues.go` 与 `frps/internal/control/wiring/runtime_issues.go`
+  - 收口 `tunnelRuntimeIssues`。
+- `frps/internal/control/runtime/state/types.go`
   - 收口 `Snapshot`、`LastAckedConfigVersion`、`pendingConfigRequestID`、`pendingSnapshot`、listener/runtime 冻结态。
-- `frps/internal/control/listeners.go`
+- `frps/internal/control/runtime/listener/*`
   - 收口当前 attach 的 listener 集合、按 tunnel 缺失的端口集合、局部恢复结果。
-- `frps/internal/control/runtime_scan.go`
+- `frps/internal/control/runtime/scan.go`
   - 收口当前扫描目标、扫描结论、恢复模式切换结果。
-- `frps/internal/control/refresh.go`
+- `frps/internal/control/wiring/refresh.go`
   - 收口空配置保活、恢复补推完整快照、仅补 listener 三种模式切换。
 - `frps/internal/system/network_snapshot.go`
   - 收口当前已发布 snapshot 的版本/轮次、最近一次成功/失败采集。

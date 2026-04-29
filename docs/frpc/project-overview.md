@@ -12,7 +12,7 @@
 
 ## 2. 当前已交付范围
 
-截至 2026-04-24，`frpc` 已具备：
+当前 `frpc` 已具备：
 
 - CLI 参数：
   - `--server`
@@ -22,6 +22,9 @@
   - `client_id`：`32` 位小写 hex
   - `client_secret`：`64` 位小写 hex
 - 登录握手：
+  - `transport.client_hello`
+  - `transport.server_hello`
+  - 按服务端选择在同一 TCP 连接上升级 TLS
   - `auth.begin`
   - `auth.challenge`
   - `auth.finish`

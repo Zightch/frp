@@ -112,6 +112,8 @@ External clients
 当前已固定的最小验证包括：
 
 - `go test ./...`（`frps/`）
+- `go test -tags testhooks ./internal/control/...`（`frps/`）
+- `go test -tags testhooks ./...`（`frps/`，发布前补跑）
 - `go test ./...`（`frpc/`）
 - `python test/e2e_tcp_single.py`
 - `python test/e2e_tcp_range.py`

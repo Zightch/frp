@@ -85,7 +85,7 @@ func profileCatalog() map[string]profile {
 				},
 				{
 					Name:    "control-core-race",
-					Package: "./internal/control",
+					Package: "./internal/control/wiring",
 					Run:     anchored(controlCoreTests()...),
 					Timeout: "240s",
 					Count:   1,
@@ -94,7 +94,7 @@ func profileCatalog() map[string]profile {
 				},
 				{
 					Name:    "control-stability-race",
-					Package: "./internal/control",
+					Package: "./internal/control/wiring",
 					Run:     anchored(stabilityTests()...),
 					Timeout: "240s",
 					Count:   1,
@@ -118,7 +118,7 @@ func profileCatalog() map[string]profile {
 				},
 				{
 					Name:    "control-core-cpu-matrix",
-					Package: "./internal/control",
+					Package: "./internal/control/wiring",
 					Run:     anchored(controlCoreTests()...),
 					Timeout: "240s",
 					Count:   1,
@@ -127,7 +127,7 @@ func profileCatalog() map[string]profile {
 				},
 				{
 					Name:    "control-stability-cpu-matrix",
-					Package: "./internal/control",
+					Package: "./internal/control/wiring",
 					Run:     anchored(stabilityTests()...),
 					Timeout: "240s",
 					Count:   1,
@@ -142,7 +142,7 @@ func profileCatalog() map[string]profile {
 			Runs: []goTestRun{
 				{
 					Name:    "control-config-churn",
-					Package: "./internal/control",
+					Package: "./internal/control/wiring",
 					Run:     anchored(configChurnTests()...),
 					Timeout: "240s",
 					Count:   5,
@@ -159,7 +159,7 @@ func profileCatalog() map[string]profile {
 			Runs: []goTestRun{
 				{
 					Name:    "control-soak",
-					Package: "./internal/control",
+					Package: "./internal/control/wiring",
 					Run:     anchored("TestServerStabilityScenarioFakeTimeSoakKeepsResourcesBounded"),
 					Timeout: "240s",
 					Count:   1,
@@ -184,7 +184,7 @@ func profileCatalog() map[string]profile {
 				},
 				{
 					Name:    "control-core-platform-baseline",
-					Package: "./internal/control",
+					Package: "./internal/control/wiring",
 					Run:     anchored(controlCoreTests()...),
 					Timeout: "240s",
 					Count:   1,
@@ -192,7 +192,7 @@ func profileCatalog() map[string]profile {
 				},
 				{
 					Name:    "control-stability-platform-baseline",
-					Package: "./internal/control",
+					Package: "./internal/control/wiring",
 					Run:     anchored(stabilityTests()...),
 					Timeout: "240s",
 					Count:   1,
@@ -206,7 +206,7 @@ func profileCatalog() map[string]profile {
 			Runs: []goTestRun{
 				{
 					Name:    "control-resource-pressure",
-					Package: "./internal/control",
+					Package: "./internal/control/wiring",
 					Run:     anchored(resourcePressureTests()...),
 					Timeout: "240s",
 					Count:   3,

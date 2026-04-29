@@ -68,12 +68,13 @@ SQLite / MySQL
 
 ### `internal/control`
 
-- `frpc` 登录与 challenge 生命周期
-- group slot
-- `config.push / config.ack`
-- listener 启停
-- TCP/UDP 运行态
-- runtime issue 与恢复
+- 根包只保留 app/api 入口 facade
+- `protocol` 负责控制连接握手、认证、frame IO、错误回复和配置同步协议语义
+- `session` 负责纯会话状态机、agent、supervisor 和 group slot
+- `runtime` 负责 listener、TCP/UDP 数据面、runtime scan、恢复、issue 和观测投影
+- `domain/runtime` 负责 `GroupRuntime`、`ConfigSnapshot` 和 desired/applied 转换
+- `repo` 负责 SQL row 到运行时模型的投影
+- `wiring` 负责业务拼装、运行态刷新和白盒场景测试
 
 ### `internal/certassets`
 

@@ -13,7 +13,7 @@
 - 双平台基线
 - 资源压力
 
-这些入口都必须继续复用正式测试中的 `ObservedState`、fake seam 和断言，不允许退回“shell 脚本 + 日志 grep”。
+这些入口都必须继续复用正式测试中的 `ObservedState`、可注入 fake 边界和断言，不允许退回“shell 脚本 + 日志 grep”。
 
 ## 2. 统一入口
 
@@ -32,6 +32,15 @@ go run ./cmd/stabilitymatrix -profile all
 - 串行执行 `go test` 命令，不把多个依赖本机端口或真实 TCP 可见性的包并发跑起来。
 - 每个 profile 都直接调用现有正式测试；成败判定仍由测试内的状态断言和不变量断言给出。
 - `platform` 不是单独维护一套脚本，而是把同一批场景作为 Windows / Linux / WSL 共同基线；在不同平台重复跑同一命令即可比较业务结论。
+
+控制面故障和竞争场景的递归必跑入口仍是：
+
+```powershell
+cd frps
+go test -tags testhooks ./internal/control/...
+```
+
+当测试包层级调整时，必须同步 `stabilitymatrix` 中对应 profile 的 package target，避免补充层只跑到空包。
 
 常用参数：
 
@@ -75,9 +84,9 @@ go run ./cmd/stabilitymatrix -profile config-churn,soak
 
 - `frps/internal/app/startup_scenario_test.go`
   - 首轮扫描门闩、控制端口开放、管理 API 首次可见
-- `frps/internal/control/*_scenario_test.go`
+- `frps/internal/control/wiring/*_scenario_test.go`
   - 端口冲突检查 / 热更新交互的确定性、异常输入、恢复故障和竞争窗口
-- `frps/internal/control/stability_scenario_test.go`
+- `frps/internal/control/wiring/stability_scenario_test.go`
   - `TestServerStabilityScenarioConfigChurnConverges`
   - `TestServerStabilityScenarioFakeTimeSoakKeepsResourcesBounded`
   - `TestServerStabilityScenarioResourcePressureRefreshAcrossManyTunnelsConverges`

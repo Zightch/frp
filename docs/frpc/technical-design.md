@@ -68,11 +68,15 @@
 
 ```text
 connect
+-> transport.client_hello(client_id, supported security modes)
+<- transport.server_hello(selected security mode)
+if selected security mode == tls:
+   TLS handshake on the same TCP connection
 -> auth.begin(client_id, runtime info)
--> auth.challenge
+<- auth.challenge
 -> auth.finish(sha256(client_secret_hash + nonce))
--> server.hello
--> config.push
+<- server.hello
+<- config.push
 -> config.ack
 ```
 
@@ -80,6 +84,7 @@ connect
 
 - `client_secret_hash = sha256(client_secret)`
 - challenge 响应通过 `protocol.ChallengeResponse` 计算
+- `transport.server_hello` 决定控制连接是否先升级到 TLS
 - 登录成功后立刻应用首次配置
 
 ### 3.2 会话状态

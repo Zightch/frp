@@ -1,6 +1,6 @@
 # frps / frpc 当前代码架构图
 
-本文根据当前代码实现绘制，不包含尚未落地的设计目标。代码现状以 `2026-04-24` 的工作区为准。
+本文根据当前代码实现绘制，不包含尚未落地的设计目标。代码现状以 `2026-04-29` 的工作区为准。
 
 ## 1. 总体运行拓扑
 
@@ -17,7 +17,7 @@ flowchart LR
 
     Frpc[frpc] -->|TCP control connection| Control[frps control server]
     Control -->|LoadGroupRuntime| DB
-    Control -->|auth.challenge / server.hello / config.push / stream frames| Frpc
+    Control -->|transport hello / auth.challenge / server.hello / config.push / stream frames| Frpc
 
     External[Python 外网客户端] -->|TCP connect remote_start| Public[frps TCP tunnel listener]
     Public -->|public connection| Control
@@ -53,26 +53,25 @@ flowchart TB
     Store --> DB[(SQLite / MySQL)]
 
     App --> API[internal/api Server]
-    App --> Control[internal/control Server]
+    App --> ControlFacade[internal/control facade]
+    ControlFacade --> Control[internal/control/wiring Server]
 
     API --> WebUI[configured webui.dist_dir static assets]
     API --> Mgmt[managementService]
     Mgmt --> Store
 
-    Control --> Repo[SQLRepository]
+    Control --> Repo[control/repo SQLRepository]
     Repo --> Store
-    Control --> Auth[auth.go login / challenge / group slot]
-    Control --> ConfigPush[config.go / repository.go]
-    Control --> Session[session.go write / ids / shutdown]
-    Control --> Listeners[listeners.go TCP/UDP listeners]
-    Control --> TCPBridge[tcp_bridge.go stream bridge]
-    Control --> UDPBridge[udp.go session bridge]
+    Control --> ControlProtocol[control/protocol handshake / auth / frame / config]
+    Control --> Session[control/session supervisor / agent / state machine]
+    Control --> Runtime[control/runtime scan / recovery / data plane]
+    Runtime --> RuntimeState[control/runtime/state ConcreteSessionState]
+    Runtime --> Bind[control/bind listener factory]
+    Runtime --> Domain[control/domain/runtime snapshot model]
 
-    Auth --> Protocol[frps/pkg/protocol]
-    ConfigPush --> Protocol
-    TCPBridge --> Protocol
-    UDPBridge --> Protocol
-    Control --> Transport[frps/pkg/transport]
+    ControlProtocol --> Protocol[frps/pkg/protocol]
+    Runtime --> Protocol
+    ControlProtocol --> Transport[frps/pkg/transport]
     API --> HTTP[net/http]
 ```
 
@@ -81,7 +80,7 @@ flowchart TB
 - `cmd/frps/main.go`：零参数启动，固定读取当前工作目录下的 `data/config.json`，加载配置和日志，启动 `app.App`。
 - `internal/app`：打开数据库，执行当前必需表建表 / 校验，并并发启动管理面和控制面。
 - `internal/api`：提供内嵌 WebUI、健康检查、分组 CRUD、隧道 CRUD、登录 `key` 重置。
-- `internal/control`：处理 `frpc` 登录、challenge/response、单分组单客户端槽位、首次配置下发、在线整组热重载、心跳、TCP 单端口/范围 stream 转发，以及 `frps` 侧 UDP listener/session 管理；当前稳定 ownership 已收口到 `auth.go`、`config.go`、`refresh.go`、`connections.go`、`session.go`、`listeners.go`、`tcp_bridge.go`、`udp.go`、`repository.go`、`observe.go` 与 `runtime_*` 管理面。
+- `internal/control`：根包只保留 app/api 稳定 facade；实际业务由 `wiring` 拼装 `protocol`、`session`、`runtime`、`domain/runtime`、`repo` 和 `bind` 子包。`ConcreteSessionState` 是单 session 控制状态、desired/applied/pending 配置、listener、TCP stream、UDP session 和恢复模式的状态所有者；`session/supervisor` 只负责 group slot、agent 生命周期和事件分发。
 - `internal/storage`：包装已打开的 `*sql.DB` / `*sql.Tx`，提供统一查询、执行、事务接口。
 - `pkg/protocol`：定义业务帧、消息类型、错误码、隧道结构和编解码，并承接当前唯一新增的跨端共享纯规则 `ChallengeResponse`。
 - `pkg/transport`：定义 4 字节长度前缀帧读写、超时和最大帧限制。
@@ -97,7 +96,7 @@ flowchart TB
 
     Client --> Reconnect[runOnce retry with backoff]
     Reconnect --> Dial[dial frps control server]
-    Dial --> Login[login auth.begin / auth.finish]
+    Dial --> Login[transport hello / optional TLS / auth]
     Login --> Session[runSession]
 
     Session --> ReadLoop[readLoop]
@@ -139,10 +138,15 @@ sequenceDiagram
     participant R as SQLRepository
     participant D as Database
 
-    C->>S: auth.begin(client_id, client metadata)
+    C->>S: transport.client_hello(client_id)
     S->>R: LoadGroupRuntimeByClientID(client_id)
     R->>D: SELECT proxy_groups
     R->>D: SELECT tunnels
+    S->>C: transport.server_hello(selected_security_mode)
+    opt selected_security_mode == tls
+        C->>S: TLS handshake
+    end
+    C->>S: auth.begin(client_id, client metadata)
     S->>S: validate enabled
     S->>C: auth.challenge(challenge_id, nonce)
     C->>C: client_secret_hash = sha256(client_secret)
@@ -160,8 +164,9 @@ sequenceDiagram
 实际代码约束：
 
 - 数据库保存的是 `client_id` 和 `client_secret_hash`，不会保存 `key` 原文。
+- `transport.client_hello` 必须在 `auth.begin` 前到达，服务端会用 hello 中的 `client_id` 决定本连接是否需要升级到 TLS。
 - `frpc` 使用 `key` 中的 `client_secret` 计算响应，`frps` 使用数据库中的 `client_secret_hash` 验证响应。
-- `sha256(client_secret_hash + nonce)` 这条跨端共享纯规则当前已固定收口到 `frps/pkg/protocol.ChallengeResponse`；本轮没有继续新增其他共享 helper。
+- `sha256(client_secret_hash + nonce)` 这条跨端共享纯规则固定收口到 `frps/pkg/protocol.ChallengeResponse`。
 - `frps` 内存中的 `groupSlots` 固定表示每个分组只有一个已登录客户端槽位。
 - 当前配置快照在首次登录和后续在线热重载阶段都会加载并下发；管理面命中运行态字段且分组在线时，会复用现有 `config.push / config.ack` 主动推进整组热重载。
 - 数据库当前只承担持久化配置层；`LoadGroupRuntime` 会在登录时把 `proxy_groups` / `tunnels` 投影成 `GroupRuntime` / `ConfigSnapshot`，之后 `frps` / `frpc` 只消费内存快照。
@@ -209,7 +214,7 @@ sequenceDiagram
 - `frps` 是 UDP session 生命周期的唯一裁决方；当前会在公网收包和 `frpc` 回包时立即刷新 UDP session 活跃时间，并由后台短周期 sweep 按 `lastActive + timeout` 裁决空闲会话，在“最后一次成功双向转发后空闲约 `30s`”时删除本地 session、向 `frpc` 发送 `udp.close`。
 - `frpc` 当前会在收到 `udp.open` 后按 `sessionId` 建立真实本地 `UDPConn`，收到 `udp.data` 后把 datagram 写到本地 UDP 服务，并由后台读循环把本地响应按同一 `sessionId` 回发给 `frps`。
 - `frpc` 当前不做本地 idle timer；只有在收到 `udp.close`、发生本地不可恢复读写错误，或控制会话结束时才释放本地 UDP session。
-- TCP/UDP range 当前都已经完成最小闭环：`config.ack` 后 `frps` 会按 `remoteStart..remoteEnd` 展开 TCP/UDP listener，并把实际命中的公网端口写入 `stream.open.remotePort` / `udp.open.remotePort`；`frpc` 则统一按 `offset = remotePort - remoteStart` 计算目标 `localPort`。`test/e2e_tcp_range.py` 已验证同一个 TCP range tunnel 命中不同 `remotePort` 时会按偏移转发到对应 `localPort`，并同轮确认 TCP 单端口不回退；`test/e2e_udp_range.py` 已验证同一个 UDP range tunnel 命中不同 `remotePort` 时会按偏移转发到对应 `localPort`，并同轮确认 UDP 单端口不回退。UDP 单端口的 `happy_path` / `idle_cleanup` 生命周期边界仍由 `test/e2e_udp_single.py` 持续验证。隧道入口 ACL、限速、抓包、在线观测等能力仍未进入真实执行链路。
+- TCP/UDP range 当前都已经完成最小闭环：`config.ack` 后 `frps` 会按 `remoteStart..remoteEnd` 展开 TCP/UDP listener，并把实际命中的公网端口写入 `stream.open.remotePort` / `udp.open.remotePort`；`frpc` 则统一按 `offset = remotePort - remoteStart` 计算目标 `localPort`。`test/e2e_tcp_range.py`、`test/e2e_udp_range.py` 和 `test/e2e_udp_single.py` 持续覆盖 range 偏移、单端口不回退和 UDP idle cleanup。隧道入口 ACL、限速、抓包、在线观测等能力仍未进入真实执行链路。
 
 ## 6. 数据库模型关系
 
@@ -262,16 +267,20 @@ erDiagram
 - `frps/internal/api/server.go`
 - `frps/internal/api/management.go`
 - `frps/internal/api/webui.go`
-- `frps/internal/control/auth.go`
-- `frps/internal/control/config.go`
-- `frps/internal/control/connections.go`
-- `frps/internal/control/listeners.go`
-- `frps/internal/control/server.go`
-- `frps/internal/control/session.go`
-- `frps/internal/control/repository.go`
-- `frps/internal/control/sockaddr.go`
-- `frps/internal/control/tcp_bridge.go`
-- `frps/internal/control/udp.go`
+- `frps/internal/control/facade.go`
+- `frps/internal/control/wiring/server.go`
+- `frps/internal/control/wiring/connection.go`
+- `frps/internal/control/wiring/auth.go`
+- `frps/internal/control/wiring/configsync_adapter.go`
+- `frps/internal/control/wiring/refresh.go`
+- `frps/internal/control/wiring/runtime_executor.go`
+- `frps/internal/control/wiring/data_plane_adapter.go`
+- `frps/internal/control/protocol/`
+- `frps/internal/control/session/`
+- `frps/internal/control/runtime/`
+- `frps/internal/control/runtime/state/types.go`
+- `frps/internal/control/repo/`
+- `frps/internal/control/bind/`
 - `frps/internal/storage/sql.go`
 - `frps/pkg/protocol/protocol.go`
 - `frps/pkg/transport/transport.go`

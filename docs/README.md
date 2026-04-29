@@ -7,12 +7,12 @@
 1. [总体项目概述](project-overview.md)
 2. [工作流](workflow.md)
 3. [进度归档](progress/README.md)
-4. [当前轮 Todo](tmp/todo.md)
-5. [仓库级回归入口](regression-entry.md)
-6. [初步框架重构蓝图](initial-architecture-refactor-blueprint.md)
-7. [frps/frpc 协议文档](protocol.md)
-8. `frps` 子项目文档
-9. `frpc` 子项目文档
+4. [仓库级回归入口](regression-entry.md)
+5. [frps/frpc 当前代码架构图](frps-frpc-current-architecture.md)
+6. [frps/frpc 协议文档](protocol.md)
+7. `frps` 子项目文档
+8. `frpc` 子项目文档
+9. [当前轮 Todo](tmp/todo.md)
 
 ## 2. 平台级文档
 
@@ -20,8 +20,9 @@
 - [工作流](workflow.md)
 - [进度归档](progress/README.md)
 - [仓库级回归入口](regression-entry.md)
-- [初步框架重构蓝图](initial-architecture-refactor-blueprint.md)
+- [frps/frpc 当前代码架构图](frps-frpc-current-architecture.md)
 - [frps/frpc 协议文档](protocol.md)
+- [初步框架重构蓝图](initial-architecture-refactor-blueprint.md)（历史蓝图，只作重构背景追溯）
 
 ## 2.1 当前轮执行文档
 
@@ -59,6 +60,7 @@
 - `regression-entry.md` 负责收口仓库级最小 Go / Python 回归入口，不展开子项目内部测试设计细节。
 - `progress/README.md` 负责说明进度归档目录和索引；`progress/*.md` 负责记录跨轮历史进度、当前停止线和已收口内容。
 - `tmp/todo.md` 只负责当前轮未完成执行项，必须明确当前总目标、实现该目标的子步骤、当前轮边界和当前唯一下一步；不能混放前几轮信息，也不记录已完成内容；需要追溯历史时只引用 `progress/README.md` 和对应日期归档。
+- `initial-architecture-refactor-blueprint.md` 是早期拆分蓝图，不作为当前代码结构口径；当前结构以 `frps-frpc-current-architecture.md` 和 `frps/technical/` 为准。
 - 协议文档负责定义 `frps/frpc` 之间的传输层分包格式和业务消息语义。
 - `frps` 文档现在按 `design/`、`features/`、`technical/`、`development/` 四类组织，统一从 `docs/frps/README.md` 进入。
 - `docs/webui/` 目录负责固定 `frps` WebUI 的设计文档，包括最小基线、视觉风格、各页面设计规范。

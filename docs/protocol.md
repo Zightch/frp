@@ -11,7 +11,7 @@
 
 - WebUI 的 REST API / WebSocket 协议。
 - `frps` 对公网用户提供的 TCP/UDP/HTTP/HTTPS 转发协议。
-- TLS/mTLS 细节。若后续启用 TLS，则长度前缀协议运行在 TLS 之上。
+- TLS 证书资产、校验策略和绑定管理细节；本文只定义控制连接在长度前缀协议内如何协商 plain / TLS。
 
 ## 2. 术语
 
@@ -223,6 +223,8 @@ CPU 架构：
 | `0x32` | `udp.close` | 双向 | binary |
 | `0x40` | `event.report` | `frpc -> frps` | binary |
 | `0x41` | `error` | 双向 | binary |
+| `0x50` | `transport.client_hello` | `frpc -> frps` | binary |
+| `0x51` | `transport.server_hello` | `frps -> frpc` | binary |
 
 首版不单独定义“读请求”和“写请求”消息。对于 TCP：
 
@@ -232,11 +234,50 @@ CPU 架构：
 
 ## 6. 登录与建链协议
 
-## 6.1 `auth.begin`
+## 6.1 `transport.client_hello`
 
 用途：
 
-- `frpc` 发起登录第一步，只发送公开定位段 `clientId` 与基础环境信息。
+- `frpc` 在认证前声明 `client_id` 和自己支持的控制连接安全模式。
+- `frps` 用 `client_id` 加载分组运行态，并决定本连接继续明文还是升级 TLS。
+
+头字段要求：
+
+- `requestId` 必须非 `0`。
+- `streamId` 必须为 `0`。
+
+body：
+
+| 顺序 | 字段 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| 1 | `clientId` | `bytes16` | `client_id` 的原始 16 字节，不传 32 位 hex 文本 |
+| 2 | `supportedSecurityModes` | `u8` | bitmask；`1=plain`，`2=tls` |
+| 3 | `capabilityBits` | `u32` | 首版固定为 `0` |
+
+## 6.2 `transport.server_hello`
+
+用途：
+
+- `frps` 返回本次控制连接选定的安全模式。
+- 若选择 `tls`，双方随后在同一 TCP 连接上完成 TLS handshake，再继续发送 `auth.begin`。
+
+头字段要求：
+
+- `requestId` 必须等于触发它的 `transport.client_hello.requestId`。
+- `streamId` 必须为 `0`。
+
+body：
+
+| 顺序 | 字段 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| 1 | `selectedSecurityMode` | `u8` | `1=plain`，`2=tls` |
+| 2 | `capabilityBits` | `u32` | 首版固定为 `0` |
+
+## 6.3 `auth.begin`
+
+用途：
+
+- `frpc` 在 transport 协商完成后发起认证，只发送公开定位段 `clientId` 与基础环境信息。
 
 头字段要求：
 
@@ -254,7 +295,7 @@ body：
 | 5 | `arch` | `u8` | CPU 架构枚举 |
 | 6 | `capabilityBits` | `u32` | 首版固定为 `0`，后续能力协商使用 |
 
-## 6.2 `auth.challenge`
+## 6.4 `auth.challenge`
 
 用途：
 
@@ -273,7 +314,7 @@ body：
 | 2 | `nonce` | `bytes16` | 一次性随机数 |
 | 3 | `expiresInMs` | `u32` | challenge 有效期 |
 
-## 6.3 `auth.finish`
+## 6.5 `auth.finish`
 
 用途：
 
@@ -291,7 +332,7 @@ body：
 | 1 | `challengeId` | `u32` | 对应 `auth.challenge.challengeId` |
 | 2 | `response` | `bytes32` | `sha256(client_secret_hash + challenge_nonce)` 的原始 32 字节 |
 
-## 6.4 `server.hello`
+## 6.6 `server.hello`
 
 用途：
 
@@ -310,13 +351,18 @@ body：
 | 2 | `sessionId` | `u64` | 当前控制连接运行态 ID |
 | 3 | `capabilityBits` | `u32` | 服务端能力位，首版固定为 `0` |
 | 4 | `serverVersion` | `shortstr` | 服务端版本 |
+
 登录失败时，`frps` 不发送 `server.hello`，而是发送 `error` 后关闭连接。
 
 当前开发阶段不做 `frps/frpc` 版本兼容协商；`clientVersion` 和 `serverVersion` 只用于诊断，同仓代码按同步升级处理。
 
-## 6.5 登录时序
+## 6.7 登录时序
 
 ```text
+frpc -> transport.client_hello
+frps -> transport.server_hello
+if selectedSecurityMode == tls:
+    TLS handshake
 frpc -> auth.begin
 frps -> auth.challenge
 frpc -> auth.finish

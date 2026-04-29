@@ -9,6 +9,7 @@
 - `frpc` 登录与配置下发是否正确
 - TCP/UDP 正向代理链路是否正确
 - UDP idle cleanup 语义是否稳定
+- 控制面故障注入、竞争窗口、恢复顺序和资源回收是否稳定
 
 ## 2. 当前自动化验证
 
@@ -19,6 +20,8 @@
 ```powershell
 cd frps
 go test ./...
+go test -tags testhooks ./...
+go test -tags testhooks ./internal/control/...
 ```
 
 当前重点覆盖：
@@ -36,11 +39,12 @@ go test ./...
   - 认证接口
   - 管理接口
 - `internal/control`
-  - key challenge/response
-  - group slot
-  - `config.push` / `config.ack`
-  - listener 行为
-  - TCP/UDP 协议错误路径
+  - transport hello、TLS 协商、key challenge/response
+  - group slot 与 session replacement
+  - `config.push` / `config.ack`、重复 ack、乱序 ack、旧 session 晚到消息
+  - listener 启停、冻结、回滚和 stale attach 防护
+  - TCP/UDP 数据面和协议错误路径
+  - `effective_ip` 失效/恢复、runtime scan、轮询恢复和资源故障
 - `pkg/protocol`
 - `pkg/transport`
 
@@ -100,8 +104,11 @@ wsl -d ubuntu -u root bash -lc "python3 /mnt/c/Users/Zightch/Desktop/Aicksaim/fr
 - 可控调度骨架
 - listener 故障注入骨架
 - 网络快照故障注入骨架
+- 控制连接故障注入骨架
+- 状态观测、不变量断言和场景编排
+- 故障注入覆盖表与稳定性补充层口径
 
-后续控制连接故障注入、状态观测、不变量断言和场景编排等内容，也继续在该文档追加；本文件只保留测试入口、常用命令和手工调试信息。
+本文件只保留测试入口、常用命令和手工调试信息；具体场景和覆盖规则以可测试基建文档为准。
 
 ## 3. 当前手工调试入口
 

@@ -40,15 +40,18 @@ frpc --server 1.2.3.4:7000 --key <key>
 当前登录过程：
 
 1. 从 `key` 里截取 `client_id` 和 `client_secret`
-2. 发送 `auth.begin`
-3. 接收 `auth.challenge`
-4. 本地计算：
+2. 发送 `transport.client_hello`
+3. 接收 `transport.server_hello`
+4. 如果服务端选择 `tls`，在同一 TCP 连接上完成 TLS handshake
+5. 发送 `auth.begin`
+6. 接收 `auth.challenge`
+7. 本地计算：
    - `client_secret_hash = sha256(client_secret)`
    - `response = sha256(client_secret_hash + nonce)`
-5. 发送 `auth.finish`
-6. 接收 `server.hello`
-7. 接收首次 `config.push`
-8. 回 `config.ack`
+8. 发送 `auth.finish`
+9. 接收 `server.hello`
+10. 接收首次 `config.push`
+11. 回 `config.ack`
 
 当前失败后行为：
 
