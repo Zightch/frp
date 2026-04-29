@@ -114,8 +114,11 @@ func (s *Server) ApplyActiveSessionConfigRecovery(groupID int64, group controlru
 	if !ok || active == nil || active.session == nil {
 		return nil
 	}
-	active.session.SetDesiredGroupRuntime(group)
-	s.supervisor.UpdateDesiredRuntime(groupID, controlruntime.DesiredRuntimeFromGroup(group))
+	if s.supervisor == nil {
+		return nil
+	}
+	event := active.session.PrepareDesiredGroupUpdate(group)
+	s.supervisor.DispatchBySessionID(active.session.ID, event)
 	return nil
 }
 

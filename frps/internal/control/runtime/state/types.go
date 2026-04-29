@@ -15,6 +15,7 @@ import (
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
+	"github.com/zightch/frp/frps/pkg/transport"
 )
 
 const InitialServerRequestID = uint32(1 << 31)
@@ -90,6 +91,19 @@ type ObservedConfigState struct {
 	RecoveryMode testsupport.RecoveryMode
 }
 
+type RuntimePendingConfig struct {
+	RequestID   uint32
+	Snapshot    ConfigSnapshot
+	EffectiveIP string
+}
+
+type RuntimeObservedConfig struct {
+	EffectiveIP            string
+	Snapshot               ConfigSnapshot
+	LastAckedConfigVersion uint64
+	Pending                *RuntimePendingConfig
+}
+
 type ObservedListener struct {
 	TunnelID uint32
 	Protocol string
@@ -159,6 +173,62 @@ func mergeObservedGroupRuntime(current GroupRuntime, desired GroupRuntime, snaps
 		group.EffectiveIP = effectiveIP
 	}
 	return group
+}
+
+func shouldMirrorObservedGroup(current GroupRuntime, next GroupRuntime) bool {
+	return current.EffectiveIP == next.EffectiveIP &&
+		controldomainruntime.SamePushedConfigSnapshot(current.Snapshot, next.Snapshot)
+}
+
+func projectSessionBindings(snapshot controlsession.DesiredRuntimeSnapshot, activeTunnelIDs map[uint32]struct{}) map[controlsession.BindingKey]controlsession.BindingState {
+	bindings := make(map[controlsession.BindingKey]controlsession.BindingState)
+	for _, tunnel := range snapshot.Tunnels {
+		if !tunnel.Enabled {
+			continue
+		}
+
+		phase := controlsession.BindingPhaseClosed
+		if _, ok := activeTunnelIDs[tunnel.TunnelID]; ok {
+			phase = controlsession.BindingPhaseActive
+		}
+
+		for port := tunnel.RemoteStart; port <= tunnel.RemoteEnd; port++ {
+			key := controlsession.BindingKey{
+				Protocol:    tunnel.Protocol,
+				EffectiveIP: snapshot.EffectiveIP,
+				Port:        port,
+			}
+			bindings[key] = controlsession.BindingState{
+				Key:   key,
+				Phase: phase,
+			}
+			if port == tunnel.RemoteEnd {
+				break
+			}
+		}
+	}
+	return bindings
+}
+
+func projectedRuntimePhase(snapshot controlsession.DesiredRuntimeSnapshot, bindings map[controlsession.BindingKey]controlsession.BindingState, runtime ObservedState) controlsession.RuntimePhase {
+	if !controldomainruntime.DesiredSnapshotHasEnabledTunnels(snapshot) {
+		return controlsession.RuntimePhaseEmpty
+	}
+	if runtime.Frozen {
+		return controlsession.RuntimePhaseBlocked
+	}
+	if len(bindings) == 0 {
+		return controlsession.RuntimePhaseBinding
+	}
+	for _, binding := range bindings {
+		if binding.Phase != controlsession.BindingPhaseActive {
+			if runtime.ListenersStarted {
+				return controlsession.RuntimePhaseRecovering
+			}
+			return controlsession.RuntimePhaseBinding
+		}
+	}
+	return controlsession.RuntimePhaseActive
 }
 
 func (s *Stream) SignalReady(err error) {
@@ -447,6 +517,34 @@ func (s *ConcreteSessionState) SetDesiredGroupRuntime(group GroupRuntime) {
 	s.DesiredGroup = group
 }
 
+func (s *ConcreteSessionState) PrepareDesiredGroupUpdate(group GroupRuntime) controlsession.DesiredRuntimeUpdated {
+	if s == nil {
+		return controlsession.DesiredRuntimeUpdated{}
+	}
+
+	s.ControlMu.Lock()
+	defer s.ControlMu.Unlock()
+
+	s.DesiredGroup = group
+	if shouldMirrorObservedGroup(s.Group, group) {
+		s.Group = group
+		if s.Control.Pending == nil {
+			s.Recovery = controldomainruntime.AppliedRecoveryModeForSnapshot(s.Group.Snapshot)
+		}
+	}
+	if s.Control.Pending != nil && controldomainruntime.SamePushedConfigSnapshot(
+		controldomainruntime.ConfigSnapshotFromDesired(s.Control.Pending.Snapshot),
+		group.Snapshot,
+	) {
+		s.Pending = group
+		s.Recovery = controldomainruntime.PendingRecoveryModeForSnapshot(s.Pending.Snapshot)
+	}
+
+	return controlsession.DesiredRuntimeUpdated{
+		Snapshot: controldomainruntime.DesiredRuntimeFromGroup(group),
+	}
+}
+
 func (s *ConcreteSessionState) PrepareConfigPush(group GroupRuntime, snapshot ConfigSnapshot) (ConfigPushOperation, error) {
 	state := s.ControlState()
 	if state.Pending != nil {
@@ -553,9 +651,19 @@ func (s *ConcreteSessionState) ResetRuntimeGenerationIfIdle() {
 }
 
 func (s *ConcreteSessionState) AttachTunnelListeners(configVersion uint64, tunnelID uint32, tcpListeners []net.Listener, udpListeners []controlbind.UDPListener) (bool, bool) {
+	s.ControlMu.Lock()
+	desiredVersion := s.DesiredGroup.Snapshot.Version
+	if desiredVersion == 0 {
+		desiredVersion = s.Group.Snapshot.Version
+	}
+	s.ControlMu.Unlock()
+
 	s.RuntimeMu.Lock()
 	defer s.RuntimeMu.Unlock()
 	if s.Runtime.Frozen {
+		return false, false
+	}
+	if desiredVersion != 0 && desiredVersion != configVersion {
 		return false, false
 	}
 	if s.Runtime.Generation != 0 && s.Runtime.Generation != configVersion {
@@ -772,6 +880,64 @@ func (s *ConcreteSessionState) ObserveState() (ObservedConfigState, ObservedStat
 	return configState, runtimeState
 }
 
+func (s ObservedConfigState) RuntimeObservedConfig() RuntimeObservedConfig {
+	config := RuntimeObservedConfig{
+		EffectiveIP: s.Group.EffectiveIP,
+		Snapshot:    s.Group.Snapshot,
+	}
+
+	if s.State.Applied != nil {
+		config.LastAckedConfigVersion = s.State.Applied.Snapshot.Version
+	}
+
+	if s.State.Pending != nil {
+		pending := s.PendingGroup
+		if pending.ID == 0 {
+			pending.Snapshot = controldomainruntime.ConfigSnapshotFromDesired(s.State.Pending.Snapshot)
+			pending.EffectiveIP = s.State.Pending.Snapshot.EffectiveIP
+		}
+		config.Pending = &RuntimePendingConfig{
+			RequestID:   s.State.Pending.RequestID,
+			Snapshot:    pending.Snapshot,
+			EffectiveIP: pending.EffectiveIP,
+		}
+	}
+
+	return config
+}
+
+func (s *ConcreteSessionState) ProjectedSessionState(conn net.Conn) controlsession.SessionState {
+	if s == nil {
+		return controlsession.SessionState{}
+	}
+
+	configState, runtimeState := s.ObserveState()
+	state := controlsession.Clone(configState.State)
+	if state.GroupID == 0 {
+		state = controlsession.NewState(configState.Group.ID, s.SessionID())
+	}
+	state.GroupID = configState.Group.ID
+	state.SessionID = s.SessionID()
+	state.Conn = controlsession.ControlConnState{
+		Attached: conn != nil,
+		ConnID:   transport.ConnectionID(conn),
+	}
+	if state.Phase == controlsession.SessionPhaseUnknown {
+		state.Phase = controlsession.SessionPhaseOnline
+	}
+
+	if state.Desired == nil {
+		desired := controldomainruntime.DesiredRuntimeFromSnapshot(configState.Group.EffectiveIP, configState.Group.Snapshot)
+		state.Desired = &desired
+	}
+	desired := *state.Desired
+	state.Desired = &desired
+	state.Bindings = projectSessionBindings(desired, runtimeState.ActiveTunnelIDs)
+	state.RuntimePhase = projectedRuntimePhase(desired, state.Bindings, runtimeState)
+
+	return state
+}
+
 func (s *ConcreteSessionState) ActiveRuntimeTunnelIDs() map[uint32]struct{} {
 	s.RuntimeMu.Lock()
 	defer s.RuntimeMu.Unlock()
@@ -845,12 +1011,15 @@ func (s *ConcreteSessionState) ReplaceGroupRuntime(group GroupRuntime) {
 	defer s.ControlMu.Unlock()
 	s.DesiredGroup = group
 	s.Group = group
-}
-
-func (s *ConcreteSessionState) SetRecoveryMode(mode testsupport.RecoveryMode) {
-	s.ControlMu.Lock()
-	defer s.ControlMu.Unlock()
-	s.Recovery = mode
+	if s.Control.Pending != nil && controldomainruntime.SamePushedConfigSnapshot(
+		controldomainruntime.ConfigSnapshotFromDesired(s.Control.Pending.Snapshot),
+		group.Snapshot,
+	) {
+		s.Pending = group
+		s.Recovery = controldomainruntime.PendingRecoveryModeForSnapshot(s.Pending.Snapshot)
+		return
+	}
+	s.Recovery = controldomainruntime.AppliedRecoveryModeForSnapshot(s.Group.Snapshot)
 }
 
 func (s *ConcreteSessionState) RecoveryModeValue() testsupport.RecoveryMode {

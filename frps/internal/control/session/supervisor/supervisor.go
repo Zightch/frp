@@ -14,7 +14,7 @@ type Runtime interface {
 	RuntimeGroupID() int64
 	RuntimeConn() net.Conn
 	RuntimeSession() controlruntime.SessionStateProjectionTarget
-	RuntimeSnapshot(state controlsession.SessionState) controlruntime.SessionSnapshot
+	RuntimeSnapshot() controlruntime.SessionSnapshot
 }
 
 type runtimeStateObserver interface {
@@ -43,7 +43,6 @@ type Supervisor struct {
 	bySession        map[uint64]*controlsession.Agent
 	runtimeByGroup   map[int64]Runtime
 	runtimeBySession map[uint64]Runtime
-	stateBySession   map[uint64]controlsession.SessionState
 	groupSlots       map[int64]uint64
 	cancelByID       map[uint64]context.CancelFunc
 }
@@ -55,7 +54,6 @@ func New(executor controlsession.Executor) *Supervisor {
 		bySession:        make(map[uint64]*controlsession.Agent),
 		runtimeByGroup:   make(map[int64]Runtime),
 		runtimeBySession: make(map[uint64]Runtime),
-		stateBySession:   make(map[uint64]controlsession.SessionState),
 		groupSlots:       make(map[int64]uint64),
 		cancelByID:       make(map[uint64]context.CancelFunc),
 	}
@@ -74,12 +72,6 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 		if runtimeObserver, ok := runtime.(runtimeStateObserver); ok {
 			runtimeObserver.SyncControlState(state)
 		}
-
-		s.mu.Lock()
-		if current := s.bySession[state.SessionID]; current == nil || current == agent {
-			s.stateBySession[state.SessionID] = state
-		}
-		s.mu.Unlock()
 	}
 
 	agent = controlsession.NewAgentWithObserver(initial, s.executor, observer)
@@ -95,7 +87,6 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 		s.runtimeByGroup[initial.GroupID] = runtime
 		s.runtimeBySession[initial.SessionID] = runtime
 	}
-	s.stateBySession[initial.SessionID] = initial
 	s.groupSlots[initial.GroupID] = initial.SessionID
 	s.cancelByID[initial.SessionID] = cancel
 	s.mu.Unlock()
@@ -117,7 +108,6 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 			delete(s.bySession, initial.SessionID)
 			delete(s.runtimeBySession, initial.SessionID)
 		}
-		delete(s.stateBySession, initial.SessionID)
 		delete(s.cancelByID, initial.SessionID)
 	}()
 	return agent
@@ -134,19 +124,6 @@ func (s *Supervisor) DispatchBySessionID(sessionID uint64, event controlsession.
 		return false
 	}
 	return agent.Enqueue(event)
-}
-
-func (s *Supervisor) UpdateDesiredRuntime(groupID int64, snapshot controlsession.DesiredRuntimeSnapshot) bool {
-	if s == nil {
-		return false
-	}
-	s.mu.RLock()
-	agent := s.byGroup[groupID]
-	s.mu.RUnlock()
-	if agent == nil {
-		return false
-	}
-	return agent.Enqueue(controlsession.DesiredRuntimeUpdated{Snapshot: snapshot})
 }
 
 func (s *Supervisor) NotifyNetworkChange() {
@@ -173,15 +150,14 @@ func (s *Supervisor) SessionState(sessionID uint64) (controlsession.SessionState
 	s.mu.RLock()
 	runtime := s.runtimeBySession[sessionID]
 	agent := s.bySession[sessionID]
-	state, ok := s.stateBySession[sessionID]
 	s.mu.RUnlock()
 	if runtime != nil {
-		return runtime.RuntimeSnapshot(state).State, true
+		return runtime.RuntimeSnapshot().State, true
 	}
 	if agent != nil {
 		return agent.State(), true
 	}
-	return state, ok
+	return controlsession.SessionState{}, false
 }
 
 func (s *Supervisor) Runtime(sessionID uint64) Runtime {
@@ -214,7 +190,6 @@ func (s *Supervisor) DetachRuntime(sessionID uint64) {
 			delete(s.groupSlots, groupID)
 		}
 	}
-	delete(s.stateBySession, sessionID)
 	s.mu.Unlock()
 }
 
@@ -310,12 +285,9 @@ func (s *Supervisor) Snapshot(exclude controlruntime.SessionStateProjectionTarge
 		groupSlots[groupID] = sessionID
 	}
 	entries := make([]struct {
-		sessionID uint64
-		agent     *controlsession.Agent
-		state     controlsession.SessionState
-		runtime   Runtime
+		runtime Runtime
 	}, 0, len(s.runtimeBySession))
-	for sessionID, runtime := range s.runtimeBySession {
+	for _, runtime := range s.runtimeBySession {
 		if runtime == nil {
 			continue
 		}
@@ -324,26 +296,16 @@ func (s *Supervisor) Snapshot(exclude controlruntime.SessionStateProjectionTarge
 			continue
 		}
 		entries = append(entries, struct {
-			sessionID uint64
-			agent     *controlsession.Agent
-			state     controlsession.SessionState
-			runtime   Runtime
+			runtime Runtime
 		}{
-			sessionID: sessionID,
-			agent:     s.bySession[sessionID],
-			state:     s.stateBySession[sessionID],
-			runtime:   runtime,
+			runtime: runtime,
 		})
 	}
 	s.mu.RUnlock()
 
 	snapshots := make([]controlruntime.SessionSnapshot, 0, len(entries))
 	for _, entry := range entries {
-		if entry.agent == nil {
-			snapshots = append(snapshots, entry.runtime.RuntimeSnapshot(entry.state))
-			continue
-		}
-		snapshots = append(snapshots, entry.runtime.RuntimeSnapshot(entry.agent.State()))
+		snapshots = append(snapshots, entry.runtime.RuntimeSnapshot())
 	}
 
 	return Snapshot{

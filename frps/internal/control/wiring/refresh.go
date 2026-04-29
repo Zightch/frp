@@ -3,10 +3,8 @@ package wiring
 import (
 	"context"
 	"errors"
-	"net"
 
 	controlruntime "github.com/zightch/frp/frps/internal/control/runtime"
-	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
 func (s *Server) RefreshGroup(groupID int64) {
@@ -25,7 +23,6 @@ func (s *Server) RefreshGroup(groupID int64) {
 
 	group = s.computeRuntimeRefreshGroup(group)
 	s.updateActiveSessionDesiredRuntime(active, group)
-	s.notifyDesiredRuntimeRefresh(groupID, group)
 }
 
 func (s *Server) refreshGroupActiveSession(groupID int64) (*activeSession, bool) {
@@ -60,49 +57,11 @@ func (s *Server) computeRuntimeRefreshGroup(group GroupRuntime) GroupRuntime {
 }
 
 func (s *Server) updateActiveSessionDesiredRuntime(active *activeSession, group GroupRuntime) {
-	currentGroup, currentSnapshot := active.session.CurrentGroupAndSnapshot()
-	active.session.SetDesiredGroupRuntime(group)
-	if currentGroup.EffectiveIP == group.EffectiveIP && controlruntime.SamePushedConfigSnapshot(currentSnapshot, group.Snapshot) {
-		active.session.ReplaceGroupRuntime(group)
+	if active == nil || active.session == nil || s.supervisor == nil {
+		return
 	}
-}
-
-func (s *Server) notifyDesiredRuntimeRefresh(groupID int64, group GroupRuntime) {
-	s.supervisor.UpdateDesiredRuntime(groupID, controlruntime.DesiredRuntimeFromGroup(group))
-}
-
-func (s *Server) freezeGroupRuntime(conn net.Conn, session *sessionState) error {
-	listeners, udpListeners, streams, udpSessions := session.FreezeTunnelRuntime()
-	controlruntime.CloseStartedTunnelListeners(listeners, udpListeners)
-
-	var freezeErr error
-	for streamID, stream := range streams {
-		if err := s.sendStreamClose(conn, session, streamID, protocol.CloseReasonAdminTerminated, "reload in progress"); err != nil && freezeErr == nil {
-			freezeErr = err
-		}
-		stream.SignalReady(net.ErrClosed)
-		stream.Close()
-	}
-	for _, udpSession := range udpSessions {
-		if err := s.sendUDPClose(conn, session, udpSession.SessionID, protocol.CloseReasonAdminTerminated, "reload in progress"); err != nil && freezeErr == nil {
-			freezeErr = err
-		}
-	}
-	return freezeErr
-}
-
-func (s *Server) rebindGroupRuntime(conn net.Conn, session *sessionState, group GroupRuntime) error {
-	if err := s.freezeGroupRuntime(conn, session); err != nil {
-		return err
-	}
-	session.ReplaceGroupRuntime(group)
-	session.AllowTunnelRuntimeStart()
-	logger := s.logger.With(
-		"session_id", session.ID,
-		"group_id", group.ID,
-		"group_name", group.Name,
-	)
-	return s.ensureTunnelListeners(conn, logger, session)
+	event := active.session.PrepareDesiredGroupUpdate(group)
+	s.supervisor.DispatchBySessionID(active.session.ID, event)
 }
 
 func (s *Server) runtimeRefreshSnapshot(group GroupRuntime, snapshot ConfigSnapshot) (ConfigSnapshot, error, bool) {

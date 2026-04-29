@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
-	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 // CollectRuntimeIssueClearTunnelIDs collects tunnel IDs that should have their runtime issues cleared.
@@ -65,7 +64,6 @@ func ApplySessionRuntimeStartPlan(op RuntimeStartApplyDeps, target SessionRuntim
 	}
 	if len(plan.Snapshot.Tunnels) == 0 {
 		target.SessionResetRuntimeGenerationIfIdle()
-		target.SessionSetRecoveryMode(testsupport.RecoveryModeEmptyConfig)
 		return nil
 	}
 	for _, tunnelID := range plan.ClearIssueTunnelIDs {
@@ -82,9 +80,6 @@ func ApplySessionRuntimeStartPlan(op RuntimeStartApplyDeps, target SessionRuntim
 		op.RecordTunnelRuntimeIssueForConfig(tunnelID, plan.Snapshot.Version, reason)
 	}
 	if len(plan.TargetTunnels) == 0 {
-		if plan.ActiveRuntime {
-			target.SessionSetRecoveryMode(testsupport.RecoveryModeRunning)
-		}
 		return nil
 	}
 
@@ -152,9 +147,6 @@ func ApplySessionRuntimeStartPlan(op RuntimeStartApplyDeps, target SessionRuntim
 	}
 	for tunnelID := range target.SessionActiveRuntimeTunnelIDs() {
 		op.RecordTunnelRuntimeIssueForConfig(tunnelID, plan.Snapshot.Version, "")
-	}
-	if target.SessionHasActiveRuntimeListeners() {
-		target.SessionSetRecoveryMode(testsupport.RecoveryModeRunning)
 	}
 	return nil
 }

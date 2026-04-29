@@ -10,7 +10,6 @@ import (
 	controllistenertls "github.com/zightch/frp/frps/internal/control/runtime/listener/tls"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
-	"github.com/zightch/frp/frps/pkg/testsupport"
 )
 
 type sessionRuntimeStartTarget struct {
@@ -33,10 +32,6 @@ func (t sessionRuntimeStartTarget) SessionActiveRuntimeTunnelIDs() map[uint32]st
 
 func (t sessionRuntimeStartTarget) SessionResetRuntimeGenerationIfIdle() {
 	t.session.ResetRuntimeGenerationIfIdle()
-}
-
-func (t sessionRuntimeStartTarget) SessionSetRecoveryMode(mode testsupport.RecoveryMode) {
-	t.session.SetRecoveryMode(mode)
 }
 
 func (t sessionRuntimeStartTarget) SessionAttachTunnelListeners(configVersion uint64, tunnelID uint32, tcpListeners []net.Listener, udpListeners []UDPListener) (bool, bool) {

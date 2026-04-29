@@ -29,7 +29,7 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 }
 
 // AttachRuntimeSession implements controlruntime.SupervisorOperator for projected runtime tests.
-func (s *Supervisor) AttachRuntimeSession(parent context.Context, state controlsession.SessionState, runtime *controlruntime.RuntimeExecutor) *controlsession.Agent {
+func (s *Supervisor) AttachRuntimeSession(parent context.Context, runtime *controlruntime.RuntimeExecutor) *controlsession.Agent {
 	if s == nil || runtime == nil {
 		return nil
 	}
@@ -43,7 +43,7 @@ func (s *Supervisor) AttachRuntimeSession(parent context.Context, state controls
 		logger:  runtime.Logger,
 		session: session,
 	}
-	return s.AttachSession(parent, state, localRuntime)
+	return s.AttachSession(parent, runtime.Session.ProjectedSessionState(runtime.Conn), localRuntime)
 }
 
 func (s *Supervisor) DispatchBySessionID(sessionID uint64, event controlsession.Event) bool {
@@ -51,13 +51,6 @@ func (s *Supervisor) DispatchBySessionID(sessionID uint64, event controlsession.
 		return false
 	}
 	return s.registry.DispatchBySessionID(sessionID, event)
-}
-
-func (s *Supervisor) UpdateDesiredRuntime(groupID int64, snapshot controlsession.DesiredRuntimeSnapshot) bool {
-	if s == nil || s.registry == nil {
-		return false
-	}
-	return s.registry.UpdateDesiredRuntime(groupID, snapshot)
 }
 
 func (s *Supervisor) NotifyNetworkChange() {

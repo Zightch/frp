@@ -140,8 +140,9 @@ func (r *testRuntime) RuntimeConn() net.Conn { return r.conn }
 func (r *testRuntime) RuntimeSession() controlruntime.SessionStateProjectionTarget {
 	return r.session
 }
-func (r *testRuntime) RuntimeSnapshot(state controlsession.SessionState) controlruntime.SessionSnapshot {
+func (r *testRuntime) RuntimeSnapshot() controlruntime.SessionSnapshot {
 	configState, _ := r.session.ObserveState()
+	state := r.session.ProjectedSessionState(r.conn)
 	return controlruntime.SessionSnapshot{
 		GroupID:   r.groupID,
 		SessionID: r.session.id,
@@ -168,6 +169,9 @@ func (s *testSession) ObserveState() (controlruntime.ObservedConfigState, contro
 }
 func (s *testSession) CurrentGroupAndSnapshot() (controlruntime.GroupRuntime, controlruntime.ConfigSnapshot) {
 	return s.group, s.snapshot
+}
+func (s *testSession) ProjectedSessionState(_ net.Conn) controlsession.SessionState {
+	return testSessionState(s.group.ID, s.id, s.snapshot)
 }
 
 func testGroupRuntime() (controlruntime.GroupRuntime, controlruntime.ConfigSnapshot) {

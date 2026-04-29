@@ -130,17 +130,17 @@ func (r *runtimeExecutor) RuntimeSession() controlruntime.SessionStateProjection
 	return r.session
 }
 
-func (r *runtimeExecutor) RuntimeSnapshot(state controlsession.SessionState) controlruntime.SessionSnapshot {
-	return r.snapshot(state)
+func (r *runtimeExecutor) RuntimeSnapshot() controlruntime.SessionSnapshot {
+	return r.snapshot()
 }
 
-func (r *runtimeExecutor) snapshot(_ controlsession.SessionState) controlruntime.SessionSnapshot {
+func (r *runtimeExecutor) snapshot() controlruntime.SessionSnapshot {
 	if r == nil {
 		return controlruntime.SessionSnapshot{}
 	}
 
 	configState, runtimeState := r.session.ObserveState()
-	projected := controlruntime.ProjectedSessionState(r.session, r.conn)
+	projected := r.session.ProjectedSessionState(r.conn)
 	return controlruntime.SessionSnapshot{
 		GroupID:      r.groupID,
 		SessionID:    projected.SessionID,

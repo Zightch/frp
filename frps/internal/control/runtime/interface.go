@@ -7,6 +7,7 @@ import (
 	controlbind "github.com/zightch/frp/frps/internal/control/bind"
 	controlrepo "github.com/zightch/frp/frps/internal/control/repo"
 	controllistener "github.com/zightch/frp/frps/internal/control/runtime/listener"
+	controlruntimestate "github.com/zightch/frp/frps/internal/control/runtime/state"
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/testsupport"
@@ -104,11 +105,7 @@ type RuntimeSessionTarget struct {
 }
 
 // RuntimePendingConfigTarget 定义运行时待定配置目标
-type RuntimePendingConfigTarget struct {
-	RequestID   uint32
-	Snapshot    ConfigSnapshot
-	EffectiveIP string
-}
+type RuntimePendingConfigTarget = controlruntimestate.RuntimePendingConfig
 
 // RuntimeListenerTarget 定义运行时监听器目标
 type RuntimeListenerTarget struct {
@@ -168,12 +165,7 @@ type RuntimeTunnelTarget struct {
 }
 
 // RuntimeObservedConfig 定义运行时观察到的配置
-type RuntimeObservedConfig struct {
-	EffectiveIP            string
-	Snapshot               ConfigSnapshot
-	LastAckedConfigVersion uint64
-	Pending                *RuntimePendingConfigTarget
-}
+type RuntimeObservedConfig = controlruntimestate.RuntimeObservedConfig
 
 // SessionRuntimeStartTarget defines the interface for session runtime start operations.
 // This interface is implemented by the control package's sessionRuntimeStartTarget.
@@ -183,7 +175,6 @@ type SessionRuntimeStartTarget interface {
 	SessionCanStartTunnelRuntime() bool
 	SessionActiveRuntimeTunnelIDs() map[uint32]struct{}
 	SessionResetRuntimeGenerationIfIdle()
-	SessionSetRecoveryMode(mode testsupport.RecoveryMode)
 	SessionAttachTunnelListeners(configVersion uint64, tunnelID uint32, tcpListeners []net.Listener, udpListeners []UDPListener) (startUDPCleanup bool, attached bool)
 	SessionHasActiveRuntimeListeners() bool
 

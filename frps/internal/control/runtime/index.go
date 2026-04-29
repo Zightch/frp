@@ -30,7 +30,7 @@ func NewRuntimeSnapshotIndex(sessions []SessionSnapshot) RuntimeSnapshotIndex {
 
 // NewRuntimeSessionTarget creates a new runtime session target from a session snapshot.
 func NewRuntimeSessionTarget(snapshot SessionSnapshot) RuntimeSessionTarget {
-	config := BuildRuntimeObservedConfig(snapshot.Config)
+	config := snapshot.Config.RuntimeObservedConfig()
 	target := RuntimeSessionTarget{
 		ID: RuntimeSessionTargetID{
 			GroupID:   snapshot.GroupID,
@@ -99,29 +99,7 @@ func NewRuntimeSessionTarget(snapshot SessionSnapshot) RuntimeSessionTarget {
 
 // BuildRuntimeObservedConfig builds a runtime observed config from observed session config state.
 func BuildRuntimeObservedConfig(configState ObservedConfigState) RuntimeObservedConfig {
-	config := RuntimeObservedConfig{
-		EffectiveIP: configState.Group.EffectiveIP,
-		Snapshot:    configState.Group.Snapshot,
-	}
-
-	if configState.State.Applied != nil {
-		config.LastAckedConfigVersion = configState.State.Applied.Snapshot.Version
-	}
-
-	if configState.State.Pending != nil {
-		pending := configState.PendingGroup
-		if pending.ID == 0 {
-			pending.Snapshot = ConfigSnapshotFromDesired(configState.State.Pending.Snapshot)
-			pending.EffectiveIP = configState.State.Pending.Snapshot.EffectiveIP
-		}
-		config.Pending = &RuntimePendingConfigTarget{
-			RequestID:   configState.State.Pending.RequestID,
-			Snapshot:    pending.Snapshot,
-			EffectiveIP: pending.EffectiveIP,
-		}
-	}
-
-	return config
+	return configState.RuntimeObservedConfig()
 }
 
 // BuildRuntimeMissingListenerTargets builds a list of missing listener targets for a session.

@@ -53,7 +53,7 @@ func (s SessionSnapshot) ActiveRuntimeGroup() (RuntimeGroupSnapshot, bool) {
 	}
 
 	group := s.Config.Group
-	config := BuildRuntimeObservedConfig(s.Config)
+	config := s.Config.RuntimeObservedConfig()
 	snapshot := config.Snapshot
 	snapshot.Tunnels = FilterTunnelsByID(snapshot.Tunnels, activeTunnelIDs)
 	if len(snapshot.Tunnels) == 0 {
