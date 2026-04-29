@@ -36,7 +36,7 @@
 - `control_transport_security`
 - `updated_at`
 
-`rate_limit` 目前仍保留在 schema，但运行时不消费。
+`rate_limit` 目前仍保留在 schema，但运行时不消费。它属于早期遗留占位字段，不再代表正式的后续限速模型；已确认的业务设计见 [../design/rate-policy-groups.md](../design/rate-policy-groups.md)。
 
 ## `tunnels`
 

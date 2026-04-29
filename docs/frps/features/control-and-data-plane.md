@@ -67,7 +67,7 @@ frps -> start listeners
 当前仍不下发：
 
 - ACL
-- 分组总限速
+- 限速策略
 - 抓包控制
 - 反向代理配置
 - `frps` 监听侧 TLS 私钥材料
@@ -76,6 +76,8 @@ frps -> start listeners
 
 - `frps` 监听侧 TLS 材料由 `frps` 本地按 tunnel id 解析
 - `frpc` backend TLS 材料才会进入 `ConfigSnapshot`
+
+当前已确认的后续限速模型改为独立 [限速策略组设计](../design/rate-policy-groups.md)；在能力真实落地前，这部分不会进入 `ConfigSnapshot`，也不会下发到 `frpc`。
 
 ## 运行态恢复
 

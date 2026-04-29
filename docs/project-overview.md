@@ -39,7 +39,7 @@
 - 反向代理。
 - 隧道入口 ACL 执行。
 - WebSocket、在线连接注册表、实时速率页、日志页。
-- 限速执行和抓包执行。
+- 限速策略组、限速执行和抓包执行。
 - 一个分组多个在线 `frpc`。
 - 数据库 schema 迁移兼容层。
 
@@ -48,9 +48,11 @@
 - 持久化配置：管理 API / WebUI 写入 SQLite / MySQL 中的 `proxy_groups`、`tunnels`。
 - 运行时配置：`frpc` 登录或在线热重载时，`frps` 从数据库读取持久化配置并构造内存里的 `GroupRuntime` / `ConfigSnapshot`，后续 listener 启停和实际转发只消费这份运行时快照。
 
-当前仍保留但尚未进入真实执行链路的持久化字段只有：
+当前仍保留但尚未进入真实执行链路的遗留持久化字段只有：
 
-- `proxy_groups.rate_limit`（预留为分组下所有隧道共享总限速）
+- `proxy_groups.rate_limit`（早期遗留占位字段；当前不生效，且不再代表正式设计方向）
+
+已确认的后续限速业务模型改为独立的 [限速策略组设计](frps/design/rate-policy-groups.md)，而不是继续沿 `proxy_groups.rate_limit` 演进。
 
 抓包相关控制当前未实现；如果后续引入，只应属于运行时配置层，不应再落成 `tunnels` 表字段。
 

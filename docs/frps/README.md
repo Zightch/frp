@@ -28,5 +28,6 @@
 ## 当前重点设计项
 
 - [证书绑定设计：入口证书与 Tunnel TLS](./design/certificate-binding.md)
+- [限速策略组设计](./design/rate-policy-groups.md)
 
 根目录不再保留旧版平铺文档；请直接从本索引进入。
