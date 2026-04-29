@@ -887,12 +887,12 @@ func TestServerUnregisterOldSessionKeepsReplacementSlotAndSession(t *testing.T) 
 	defer newClient.Close()
 	defer newServer.Close()
 
-	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, oldServer, oldSession)
+	attachProjectedRuntimeSessionForTest(context.Background(), server.supervisor, server.logger, oldServer, oldSession)
 	if state := server.ObserveState(); state.GroupSlots[group.ID] != oldSession.ID {
 		t.Fatalf("expected old session to own group slot, got %#v", state.GroupSlots)
 	}
 
-	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, newServer, newSession)
+	attachProjectedRuntimeSessionForTest(context.Background(), server.supervisor, server.logger, newServer, newSession)
 	if state := server.ObserveState(); state.GroupSlots[group.ID] != newSession.ID {
 		t.Fatalf("expected replacement session to own group slot, got %#v", state.GroupSlots)
 	}

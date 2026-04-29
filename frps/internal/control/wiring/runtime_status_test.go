@@ -160,7 +160,7 @@ func TestServerEnsureTunnelListenersDetectsRuntimeConflictWithActiveGroup(t *tes
 	if err := server.ensureTunnelListeners(otherServerConn, slog.New(slog.NewTextHandler(io.Discard, nil)), otherSession); err != nil {
 		t.Fatalf("start active group listeners: %v", err)
 	}
-	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, otherServerConn, otherSession)
+	attachProjectedRuntimeSessionForTest(context.Background(), server.supervisor, server.logger, otherServerConn, otherSession)
 	defer func() {
 		controlruntime.DetachRuntime(server.supervisor, otherSession.ID)
 		otherSession.ApplyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
@@ -451,7 +451,7 @@ func TestServerScanNonListeningTunnelRuntimeIssuesScansActivePartialGroupAndReco
 	if err := server.ensureTunnelListeners(serverConn, slog.New(slog.NewTextHandler(io.Discard, nil)), session); err != nil {
 		t.Fatalf("ensure tunnel listeners with partial bind failure: %v", err)
 	}
-	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, serverConn, session)
+	attachProjectedRuntimeSessionForTest(context.Background(), server.supervisor, server.logger, serverConn, session)
 	defer func() {
 		controlruntime.DetachRuntime(server.supervisor, session.ID)
 		session.ApplyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})

@@ -28,24 +28,6 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 	return s.registry.AttachSession(parent, initial, runtime)
 }
 
-// AttachRuntimeSession implements controlruntime.SupervisorOperator for projected runtime tests.
-func (s *Supervisor) AttachRuntimeSession(parent context.Context, runtime *controlruntime.RuntimeExecutor) *controlsession.Agent {
-	if s == nil || runtime == nil {
-		return nil
-	}
-	session, ok := runtime.Session.(*sessionState)
-	if !ok || session == nil {
-		return nil
-	}
-	localRuntime := &runtimeExecutor{
-		groupID: runtime.GroupID,
-		conn:    runtime.Conn,
-		logger:  runtime.Logger,
-		session: session,
-	}
-	return s.AttachSession(parent, runtime.Session.ProjectedSessionState(runtime.Conn), localRuntime)
-}
-
 func (s *Supervisor) DispatchBySessionID(sessionID uint64, event controlsession.Event) bool {
 	if s == nil || s.registry == nil {
 		return false

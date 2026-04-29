@@ -508,15 +508,6 @@ func (s *ConcreteSessionState) DesiredGroupRuntime() GroupRuntime {
 	return s.DesiredGroup
 }
 
-func (s *ConcreteSessionState) SetDesiredGroupRuntime(group GroupRuntime) {
-	if s == nil {
-		return
-	}
-	s.ControlMu.Lock()
-	defer s.ControlMu.Unlock()
-	s.DesiredGroup = group
-}
-
 func (s *ConcreteSessionState) PrepareDesiredGroupUpdate(group GroupRuntime) controlsession.DesiredRuntimeUpdated {
 	if s == nil {
 		return controlsession.DesiredRuntimeUpdated{}
@@ -524,7 +515,10 @@ func (s *ConcreteSessionState) PrepareDesiredGroupUpdate(group GroupRuntime) con
 
 	s.ControlMu.Lock()
 	defer s.ControlMu.Unlock()
+	return s.prepareDesiredGroupUpdateLocked(group)
+}
 
+func (s *ConcreteSessionState) prepareDesiredGroupUpdateLocked(group GroupRuntime) controlsession.DesiredRuntimeUpdated {
 	s.DesiredGroup = group
 	if shouldMirrorObservedGroup(s.Group, group) {
 		s.Group = group
@@ -552,10 +546,7 @@ func (s *ConcreteSessionState) PrepareConfigPush(group GroupRuntime, snapshot Co
 	}
 
 	group.Snapshot = snapshot
-	s.SetDesiredGroupRuntime(group)
-	next := s.ApplyControlEvent(controlsession.DesiredRuntimeUpdated{
-		Snapshot: controldomainruntime.DesiredRuntimeFromGroup(group),
-	})
+	next := s.ApplyControlEvent(s.PrepareDesiredGroupUpdate(group))
 	if next.Pending == nil {
 		return ConfigPushOperation{}, ErrConfigUpdateInFlight
 	}
@@ -1004,22 +995,6 @@ func (s *ConcreteSessionState) CurrentSnapshot() ConfigSnapshot {
 	s.ControlMu.Lock()
 	defer s.ControlMu.Unlock()
 	return s.Group.Snapshot
-}
-
-func (s *ConcreteSessionState) ReplaceGroupRuntime(group GroupRuntime) {
-	s.ControlMu.Lock()
-	defer s.ControlMu.Unlock()
-	s.DesiredGroup = group
-	s.Group = group
-	if s.Control.Pending != nil && controldomainruntime.SamePushedConfigSnapshot(
-		controldomainruntime.ConfigSnapshotFromDesired(s.Control.Pending.Snapshot),
-		group.Snapshot,
-	) {
-		s.Pending = group
-		s.Recovery = controldomainruntime.PendingRecoveryModeForSnapshot(s.Pending.Snapshot)
-		return
-	}
-	s.Recovery = controldomainruntime.AppliedRecoveryModeForSnapshot(s.Group.Snapshot)
 }
 
 func (s *ConcreteSessionState) RecoveryModeValue() testsupport.RecoveryMode {

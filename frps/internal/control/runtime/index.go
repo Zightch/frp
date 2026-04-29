@@ -97,11 +97,6 @@ func NewRuntimeSessionTarget(snapshot SessionSnapshot) RuntimeSessionTarget {
 	return target
 }
 
-// BuildRuntimeObservedConfig builds a runtime observed config from observed session config state.
-func BuildRuntimeObservedConfig(configState ObservedConfigState) RuntimeObservedConfig {
-	return configState.RuntimeObservedConfig()
-}
-
 // BuildRuntimeMissingListenerTargets builds a list of missing listener targets for a session.
 func BuildRuntimeMissingListenerTargets(id RuntimeSessionTargetID, tunnels []protocol.TunnelEntry, listenersByTunnel map[uint32][]RuntimeListenerTarget) []RuntimeMissingListenerTarget {
 	missing := make([]RuntimeMissingListenerTarget, 0)

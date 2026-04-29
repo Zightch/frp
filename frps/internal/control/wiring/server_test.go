@@ -3234,7 +3234,7 @@ func TestServerRefreshGroupKeepsSessionAliveWhenEffectiveIPRebindPartiallyConfli
 	if err := server.ensureTunnelListeners(otherServerConn, slog.New(slog.NewTextHandler(io.Discard, nil)), otherSession); err != nil {
 		t.Fatalf("start active group listeners: %v", err)
 	}
-	controlruntime.AttachProjectedRuntimeSession(context.Background(), server.supervisor, server.logger, otherServerConn, otherSession)
+	attachProjectedRuntimeSessionForTest(context.Background(), server.supervisor, server.logger, otherServerConn, otherSession)
 	defer func() {
 		controlruntime.DetachRuntime(server.supervisor, otherSession.ID)
 		otherSession.ApplyControlEvent(controlsession.ControlConnClosed{Reason: "runtime unregistered"})
@@ -4305,6 +4305,22 @@ func writeConfigAck(t *testing.T, conn net.Conn, requestID uint32, version uint6
 
 func newTestSessionState(group GroupRuntime, snapshot ConfigSnapshot) *sessionState {
 	return newSessionState(1, group, snapshot, 0)
+}
+
+func attachProjectedRuntimeSessionForTest(parent context.Context, supervisor *Supervisor, baseLogger *slog.Logger, conn net.Conn, session *sessionState) *controlsession.Agent {
+	if supervisor == nil || conn == nil || session == nil {
+		return nil
+	}
+
+	group, snapshot := session.CurrentGroupAndSnapshot()
+	group.Snapshot = snapshot
+	runtime := &runtimeExecutor{
+		groupID: group.ID,
+		conn:    conn,
+		logger:  controlruntime.ScopedRuntimeLogger(baseLogger, session, group),
+		session: session,
+	}
+	return supervisor.AttachSession(parent, session.ProjectedSessionState(conn), runtime)
 }
 
 type staticSnapshotReader struct {
