@@ -280,6 +280,226 @@ func TestAuthInitializationLoginAndSessionEndpoints(t *testing.T) {
 	)
 }
 
+func TestAuthLoginRequiresExplicitTakeoverWhenAdministratorOccupied(t *testing.T) {
+	store := newTestStore(t)
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	manager, err := authn.NewManager(authn.Options{
+		Path:          authPath,
+		WatchInterval: 5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new auth manager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = manager.Close()
+	})
+	if err := manager.Initialize("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatalf("initialize auth manager: %v", err)
+	}
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	firstLogin := performManagementLogin(t, server.Handler(), "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	firstCookie := findCookie(firstLogin.Cookies, managementSessionCookieName)
+	if firstCookie == nil {
+		t.Fatal("first login must set a management session cookie")
+	}
+
+	occupied := performOccupiedManagementLogin(t, server.Handler(), "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if occupied.JSON["error_code"] != "management_admin_occupied" {
+		t.Fatalf("unexpected occupied login payload: %#v", occupied.JSON)
+	}
+
+	details := occupied.JSON["details"].(map[string]any)
+	takeover := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/auth/takeover",
+		map[string]any{
+			"pending_login_ticket": details["pending_login_ticket"],
+			"observed_generation":  details["observed_generation"],
+		},
+		http.StatusOK,
+	)
+	secondCookie := findCookie(takeover.Cookies, managementSessionCookieName)
+	if secondCookie == nil {
+		t.Fatal("takeover must set a management session cookie")
+	}
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/auth/session",
+		nil,
+		http.StatusUnauthorized,
+		firstCookie,
+	)
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/auth/session",
+		nil,
+		http.StatusOK,
+		secondCookie,
+	)
+}
+
+func TestAuthTakeoverPageBecomesStaleAfterAdministratorLogsOut(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	firstLogin := performManagementLogin(t, server.Handler(), "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	firstCookie := findCookie(firstLogin.Cookies, managementSessionCookieName)
+	if firstCookie == nil {
+		t.Fatal("first login must set a management session cookie")
+	}
+
+	occupied := performOccupiedManagementLogin(t, server.Handler(), "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	details := occupied.JSON["details"].(map[string]any)
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/auth/logout",
+		nil,
+		http.StatusOK,
+		firstCookie,
+	)
+
+	stale := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/auth/takeover",
+		map[string]any{
+			"pending_login_ticket": details["pending_login_ticket"],
+			"observed_generation":  details["observed_generation"],
+		},
+		http.StatusConflict,
+	)
+	if stale.JSON["error_code"] != "management_takeover_stale" {
+		t.Fatalf("unexpected stale takeover payload: %#v", stale.JSON)
+	}
+	if stale.JSON["error"] != "页面已失效，请重新登录" {
+		t.Fatalf("unexpected stale takeover message: %#v", stale.JSON)
+	}
+
+	relogin := performManagementLogin(t, server.Handler(), "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if relogin.JSON["authenticated"] != true {
+		t.Fatalf("unexpected relogin payload: %#v", relogin.JSON)
+	}
+}
+
+func TestAuthOnlyOneWaitingPageCanTakeOverObservedAdministrator(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	firstLogin := performManagementLogin(t, server.Handler(), "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	firstCookie := findCookie(firstLogin.Cookies, managementSessionCookieName)
+	if firstCookie == nil {
+		t.Fatal("first login must set a management session cookie")
+	}
+
+	waitingA := performOccupiedManagementLogin(t, server.Handler(), "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	waitingB := performOccupiedManagementLogin(t, server.Handler(), "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	detailsA := waitingA.JSON["details"].(map[string]any)
+	detailsB := waitingB.JSON["details"].(map[string]any)
+
+	takeoverA := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/auth/takeover",
+		map[string]any{
+			"pending_login_ticket": detailsA["pending_login_ticket"],
+			"observed_generation":  detailsA["observed_generation"],
+		},
+		http.StatusOK,
+	)
+	secondCookie := findCookie(takeoverA.Cookies, managementSessionCookieName)
+	if secondCookie == nil {
+		t.Fatal("takeover must set a management session cookie")
+	}
+
+	stale := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/auth/takeover",
+		map[string]any{
+			"pending_login_ticket": detailsB["pending_login_ticket"],
+			"observed_generation":  detailsB["observed_generation"],
+		},
+		http.StatusConflict,
+	)
+	if stale.JSON["error_code"] != "management_takeover_stale" {
+		t.Fatalf("unexpected stale waiting page payload: %#v", stale.JSON)
+	}
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/auth/session",
+		nil,
+		http.StatusUnauthorized,
+		firstCookie,
+	)
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/auth/session",
+		nil,
+		http.StatusOK,
+		secondCookie,
+	)
+}
+
 func TestAuthStateResetsAfterAuthFileDeletion(t *testing.T) {
 	store := newTestStore(t)
 	authPath := filepath.Join(t.TempDir(), "auth.json")
@@ -1172,30 +1392,17 @@ func TestRatePolicyCRUDAndBindings(t *testing.T) {
 		t.Fatalf("unexpected updated uplink bps: %d", got)
 	}
 
-	boundTCP := performRequest(
+	syncedBindings := performRequest(
 		t,
 		server.Handler(),
-		http.MethodPost,
+		http.MethodPut,
 		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
-		map[string]any{"tunnel_id": tcpTunnelID},
-		http.StatusCreated,
+		map[string]any{"tunnel_ids": []int64{tcpTunnelID, udpTunnelID}},
+		http.StatusOK,
 		sessionCookie,
 	)
-	if got := int64(boundTCP.JSON["item"].(map[string]any)["tunnel_id"].(float64)); got != tcpTunnelID {
-		t.Fatalf("unexpected tcp binding payload: %#v", boundTCP.JSON)
-	}
-
-	boundUDP := performRequest(
-		t,
-		server.Handler(),
-		http.MethodPost,
-		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
-		map[string]any{"tunnel_id": udpTunnelID},
-		http.StatusCreated,
-		sessionCookie,
-	)
-	if got := int64(boundUDP.JSON["item"].(map[string]any)["tunnel_id"].(float64)); got != udpTunnelID {
-		t.Fatalf("unexpected udp binding payload: %#v", boundUDP.JSON)
+	if got := len(syncedBindings.JSON["items"].([]any)); got != 2 {
+		t.Fatalf("unexpected synced binding payload: %#v", syncedBindings.JSON)
 	}
 
 	bindings := performRequest(
@@ -1237,9 +1444,9 @@ func TestRatePolicyCRUDAndBindings(t *testing.T) {
 	rangeBind := performRequest(
 		t,
 		server.Handler(),
-		http.MethodPost,
+		http.MethodPut,
 		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
-		map[string]any{"tunnel_id": rangeTunnelID},
+		map[string]any{"tunnel_ids": []int64{rangeTunnelID}},
 		http.StatusBadRequest,
 		sessionCookie,
 	)
@@ -1247,17 +1454,31 @@ func TestRatePolicyCRUDAndBindings(t *testing.T) {
 		t.Fatalf("unexpected range binding error: %#v", rangeBind.JSON)
 	}
 
-	duplicateBind := performRequest(
+	migratedBind := performRequest(
 		t,
 		server.Handler(),
-		http.MethodPost,
+		http.MethodPut,
 		"/api/v1/rate-policies/"+strconv.FormatInt(secondPolicyID, 10)+"/bindings",
-		map[string]any{"tunnel_id": tcpTunnelID},
-		http.StatusConflict,
+		map[string]any{"tunnel_ids": []int64{tcpTunnelID}},
+		http.StatusOK,
 		sessionCookie,
 	)
-	if !strings.Contains(duplicateBind.JSON["error"].(string), "already bound") {
-		t.Fatalf("unexpected duplicate binding error: %#v", duplicateBind.JSON)
+	if got := len(migratedBind.JSON["items"].([]any)); got != 1 {
+		t.Fatalf("unexpected migrated binding payload: %#v", migratedBind.JSON)
+	}
+
+	bindingsAfterMigration := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	remainingBindings := bindingsAfterMigration.JSON["items"].([]any)
+	if len(remainingBindings) != 1 || int64(remainingBindings[0].(map[string]any)["tunnel_id"].(float64)) != udpTunnelID {
+		t.Fatalf("unexpected bindings after migration: %#v", bindingsAfterMigration.JSON)
 	}
 
 	deleteConflict := performRequest(
@@ -1276,18 +1497,9 @@ func TestRatePolicyCRUDAndBindings(t *testing.T) {
 	performRequest(
 		t,
 		server.Handler(),
-		http.MethodDelete,
-		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings/"+strconv.FormatInt(tcpTunnelID, 10),
-		nil,
-		http.StatusOK,
-		sessionCookie,
-	)
-	performRequest(
-		t,
-		server.Handler(),
-		http.MethodDelete,
-		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings/"+strconv.FormatInt(udpTunnelID, 10),
-		nil,
+		http.MethodPut,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		map[string]any{"tunnel_ids": []int64{}},
 		http.StatusOK,
 		sessionCookie,
 	)
@@ -1421,10 +1633,10 @@ func TestRatePolicyMutationsRefreshAffectedGroups(t *testing.T) {
 	performRequest(
 		t,
 		server.Handler(),
-		http.MethodPost,
+		http.MethodPut,
 		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
-		map[string]any{"tunnel_id": tunnelAID},
-		http.StatusCreated,
+		map[string]any{"tunnel_ids": []int64{tunnelAID}},
+		http.StatusOK,
 		sessionCookie,
 	)
 	if got := refresher.calls(); len(got) != 1 || got[0] != groupAID {
@@ -1435,10 +1647,10 @@ func TestRatePolicyMutationsRefreshAffectedGroups(t *testing.T) {
 	performRequest(
 		t,
 		server.Handler(),
-		http.MethodPost,
+		http.MethodPut,
 		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
-		map[string]any{"tunnel_id": tunnelBID},
-		http.StatusCreated,
+		map[string]any{"tunnel_ids": []int64{tunnelAID, tunnelBID}},
+		http.StatusOK,
 		sessionCookie,
 	)
 	if got := refresher.calls(); len(got) != 1 || got[0] != groupBID {
@@ -1468,9 +1680,9 @@ func TestRatePolicyMutationsRefreshAffectedGroups(t *testing.T) {
 	performRequest(
 		t,
 		server.Handler(),
-		http.MethodDelete,
-		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings/"+strconv.FormatInt(tunnelAID, 10),
-		nil,
+		http.MethodPut,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		map[string]any{"tunnel_ids": []int64{tunnelBID}},
 		http.StatusOK,
 		sessionCookie,
 	)
@@ -1482,9 +1694,9 @@ func TestRatePolicyMutationsRefreshAffectedGroups(t *testing.T) {
 	performRequest(
 		t,
 		server.Handler(),
-		http.MethodDelete,
-		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings/"+strconv.FormatInt(tunnelBID, 10),
-		nil,
+		http.MethodPut,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		map[string]any{"tunnel_ids": []int64{}},
 		http.StatusOK,
 		sessionCookie,
 	)
@@ -1586,10 +1798,10 @@ func TestDeletingTunnelOrProxyGroupCleansRatePolicyBindings(t *testing.T) {
 	performRequest(
 		t,
 		server.Handler(),
-		http.MethodPost,
+		http.MethodPut,
 		"/api/v1/rate-policies/"+strconv.FormatInt(policyAID, 10)+"/bindings",
-		map[string]any{"tunnel_id": tunnelAID},
-		http.StatusCreated,
+		map[string]any{"tunnel_ids": []int64{tunnelAID}},
+		http.StatusOK,
 		sessionCookie,
 	)
 	performRequest(
@@ -1663,10 +1875,10 @@ func TestDeletingTunnelOrProxyGroupCleansRatePolicyBindings(t *testing.T) {
 	performRequest(
 		t,
 		server.Handler(),
-		http.MethodPost,
+		http.MethodPut,
 		"/api/v1/rate-policies/"+strconv.FormatInt(policyBID, 10)+"/bindings",
-		map[string]any{"tunnel_id": tunnelBID},
-		http.StatusCreated,
+		map[string]any{"tunnel_ids": []int64{tunnelBID}},
+		http.StatusOK,
 		sessionCookie,
 	)
 	performRequest(
@@ -2879,6 +3091,54 @@ func authenticatedManagementCookie(t *testing.T, manager *authn.Manager) *http.C
 		Value: token,
 		Path:  "/",
 	}
+}
+
+func performManagementLogin(t *testing.T, handler http.Handler, keyHash string) testResponse {
+	t.Helper()
+
+	challenge := performJSONRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/api/v1/auth/challenge",
+		nil,
+		http.StatusOK,
+	)
+	return performRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/api/v1/auth/login",
+		map[string]any{
+			"challenge_id": challenge["challenge_id"],
+			"proof":        buildManagementProof(keyHash, challenge["salt"].(string)),
+		},
+		http.StatusOK,
+	)
+}
+
+func performOccupiedManagementLogin(t *testing.T, handler http.Handler, keyHash string) testResponse {
+	t.Helper()
+
+	challenge := performJSONRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/api/v1/auth/challenge",
+		nil,
+		http.StatusOK,
+	)
+	return performRequest(
+		t,
+		handler,
+		http.MethodPost,
+		"/api/v1/auth/login",
+		map[string]any{
+			"challenge_id": challenge["challenge_id"],
+			"proof":        buildManagementProof(keyHash, challenge["salt"].(string)),
+		},
+		http.StatusConflict,
+	)
 }
 
 func jsonNumberString(value float64) string {

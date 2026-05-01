@@ -21,6 +21,11 @@ type authLoginRequest struct {
 	Proof       string `json:"proof"`
 }
 
+type authTakeoverRequest struct {
+	PendingLoginToken  string `json:"pending_login_ticket"`
+	ObservedGeneration uint64 `json:"observed_generation"`
+}
+
 func (s *Server) handleAuthState(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		httpx.WriteMethodNotAllowed(writer)
@@ -125,7 +130,53 @@ func (s *Server) handleAuthLogin(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 
-	session, token, err := s.auth.Login(payload.ChallengeID, payload.Proof)
+	result, err := s.auth.StartLogin(payload.ChallengeID, payload.Proof)
+	if err != nil {
+		httpx.WriteError(writer, translateAuthError(err))
+		return
+	}
+	if result.Occupied {
+		httpx.WriteError(writer, &httpx.Error{
+			Status:  http.StatusConflict,
+			Message: "current administrator is online",
+			Code:    "management_admin_occupied",
+			Details: map[string]any{
+				"pending_login_ticket": result.PendingLoginToken,
+				"observed_generation":  result.ObservedGeneration,
+			},
+		})
+		return
+	}
+
+	s.writeManagementSessionCookie(writer, request, result.Token, result.Session.ExpiresAt)
+	httpx.WriteJSON(writer, http.StatusOK, map[string]any{
+		"initialized":   true,
+		"authenticated": true,
+		"expires_at":    result.Session.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+func (s *Server) handleAuthTakeover(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		httpx.WriteMethodNotAllowed(writer)
+		return
+	}
+	if s.auth == nil {
+		httpx.WriteError(writer, &httpx.Error{Status: http.StatusServiceUnavailable, Message: "management auth is unavailable"})
+		return
+	}
+
+	var payload authTakeoverRequest
+	if err := httpx.DecodeJSONBody(request, &payload); err != nil {
+		httpx.WriteError(writer, err)
+		return
+	}
+	if strings.TrimSpace(payload.PendingLoginToken) == "" || payload.ObservedGeneration == 0 {
+		httpx.WriteError(writer, &httpx.Error{Status: http.StatusBadRequest, Message: "pending_login_ticket and observed_generation are required"})
+		return
+	}
+
+	session, token, err := s.auth.Takeover(payload.PendingLoginToken, payload.ObservedGeneration)
 	if err != nil {
 		httpx.WriteError(writer, translateAuthError(err))
 		return
@@ -280,6 +331,12 @@ func translateAuthError(err error) error {
 		return &httpx.Error{Status: http.StatusUnauthorized, Message: err.Error()}
 	case errors.Is(err, authn.ErrSessionExpired):
 		return &httpx.Error{Status: http.StatusUnauthorized, Message: err.Error()}
+	case errors.Is(err, authn.ErrTakeoverStale):
+		return &httpx.Error{
+			Status:  http.StatusConflict,
+			Message: "页面已失效，请重新登录",
+			Code:    "management_takeover_stale",
+		}
 	default:
 		return err
 	}

@@ -119,6 +119,7 @@ func NewServer(options Options, logger *slog.Logger, version string) (*Server, e
 	apiMux.HandleFunc("/api/v1/auth/init", srv.handleAuthInit)
 	apiMux.HandleFunc("/api/v1/auth/challenge", srv.handleAuthChallenge)
 	apiMux.HandleFunc("/api/v1/auth/login", srv.handleAuthLogin)
+	apiMux.HandleFunc("/api/v1/auth/takeover", srv.handleAuthTakeover)
 	apiMux.HandleFunc("/api/v1/auth/session", srv.handleAuthSession)
 	apiMux.HandleFunc("/api/v1/auth/logout", srv.handleAuthLogout)
 
@@ -222,6 +223,7 @@ func isAPIPath(path string) bool {
 		path == "/api/v1/auth/init",
 		path == "/api/v1/auth/challenge",
 		path == "/api/v1/auth/login",
+		path == "/api/v1/auth/takeover",
 		path == "/api/v1/auth/session",
 		path == "/api/v1/auth/logout",
 		path == "/api/v1/rate-policies",

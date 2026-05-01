@@ -120,6 +120,90 @@ func TestManagerCreatesValidatesAndRevokesSessions(t *testing.T) {
 	}
 }
 
+func TestManagerStartLoginReturnsOccupiedUntilExplicitTakeover(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(t, Options{
+		Path: filepath.Join(t.TempDir(), "auth.json"),
+	})
+
+	keyHash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	if err := manager.Initialize(keyHash); err != nil {
+		t.Fatalf("initialize manager: %v", err)
+	}
+
+	firstChallenge, err := manager.IssueChallenge()
+	if err != nil {
+		t.Fatalf("issue first challenge: %v", err)
+	}
+	first, err := manager.StartLogin(firstChallenge.ID, buildProof(keyHash, firstChallenge.Salt))
+	if err != nil {
+		t.Fatalf("start first login: %v", err)
+	}
+	if first.Occupied || first.Token == "" {
+		t.Fatalf("unexpected first login result: %#v", first)
+	}
+
+	secondChallenge, err := manager.IssueChallenge()
+	if err != nil {
+		t.Fatalf("issue second challenge: %v", err)
+	}
+	waiting, err := manager.StartLogin(secondChallenge.ID, buildProof(keyHash, secondChallenge.Salt))
+	if err != nil {
+		t.Fatalf("start second login: %v", err)
+	}
+	if !waiting.Occupied || waiting.PendingLoginToken == "" || waiting.ObservedGeneration == 0 {
+		t.Fatalf("unexpected waiting login result: %#v", waiting)
+	}
+
+	takeoverSession, takeoverToken, err := manager.Takeover(waiting.PendingLoginToken, waiting.ObservedGeneration)
+	if err != nil {
+		t.Fatalf("takeover login: %v", err)
+	}
+	if takeoverToken == "" || takeoverSession.ExpiresAt.IsZero() {
+		t.Fatalf("unexpected takeover result: session=%#v token=%q", takeoverSession, takeoverToken)
+	}
+	if _, err := manager.ValidateSession(first.Token); !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("expected original session to be revoked, got %v", err)
+	}
+}
+
+func TestManagerTakeoverBecomesStaleAfterAdministratorLeaves(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(t, Options{
+		Path: filepath.Join(t.TempDir(), "auth.json"),
+	})
+
+	keyHash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	if err := manager.Initialize(keyHash); err != nil {
+		t.Fatalf("initialize manager: %v", err)
+	}
+
+	firstChallenge, err := manager.IssueChallenge()
+	if err != nil {
+		t.Fatalf("issue first challenge: %v", err)
+	}
+	first, err := manager.StartLogin(firstChallenge.ID, buildProof(keyHash, firstChallenge.Salt))
+	if err != nil {
+		t.Fatalf("start first login: %v", err)
+	}
+
+	secondChallenge, err := manager.IssueChallenge()
+	if err != nil {
+		t.Fatalf("issue second challenge: %v", err)
+	}
+	waiting, err := manager.StartLogin(secondChallenge.ID, buildProof(keyHash, secondChallenge.Salt))
+	if err != nil {
+		t.Fatalf("start second login: %v", err)
+	}
+
+	manager.Logout(first.Token)
+	if _, _, err := manager.Takeover(waiting.PendingLoginToken, waiting.ObservedGeneration); !errors.Is(err, ErrTakeoverStale) {
+		t.Fatalf("expected stale takeover after logout, got %v", err)
+	}
+}
+
 func TestManagerRejectsExpiredChallenge(t *testing.T) {
 	t.Parallel()
 

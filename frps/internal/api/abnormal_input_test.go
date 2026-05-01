@@ -451,10 +451,10 @@ func TestUpdateBoundTunnelToRangeRequiresUnbind(t *testing.T) {
 	performRequest(
 		t,
 		server.Handler(),
-		http.MethodPost,
+		http.MethodPut,
 		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
-		map[string]any{"tunnel_id": tunnelID},
-		http.StatusCreated,
+		map[string]any{"tunnel_ids": []int64{tunnelID}},
+		http.StatusOK,
 		sessionCookie,
 	)
 

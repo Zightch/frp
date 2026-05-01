@@ -84,7 +84,8 @@ const placeholderIndexHTML = `<!DOCTYPE html>
       <p><code>GET __AUTH_STATE_PATH__</code> 查看是否已初始化。</p>
       <p><code>POST __AUTH_INIT_PATH__</code> 在未初始化时写入管理密钥 hash。</p>
       <p><code>POST __AUTH_CHALLENGE_PATH__</code> 在已初始化后申请一次性盐 challenge。</p>
-      <p><code>POST __AUTH_LOGIN_PATH__</code> 提交 <code>challenge_id</code> 和 <code>proof</code>，由服务端签发管理会话。</p>
+      <p><code>POST __AUTH_LOGIN_PATH__</code> 提交 <code>challenge_id</code> 和 <code>proof</code>；空闲时直接签发管理会话，占用时返回等待态。</p>
+      <p><code>POST __AUTH_TAKEOVER_PATH__</code> 提交 <code>pending_login_ticket</code> 和 <code>observed_generation</code>，显式顶掉当前管理员。</p>
       <p><code>GET __AUTH_SESSION_PATH__</code> 查看当前管理会话状态；<code>POST __AUTH_LOGOUT_PATH__</code> 注销当前会话。</p>
     </div>
     <p>当前业务管理接口已经要求有效管理会话，后续阶段再切换到独立的 Node.js + Vue 3 + Element Plus WebUI。</p>
@@ -228,6 +229,7 @@ func renderPlaceholderIndexHTML(basePath string) []byte {
 		"__AUTH_INIT_PATH__", joinURLPath(basePath, "/api/v1/auth/init"),
 		"__AUTH_CHALLENGE_PATH__", joinURLPath(basePath, "/api/v1/auth/challenge"),
 		"__AUTH_LOGIN_PATH__", joinURLPath(basePath, "/api/v1/auth/login"),
+		"__AUTH_TAKEOVER_PATH__", joinURLPath(basePath, "/api/v1/auth/takeover"),
 		"__AUTH_SESSION_PATH__", joinURLPath(basePath, "/api/v1/auth/session"),
 		"__AUTH_LOGOUT_PATH__", joinURLPath(basePath, "/api/v1/auth/logout"),
 	)

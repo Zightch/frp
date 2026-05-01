@@ -30,12 +30,19 @@
 - `POST /api/v1/auth/login` 固定先验证 `challenge_id + proof`，只要管理密钥认证还没通过，就不会进入管理员占用判断。
 - 管理密钥认证通过后，服务端会在签发管理会话前检查当前是否已有在线管理员。
 - 如果当前无人占用，则直接签发新的管理会话。
-- 如果当前已有管理员在线，则 `POST /api/v1/auth/login` 不签发正式管理会话，只返回等待态结果，并携带一次性的 `pending_login_ticket` 与当前占用者的 `observed_generation`。
+- 如果当前已有管理员在线，则 `POST /api/v1/auth/login` 不签发正式管理会话，而是返回 `409 management_admin_occupied`，并携带一次性的 `pending_login_ticket` 与当前占用者的 `observed_generation`。
 - `pending_login_ticket` 只用于后续显式 `POST /api/v1/auth/takeover`，不表示排队资格，不表示候补资格，也不表示预留了空位。
 - `POST /api/v1/auth/takeover` 必须同时提交 `pending_login_ticket` 与 `observed_generation`；服务端要在同一原子判断里确认“当前占用者是否仍然是这一个 generation/version”。
 - 只有当当前占用者仍然等于 `observed_generation` 时，顶掉才成功，并签发新的管理会话。
-- 如果当前占用者已经下线，或已经被别人替换，则 `POST /api/v1/auth/takeover` 必须失败，并返回“页面已失效，请重新登录”语义；旧等待页不能顺手抢走空闲管理位。
+- 如果当前占用者已经下线，或已经被别人替换，则 `POST /api/v1/auth/takeover` 必须失败，并返回 `409 management_takeover_stale`，错误消息固定为“页面已失效，请重新登录”；旧等待页不能顺手抢走空闲管理位。
 - 当前管理员下线后，管理位直接回到空闲；等待页如果已经失效，必须重新走一轮新的 `challenge -> proof` 登录流程。
+
+当前关键返回体约定：
+
+- `POST /api/v1/auth/login` 空闲成功 -> `200 {initialized, authenticated, expires_at}`
+- `POST /api/v1/auth/login` 占用等待 -> `409 {error, error_code: "management_admin_occupied", details: {pending_login_ticket, observed_generation}}`
+- `POST /api/v1/auth/takeover` 顶掉成功 -> `200 {initialized, authenticated, expires_at}`
+- `POST /api/v1/auth/takeover` 页面失效 -> `409 {error: "页面已失效，请重新登录", error_code: "management_takeover_stale"}`
 
 ## `proxy_group` 接口
 
@@ -90,8 +97,7 @@ Tunnel TLS 仅支持 `protocol=tcp` 且 `remote_type=single` 的单端口 TCP �
 - `PATCH /api/v1/rate-policies/{id}`
 - `DELETE /api/v1/rate-policies/{id}`
 - `GET /api/v1/rate-policies/{id}/bindings`
-- `POST /api/v1/rate-policies/{id}/bindings`
-- `DELETE /api/v1/rate-policies/{id}/bindings/{tunnel_id}`
+- `PUT /api/v1/rate-policies/{id}/bindings`
 
 `POST /api/v1/rate-policies` 与 `PATCH /api/v1/rate-policies/{id}` 当前使用统一请求体：
 
@@ -113,13 +119,20 @@ Tunnel TLS 仅支持 `protocol=tcp` 且 `remote_type=single` 的单端口 TCP �
 - `POST /api/v1/rate-policies` -> `{item: RatePolicyView}`
 - `PATCH /api/v1/rate-policies/{id}` -> `{item: RatePolicyView}`
 - `GET /api/v1/rate-policies/{id}/bindings` -> `{items: RatePolicyBindingView[]}`
-- `POST /api/v1/rate-policies/{id}/bindings` -> `{item: RatePolicyBindingView}`
+- `PUT /api/v1/rate-policies/{id}/bindings` -> `{items: RatePolicyBindingView[]}`
+
+`PUT /api/v1/rate-policies/{id}/bindings` 当前请求体：
+
+- `tunnel_ids: number[]`
 
 当前 binding 约束固定为：
 
 - 只允许绑定单端口 TCP / UDP 隧道
 - range 隧道不可绑定
 - 一个隧道最多绑定一个限速策略
+- `PUT` 提交的是当前策略最终应持有的完整隧道集合
+- 目标集合中的隧道如果已绑定其他策略，会在同一次提交里直接迁移到当前策略
+- 不在目标集合中的当前绑定隧道，会在同一次提交里解绑
 - 删除隧道时自动删除对应 binding
 - 删除 `proxy_group` 时，其下隧道和 binding 一起删除
 - 删除仍有 binding 的限速策略会被拒绝

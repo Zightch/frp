@@ -426,15 +426,14 @@ interface TunnelBinding {
 | `/rate-policies/{id}` | PATCH | `{item: RatePolicy}` |
 | `/rate-policies/{id}` | DELETE | `{}` |
 | `/rate-policies/{id}/bindings` | GET | `{items: RatePolicyBinding[]}` |
-| `/rate-policies/{id}/bindings` | POST | `{item: RatePolicyBinding}` | 绑定单条隧道 |
-| `/rate-policies/{id}/bindings/{tunnel_id}` | DELETE | `{}` | 解绑隧道 |
+| `/rate-policies/{id}/bindings` | PUT | `{items: RatePolicyBinding[]}` | 按最终购物车结果整体提交 |
 | `/tunnels` | GET | `{items: Tunnel[]}` | 前端结合策略和绑定列表聚合可绑定隧道视图 |
 
 补充约定：
 
 - 管理 API 不维护独立的"绑定编辑会话"或"购物车草稿"。
 - 前端通过 `/tunnels` 和当前策略绑定列表聚合左侧隧道池与右侧购物车。
-- 点击确认时，前端只按最终购物车内容计算需要执行的绑定、迁移和解绑请求。
+- 点击确认时，前端直接调用 `PUT /rate-policies/{id}/bindings` 提交最终购物车结果，由后端一次性完成绑定、迁移和解绑。
 
 ## 10. 交互细节
 

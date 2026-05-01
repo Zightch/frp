@@ -107,24 +107,18 @@ func (h *Handler) handleRatePolicyResource(writer http.ResponseWriter, request *
 			return
 		}
 		httpx.WriteJSON(writer, http.StatusOK, map[string]any{"items": items})
-	case resource.kind == ratePolicyResourceKindBindings && request.Method == http.MethodPost:
-		var payload RatePolicyBindingRequest
+	case resource.kind == ratePolicyResourceKindBindings && request.Method == http.MethodPut:
+		var payload RatePolicyBindingsUpdateRequest
 		if err := httpx.DecodeJSONBody(request, &payload); err != nil {
 			httpx.WriteError(writer, err)
 			return
 		}
-		item, err := service.CreateRatePolicyBinding(request.Context(), resource.policyID, payload)
+		items, err := service.UpdateRatePolicyBindings(request.Context(), resource.policyID, payload)
 		if err != nil {
 			httpx.WriteError(writer, err)
 			return
 		}
-		httpx.WriteJSON(writer, http.StatusCreated, map[string]any{"item": item})
-	case resource.kind == ratePolicyResourceKindBinding && request.Method == http.MethodDelete:
-		if err := service.DeleteRatePolicyBinding(request.Context(), resource.policyID, resource.tunnelID); err != nil {
-			httpx.WriteError(writer, err)
-			return
-		}
-		httpx.WriteJSON(writer, http.StatusOK, map[string]any{"deleted": true})
+		httpx.WriteJSON(writer, http.StatusOK, map[string]any{"items": items})
 	default:
 		httpx.WriteMethodNotAllowed(writer)
 	}
@@ -150,13 +144,11 @@ type ratePolicyResourceKind int
 const (
 	ratePolicyResourceKindPolicy ratePolicyResourceKind = iota + 1
 	ratePolicyResourceKindBindings
-	ratePolicyResourceKindBinding
 )
 
 type ratePolicyResource struct {
 	kind     ratePolicyResourceKind
 	policyID int64
-	tunnelID int64
 }
 
 func parseRatePolicyResource(path string) (ratePolicyResource, error) {
@@ -172,7 +164,7 @@ func parseRatePolicyResource(path string) (ratePolicyResource, error) {
 	}
 
 	parts := strings.Split(remainder, "/")
-	if len(parts) == 0 || len(parts) > 3 {
+	if len(parts) == 0 || len(parts) > 2 {
 		return ratePolicyResource{}, &httpx.Error{Status: http.StatusNotFound, Message: "resource not found"}
 	}
 
@@ -187,17 +179,5 @@ func parseRatePolicyResource(path string) (ratePolicyResource, error) {
 	if parts[1] != "bindings" {
 		return ratePolicyResource{}, &httpx.Error{Status: http.StatusNotFound, Message: "resource not found"}
 	}
-	if len(parts) == 2 {
-		return ratePolicyResource{kind: ratePolicyResourceKindBindings, policyID: policyID}, nil
-	}
-
-	tunnelID, err := strconv.ParseInt(parts[2], 10, 64)
-	if err != nil || tunnelID <= 0 {
-		return ratePolicyResource{}, &httpx.Error{Status: http.StatusNotFound, Message: "resource not found"}
-	}
-	return ratePolicyResource{
-		kind:     ratePolicyResourceKindBinding,
-		policyID: policyID,
-		tunnelID: tunnelID,
-	}, nil
+	return ratePolicyResource{kind: ratePolicyResourceKindBindings, policyID: policyID}, nil
 }

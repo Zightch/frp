@@ -41,8 +41,8 @@ type RatePolicyRequest struct {
 	Uplink   RateValueRequest `json:"uplink"`
 }
 
-type RatePolicyBindingRequest struct {
-	TunnelID int64 `json:"tunnel_id"`
+type RatePolicyBindingsUpdateRequest struct {
+	TunnelIDs []int64 `json:"tunnel_ids"`
 }
 
 type RatePolicyView struct {

@@ -15,7 +15,117 @@ func (s *Service) ListRatePolicyBindings(ctx context.Context, policyID int64) ([
 		return nil, err
 	}
 
-	result, err := s.store.QueryContext(
+	items, err := s.loadRatePolicyBindings(ctx, s.store, policyID)
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *Service) UpdateRatePolicyBindings(ctx context.Context, policyID int64, payload RatePolicyBindingsUpdateRequest) ([]RatePolicyBindingView, error) {
+	targetTunnelIDs, err := normalizeBindingTunnelIDs(payload.TunnelIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	affectedGroupIDs := make(map[int64]struct{})
+	var items []RatePolicyBindingView
+	err = s.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
+		if _, err := s.loadRatePolicyByID(ctx, tx, policyID); err != nil {
+			return err
+		}
+
+		currentBindings, err := s.loadRatePolicyBindings(ctx, tx, policyID)
+		if err != nil {
+			return err
+		}
+
+		targetSet := make(map[int64]struct{}, len(targetTunnelIDs))
+		for _, tunnelID := range targetTunnelIDs {
+			targetSet[tunnelID] = struct{}{}
+
+			tunnel, err := s.loadBindingTunnel(ctx, tx, tunnelID)
+			if err != nil {
+				return err
+			}
+			if err := ensureBindableTunnel(tunnel); err != nil {
+				return err
+			}
+
+			boundPolicyID, err := loadBoundPolicyID(ctx, tx, tunnelID)
+			if err != nil {
+				return err
+			}
+
+			switch boundPolicyID {
+			case 0:
+				affectedGroupIDs[tunnel.GroupID] = struct{}{}
+				now := schemaTimestamp()
+				if _, err := tx.ExecContext(
+					ctx,
+					`
+INSERT INTO rate_policy_bindings (
+	rate_policy_id,
+	tunnel_id,
+	created_at,
+	updated_at
+) VALUES (?, ?, ?, ?)
+`,
+					policyID,
+					tunnelID,
+					now,
+					now,
+				); err != nil {
+					return wrapUniqueConstraintError(err, "tunnel is already bound to a rate policy")
+				}
+			case policyID:
+				// Keep the existing binding as-is.
+			default:
+				affectedGroupIDs[tunnel.GroupID] = struct{}{}
+				if _, err := tx.ExecContext(
+					ctx,
+					`UPDATE rate_policy_bindings SET rate_policy_id = ?, updated_at = ? WHERE tunnel_id = ?`,
+					policyID,
+					schemaTimestamp(),
+					tunnelID,
+				); err != nil {
+					return fmt.Errorf("migrate rate policy binding: %w", err)
+				}
+			}
+		}
+
+		for _, binding := range currentBindings {
+			if _, keep := targetSet[binding.TunnelID]; keep {
+				continue
+			}
+			affectedGroupIDs[binding.GroupID] = struct{}{}
+			if _, err := tx.ExecContext(
+				ctx,
+				`DELETE FROM rate_policy_bindings WHERE rate_policy_id = ? AND tunnel_id = ?`,
+				policyID,
+				binding.TunnelID,
+			); err != nil {
+				return fmt.Errorf("delete rate policy binding: %w", err)
+			}
+		}
+
+		items, err = s.loadRatePolicyBindings(ctx, tx, policyID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	groupIDs := make([]int64, 0, len(affectedGroupIDs))
+	for groupID := range affectedGroupIDs {
+		groupIDs = append(groupIDs, groupID)
+	}
+	s.refreshGroups(groupIDs...)
+	return items, nil
+}
+
+func (s *Service) loadRatePolicyBindings(ctx context.Context, conn storage.Conn, policyID int64) ([]RatePolicyBindingView, error) {
+	result, err := conn.QueryContext(
 		ctx,
 		`
 SELECT
@@ -52,154 +162,6 @@ ORDER BY rpb.id
 		items = append(items, item)
 	}
 	return items, nil
-}
-
-func (s *Service) CreateRatePolicyBinding(ctx context.Context, policyID int64, payload RatePolicyBindingRequest) (RatePolicyBindingView, error) {
-	if payload.TunnelID <= 0 {
-		return RatePolicyBindingView{}, &Error{Status: http.StatusBadRequest, Message: "tunnel_id is required"}
-	}
-
-	var (
-		item    RatePolicyBindingView
-		groupID int64
-	)
-	err := s.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
-		if _, err := s.loadRatePolicyByID(ctx, tx, policyID); err != nil {
-			return err
-		}
-		tunnel, err := s.loadBindingTunnel(ctx, tx, payload.TunnelID)
-		if err != nil {
-			return err
-		}
-		if err := ensureBindableTunnel(tunnel); err != nil {
-			return err
-		}
-		if err := ensureTunnelUnbound(ctx, tx, tunnel.ID); err != nil {
-			return err
-		}
-
-		now := schemaTimestamp()
-		result, err := tx.ExecContext(
-			ctx,
-			`
-INSERT INTO rate_policy_bindings (
-	rate_policy_id,
-	tunnel_id,
-	created_at,
-	updated_at
-) VALUES (?, ?, ?, ?)
-`,
-			policyID,
-			tunnel.ID,
-			now,
-			now,
-		)
-		if err != nil {
-			return wrapUniqueConstraintError(err, "tunnel is already bound to a rate policy")
-		}
-
-		item, err = s.loadRatePolicyBindingByID(ctx, tx, result.LastInsertID)
-		if err != nil {
-			return err
-		}
-		groupID = tunnel.GroupID
-		return nil
-	})
-	if err != nil {
-		return RatePolicyBindingView{}, err
-	}
-
-	s.refreshGroups(groupID)
-	return item, nil
-}
-
-func (s *Service) DeleteRatePolicyBinding(ctx context.Context, policyID, tunnelID int64) error {
-	var groupID int64
-	err := s.store.WithTxContext(ctx, nil, func(tx *storage.Tx) error {
-		if _, err := s.loadRatePolicyByID(ctx, tx, policyID); err != nil {
-			return err
-		}
-
-		row, err := tx.QueryOneContext(
-			ctx,
-			`
-SELECT t.group_id
-FROM rate_policy_bindings AS rpb
-JOIN tunnels AS t ON t.id = rpb.tunnel_id
-WHERE rpb.rate_policy_id = ? AND rpb.tunnel_id = ?
-`,
-			policyID,
-			tunnelID,
-		)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return &Error{Status: http.StatusNotFound, Message: "rate policy binding not found"}
-			}
-			return fmt.Errorf("load rate policy binding before delete: %w", err)
-		}
-		groupID, err = rowInt64(row, "group_id")
-		if err != nil {
-			return fmt.Errorf("decode binding group id: %w", err)
-		}
-
-		result, err := tx.ExecContext(
-			ctx,
-			`DELETE FROM rate_policy_bindings WHERE rate_policy_id = ? AND tunnel_id = ?`,
-			policyID,
-			tunnelID,
-		)
-		if err != nil {
-			return fmt.Errorf("delete rate policy binding: %w", err)
-		}
-		if result.RowsAffected == 0 {
-			return &Error{Status: http.StatusNotFound, Message: "rate policy binding not found"}
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	s.refreshGroups(groupID)
-	return nil
-}
-
-func (s *Service) loadRatePolicyBindingByID(ctx context.Context, conn storage.Conn, id int64) (RatePolicyBindingView, error) {
-	row, err := conn.QueryOneContext(
-		ctx,
-		`
-SELECT
-	rpb.id,
-	rpb.rate_policy_id,
-	rpb.tunnel_id,
-	COALESCE(t.group_id, 0) AS group_id,
-	COALESCE(g.name, '') AS group_name,
-	COALESCE(t.name, '') AS tunnel_name,
-	COALESCE(t.protocol, '') AS protocol,
-	COALESCE(t.remote_type, '') AS remote_type,
-	COALESCE(t.remote_start, 0) AS remote_start,
-	COALESCE(t.remote_end, 0) AS remote_end,
-	rpb.created_at,
-	rpb.updated_at
-FROM rate_policy_bindings AS rpb
-LEFT JOIN tunnels AS t ON t.id = rpb.tunnel_id
-LEFT JOIN proxy_groups AS g ON g.id = t.group_id
-WHERE rpb.id = ?
-`,
-		id,
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return RatePolicyBindingView{}, &Error{Status: http.StatusNotFound, Message: "rate policy binding not found"}
-		}
-		return RatePolicyBindingView{}, fmt.Errorf("load rate policy binding: %w", err)
-	}
-
-	item, err := decodeRatePolicyBindingRow(row)
-	if err != nil {
-		return RatePolicyBindingView{}, fmt.Errorf("decode rate policy binding: %w", err)
-	}
-	return item, nil
 }
 
 func (s *Service) loadBindingTunnel(ctx context.Context, conn storage.Conn, tunnelID int64) (bindingTunnel, error) {
@@ -261,7 +223,7 @@ func ensureBindableTunnel(tunnel bindingTunnel) error {
 	return nil
 }
 
-func ensureTunnelUnbound(ctx context.Context, conn storage.Conn, tunnelID int64) error {
+func loadBoundPolicyID(ctx context.Context, conn storage.Conn, tunnelID int64) (int64, error) {
 	row, err := conn.QueryOneContext(
 		ctx,
 		`SELECT rate_policy_id FROM rate_policy_bindings WHERE tunnel_id = ?`,
@@ -269,16 +231,34 @@ func ensureTunnelUnbound(ctx context.Context, conn storage.Conn, tunnelID int64)
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil
+			return 0, nil
 		}
-		return fmt.Errorf("load existing rate policy binding: %w", err)
+		return 0, fmt.Errorf("load existing rate policy binding: %w", err)
 	}
+
 	boundPolicyID, err := rowInt64(row, "rate_policy_id")
 	if err != nil {
-		return fmt.Errorf("decode existing bound rate policy id: %w", err)
+		return 0, fmt.Errorf("decode existing bound rate policy id: %w", err)
 	}
-	if boundPolicyID > 0 {
-		return &Error{Status: http.StatusConflict, Message: "tunnel is already bound to a rate policy"}
+	return boundPolicyID, nil
+}
+
+func normalizeBindingTunnelIDs(values []int64) ([]int64, error) {
+	if len(values) == 0 {
+		return nil, nil
 	}
-	return nil
+
+	seen := make(map[int64]struct{}, len(values))
+	normalized := make([]int64, 0, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			return nil, &Error{Status: http.StatusBadRequest, Message: "tunnel_ids must only contain positive ids"}
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	return normalized, nil
 }

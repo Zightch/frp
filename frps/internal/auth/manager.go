@@ -18,6 +18,7 @@ import (
 const (
 	DefaultPath          = "./data/auth.json"
 	defaultChallengeTTL  = 2 * time.Minute
+	defaultPendingTTL    = 2 * time.Minute
 	defaultSessionTTL    = 12 * time.Hour
 	defaultWatchInterval = time.Second
 )
@@ -31,11 +32,13 @@ var (
 	ErrChallengeReplayed  = errors.New("challenge has already been used")
 	ErrSessionRequired    = errors.New("management session is required")
 	ErrSessionExpired     = errors.New("management session is invalid or expired")
+	ErrTakeoverStale      = errors.New("management takeover page is stale")
 )
 
 type Options struct {
 	Path          string
 	ChallengeTTL  time.Duration
+	PendingTTL    time.Duration
 	SessionTTL    time.Duration
 	WatchInterval time.Duration
 }
@@ -43,14 +46,18 @@ type Options struct {
 type Manager struct {
 	path          string
 	challengeTTL  time.Duration
+	pendingTTL    time.Duration
 	sessionTTL    time.Duration
 	watchInterval time.Duration
 
-	mu          sync.RWMutex
-	keyHash     string
-	initialized bool
-	challenges  map[string]*challenge
-	sessions    map[string]*session
+	mu                 sync.RWMutex
+	keyHash            string
+	initialized        bool
+	challenges         map[string]*challenge
+	pendingLogins      map[string]*pendingLogin
+	sessions           map[string]*session
+	activeSessionToken string
+	activeGeneration   uint64
 
 	stopCh    chan struct{}
 	doneCh    chan struct{}
@@ -67,6 +74,14 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
+type LoginResult struct {
+	Occupied           bool
+	Session            Session
+	Token              string
+	PendingLoginToken  string
+	ObservedGeneration uint64
+}
+
 type challenge struct {
 	Salt      string
 	ExpiresAt time.Time
@@ -74,7 +89,13 @@ type challenge struct {
 }
 
 type session struct {
-	ExpiresAt time.Time
+	ExpiresAt  time.Time
+	Generation uint64
+}
+
+type pendingLogin struct {
+	ExpiresAt          time.Time
+	ObservedGeneration uint64
 }
 
 type filePayload struct {
@@ -87,9 +108,14 @@ func NewManager(options Options) (*Manager, error) {
 		path = DefaultPath
 	}
 
-	ttl := options.ChallengeTTL
-	if ttl <= 0 {
-		ttl = defaultChallengeTTL
+	challengeTTL := options.ChallengeTTL
+	if challengeTTL <= 0 {
+		challengeTTL = defaultChallengeTTL
+	}
+
+	pendingTTL := options.PendingTTL
+	if pendingTTL <= 0 {
+		pendingTTL = defaultPendingTTL
 	}
 
 	sessionTTL := options.SessionTTL
@@ -104,10 +130,12 @@ func NewManager(options Options) (*Manager, error) {
 
 	manager := &Manager{
 		path:          path,
-		challengeTTL:  ttl,
+		challengeTTL:  challengeTTL,
+		pendingTTL:    pendingTTL,
 		sessionTTL:    sessionTTL,
 		watchInterval: watchInterval,
 		challenges:    make(map[string]*challenge),
+		pendingLogins: make(map[string]*pendingLogin),
 		sessions:      make(map[string]*session),
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
@@ -176,7 +204,10 @@ func (m *Manager) Initialize(keyHash string) error {
 	m.keyHash = normalized
 	m.initialized = true
 	m.challenges = make(map[string]*challenge)
+	m.pendingLogins = make(map[string]*pendingLogin)
 	m.sessions = make(map[string]*session)
+	m.activeSessionToken = ""
+	m.activeGeneration = 0
 	return nil
 }
 
@@ -231,14 +262,84 @@ func (m *Manager) Login(challengeID, proof string) (Session, string, error) {
 		return Session{}, "", err
 	}
 
-	token, err := randomHex(32)
-	if err != nil {
-		return Session{}, "", fmt.Errorf("generate session token: %w", err)
+	return m.issueSessionLocked(now)
+}
+
+func (m *Manager) StartLogin(challengeID, proof string) (LoginResult, error) {
+	if err := m.syncDeletedState(); err != nil {
+		return LoginResult{}, err
 	}
 
-	expiresAt := now.Add(m.sessionTTL)
-	m.sessions[token] = &session{ExpiresAt: expiresAt}
-	return Session{ExpiresAt: expiresAt}, token, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now().UTC()
+	if err := m.verifyChallengeLocked(now, challengeID, proof); err != nil {
+		return LoginResult{}, err
+	}
+
+	m.cleanupExpiredLocked(now)
+	if m.activeSessionToken == "" {
+		session, token, err := m.issueSessionLocked(now)
+		if err != nil {
+			return LoginResult{}, err
+		}
+		return LoginResult{
+			Session: session,
+			Token:   token,
+		}, nil
+	}
+
+	token, err := randomHex(32)
+	if err != nil {
+		return LoginResult{}, fmt.Errorf("generate pending login token: %w", err)
+	}
+
+	m.pendingLogins[token] = &pendingLogin{
+		ExpiresAt:          now.Add(m.pendingTTL),
+		ObservedGeneration: m.activeGeneration,
+	}
+	return LoginResult{
+		Occupied:           true,
+		PendingLoginToken:  token,
+		ObservedGeneration: m.activeGeneration,
+	}, nil
+}
+
+func (m *Manager) Takeover(pendingLoginToken string, observedGeneration uint64) (Session, string, error) {
+	if err := m.syncDeletedState(); err != nil {
+		return Session{}, "", err
+	}
+
+	pendingLoginToken = normalizeSessionToken(pendingLoginToken)
+	if pendingLoginToken == "" || observedGeneration == 0 {
+		return Session{}, "", ErrTakeoverStale
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.initialized {
+		return Session{}, "", ErrNotInitialized
+	}
+
+	now := time.Now().UTC()
+	m.cleanupExpiredLocked(now)
+
+	item, ok := m.pendingLogins[pendingLoginToken]
+	if !ok {
+		return Session{}, "", ErrTakeoverStale
+	}
+	delete(m.pendingLogins, pendingLoginToken)
+
+	if item.ObservedGeneration != observedGeneration {
+		return Session{}, "", ErrTakeoverStale
+	}
+	if m.activeSessionToken == "" || m.activeGeneration != observedGeneration {
+		return Session{}, "", ErrTakeoverStale
+	}
+
+	return m.issueSessionLocked(now)
 }
 
 func (m *Manager) VerifyChallenge(challengeID, proof string) error {
@@ -277,11 +378,6 @@ func (m *Manager) ValidateSession(token string) (Session, error) {
 	if !ok {
 		return Session{}, ErrSessionExpired
 	}
-	if now.After(item.ExpiresAt) {
-		delete(m.sessions, token)
-		return Session{}, ErrSessionExpired
-	}
-
 	return Session{ExpiresAt: item.ExpiresAt}, nil
 }
 
@@ -295,7 +391,12 @@ func (m *Manager) Logout(token string) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	delete(m.sessions, token)
+	if token == m.activeSessionToken {
+		m.activeSessionToken = ""
+		m.pendingLogins = make(map[string]*pendingLogin)
+	}
 }
 
 func (m *Manager) Close() error {
@@ -327,6 +428,7 @@ func (m *Manager) load() error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	m.keyHash = normalized
 	m.initialized = true
 	return nil
@@ -338,10 +440,24 @@ func (m *Manager) cleanupExpiredLocked(now time.Time) {
 			delete(m.challenges, id)
 		}
 	}
+	for token, item := range m.pendingLogins {
+		if now.After(item.ExpiresAt) {
+			delete(m.pendingLogins, token)
+		}
+	}
+
+	activeExpired := false
 	for token, item := range m.sessions {
 		if now.After(item.ExpiresAt) {
 			delete(m.sessions, token)
+			if token == m.activeSessionToken {
+				activeExpired = true
+			}
 		}
+	}
+	if activeExpired || (m.activeSessionToken != "" && m.sessions[m.activeSessionToken] == nil) {
+		m.activeSessionToken = ""
+		m.pendingLogins = make(map[string]*pendingLogin)
 	}
 }
 
@@ -378,7 +494,10 @@ func (m *Manager) resetLocked() {
 	m.keyHash = ""
 	m.initialized = false
 	m.challenges = make(map[string]*challenge)
+	m.pendingLogins = make(map[string]*pendingLogin)
 	m.sessions = make(map[string]*session)
+	m.activeSessionToken = ""
+	m.activeGeneration = 0
 }
 
 func (m *Manager) verifyChallengeLocked(now time.Time, challengeID, proof string) error {
@@ -446,4 +565,23 @@ func normalizeSessionToken(value string) string {
 		return ""
 	}
 	return value
+}
+
+func (m *Manager) issueSessionLocked(now time.Time) (Session, string, error) {
+	token, err := randomHex(32)
+	if err != nil {
+		return Session{}, "", fmt.Errorf("generate session token: %w", err)
+	}
+
+	m.activeGeneration++
+	expiresAt := now.Add(m.sessionTTL)
+	m.sessions = map[string]*session{
+		token: &session{
+			ExpiresAt:  expiresAt,
+			Generation: m.activeGeneration,
+		},
+	}
+	m.activeSessionToken = token
+	m.pendingLogins = make(map[string]*pendingLogin)
+	return Session{ExpiresAt: expiresAt}, token, nil
 }
