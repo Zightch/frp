@@ -24,7 +24,7 @@
 - `GET /api/v1/auth/session`
 - `POST /api/v1/auth/logout`
 
-## 分组接口
+## `proxy_group` 接口
 
 - `GET /api/v1/proxy-groups`
 - `POST /api/v1/proxy-groups`
@@ -66,7 +66,7 @@ Tunnel TLS 仅支持 `protocol=tcp` 且 `remote_type=single` 的单端口 TCP �
 其中 `warnings` 当前主要用于提示：
 
 - tunnel backend TLS 需要向 `frpc` 下发 CA 或客户端证书
-- 但该分组的控制连接策略仍为 `control_transport_security=plain`
+- 但该 `proxy_group` 的控制连接策略仍为 `control_transport_security=plain`
 
 ## 证书资产接口
 

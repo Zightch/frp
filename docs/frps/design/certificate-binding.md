@@ -18,7 +18,7 @@
 - 让 `frps` 监听侧和 `frpc` backend 侧都能复用同一套资产体系。
 - 明确区分：
   - 入口证书绑定
-  - 分组控制链路 TLS 策略
+  - `proxy_group` 控制链路 TLS 策略
   - tunnel 级 TLS 配置
 
 ## 2. 非目标
@@ -160,7 +160,7 @@ CA 池规则：
 
 ## 5. 控制链路关系
 
-分组控制链路策略仍由：
+`proxy_group` 控制链路策略仍由：
 
 - `proxy_groups.control_transport_security = plain | tls_required`
 
@@ -169,7 +169,7 @@ CA 池规则：
 它和 tunnel TLS 的关系是：
 
 - 不强制要求“只要 tunnel TLS 开启，`7000` 控制连接就必须是 TLS”
-- 但如果 backend TLS 需要向 `frpc` 下发自定义 CA 或客户端证书，而该分组控制链路仍为 `plain`
+- 但如果 backend TLS 需要向 `frpc` 下发自定义 CA 或客户端证书，而该 `proxy_group` 控制链路仍为 `plain`
   - 保存允许成功
   - 管理 API 返回 `warnings`
 

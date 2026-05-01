@@ -19,7 +19,7 @@
 - `frame`：一条完整的业务帧，对应一个长度前缀包。
 - `requestId`：请求响应关联 ID，只在当前 `connection` 内有效。
 - `streamId`：TCP 工作流 ID，由 `frps` 分配；在 UDP 相关帧中复用为 `sessionId`。
-- `configVersion`：某个分组的正向代理执行配置版本号。
+- `configVersion`：某个 `proxy_group` 的正向代理执行配置版本号。
 - `wire tunnel id`：`config.push` 中下发的运行态隧道 ID，只服务于 `frps/frpc` 协议，不要求等同于数据库 ID。
 
 ## 3. 传输层协议
@@ -239,7 +239,7 @@ CPU 架构：
 用途：
 
 - `frpc` 在认证前声明 `client_id` 和自己支持的控制连接安全模式。
-- `frps` 用 `client_id` 加载分组运行态，并决定本连接继续明文还是升级 TLS。
+- `frps` 用 `client_id` 加载 `proxy_group` 运行态，并决定本连接继续明文还是升级 TLS。
 
 头字段要求：
 
@@ -490,18 +490,18 @@ body：
 - 在线热重载继续复用现有 `config.push / config.ack`，不新增单 tunnel `add/remove/rename/replace` 协议事件。
 - 同一控制连接在任一时刻只允许存在一个未确认的 `config.push`。
 - `frpc` 只有在本地资源清理和快照替换已经完成后，才允许返回 `config.ack(status=ok)`。
-- 如果服务端没有主动冻结该分组，已经打开的 TCP `stream` 继续绑定其打开瞬间的隧道快照，不因配置更新被原地改写；但在线整组热重载阶段，`frps` 首版允许先关闭该分组全部活动 TCP/UDP 运行态，再下发新快照。
+- 如果服务端没有主动冻结该 `proxy_group`，已经打开的 TCP `stream` 继续绑定其打开瞬间的隧道快照，不因配置更新被原地改写；但在线整组热重载阶段，`frps` 首版允许先关闭该 `proxy_group` 全部活动 TCP/UDP 运行态，再下发新快照。
 - 如果 `config.ack` 超时、返回 `error`，或更新期间底层连接断开，`frps` 可以直接关闭该控制连接，让 `frpc` 重新登录后重新领取完整快照。
 
 ### 8.3.1 在线整组热重载约定
 
 下面这些规则已确认，作为当前在线热重载的协议侧约束：
 
-- 分组离线时，配置变更只写数据库，不产生协议流量。
-- 分组在线且发生运行态配置变更时，`frps` 首版按“整组冻结 + 整组全量重建”处理。
-- `frps` 下发新快照前，可以先停止该分组公网 listener，并关闭该分组当前活动 TCP/UDP 运行态。
+- `proxy_group` 离线时，配置变更只写数据库，不产生协议流量。
+- `proxy_group` 在线且发生运行态配置变更时，`frps` 首版按“整组冻结 + 整组全量重建”处理。
+- `frps` 下发新快照前，可以先停止该 `proxy_group` 公网 listener，并关闭该 `proxy_group` 当前活动 TCP/UDP 运行态。
 - `frps` 只有在收到对应 `config.ack(status=ok)` 后，才重新按新快照开放 listener。
-- 登录 `key` 重置和分组删除不属于热重载路径，继续直接关闭控制连接。
+- 登录 `key` 重置和 `proxy_group` 删除不属于热重载路径，继续直接关闭控制连接。
 
 ## 8.4 端口范围执行约定
 

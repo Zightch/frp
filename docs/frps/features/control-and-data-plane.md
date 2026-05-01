@@ -37,13 +37,13 @@ frps -> start listeners
 
 - `transport.client_hello` 是否先到达
 - `client_id` 是否存在
-- 分组 `control_transport_security` 是否要求把当前连接升级到 TLS
-- 分组要求 TLS 时，`frpc_tls` 服务端证书当前是否可用
-- 分组是否启用
+- `proxy_group` `control_transport_security` 是否要求把当前连接升级到 TLS
+- `proxy_group` 要求 TLS 时，`frpc_tls` 服务端证书当前是否可用
+- `proxy_group` 是否启用
 - challenge 是否有效且未重放
 - challenge 响应是否匹配
 - `auth.begin` 中的 `client_id` 是否与 `transport.client_hello` 一致
-- 当前分组单客户端槽位是否已被占用
+- 当前 `proxy_group` 单客户端槽位是否已被占用
 
 ## 配置快照
 
@@ -77,14 +77,14 @@ frps -> start listeners
 - `frps` 监听侧 TLS 材料由 `frps` 本地按 tunnel id 解析
 - `frpc` backend TLS 材料才会进入 `ConfigSnapshot`
 
-当前已确认的后续限速模型改为独立 [限速策略组设计](../design/rate-policy-groups.md)；在能力真实落地前，这部分不会进入 `ConfigSnapshot`，也不会下发到 `frpc`。
+当前已确认的后续限速模型改为独立 [限速策略设计](../design/rate-policy.md)；在能力真实落地前，这部分不会进入 `ConfigSnapshot`，也不会下发到 `frpc`。
 
 ## 运行态恢复
 
 启动后后台会固定轮询“当前没有 listener 的启用 tunnel”：
 
-- 对离线分组，只负责写入和清理 runtime issue
-- 对在线但只拉起了部分 tunnel 的分组，恢复后会直接在现有 session 上补启动缺失 tunnel
+- 对离线 `proxy_group`，只负责写入和清理 runtime issue
+- 对在线但只拉起了部分 tunnel 的 `proxy_group`，恢复后会直接在现有 session 上补启动缺失 tunnel
 - 如果该 session 之前因 `effective_ip` 失效收到的是空配置，恢复时会先补发完整快照，再等待 `ack`，之后才恢复 listener
 
 ## TCP 转发

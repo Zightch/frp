@@ -74,7 +74,7 @@ python test/e2e_tcp_perf.py
 - UDP 单端口主链路
 - UDP 空闲清理
 - UDP 连续范围映射
-- 管理认证、分组 CRUD、登录 `key` 重置、隧道 CRUD
+- 管理认证、`proxy_group` CRUD、登录 `key` 重置、隧道 CRUD
 - 最小 TCP 健康压测
 
 ### 2.3 Python 平台探针（免编译）
@@ -134,9 +134,9 @@ Test-NetConnection 127.0.0.1 -Port 7000
 
 优先检查：
 
-- 分组是否启用
+- `proxy_group` 是否启用
 - key 是否正确
-- 同分组是否已有在线客户端占用槽位
+- 同 `proxy_group` 是否已有在线客户端占用槽位
 
 ### 3.4 公网端口不可用
 

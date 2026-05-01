@@ -1,15 +1,15 @@
-# 分组与隧道管理
+# `proxy_group` 与隧道管理
 
-## 分组管理
+## `proxy_group` 管理
 
-当前管理面直接开放的分组字段只有：
+当前管理面直接开放的 `proxy_group` 字段只有：
 
 - `name`
 - `effective_ip`
 - `enabled`
 - `control_transport_security`
 
-创建分组时：
+创建 `proxy_group` 时：
 
 - 自动生成完整登录 `key`
 - 返回完整明文 `key` 一次
@@ -17,15 +17,15 @@
 
 当前业务规则：
 
-- 分组名全局唯一
+- `proxy_group` 名全局唯一
 - `effective_ip` 只能是本机当前可用 IPv4、IPv6，或 `0.0.0.0`、`::`
-- `effective_ip` 是分组级公网绑定地址
+- `effective_ip` 是 `proxy_group` 级公网绑定地址
 - `control_transport_security = plain | tls_required`
-- 分组切到 `tls_required` 前，必须先绑定 `frpc_tls`
-- 一个分组固定只允许一个在线 `frpc`
-- 禁用分组后，新登录必须被拒绝
+- `proxy_group` 切到 `tls_required` 前，必须先绑定 `frpc_tls`
+- 一个 `proxy_group` 固定只允许一个在线 `frpc`
+- 禁用 `proxy_group` 后，新登录必须被拒绝
 
-当前分组返回还会附带运行态派生字段：
+当前 `proxy_group` 返回还会附带运行态派生字段：
 
 - `status`
 - `status_reason`
@@ -91,7 +91,7 @@
 - `listen_tls_client_ca_asset_ids` 和 `backend_tls_ca_asset_ids` 都允许多选，语义是 CA 池
 - `listen_tls_load_system_ca` 默认关闭
 - `backend_tls_load_system_ca` 在启用 backend TLS 时默认开启
-- 如果 backend TLS 需要向 `frpc` 下发自定义 CA 或客户端证书，但分组 `control_transport_security=plain`，保存仍允许成功，但会返回 warning
+- 如果 backend TLS 需要向 `frpc` 下发自定义 CA 或客户端证书，但 `proxy_group` `control_transport_security=plain`，保存仍允许成功，但会返回 warning
 
 ## 跨平台统一端口冲突规则
 
@@ -119,7 +119,7 @@
 
 优先级固定为：
 
-1. 分组或隧道禁用
+1. `proxy_group` 或隧道禁用
 2. 命中静态端口冲突
 3. 启动期扫描、轮询恢复、listener 启动或 `effective_ip` 本地重绑发现运行态失败
 4. 其余情况
@@ -133,10 +133,10 @@
 
 ## 在线热重载
 
-分组在线时，下列变更会触发整组热重载：
+`proxy_group` 在线时，下列变更会触发整组热重载：
 
-- 分组 `enabled`
-- 分组 `effective_ip`
+- `proxy_group` `enabled`
+- `proxy_group` `effective_ip`
 - 隧道新增 / 删除
 - 隧道监听空间和本地目标相关字段
 - 隧道监听侧 TLS 相关字段
@@ -145,8 +145,8 @@
 
 下列变更当前不触发热重载：
 
-- 分组名称修改
-- 分组 `control_transport_security`
+- `proxy_group` 名称修改
+- `proxy_group` `control_transport_security`
 - 隧道名称修改
 
 `control_transport_security` 的变更只影响新建控制连接：
@@ -157,7 +157,7 @@
 在线热重载当前固定为：
 
 1. 先写库成功
-2. 冻结该分组旧 listener 与活动 TCP/UDP 运行态
+2. 冻结该 `proxy_group` 旧 listener 与活动 TCP/UDP 运行态
 3. 下发新的整组完整快照
 4. 等待 `frpc config.ack(status=ok)`
 5. `frps` 按新快照重建 listener

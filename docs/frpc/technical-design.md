@@ -131,8 +131,8 @@ max(3 * heartbeat_interval, 5s)
 
 1. 解析完整快照
 2. 对比旧快照和新快照，形成新增 / 删除 / 替换分类，供日志和本地清理使用
-3. 关闭当前分组全部活动本地 TCP stream
-4. 关闭当前分组全部活动本地 UDP session
+3. 关闭当前 `proxy_group` 全部活动本地 TCP stream
+4. 关闭当前 `proxy_group` 全部活动本地 UDP session
 5. 原子替换 `sessionState.snapshot`
 6. 返回 `config.ack`
 7. 更新 `lastAckedConfigVersion`
@@ -156,8 +156,8 @@ max(3 * heartbeat_interval, 5s)
 
 1. 收到新的整组 `config.push`。
 2. 对比旧快照和新快照，形成新增 / 删除 / 替换分类，供本地清理和后续日志使用。
-3. 关闭当前分组全部活动本地 TCP stream。
-4. 关闭当前分组全部活动本地 UDP session。
+3. 关闭当前 `proxy_group` 全部活动本地 TCP stream。
+4. 关闭当前 `proxy_group` 全部活动本地 UDP session。
 5. 原子替换当前运行态快照。
 6. 返回 `config.ack(status=ok)`。
 

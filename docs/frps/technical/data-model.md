@@ -35,7 +35,7 @@
 - `control_transport_security`
 - `updated_at`
 
-当前正式 schema 中已经不再保留 `rate_limit` 字段；已确认的后续限速业务设计见 [../design/rate-policy-groups.md](../design/rate-policy-groups.md)。
+当前正式 schema 中已经不再保留 `rate_limit` 字段；已确认的后续限速业务设计见 [../design/rate-policy.md](../design/rate-policy.md)。
 
 ## `tunnels`
 
@@ -183,6 +183,6 @@
 
 - `frps` 监听侧 TLS 材料不下发给 `frpc`，而是按 tunnel id 在 `frps` 本地解析
 - `frpc` backend TLS 所需 CA / client cert 会从这张绑定表解析后投影进 `ConfigSnapshot.Tunnels`
-- `frpc` 登录连接的“某个分组是否要求 TLS”仍不属于这张表，而是进入 `proxy_groups.control_transport_security = plain | tls_required`
+- `frpc` 登录连接的“某个 `proxy_group` 是否要求 TLS”仍不属于这张表，而是进入 `proxy_groups.control_transport_security = plain | tls_required`
 
 详见 [../design/certificate-binding.md](../design/certificate-binding.md)。

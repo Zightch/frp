@@ -14,12 +14,12 @@
 - `frps` 零参数启动，固定读取当前工作目录下的 `data/config.json`。
 - `frpc` 只接收 `--server` 和 `--key`。
 - `frps/frpc` 协议固定为 `4` 字节长度前缀加二进制业务帧。
-- 分组登录 `key` 固定为 `32` 位小写 hex `client_id` 加 `64` 位小写 hex `client_secret`。
+- `proxy_group` 登录 `key` 固定为 `32` 位小写 hex `client_id` 加 `64` 位小写 hex `client_secret`。
 - `frpc` 登录采用 challenge/response：`sha256(client_secret_hash + nonce)`。
-- 一个分组固定只允许 `1` 个在线 `frpc`。
+- 一个 `proxy_group` 固定只允许 `1` 个在线 `frpc`。
 - 登录成功后由 `frps` 下发首次 `config.push`，`frpc` 回 `config.ack`。
 - `frps` 在 `config.ack` 后启动启用状态的 TCP/UDP 公网 listener。
-- 管理面命中运行态字段且分组在线时，会复用现有 `config.push / config.ack` 触发整组热重载。
+- 管理面命中运行态字段且 `proxy_group` 在线时，会复用现有 `config.push / config.ack` 触发整组热重载。
 - 已支持 TCP 单端口和连续端口范围映射。
 - 已支持 UDP 单端口和连续端口范围映射。
 - UDP 生命周期由 `frps` 裁决；任一路径有成功转发都会立即刷新活跃时间，最后一次活动结束后空闲约 `30s` 自动清理并下发 `udp.close`。
@@ -29,8 +29,8 @@
   - `frps` 按 `webui.dist_dir` 托管静态目录
   - 支持按 `webui.path_prefix` 挂到子路径，并同步提供同前缀下的健康检查与管理 API 别名
   - 前端技术栈收口为 `Node.js + Vue 3 + Element Plus`
-  - 已实现管理密钥初始化、challenge 登录、分组管理、登录 `key` 重置和隧道管理
-  - 当前主管理页已经接入 `effective_ip` 下拉、分组/隧道状态展示和一次性 `key` 展示弹窗
+  - 已实现管理密钥初始化、challenge 登录、`proxy_group` 管理、登录 `key` 重置和隧道管理
+  - 当前主管理页已经接入 `effective_ip` 下拉、`proxy_group` / 隧道状态展示和一次性 `key` 展示弹窗
 - 存储层已支持 SQLite 和 MySQL 两种数据库。
 - 启动时会自动建当前必需表，并对现有表结构做严格校验；不做 schema 迁移兼容。
 
@@ -39,8 +39,8 @@
 - 反向代理。
 - 隧道入口 ACL 执行。
 - WebSocket、在线连接注册表、实时速率页、日志页。
-- 限速策略组、限速执行和抓包执行。
-- 一个分组多个在线 `frpc`。
+- 限速策略管理、限速执行和抓包执行。
+- 一个 `proxy_group` 多个在线 `frpc`。
 - 数据库 schema 迁移兼容层。
 
 当前配置明确分成两层：
@@ -48,7 +48,7 @@
 - 持久化配置：管理 API / WebUI 写入 SQLite / MySQL 中的 `proxy_groups`、`tunnels`。
 - 运行时配置：`frpc` 登录或在线热重载时，`frps` 从数据库读取持久化配置并构造内存里的 `GroupRuntime` / `ConfigSnapshot`，后续 listener 启停和实际转发只消费这份运行时快照。
 
-当前已确认的后续限速业务模型改为独立的 [限速策略组设计](frps/design/rate-policy-groups.md)。当前正式 schema 中已经不再保留旧的 `proxy_groups.rate_limit` 字段。
+当前已确认的后续限速业务模型改为独立的 [限速策略设计](frps/design/rate-policy.md)。当前正式 schema 中已经不再保留旧的 `proxy_groups.rate_limit` 字段。
 
 抓包相关控制当前未实现；如果后续引入，只应属于运行时配置层，不应再落成 `tunnels` 表字段。
 

@@ -63,7 +63,7 @@ SQLite / MySQL
 - HTTP server
 - 路由注册
 - 管理会话中间件
-- 分组 / 隧道 / 证书资产 API
+- `proxy_group` / 隧道 / 证书资产 API
 - WebUI 静态资源托管
 
 ### `internal/control`

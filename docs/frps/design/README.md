@@ -5,7 +5,7 @@
 当前有效条目：
 
 - [证书绑定设计：入口证书与 Tunnel TLS](./certificate-binding.md)
-- [限速策略组设计](./rate-policy-groups.md)
+- [限速策略设计](./rate-policy.md)
 
 约定：
 

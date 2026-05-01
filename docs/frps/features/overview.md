@@ -13,8 +13,8 @@
 ## 当前已交付范围
 
 - 管理认证：初始化、challenge 登录、会话校验、退出
-- WebUI：初始化、登录、分组管理、隧道管理、证书资产管理
-- 分组管理：`name`、`effective_ip`、`enabled`、登录 `key` 重置
+- WebUI：初始化、登录、`proxy_group` 管理、隧道管理、证书资产管理
+- `proxy_group` 管理：`name`、`effective_ip`、`enabled`、登录 `key` 重置
 - 隧道管理：TCP/UDP 单端口和范围映射
 - 控制面：`client_id + client_secret` challenge/response 登录、心跳、`config.push / config.ack`
 - 在线热重载：整组冻结、整组完整快照下发、`ack` 后 listener 重建
@@ -27,12 +27,12 @@
 - tunnel 级 ACL 执行
 - WebSocket 实时态
 - 连接列表和连接级管理
-- 限速策略组管理与限速执行
+- 限速策略管理与限速执行
 - 抓包执行
 
 ## 当前功能文档
 
 - [管理面与 WebUI](./management-surface.md)
-- [分组与隧道管理](./group-and-tunnel-management.md)
+- [`proxy_group` 与隧道管理](./group-and-tunnel-management.md)
 - [控制面与数据面](./control-and-data-plane.md)
 - [证书资产](./certificate-assets.md)

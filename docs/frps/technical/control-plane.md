@@ -140,12 +140,12 @@ frps -> start listeners
 
 1. 读取 `transport.client_hello`
 2. 按 `client_id` 读取 `GroupRuntime`
-3. 按分组 `control_transport_security` 决定 `plain` 还是 `tls`
+3. 按 `proxy_group` `control_transport_security` 决定 `plain` 还是 `tls`
 4. 如需 TLS，则在同一 TCP 连接上升级到 TLS
 5. 读取 `auth.begin`，并校验其中 `client_id` 与 hello 一致
 6. 签发 challenge
 7. 常量时间校验 challenge 响应
-8. 抢占单分组单客户端槽位
+8. 抢占单 `proxy_group` 单客户端槽位
 9. 返回 `server.hello`
 10. 下发首次 `config.push`
 
@@ -171,7 +171,7 @@ frps -> start listeners
 
 - 首次登录与在线热重载复用同一快照路径
 - `config.ack` 成功后才启动或重启 listener
-- 管理面写库成功且命中运行态字段时，如果分组在线，会触发整组补推
+- 管理面写库成功且命中运行态字段时，如果 `proxy_group` 在线，会触发整组补推
 
 `repo` 只负责把 SQL row decode 为 domain runtime model；根 `control` 通过
 facade 暴露 app/api 需要的稳定 API，`wiring` 通过 alias 连接 repo、bind 和 runtime。
@@ -187,7 +187,7 @@ facade 暴露 app/api 需要的稳定 API，`wiring` 通过 alias 连接 repo、
 
 关键规则：
 
-- 同一分组同一时刻只允许一个未确认的在线配置更新
+- 同一 `proxy_group` 同一时刻只允许一个未确认的在线配置更新
 - 如果上一版 `config.push` 仍未确认，又来了下一版变更，直接断开当前控制连接
 - `config.ack` 超时或失败，也直接断开连接，交给 `frpc` 重连
 
@@ -202,11 +202,11 @@ facade 暴露 app/api 需要的稳定 API，`wiring` 通过 alias 连接 repo、
 
 ## 当前 TLS 边界
 
-当前 `frpc` 登录传输已支持分组级 TLS 策略。
+当前 `frpc` 登录传输已支持 `proxy_group` 级 TLS 策略。
 
 - `transport.client_hello` 必须前置携带 `client_id`
-- `frps` 先按分组的 `control_transport_security` 决定返回明文还是 TLS
-- 分组要求 TLS 时，TLS 成功后才进入现有 `auth.begin` 链路
+- `frps` 先按 `proxy_group` 的 `control_transport_security` 决定返回明文还是 TLS
+- `proxy_group` 要求 TLS 时，TLS 成功后才进入现有 `auth.begin` 链路
 - 服务端证书来源于 `certificate_asset_usages.frpc_tls`
 
 相关设计见 [../design/certificate-binding.md](../design/certificate-binding.md)。

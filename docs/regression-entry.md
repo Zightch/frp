@@ -104,7 +104,7 @@ python test/e2e_tcp_perf.py --transfer-concurrency 8 --transfer-bytes-per-connec
 
 当前口径固定如下：
 
-- TCP 单端口负向场景只在改动登录、分组启停、隧道启停或本地目标失败路径时重点补跑。
+- TCP 单端口负向场景只在改动登录、`proxy_group` 启停、隧道启停或本地目标失败路径时重点补跑。
 - `e2e_tcp_perf.py` 属于代码健康压测基线，不属于每次日常最小回归的阻塞门槛。
 
 ## 5. 当前建议执行顺序

@@ -79,7 +79,7 @@ flowchart TB
 
 - `cmd/frps/main.go`：零参数启动，固定读取当前工作目录下的 `data/config.json`，加载配置和日志，启动 `app.App`。
 - `internal/app`：打开数据库，执行当前必需表建表 / 校验，并并发启动管理面和控制面。
-- `internal/api`：提供内嵌 WebUI、健康检查、分组 CRUD、隧道 CRUD、登录 `key` 重置。
+- `internal/api`：提供内嵌 WebUI、健康检查、`proxy_group` CRUD、隧道 CRUD、登录 `key` 重置。
 - `internal/control`：根包只保留 app/api 稳定 facade；实际业务由 `wiring` 拼装 `protocol`、`session`、`runtime`、`domain/runtime`、`repo` 和 `bind` 子包。`ConcreteSessionState` 是单 session 控制状态、desired/applied/pending 配置、listener、TCP stream、UDP session 和恢复模式的状态所有者；`session/supervisor` 只负责 group slot、agent 生命周期和事件分发。
 - `internal/storage`：包装已打开的 `*sql.DB` / `*sql.Tx`，提供统一查询、执行、事务接口。
 - `pkg/protocol`：定义业务帧、消息类型、错误码、隧道结构和编解码，并承接当前唯一新增的跨端共享纯规则 `ChallengeResponse`。
@@ -167,8 +167,8 @@ sequenceDiagram
 - `transport.client_hello` 必须在 `auth.begin` 前到达，服务端会用 hello 中的 `client_id` 决定本连接是否需要升级到 TLS。
 - `frpc` 使用 `key` 中的 `client_secret` 计算响应，`frps` 使用数据库中的 `client_secret_hash` 验证响应。
 - `sha256(client_secret_hash + nonce)` 这条跨端共享纯规则固定收口到 `frps/pkg/protocol.ChallengeResponse`。
-- `frps` 内存中的 `groupSlots` 固定表示每个分组只有一个已登录客户端槽位。
-- 当前配置快照在首次登录和后续在线热重载阶段都会加载并下发；管理面命中运行态字段且分组在线时，会复用现有 `config.push / config.ack` 主动推进整组热重载。
+- `frps` 内存中的 `groupSlots` 固定表示每个 `proxy_group` 只有一个已登录客户端槽位。
+- 当前配置快照在首次登录和后续在线热重载阶段都会加载并下发；管理面命中运行态字段且 `proxy_group` 在线时，会复用现有 `config.push / config.ack` 主动推进整组热重载。
 - 数据库当前只承担持久化配置层；`LoadGroupRuntime` 会在登录时把 `proxy_groups` / `tunnels` 投影成 `GroupRuntime` / `ConfigSnapshot`，之后 `frps` / `frpc` 只消费内存快照。
 - 抓包相关控制当前未实现；如果后续引入，应属于运行时配置，不应再作为 `tunnels` 表列。
 
@@ -255,7 +255,7 @@ erDiagram
 
 - 关系图表达的是当前代码中的逻辑关联，schema 中未声明外键约束。
 - `proxy_groups` 和 `tunnels` 是当前 WebUI 和控制面共同使用的核心表。
-- 当前已确认的后续限速模型见 [限速策略组设计](frps/design/rate-policy-groups.md)；旧的 `proxy_groups.rate_limit` 字段已经从正式 schema 中移除。
+- 当前已确认的后续限速模型见 [限速策略设计](frps/design/rate-policy.md)；旧的 `proxy_groups.rate_limit` 字段已经从正式 schema 中移除。
 - 抓包控制如果后续引入，应放在运行时配置层而不是关系图里的持久化表。
 - 当前代码不维护 `schema_migrations` 或独立 schema 版本记录；启动时只校验当前代码依赖的业务表，额外残留表不参与业务关系图。
 

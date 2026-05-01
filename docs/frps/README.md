@@ -17,7 +17,7 @@
 
 1. [功能总览](./features/overview.md)
 2. [管理面与 WebUI](./features/management-surface.md)
-3. [分组与隧道管理](./features/group-and-tunnel-management.md)
+3. [`proxy_group` 与隧道管理](./features/group-and-tunnel-management.md)
 4. [控制面与数据面](./features/control-and-data-plane.md)
 5. [证书资产](./features/certificate-assets.md)
 6. [架构与模块](./technical/architecture.md)
@@ -28,6 +28,6 @@
 ## 当前重点设计项
 
 - [证书绑定设计：入口证书与 Tunnel TLS](./design/certificate-binding.md)
-- [限速策略组设计](./design/rate-policy-groups.md)
+- [限速策略设计](./design/rate-policy.md)
 
 根目录不再保留旧版平铺文档；请直接从本索引进入。
