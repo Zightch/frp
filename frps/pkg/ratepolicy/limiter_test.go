@@ -246,6 +246,138 @@ func TestLimiterRegistryRejectsConfigMismatch(t *testing.T) {
 	}
 }
 
+func TestLimiterRegistryIndependentLimitersDoNotCompeteAcrossTunnels(t *testing.T) {
+	config, err := NewBucketConfig(16_000)
+	if err != nil {
+		t.Fatalf("new bucket config: %v", err)
+	}
+
+	registry := NewLimiterRegistry()
+	limitersA, err := registry.Limiters(LimiterSpec{
+		Mode:     ModeIndependent,
+		PolicyID: 7,
+		TunnelID: 11,
+		Downlink: config,
+		Uplink:   config,
+	})
+	if err != nil {
+		t.Fatalf("independent tunnel a: %v", err)
+	}
+	limitersB, err := registry.Limiters(LimiterSpec{
+		Mode:     ModeIndependent,
+		PolicyID: 7,
+		TunnelID: 12,
+		Downlink: config,
+		Uplink:   config,
+	})
+	if err != nil {
+		t.Fatalf("independent tunnel b: %v", err)
+	}
+
+	waitA := make(chan error, 1)
+	go func() {
+		waitA <- limitersA.Downlink.WaitN(context.Background(), 3_000)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	waitB := make(chan error, 1)
+	startB := time.Now()
+	go func() {
+		waitB <- limitersB.Downlink.WaitN(context.Background(), 3_000)
+	}()
+
+	select {
+	case err := <-waitA:
+		if err != nil {
+			t.Fatalf("independent tunnel a wait failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("independent tunnel a wait did not finish in time")
+	}
+
+	select {
+	case err := <-waitB:
+		if err != nil {
+			t.Fatalf("independent tunnel b wait failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("independent tunnel b wait did not finish in time")
+	}
+
+	if elapsed := time.Since(startB); elapsed > 1200*time.Millisecond {
+		t.Fatalf("independent tunnel unexpectedly waited like a shared limiter: %s", elapsed)
+	}
+}
+
+func TestLimiterRegistrySharedLimitersCompeteAcrossTunnels(t *testing.T) {
+	config, err := NewBucketConfig(16_000)
+	if err != nil {
+		t.Fatalf("new bucket config: %v", err)
+	}
+
+	registry := NewLimiterRegistry()
+	limitersA, err := registry.Limiters(LimiterSpec{
+		Mode:     ModeShared,
+		PolicyID: 9,
+		TunnelID: 21,
+		Downlink: config,
+		Uplink:   config,
+	})
+	if err != nil {
+		t.Fatalf("shared tunnel a: %v", err)
+	}
+	limitersB, err := registry.Limiters(LimiterSpec{
+		Mode:     ModeShared,
+		PolicyID: 9,
+		TunnelID: 22,
+		Downlink: config,
+		Uplink:   config,
+	})
+	if err != nil {
+		t.Fatalf("shared tunnel b: %v", err)
+	}
+
+	waitA := make(chan error, 1)
+	go func() {
+		waitA <- limitersA.Downlink.WaitN(context.Background(), 3_000)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	waitB := make(chan error, 1)
+	startB := time.Now()
+	go func() {
+		waitB <- limitersB.Downlink.WaitN(context.Background(), 3_000)
+	}()
+
+	select {
+	case err := <-waitA:
+		if err != nil {
+			t.Fatalf("shared tunnel a wait failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shared tunnel a wait did not finish in time")
+	}
+
+	select {
+	case err := <-waitB:
+		if err != nil {
+			t.Fatalf("shared tunnel b wait failed: %v", err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("shared tunnel b wait did not finish in time")
+	}
+
+	elapsed := time.Since(startB)
+	if elapsed < 1400*time.Millisecond {
+		t.Fatalf("shared tunnel did not observe competition delay: %s", elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("shared tunnel competition wait took too long: %s", elapsed)
+	}
+}
+
 func TestWritePayloadSplitsByLimiterBurst(t *testing.T) {
 	writes := make([]string, 0, 3)
 	limiter := &fakeLimiter{

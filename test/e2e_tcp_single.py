@@ -7,6 +7,7 @@ import hashlib
 import http.cookiejar
 import json
 import os
+import queue
 import shutil
 import signal
 import socket
@@ -26,13 +27,32 @@ from typing import IO
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 SCHEMA_TIMEOUT_SECONDS = 15.0
-SUPPORTED_SCENARIOS = ("happy_path", "bad_token", "disabled_group", "disabled_tunnel", "local_unavailable", "hot_reload")
+SUPPORTED_SCENARIOS = (
+    "happy_path",
+    "bad_token",
+    "disabled_group",
+    "disabled_tunnel",
+    "local_unavailable",
+    "hot_reload",
+    "rate_limit_independent",
+    "rate_limit_shared",
+    "rate_limit_reload",
+)
 BAD_TOKEN_ERROR_CODE = 1101
 BAD_TOKEN_ERROR_TEXT = "challenge response mismatch"
 DISABLED_GROUP_ERROR_CODE = 1103
 DISABLED_GROUP_ERROR_TEXT = "proxy group is disabled"
 NEGATIVE_STABILITY_WINDOW_SECONDS = 2.0
 MANAGEMENT_SECRET = "frp-tcp-e2e-management-secret"
+TCP_RATE_LIMIT_PAYLOAD_BYTES = 512 * 1024
+TCP_RATE_LIMIT_FAST_MEGABITS = 8
+TCP_RATE_LIMIT_SLOW_MEGABITS = 1
+TCP_RATE_LIMIT_INDEPENDENT_MIN_SECONDS = 2.0
+TCP_RATE_LIMIT_INDEPENDENT_MAX_SECONDS = 5.5
+TCP_RATE_LIMIT_SHARED_MIN_SECONDS = 5.0
+TCP_RATE_LIMIT_SHARED_MAX_SECONDS = 9.0
+TCP_RATE_LIMIT_RELOAD_FAST_MAX_SECONDS = 1.5
+TCP_RATE_LIMIT_RELOAD_SLOW_MIN_SECONDS = 2.2
 
 
 @dataclass(frozen=True)
@@ -89,6 +109,12 @@ class ExternalClientAttempt:
     recv_error: str | None
     connection_closed: bool
     timed_out: bool
+
+
+@dataclass(frozen=True)
+class TimedRoundTrip:
+    response: bytes
+    elapsed_seconds: float
 
 
 @dataclass(frozen=True)
@@ -275,7 +301,13 @@ def main() -> int:
         print(f"[stage] {stage}")
         seed_runtime_data(paths.db_path, token, ports, args.scenario)
 
-        if args.scenario in ("happy_path", "hot_reload"):
+        if args.scenario in (
+            "happy_path",
+            "hot_reload",
+            "rate_limit_independent",
+            "rate_limit_shared",
+            "rate_limit_reload",
+        ):
             stage = "start echo server"
             print(f"[stage] {stage}")
             initial_echo_handle = run_echo_server("127.0.0.1", ports.echo)
@@ -298,7 +330,13 @@ def main() -> int:
         )
         processes.append(frpc_process)
 
-        if args.scenario in ("happy_path", "hot_reload"):
+        if args.scenario in (
+            "happy_path",
+            "hot_reload",
+            "rate_limit_independent",
+            "rate_limit_shared",
+            "rate_limit_reload",
+        ):
             stage = "wait for remote tcp listener"
             print(f"[stage] {stage}")
             wait_log_contains(paths.frps_log_path, "tcp tunnel listener ready", timeout, processes)
@@ -362,6 +400,58 @@ def main() -> int:
                 processes,
             )
             print("[ok] tcp single-port hot_reload replaced old runtime and applied new target")
+        elif args.scenario == "rate_limit_independent":
+            if initial_echo_handle is None:
+                raise RuntimeError("rate_limit_independent requires the initial tcp echo server")
+
+            stage = "start second echo server for independent rate limit"
+            print(f"[stage] {stage}")
+            secondary_echo_handle = run_echo_server("127.0.0.1", ports.reloaded_echo)
+            echo_handles.append(secondary_echo_handle)
+
+            stage = "validate independent tcp rate limit policy"
+            print(f"[stage] {stage}")
+            validate_rate_limit_independent_scenario(
+                paths,
+                ports,
+                args.payload.encode("utf-8"),
+                timeout,
+                processes,
+            )
+            print("[ok] tcp single-port rate_limit_independent applied one policy to multiple tunnels without shared competition")
+        elif args.scenario == "rate_limit_shared":
+            if initial_echo_handle is None:
+                raise RuntimeError("rate_limit_shared requires the initial tcp echo server")
+
+            stage = "start second echo server for shared rate limit"
+            print(f"[stage] {stage}")
+            secondary_echo_handle = run_echo_server("127.0.0.1", ports.reloaded_echo)
+            echo_handles.append(secondary_echo_handle)
+
+            stage = "validate shared tcp rate limit policy"
+            print(f"[stage] {stage}")
+            validate_rate_limit_shared_scenario(
+                paths,
+                ports,
+                args.payload.encode("utf-8"),
+                timeout,
+                processes,
+            )
+            print("[ok] tcp single-port rate_limit_shared enforced one shared bucket across multiple tunnels")
+        elif args.scenario == "rate_limit_reload":
+            if initial_echo_handle is None:
+                raise RuntimeError("rate_limit_reload requires the initial tcp echo server")
+
+            stage = "validate tcp rate limit reload"
+            print(f"[stage] {stage}")
+            validate_rate_limit_reload_scenario(
+                paths,
+                ports,
+                args.payload.encode("utf-8"),
+                timeout,
+                processes,
+            )
+            print("[ok] tcp single-port rate_limit_reload applied the updated rate policy online")
         else:
             raise RuntimeError(f"unsupported scenario: {args.scenario}")
 
@@ -556,7 +646,7 @@ def init_sqlite_db(db_path: Path) -> None:
 
 def wait_sqlite_schema(db_path: Path, timeout_seconds: float) -> None:
     deadline = time.time() + timeout_seconds
-    required_tables = {"proxy_groups", "tunnels"}
+    required_tables = {"proxy_groups", "tunnels", "rate_policies", "rate_policy_bindings"}
 
     while time.time() < deadline:
         try:
@@ -662,6 +752,39 @@ def seed_runtime_data(db_path: Path, token: TokenMaterial, ports: Ports, scenari
                 created_at,
             ),
         )
+        if scenario in ("rate_limit_independent", "rate_limit_shared"):
+            conn.execute(
+                """
+                INSERT INTO tunnels (
+                    group_id,
+                    name,
+                    protocol,
+                    remote_type,
+                    remote_start,
+                    remote_end,
+                    local_host,
+                    local_start,
+                    local_end,
+                    enabled,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(group_id),
+                    "e2e-tcp-b",
+                    "tcp",
+                    "single",
+                    ports.reloaded_remote,
+                    ports.reloaded_remote,
+                    "127.0.0.1",
+                    ports.reloaded_echo,
+                    ports.reloaded_echo,
+                    1,
+                    created_at,
+                    created_at,
+                ),
+            )
         conn.commit()
 
 
@@ -911,6 +1034,336 @@ def validate_hot_reload_scenario(
         public_conn.close()
 
 
+def validate_rate_limit_independent_scenario(
+    paths: RuntimePaths,
+    ports: Ports,
+    payload_seed: bytes,
+    timeout_seconds: float,
+    processes: list[ManagedProcess],
+) -> None:
+    apply_rate_policy_to_tunnels(
+        paths,
+        ports,
+        ("e2e-tcp", "e2e-tcp-b"),
+        name="e2e-tcp-independent",
+        mode="independent",
+        downlink_value=TCP_RATE_LIMIT_SLOW_MEGABITS,
+        downlink_unit="M",
+        uplink_value=TCP_RATE_LIMIT_SLOW_MEGABITS,
+        uplink_unit="M",
+        timeout_seconds=timeout_seconds,
+        processes=processes,
+    )
+
+    payload_a = make_sized_payload(payload_seed + b"-independent-a", TCP_RATE_LIMIT_PAYLOAD_BYTES)
+    payload_b = make_sized_payload(payload_seed + b"-independent-b", TCP_RATE_LIMIT_PAYLOAD_BYTES)
+    results, wall_seconds = wait_for_concurrent_tcp_rate_limit_minimum(
+        (
+            ("tunnel_a", ports.remote, payload_a),
+            ("tunnel_b", ports.reloaded_remote, payload_b),
+        ),
+        minimum_wall_seconds=TCP_RATE_LIMIT_INDEPENDENT_MIN_SECONDS,
+        timeout_seconds=timeout_seconds,
+    )
+    if results["tunnel_a"].response != payload_a:
+        raise RuntimeError("rate_limit_independent tunnel_a returned mismatched payload")
+    if results["tunnel_b"].response != payload_b:
+        raise RuntimeError("rate_limit_independent tunnel_b returned mismatched payload")
+    if wall_seconds > TCP_RATE_LIMIT_INDEPENDENT_MAX_SECONDS:
+        raise RuntimeError(
+            "rate_limit_independent took too long, limiters may have competed unexpectedly: "
+            f"wall={wall_seconds:.3f}s",
+        )
+
+
+def validate_rate_limit_shared_scenario(
+    paths: RuntimePaths,
+    ports: Ports,
+    payload_seed: bytes,
+    timeout_seconds: float,
+    processes: list[ManagedProcess],
+) -> None:
+    apply_rate_policy_to_tunnels(
+        paths,
+        ports,
+        ("e2e-tcp", "e2e-tcp-b"),
+        name="e2e-tcp-shared",
+        mode="shared",
+        downlink_value=TCP_RATE_LIMIT_SLOW_MEGABITS,
+        downlink_unit="M",
+        uplink_value=TCP_RATE_LIMIT_SLOW_MEGABITS,
+        uplink_unit="M",
+        timeout_seconds=timeout_seconds,
+        processes=processes,
+    )
+
+    payload_a = make_sized_payload(payload_seed + b"-shared-a", TCP_RATE_LIMIT_PAYLOAD_BYTES)
+    payload_b = make_sized_payload(payload_seed + b"-shared-b", TCP_RATE_LIMIT_PAYLOAD_BYTES)
+    results, wall_seconds = wait_for_concurrent_tcp_rate_limit_minimum(
+        (
+            ("tunnel_a", ports.remote, payload_a),
+            ("tunnel_b", ports.reloaded_remote, payload_b),
+        ),
+        minimum_wall_seconds=TCP_RATE_LIMIT_SHARED_MIN_SECONDS,
+        timeout_seconds=timeout_seconds,
+    )
+    if results["tunnel_a"].response != payload_a:
+        raise RuntimeError("rate_limit_shared tunnel_a returned mismatched payload")
+    if results["tunnel_b"].response != payload_b:
+        raise RuntimeError("rate_limit_shared tunnel_b returned mismatched payload")
+    if wall_seconds > TCP_RATE_LIMIT_SHARED_MAX_SECONDS:
+        raise RuntimeError(f"rate_limit_shared took too long: wall={wall_seconds:.3f}s")
+
+
+def validate_rate_limit_reload_scenario(
+    paths: RuntimePaths,
+    ports: Ports,
+    payload_seed: bytes,
+    timeout_seconds: float,
+    processes: list[ManagedProcess],
+) -> None:
+    policy_id = apply_rate_policy_to_tunnels(
+        paths,
+        ports,
+        ("e2e-tcp",),
+        name="e2e-tcp-reload",
+        mode="independent",
+        downlink_value=TCP_RATE_LIMIT_FAST_MEGABITS,
+        downlink_unit="M",
+        uplink_value=TCP_RATE_LIMIT_FAST_MEGABITS,
+        uplink_unit="M",
+        timeout_seconds=timeout_seconds,
+        processes=processes,
+    )
+
+    payload = make_sized_payload(payload_seed + b"-reload", TCP_RATE_LIMIT_PAYLOAD_BYTES)
+    fast_round_trip = run_external_client_timed("127.0.0.1", ports.remote, payload, timeout_seconds)
+    if fast_round_trip.response != payload:
+        raise RuntimeError("rate_limit_reload fast policy returned mismatched payload")
+    if fast_round_trip.elapsed_seconds > TCP_RATE_LIMIT_RELOAD_FAST_MAX_SECONDS:
+        raise RuntimeError(
+            "rate_limit_reload fast policy was slower than expected: "
+            f"elapsed={fast_round_trip.elapsed_seconds:.3f}s",
+        )
+
+    update_rate_policy_and_wait(
+        paths,
+        ports,
+        policy_id,
+        name="e2e-tcp-reload",
+        mode="independent",
+        downlink_value=TCP_RATE_LIMIT_SLOW_MEGABITS,
+        downlink_unit="M",
+        uplink_value=TCP_RATE_LIMIT_SLOW_MEGABITS,
+        uplink_unit="M",
+        timeout_seconds=timeout_seconds,
+        processes=processes,
+    )
+
+    slow_round_trip = wait_for_tcp_rate_limit_minimum(
+        "127.0.0.1",
+        ports.remote,
+        payload,
+        minimum_elapsed_seconds=TCP_RATE_LIMIT_RELOAD_SLOW_MIN_SECONDS,
+        timeout_seconds=timeout_seconds,
+    )
+    if slow_round_trip.response != payload:
+        raise RuntimeError("rate_limit_reload slow policy returned mismatched payload")
+    if slow_round_trip.elapsed_seconds <= fast_round_trip.elapsed_seconds:
+        raise RuntimeError(
+            "rate_limit_reload did not get slower after policy update: "
+            f"fast={fast_round_trip.elapsed_seconds:.3f}s slow={slow_round_trip.elapsed_seconds:.3f}s",
+        )
+
+
+def apply_rate_policy_to_tunnels(
+    paths: RuntimePaths,
+    ports: Ports,
+    tunnel_names: tuple[str, ...],
+    *,
+    name: str,
+    mode: str,
+    downlink_value: int,
+    downlink_unit: str,
+    uplink_value: int,
+    uplink_unit: str,
+    timeout_seconds: float,
+    processes: list[ManagedProcess],
+) -> int:
+    base_url = f"http://127.0.0.1:{ports.management}"
+    opener = login_management_session(base_url, MANAGEMENT_SECRET)
+    initial_ack_count = count_log_occurrences(paths.frps_log_path, "config acknowledged")
+    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "config applied")
+
+    policy_id = create_rate_policy(
+        opener,
+        base_url,
+        name=name,
+        mode=mode,
+        downlink_value=downlink_value,
+        downlink_unit=downlink_unit,
+        uplink_value=uplink_value,
+        uplink_unit=uplink_unit,
+    )
+    for tunnel_name in tunnel_names:
+        tunnel_id, _ = load_single_tunnel_record(paths.db_path, tunnel_name)
+        bind_rate_policy_tunnel(opener, base_url, policy_id, tunnel_id)
+
+    expected_refreshes = len(tunnel_names)
+    wait_log_count_at_least(
+        paths.frps_log_path,
+        "config acknowledged",
+        initial_ack_count + expected_refreshes,
+        timeout_seconds,
+        processes,
+    )
+    wait_log_count_at_least(
+        paths.frpc_log_path,
+        "config applied",
+        initial_apply_count + expected_refreshes,
+        timeout_seconds,
+        processes,
+    )
+    return policy_id
+
+
+def update_rate_policy_and_wait(
+    paths: RuntimePaths,
+    ports: Ports,
+    policy_id: int,
+    *,
+    name: str,
+    mode: str,
+    downlink_value: int,
+    downlink_unit: str,
+    uplink_value: int,
+    uplink_unit: str,
+    timeout_seconds: float,
+    processes: list[ManagedProcess],
+) -> None:
+    base_url = f"http://127.0.0.1:{ports.management}"
+    opener = login_management_session(base_url, MANAGEMENT_SECRET)
+    initial_ack_count = count_log_occurrences(paths.frps_log_path, "config acknowledged")
+    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "config applied")
+
+    update_rate_policy(
+        opener,
+        base_url,
+        policy_id,
+        name=name,
+        mode=mode,
+        downlink_value=downlink_value,
+        downlink_unit=downlink_unit,
+        uplink_value=uplink_value,
+        uplink_unit=uplink_unit,
+    )
+
+    wait_log_count_at_least(
+        paths.frps_log_path,
+        "config acknowledged",
+        initial_ack_count + 1,
+        timeout_seconds,
+        processes,
+    )
+    wait_log_count_at_least(
+        paths.frpc_log_path,
+        "config applied",
+        initial_apply_count + 1,
+        timeout_seconds,
+        processes,
+    )
+
+
+def wait_for_tcp_rate_limit_minimum(
+    host: str,
+    port: int,
+    payload: bytes,
+    minimum_elapsed_seconds: float,
+    timeout_seconds: float,
+) -> TimedRoundTrip:
+    deadline = time.time() + timeout_seconds
+    last_round_trip: TimedRoundTrip | None = None
+    while time.time() < deadline:
+        last_round_trip = run_external_client_timed(host, port, payload, timeout_seconds)
+        if last_round_trip.response != payload:
+            raise RuntimeError("tcp rate-limited round-trip returned mismatched payload")
+        if last_round_trip.elapsed_seconds >= minimum_elapsed_seconds:
+            return last_round_trip
+        time.sleep(0.25)
+
+    raise RuntimeError(
+        "tcp rate limit did not take effect in time: "
+        f"minimum={minimum_elapsed_seconds:.3f}s last={0.0 if last_round_trip is None else last_round_trip.elapsed_seconds:.3f}s",
+    )
+
+
+def wait_for_concurrent_tcp_rate_limit_minimum(
+    cases: tuple[tuple[str, int, bytes], ...],
+    *,
+    minimum_wall_seconds: float,
+    timeout_seconds: float,
+) -> tuple[dict[str, TimedRoundTrip], float]:
+    deadline = time.time() + timeout_seconds
+    last_wall_seconds = 0.0
+    while time.time() < deadline:
+        results, wall_seconds = run_concurrent_tcp_round_trips(cases, timeout_seconds)
+        last_wall_seconds = wall_seconds
+        if wall_seconds >= minimum_wall_seconds:
+            return results, wall_seconds
+        time.sleep(0.25)
+
+    raise RuntimeError(
+        "concurrent tcp rate limit did not take effect in time: "
+        f"minimum={minimum_wall_seconds:.3f}s last={last_wall_seconds:.3f}s",
+    )
+
+
+def run_concurrent_tcp_round_trips(
+    cases: tuple[tuple[str, int, bytes], ...],
+    timeout_seconds: float,
+) -> tuple[dict[str, TimedRoundTrip], float]:
+    outcomes: queue.Queue[tuple[str, TimedRoundTrip | None, str | None]] = queue.Queue()
+    threads: list[threading.Thread] = []
+
+    def worker(name: str, port: int, payload: bytes) -> None:
+        try:
+            outcomes.put((name, run_external_client_timed("127.0.0.1", port, payload, timeout_seconds), None))
+        except Exception as exc:
+            outcomes.put((name, None, str(exc)))
+
+    start = time.perf_counter()
+    for name, port, payload in cases:
+        thread = threading.Thread(
+            target=worker,
+            args=(name, port, payload),
+            name=f"tcp-rate-limit-{name}",
+            daemon=True,
+        )
+        threads.append(thread)
+        thread.start()
+
+    for thread in threads:
+        thread.join(timeout=timeout_seconds + 5.0)
+        if thread.is_alive():
+            raise TimeoutError(f"concurrent tcp worker did not finish in time: {thread.name}")
+
+    wall_seconds = time.perf_counter() - start
+    results: dict[str, TimedRoundTrip] = {}
+    errors: list[str] = []
+    while not outcomes.empty():
+        name, result, error_text = outcomes.get_nowait()
+        if error_text is not None or result is None:
+            errors.append(f"{name}: {error_text}")
+            continue
+        results[name] = result
+
+    if errors:
+        raise RuntimeError("concurrent tcp round-trip failed: " + "; ".join(errors))
+    if len(results) != len(cases):
+        raise RuntimeError(f"concurrent tcp round-trip lost results: got {len(results)} want {len(cases)}")
+    return results, wall_seconds
+
+
 def validate_auth_rejection_scenario(
     scenario: str,
     paths: RuntimePaths,
@@ -969,10 +1422,23 @@ def run_echo_server(host: str, port: int) -> EchoServerHandle:
     return EchoServerHandle(server=server, thread=thread)
 
 
+def make_sized_payload(seed: bytes, size: int) -> bytes:
+    if size <= 0:
+        raise ValueError("payload size must be positive")
+    pattern = seed or b"x"
+    return (pattern * ((size + len(pattern) - 1) // len(pattern)))[:size]
+
+
 def run_external_client(host: str, port: int, payload: bytes, timeout_seconds: float) -> bytes:
     with socket.create_connection((host, port), timeout=timeout_seconds) as conn:
         conn.settimeout(timeout_seconds)
         return run_external_client_exchange(conn, payload)
+
+
+def run_external_client_timed(host: str, port: int, payload: bytes, timeout_seconds: float) -> TimedRoundTrip:
+    started_at = time.perf_counter()
+    response = run_external_client(host, port, payload, timeout_seconds)
+    return TimedRoundTrip(response=response, elapsed_seconds=time.perf_counter() - started_at)
 
 
 def run_external_client_exchange(conn: socket.socket, payload: bytes) -> bytes:
@@ -1121,15 +1587,24 @@ def login_management_session(base_url: str, secret: str) -> urllib.request.Opene
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
     key_hash = sha256_hex(secret)
 
-    init_result = request_json(
-        opener,
-        "POST",
-        f"{base_url}/api/v1/auth/init",
-        payload={"key_hash": key_hash},
-        expected_status=201,
-    )
-    if init_result.get("initialized") is not True:
-        raise RuntimeError(f"management auth init returned unexpected payload: {init_result!r}")
+    try:
+        init_result = request_json(
+            opener,
+            "POST",
+            f"{base_url}/api/v1/auth/init",
+            payload={"key_hash": key_hash},
+            expected_status=201,
+        )
+        if init_result.get("initialized") is not True:
+            raise RuntimeError(f"management auth init returned unexpected payload: {init_result!r}")
+    except RuntimeError:
+        perform_request(
+            opener,
+            "POST",
+            f"{base_url}/api/v1/auth/init",
+            payload={"key_hash": key_hash},
+            expected_status=409,
+        )
 
     challenge = request_json(opener, "POST", f"{base_url}/api/v1/auth/challenge", expected_status=200)
     challenge_id = str(challenge.get("challenge_id") or "").strip()
@@ -1182,6 +1657,76 @@ def patch_single_tunnel_via_management(
             "enabled": True,
         },
         expected_status=200,
+    )
+
+
+def create_rate_policy(
+    opener: urllib.request.OpenerDirector,
+    base_url: str,
+    *,
+    name: str,
+    mode: str,
+    downlink_value: int,
+    downlink_unit: str,
+    uplink_value: int,
+    uplink_unit: str,
+) -> int:
+    response = request_json(
+        opener,
+        "POST",
+        f"{base_url}/api/v1/rate-policies",
+        payload={
+            "name": name,
+            "mode": mode,
+            "downlink": {"value": downlink_value, "unit": downlink_unit},
+            "uplink": {"value": uplink_value, "unit": uplink_unit},
+        },
+        expected_status=201,
+    )
+    item = response.get("item")
+    if not isinstance(item, dict) or int(item.get("id") or 0) <= 0:
+        raise RuntimeError(f"unexpected create rate policy payload: {response!r}")
+    return int(item["id"])
+
+
+def update_rate_policy(
+    opener: urllib.request.OpenerDirector,
+    base_url: str,
+    policy_id: int,
+    *,
+    name: str,
+    mode: str,
+    downlink_value: int,
+    downlink_unit: str,
+    uplink_value: int,
+    uplink_unit: str,
+) -> None:
+    request_json(
+        opener,
+        "PATCH",
+        f"{base_url}/api/v1/rate-policies/{policy_id}",
+        payload={
+            "name": name,
+            "mode": mode,
+            "downlink": {"value": downlink_value, "unit": downlink_unit},
+            "uplink": {"value": uplink_value, "unit": uplink_unit},
+        },
+        expected_status=200,
+    )
+
+
+def bind_rate_policy_tunnel(
+    opener: urllib.request.OpenerDirector,
+    base_url: str,
+    policy_id: int,
+    tunnel_id: int,
+) -> None:
+    request_json(
+        opener,
+        "POST",
+        f"{base_url}/api/v1/rate-policies/{policy_id}/bindings",
+        payload={"tunnel_id": tunnel_id},
+        expected_status=201,
     )
 
 
@@ -1294,6 +1839,9 @@ def scenario_expectation_summary(scenario: str) -> str:
         "disabled_tunnel": "frpc login and config apply succeed, but the disabled tunnel never exposes the remote listener",
         "local_unavailable": "frpc login and remote listener succeed, then a real stream.open is rejected because the local target is unavailable and no echo payload is returned",
         "hot_reload": "frpc completes a second config.push/config.ack cycle, the old tcp runtime is closed, and external traffic reaches the reloaded target",
+        "rate_limit_independent": "two tcp tunnels bind to one independent rate policy, each tunnel is limited, and concurrent traffic does not share one bucket",
+        "rate_limit_shared": "two tcp tunnels bind to one shared rate policy and concurrent traffic competes for one shared bucket",
+        "rate_limit_reload": "an existing tcp rate policy is updated online and frps applies the slower limit without changing the tunnel mapping",
     }
     try:
         return expectations[scenario]
@@ -1310,9 +1858,12 @@ def scenario_actual_summary(
     frps_log = read_log_text(paths.frps_log_path)
     frpc_log = read_log_text(paths.frpc_log_path)
     group_enabled, tunnel_enabled = read_seed_flags(paths.db_path)
+    rate_policy_count, rate_policy_binding_count = read_rate_policy_counts(paths.db_path)
     parts = [
         f"group_enabled={group_enabled}",
         f"tunnel_enabled={tunnel_enabled}",
+        f"rate_policy_count={rate_policy_count}",
+        f"rate_policy_binding_count={rate_policy_binding_count}",
         f"frps_login_failed={'frpc control login failed' in frps_log}",
         f"frps_login_succeeded={'frpc control login succeeded' in frps_log}",
         f"frps_config_ack={'config acknowledged' in frps_log}",
@@ -1364,6 +1915,22 @@ def read_seed_flags(db_path: Path) -> tuple[str, str]:
     group_enabled = "missing" if group_row is None else str(int(group_row[0]))
     tunnel_enabled = "missing" if tunnel_row is None else str(int(tunnel_row[0]))
     return (group_enabled, tunnel_enabled)
+
+
+def read_rate_policy_counts(db_path: Path) -> tuple[str, str]:
+    if not db_path.exists():
+        return ("unknown", "unknown")
+
+    try:
+        with sqlite3.connect(db_path, timeout=1.0) as conn:
+            policy_row = conn.execute("SELECT COUNT(1) FROM rate_policies").fetchone()
+            binding_row = conn.execute("SELECT COUNT(1) FROM rate_policy_bindings").fetchone()
+    except sqlite3.Error:
+        return ("unknown", "unknown")
+
+    policy_count = "unknown" if policy_row is None else str(int(policy_row[0]))
+    binding_count = "unknown" if binding_row is None else str(int(binding_row[0]))
+    return (policy_count, binding_count)
 
 
 def summarize_process_states(processes: list[ManagedProcess]) -> str:

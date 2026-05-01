@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/ratepolicy"
 )
 
 func TestSessionStateAddPublicStreamRegistersTunnelRateLimiters(t *testing.T) {
@@ -183,6 +184,83 @@ func TestSessionStateClosePublicStreamCancelsRateLimitContext(t *testing.T) {
 	}
 }
 
+func TestSessionStateFreezeTunnelRuntimeRebuildsStreamRateLimitersAfterReload(t *testing.T) {
+	tunnel := protocol.TunnelEntry{
+		TunnelID:    7,
+		Protocol:    protocol.ProtocolTCP,
+		TunnelFlags: protocol.TunnelFlagEnabled,
+		RemoteStart: 20000,
+		RemoteEnd:   20000,
+		RatePolicy: protocol.TunnelRatePolicy{
+			PolicyID:    9,
+			Mode:        protocol.RatePolicyModeIndependent,
+			DownlinkBPS: 10_000_000,
+			UplinkBPS:   5_000_000,
+		},
+	}
+	snapshot := ConfigSnapshot{
+		Version: 3,
+		Tunnels: []protocol.TunnelEntry{tunnel},
+	}
+	session := newSessionState(11, GroupRuntime{ID: 1, Snapshot: snapshot}, snapshot, 0)
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = snapshot.Version
+	session.RuntimeMu.Unlock()
+
+	clientA, serverA := net.Pipe()
+	defer clientA.Close()
+	defer serverA.Close()
+
+	if !session.AddPublicStream(101, &publicStream{Conn: serverA, Tunnel: tunnel, Ready: make(chan error, 1)}, snapshot.Version) {
+		t.Fatal("expected initial stream to register")
+	}
+
+	ctxA, limitersA, ok := session.StreamRateLimit(101)
+	if !ok || ctxA == nil {
+		t.Fatal("expected initial stream rate limit context")
+	}
+
+	session.FreezeTunnelRuntime()
+	select {
+	case <-ctxA.Done():
+	default:
+		t.Fatal("expected freeze to cancel initial stream rate limit context")
+	}
+
+	session.AllowTunnelRuntimeStart()
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = 4
+	session.RuntimeMu.Unlock()
+
+	reloadedTunnel := tunnel
+	reloadedTunnel.RatePolicy.DownlinkBPS = 20_000_000
+	reloadedTunnel.RatePolicy.UplinkBPS = 8_000_000
+
+	clientB, serverB := net.Pipe()
+	defer clientB.Close()
+	defer serverB.Close()
+
+	if !session.AddPublicStream(202, &publicStream{Conn: serverB, Tunnel: reloadedTunnel, Ready: make(chan error, 1)}, 4) {
+		t.Fatal("expected reloaded stream to register")
+	}
+
+	_, limitersB, ok := session.StreamRateLimit(202)
+	if !ok {
+		t.Fatal("expected reloaded stream rate limit entry")
+	}
+	if limitersA.Downlink == limitersB.Downlink || limitersA.Uplink == limitersB.Uplink {
+		t.Fatal("expected reload to rebuild tunnel limiter instances")
+	}
+	if got := limitersB.Downlink.Config(); got != (ratepolicy.BucketConfig{RateBPS: 20_000_000, BurstBytes: 2_500_000}) {
+		t.Fatalf("unexpected reloaded downlink config: %#v", got)
+	}
+	if got := limitersB.Uplink.Config(); got != (ratepolicy.BucketConfig{RateBPS: 8_000_000, BurstBytes: 1_000_000}) {
+		t.Fatalf("unexpected reloaded uplink config: %#v", got)
+	}
+}
+
 func TestSessionStateStreamRateLimitMissingStream(t *testing.T) {
 	session := newSessionState(11, GroupRuntime{ID: 1}, ConfigSnapshot{}, 0)
 	ctx, limiters, ok := session.StreamRateLimit(404)
@@ -334,6 +412,49 @@ func TestSessionStateClosePublicUDPSessionCancelsRateLimitContext(t *testing.T) 
 	case <-ctx.Done():
 	default:
 		t.Fatal("expected udp session close to cancel rate limit context")
+	}
+}
+
+func TestSessionStateFreezeTunnelRuntimeCancelsUDPRateLimitContext(t *testing.T) {
+	tunnel := protocol.TunnelEntry{
+		TunnelID:    7,
+		Protocol:    protocol.ProtocolUDP,
+		TunnelFlags: protocol.TunnelFlagEnabled,
+		RemoteStart: 20000,
+		RemoteEnd:   20000,
+		RatePolicy: protocol.TunnelRatePolicy{
+			PolicyID:    9,
+			Mode:        protocol.RatePolicyModeIndependent,
+			DownlinkBPS: 10_000_000,
+			UplinkBPS:   5_000_000,
+		},
+	}
+	snapshot := ConfigSnapshot{
+		Version: 3,
+		Tunnels: []protocol.TunnelEntry{tunnel},
+	}
+	session := newSessionState(11, GroupRuntime{ID: 1, Snapshot: snapshot}, snapshot, 0)
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = snapshot.Version
+	session.RuntimeMu.Unlock()
+
+	listener := &rateLimitTestUDPListener{}
+	udpSession, created := session.BindPublicUDPSession(newPublicUDPSession(201, tunnel, 20000, listener, &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 53000}, time.Now().UTC()), snapshot.Version)
+	if udpSession == nil || !created {
+		t.Fatal("expected udp session to register")
+	}
+
+	ctx, _, ok := session.UDPSessionRateLimit(udpSession.SessionID)
+	if !ok || ctx == nil {
+		t.Fatal("expected udp session rate limit context")
+	}
+
+	session.FreezeTunnelRuntime()
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("expected freeze to cancel udp session rate limit context")
 	}
 }
 
