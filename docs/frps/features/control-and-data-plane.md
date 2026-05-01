@@ -63,11 +63,15 @@ frps -> start listeners
 - `backend_tls_insecure_skip_verify`
 - backend TLS 所需 CA PEM
 - backend mTLS 所需 client cert / key PEM
+- 限速策略最终执行字段：
+  - `policy_id`
+  - `mode`
+  - `downlink_bps`
+  - `uplink_bps`
 
 当前仍不下发：
 
 - ACL
-- 限速策略
 - 抓包控制
 - 反向代理配置
 - `frps` 监听侧 TLS 私钥材料
@@ -75,9 +79,9 @@ frps -> start listeners
 其中：
 
 - `frps` 监听侧 TLS 材料由 `frps` 本地按 tunnel id 解析
-- `frpc` backend TLS 材料才会进入 `ConfigSnapshot`
+- `frpc` backend TLS 材料和限速策略最终执行字段会进入 `ConfigSnapshot`
 
-当前已确认的后续限速模型改为独立 [限速策略设计](../design/rate-policy.md)；在能力真实落地前，这部分不会进入 `ConfigSnapshot`，也不会下发到 `frpc`。
+当前限速模型已经收口为独立 [限速策略设计](../design/rate-policy.md)。当前控制面已经把限速策略投影进 `ConfigSnapshot` 并下发到 `frpc`，但 TCP / UDP 数据面令牌桶执行仍未接入。
 
 ## 运行态恢复
 

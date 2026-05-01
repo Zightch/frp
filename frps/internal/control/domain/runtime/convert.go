@@ -30,14 +30,18 @@ func DesiredTunnelsFromConfig(tunnels []protocol.TunnelEntry) []controlsession.D
 	desired := make([]controlsession.DesiredTunnelRuntime, 0, len(tunnels))
 	for _, tunnel := range tunnels {
 		desired = append(desired, controlsession.DesiredTunnelRuntime{
-			TunnelID:    tunnel.TunnelID,
-			Protocol:    ProtocolName(tunnel.Protocol),
-			Enabled:     tunnel.TunnelFlags&protocol.TunnelFlagEnabled != 0,
-			RemoteStart: tunnel.RemoteStart,
-			RemoteEnd:   tunnel.RemoteEnd,
-			LocalHost:   tunnel.LocalHost.String(),
-			LocalStart:  tunnel.LocalStart,
-			LocalEnd:    tunnel.LocalEnd,
+			TunnelID:              tunnel.TunnelID,
+			Protocol:              ProtocolName(tunnel.Protocol),
+			Enabled:               tunnel.TunnelFlags&protocol.TunnelFlagEnabled != 0,
+			RemoteStart:           tunnel.RemoteStart,
+			RemoteEnd:             tunnel.RemoteEnd,
+			LocalHost:             tunnel.LocalHost.String(),
+			LocalStart:            tunnel.LocalStart,
+			LocalEnd:              tunnel.LocalEnd,
+			RatePolicyID:          tunnel.RatePolicy.PolicyID,
+			RatePolicyMode:        tunnel.RatePolicy.Mode,
+			RatePolicyDownlinkBPS: tunnel.RatePolicy.DownlinkBPS,
+			RatePolicyUplinkBPS:   tunnel.RatePolicy.UplinkBPS,
 		})
 	}
 	return desired
@@ -71,6 +75,12 @@ func ConfigTunnelsFromDesired(tunnels []controlsession.DesiredTunnelRuntime) []p
 			LocalHost:   host,
 			LocalStart:  tunnel.LocalStart,
 			LocalEnd:    tunnel.LocalEnd,
+			RatePolicy: protocol.TunnelRatePolicy{
+				PolicyID:    tunnel.RatePolicyID,
+				Mode:        tunnel.RatePolicyMode,
+				DownlinkBPS: tunnel.RatePolicyDownlinkBPS,
+				UplinkBPS:   tunnel.RatePolicyUplinkBPS,
+			},
 		})
 	}
 	return configured

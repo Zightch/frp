@@ -47,6 +47,26 @@ INSERT INTO tunnels (
 		t.Fatalf("insert tunnels: %v", err)
 	}
 
+	if _, err := store.Exec(
+		`
+INSERT INTO rate_policies (name, mode, downlink_bps, uplink_bps, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`,
+		"policy-a", "shared", 10_000_000, 5_000_000, "2026-04-18 10:00:00.000004", "2026-04-18 10:00:00.000005",
+	); err != nil {
+		t.Fatalf("insert rate policy: %v", err)
+	}
+
+	if _, err := store.Exec(
+		`
+INSERT INTO rate_policy_bindings (rate_policy_id, tunnel_id, created_at, updated_at)
+VALUES (?, ?, ?, ?)
+`,
+		1, 1, "2026-04-18 10:00:00.000006", "2026-04-18 10:00:00.000007",
+	); err != nil {
+		t.Fatalf("insert rate policy binding: %v", err)
+	}
+
 	repo := NewRepository(store)
 	group, err := repo.LoadGroupRuntimeByClientID(context.Background(), tokenID)
 	if err != nil {
@@ -71,8 +91,20 @@ INSERT INTO tunnels (
 	if group.Snapshot.Tunnels[0].Protocol != protocol.ProtocolTCP {
 		t.Fatalf("unexpected first tunnel protocol: %d", group.Snapshot.Tunnels[0].Protocol)
 	}
+	if group.Snapshot.Tunnels[0].RatePolicy.PolicyID != 1 ||
+		group.Snapshot.Tunnels[0].RatePolicy.Mode != protocol.RatePolicyModeShared ||
+		group.Snapshot.Tunnels[0].RatePolicy.DownlinkBPS != 10_000_000 ||
+		group.Snapshot.Tunnels[0].RatePolicy.UplinkBPS != 5_000_000 {
+		t.Fatalf("unexpected first tunnel rate policy: %#v", group.Snapshot.Tunnels[0].RatePolicy)
+	}
+	if group.Snapshot.Tunnels[0].Revision != 1776506400000007 {
+		t.Fatalf("expected tunnel revision to include binding update, got %d", group.Snapshot.Tunnels[0].Revision)
+	}
 	if group.Snapshot.Tunnels[1].TunnelFlags&protocol.TunnelFlagRange == 0 {
 		t.Fatalf("expected second tunnel to be marked as range: %#v", group.Snapshot.Tunnels[1])
+	}
+	if group.Snapshot.Version != 1776506400000007 || group.Snapshot.GeneratedAtMs != 1776506400000 {
+		t.Fatalf("unexpected snapshot metadata after rate policy projection: %#v", group.Snapshot)
 	}
 }
 
@@ -106,6 +138,26 @@ INSERT INTO tunnels (
 		t.Fatalf("insert tunnels: %v", err)
 	}
 
+	if _, err := store.Exec(
+		`
+INSERT INTO rate_policies (name, mode, downlink_bps, uplink_bps, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`,
+		"policy-b", "independent", 20_000_000, 8_000_000, "2026-04-18 10:00:00.000005", "2026-04-18 10:00:00.000006",
+	); err != nil {
+		t.Fatalf("insert rate policy: %v", err)
+	}
+
+	if _, err := store.Exec(
+		`
+INSERT INTO rate_policy_bindings (rate_policy_id, tunnel_id, created_at, updated_at)
+VALUES (?, ?, ?, ?)
+`,
+		1, 2, "2026-04-18 10:00:00.000007", "2026-04-18 10:00:00.000008",
+	); err != nil {
+		t.Fatalf("insert rate policy binding: %v", err)
+	}
+
 	repo := NewRepository(store)
 	groups, err := repo.ListGroupRuntimes(context.Background())
 	if err != nil {
@@ -123,6 +175,13 @@ INSERT INTO tunnels (
 	}
 	if len(groups[1].Snapshot.Tunnels) != 1 || groups[1].Snapshot.Tunnels[0].TunnelID != 2 {
 		t.Fatalf("unexpected second group snapshot: %#v", groups[1].Snapshot)
+	}
+	if groups[1].Snapshot.Tunnels[0].RatePolicy.PolicyID != 1 ||
+		groups[1].Snapshot.Tunnels[0].RatePolicy.Mode != protocol.RatePolicyModeIndependent {
+		t.Fatalf("unexpected second group rate policy: %#v", groups[1].Snapshot.Tunnels[0].RatePolicy)
+	}
+	if groups[1].Snapshot.Version != 1776506400000008 {
+		t.Fatalf("expected second group snapshot version to include binding update, got %d", groups[1].Snapshot.Version)
 	}
 }
 

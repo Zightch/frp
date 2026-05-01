@@ -96,7 +96,15 @@ func SameTunnelEntry(left, right protocol.TunnelEntry) bool {
 		left.BackendTLSServerName == right.BackendTLSServerName &&
 		left.BackendTLSCAPEM == right.BackendTLSCAPEM &&
 		left.BackendTLSClientCertPEM == right.BackendTLSClientCertPEM &&
-		left.BackendTLSClientKeyPEM == right.BackendTLSClientKeyPEM
+		left.BackendTLSClientKeyPEM == right.BackendTLSClientKeyPEM &&
+		SameTunnelRatePolicy(left.RatePolicy, right.RatePolicy)
+}
+
+func SameTunnelRatePolicy(left, right protocol.TunnelRatePolicy) bool {
+	return left.PolicyID == right.PolicyID &&
+		left.Mode == right.Mode &&
+		left.DownlinkBPS == right.DownlinkBPS &&
+		left.UplinkBPS == right.UplinkBPS
 }
 
 // SameHost checks if two host values are the same.

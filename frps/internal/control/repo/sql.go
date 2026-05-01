@@ -13,6 +13,7 @@ import (
 	"github.com/zightch/frp/frps/internal/storage"
 	"github.com/zightch/frp/frps/internal/system"
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/ratepolicy"
 )
 
 const schemaTimestampLayout = "2006-01-02 15:04:05.000000"
@@ -47,6 +48,19 @@ func decodeTunnelTLSMode(value string) (uint8, error) {
 		return protocol.TunnelTLSModeMTLS, nil
 	default:
 		return 0, fmt.Errorf("unsupported tunnel tls mode %q", value)
+	}
+}
+
+func decodeTunnelRatePolicyMode(value string) (uint8, error) {
+	switch mode, err := ratepolicy.ParseMode(value); {
+	case err != nil:
+		return 0, err
+	case mode == ratepolicy.ModeIndependent:
+		return protocol.RatePolicyModeIndependent, nil
+	case mode == ratepolicy.ModeShared:
+		return protocol.RatePolicyModeShared, nil
+	default:
+		return 0, fmt.Errorf("unsupported rate policy mode %q", value)
 	}
 }
 

@@ -97,6 +97,12 @@ const (
 )
 
 const (
+	RatePolicyModeNone        uint8 = 0
+	RatePolicyModeIndependent uint8 = 1
+	RatePolicyModeShared      uint8 = 2
+)
+
+const (
 	ErrorCodeProtocolInvalidLength   uint16 = 1001
 	ErrorCodeProtocolUnknownType     uint16 = 1002
 	ErrorCodeProtocolInvalidVersion  uint16 = 1003
@@ -356,6 +362,13 @@ type ConfigPush struct {
 	Tunnels       []TunnelEntry
 }
 
+type TunnelRatePolicy struct {
+	PolicyID    uint32
+	Mode        uint8
+	DownlinkBPS uint64
+	UplinkBPS   uint64
+}
+
 type TunnelEntry struct {
 	TunnelID                     uint32
 	Protocol                     uint8
@@ -373,6 +386,7 @@ type TunnelEntry struct {
 	BackendTLSCAPEM              string
 	BackendTLSClientCertPEM      string
 	BackendTLSClientKeyPEM       string
+	RatePolicy                   TunnelRatePolicy
 }
 
 type ConfigAck struct {
@@ -958,6 +972,10 @@ func encodeTunnelEntry(enc *bodyEncoder, tunnel TunnelEntry) error {
 	if err := enc.longstr(tunnel.BackendTLSClientKeyPEM); err != nil {
 		return err
 	}
+	enc.u32(tunnel.RatePolicy.PolicyID)
+	enc.u8(tunnel.RatePolicy.Mode)
+	enc.u64(tunnel.RatePolicy.DownlinkBPS)
+	enc.u64(tunnel.RatePolicy.UplinkBPS)
 	return nil
 }
 
@@ -1017,6 +1035,18 @@ func decodeTunnelEntry(dec *bodyDecoder) (TunnelEntry, error) {
 		return tunnel, err
 	}
 	if tunnel.BackendTLSClientKeyPEM, err = dec.longstr(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.RatePolicy.PolicyID, err = dec.u32(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.RatePolicy.Mode, err = dec.u8(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.RatePolicy.DownlinkBPS, err = dec.u64(); err != nil {
+		return tunnel, err
+	}
+	if tunnel.RatePolicy.UplinkBPS, err = dec.u64(); err != nil {
 		return tunnel, err
 	}
 	return tunnel, nil

@@ -129,23 +129,31 @@ func (r *SQLRepository) loadTunnels(ctx context.Context, groupID int64) ([]proto
 		ctx,
 		`
 SELECT
-	id,
-	protocol,
-	remote_type,
-	remote_start,
-	remote_end,
-	local_host,
-	local_start,
-	local_end,
-	backend_tls_mode,
-	backend_tls_server_name,
-	backend_tls_load_system_ca,
-	backend_tls_insecure_skip_verify,
-	enabled,
-	updated_at
-FROM tunnels
-WHERE group_id = ?
-ORDER BY id
+	t.id,
+	t.protocol,
+	t.remote_type,
+	t.remote_start,
+	t.remote_end,
+	t.local_host,
+	t.local_start,
+	t.local_end,
+	t.backend_tls_mode,
+	t.backend_tls_server_name,
+	t.backend_tls_load_system_ca,
+	t.backend_tls_insecure_skip_verify,
+	t.enabled,
+	t.updated_at,
+	rpb.rate_policy_id AS rate_policy_id,
+	rpb.updated_at AS rate_policy_binding_updated_at,
+	rp.mode AS rate_policy_mode,
+	rp.downlink_bps AS rate_policy_downlink_bps,
+	rp.uplink_bps AS rate_policy_uplink_bps,
+	rp.updated_at AS rate_policy_updated_at
+FROM tunnels t
+LEFT JOIN rate_policy_bindings rpb ON rpb.tunnel_id = t.id
+LEFT JOIN rate_policies rp ON rp.id = rpb.rate_policy_id
+WHERE t.group_id = ?
+ORDER BY t.id
 `,
 		groupID,
 	)
@@ -166,7 +174,10 @@ ORDER BY id
 			return nil, time.Time{}, fmt.Errorf("decode group tunnel: %w", err)
 		}
 		tunnels = append(tunnels, tunnel)
-		latestUpdatedAt = latestTime(latestUpdatedAt, rowTime(row, "updated_at"))
+		tunnelUpdatedAt := rowTime(row, "updated_at")
+		latestUpdatedAt = latestTime(latestUpdatedAt, tunnelUpdatedAt)
+		latestUpdatedAt = latestTime(latestUpdatedAt, rowTime(row, "rate_policy_binding_updated_at"))
+		latestUpdatedAt = latestTime(latestUpdatedAt, rowTime(row, "rate_policy_updated_at"))
 	}
 
 	return tunnels, latestUpdatedAt, nil
@@ -266,6 +277,14 @@ func (r *SQLRepository) decodeTunnelRow(ctx context.Context, row storage.Row, us
 		}
 	}
 
+	ratePolicy, err := decodeTunnelRatePolicyRow(row)
+	if err != nil {
+		return tunnel, fmt.Errorf("rate policy: %w", err)
+	}
+
+	revisionUpdatedAt := latestTime(rowTime(row, "updated_at"), rowTime(row, "rate_policy_binding_updated_at"))
+	revisionUpdatedAt = latestTime(revisionUpdatedAt, rowTime(row, "rate_policy_updated_at"))
+
 	tunnel = protocol.TunnelEntry{
 		TunnelID:                     uint32(id),
 		Protocol:                     proto,
@@ -275,7 +294,7 @@ func (r *SQLRepository) decodeTunnelRow(ctx context.Context, row storage.Row, us
 		LocalHost:                    host,
 		LocalStart:                   uint16(localStart),
 		LocalEnd:                     uint16(localEnd),
-		Revision:                     configVersion(rowTime(row, "updated_at")),
+		Revision:                     configVersion(revisionUpdatedAt),
 		BackendTLSMode:               backendMode,
 		BackendTLSLoadSystemCA:       backendLoadSystemCA,
 		BackendTLSInsecureSkipVerify: backendInsecureSkipVerify,
@@ -283,9 +302,49 @@ func (r *SQLRepository) decodeTunnelRow(ctx context.Context, row storage.Row, us
 		BackendTLSCAPEM:              backendCAPEM,
 		BackendTLSClientCertPEM:      backendClientCertPEM,
 		BackendTLSClientKeyPEM:       backendClientKeyPEM,
+		RatePolicy:                   ratePolicy,
 	}
 
 	return tunnel, nil
+}
+
+func decodeTunnelRatePolicyRow(row storage.Row) (protocol.TunnelRatePolicy, error) {
+	var policy protocol.TunnelRatePolicy
+
+	policyID, err := rowInt64(row, "rate_policy_id")
+	if err != nil {
+		return policy, fmt.Errorf("rate_policy_id: %w", err)
+	}
+	if policyID == 0 {
+		return policy, nil
+	}
+	if policyID < 0 || policyID > 1<<32-1 {
+		return policy, fmt.Errorf("rate_policy_id %d is out of wire range", policyID)
+	}
+
+	mode, err := decodeTunnelRatePolicyMode(rowString(row, "rate_policy_mode"))
+	if err != nil {
+		return policy, fmt.Errorf("rate_policy_mode: %w", err)
+	}
+	downlinkBPS, err := rowInt64(row, "rate_policy_downlink_bps")
+	if err != nil {
+		return policy, fmt.Errorf("rate_policy_downlink_bps: %w", err)
+	}
+	uplinkBPS, err := rowInt64(row, "rate_policy_uplink_bps")
+	if err != nil {
+		return policy, fmt.Errorf("rate_policy_uplink_bps: %w", err)
+	}
+	if downlinkBPS <= 0 || uplinkBPS <= 0 {
+		return policy, fmt.Errorf("bound rate policy must have positive downlink and uplink bps")
+	}
+
+	policy = protocol.TunnelRatePolicy{
+		PolicyID:    uint32(policyID),
+		Mode:        mode,
+		DownlinkBPS: uint64(downlinkBPS),
+		UplinkBPS:   uint64(uplinkBPS),
+	}
+	return policy, nil
 }
 
 func (r *SQLRepository) loadTunnelUsageMap(ctx context.Context) (map[int64]map[entrycerts.UsageType][]int64, error) {

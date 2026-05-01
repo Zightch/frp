@@ -136,7 +136,15 @@ func sameTunnelExecution(left, right protocol.TunnelEntry) bool {
 		left.RemoteEnd == right.RemoteEnd &&
 		left.LocalStart == right.LocalStart &&
 		left.LocalEnd == right.LocalEnd &&
-		sameHost(left.LocalHost, right.LocalHost)
+		sameHost(left.LocalHost, right.LocalHost) &&
+		sameTunnelRatePolicy(left.RatePolicy, right.RatePolicy)
+}
+
+func sameTunnelRatePolicy(left, right protocol.TunnelRatePolicy) bool {
+	return left.PolicyID == right.PolicyID &&
+		left.Mode == right.Mode &&
+		left.DownlinkBPS == right.DownlinkBPS &&
+		left.UplinkBPS == right.UplinkBPS
 }
 
 func sameHost(left, right protocol.Host) bool {

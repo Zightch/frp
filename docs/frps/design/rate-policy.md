@@ -1,6 +1,6 @@
 # 限速策略设计
 
-本文档描述已确认的“限速策略”业务模型。当前代码已经落地 `schema + 管理 API` 闸口；本文继续固定整体边界，避免重新回到 `proxy_group` 内嵌限速的旧设想。
+本文档描述已确认的“限速策略”业务模型。当前代码已经落地 `schema + 管理 API` 闸口，并已把限速策略投影进 `GroupRuntime / ConfigSnapshot / config.push`；本文继续固定整体边界，避免重新回到 `proxy_group` 内嵌限速的旧设想。
 
 ## 1. 术语约定
 
@@ -253,7 +253,14 @@
 
 当前正式 schema 中已经不再保留旧的 `proxy_groups.rate_limit` 字段。
 
-后续正式实现限速时，应直接围绕：
+当前控制面已经收口到以下主链：
+
+- `rate_policies`
+- `rate_policy_bindings`
+- `GroupRuntime / ConfigSnapshot`
+- `protocol.ConfigPush / protocol.TunnelEntry`
+
+后续继续正式实现限速时，应直接围绕：
 
 - `rate_policies`
 - 策略与隧道绑定关系

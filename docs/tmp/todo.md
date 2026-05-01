@@ -27,17 +27,7 @@
 
 ## 子步骤
 
-### 1. 把限速策略投影进运行时快照
-
-- repo 层在加载 `GroupRuntime` 时，需要额外解析：
-  - 当前 `proxy_group` 下所有隧道
-  - 这些隧道关联到的 `rate_policy`
-  - 每条隧道最终可执行的限速配置
-- `ConfigSnapshot` / `protocol.ConfigPush` / `protocol.TunnelEntry` 需要扩展最小限速字段。
-- `frpc` 快照替换逻辑要把限速执行字段纳入“隧道是否变化”的判断。
-- reload 语义必须继续保持现有整组 `config.push / config.ack` 热重载路径。
-
-### 2. 摊平最小限速组件
+### 1. 摊平最小限速组件
 
 - 继续下沉纯组件：
   - `Direction`
@@ -48,7 +38,7 @@
 - `independent` 和 `shared` 必须共用同一套底层组件，不允许做两套分叉实现。
 - `shared` 当前只允许在单个已登录 session 内共享，不做跨 session / 跨进程 / 跨节点共享。
 
-### 3. 把限速真正接进 TCP 数据面
+### 2. 把限速真正接进 TCP 数据面
 
 - `frps` 下行：公网 TCP -> `stream.data`
 - `frpc` 上行：本地 TCP -> `stream.data`
@@ -58,7 +48,7 @@
   - reload / shutdown / session close 时的等待取消
 - 不能把限速逻辑散落到现有 copy loop 各处。
 
-### 4. 把限速真正接进 UDP 数据面
+### 3. 把限速真正接进 UDP 数据面
 
 - `frps` 下行：公网 UDP ingress -> `udp.data`
 - `frpc` 上行：本地 UDP response -> `udp.data`
@@ -67,22 +57,19 @@
   - idle cleanup 与限速等待并存
   - `udp.close` / reload / session close 时取消等待
 
-### 5. 补齐 `shared` 模式最小闭环
+### 4. 补齐 `shared` 模式最小闭环
 
 - 在 `independent` 打通后，再复用同一套组件补 `shared`。
 - `shared` 需要额外确认：
   - session 内同策略多 tunnel 共用同一方向 limiter
   - reload 后旧 registry 清理、新 registry 按新快照重建
 
-### 6. 测试收口
+### 5. 测试收口
 
 - 纯单测：
   - bucket refill / wait / cancel
   - `independent` / `shared` registry 语义
   - 小速率下大帧 / 大 datagram 仍可前进
-- 协议与快照测试：
-  - `ConfigPush` 新字段编解码
-  - snapshot compare / reload 判定
 - 控制面 / 数据面场景测试：
   - 在线 reload 后限速生效
   - session close / shutdown 时等待中的 limiter 退出
@@ -97,7 +84,7 @@
   - 单端口 UDP `shared`
   - 在线修改策略后的 reload 生效
 
-### 7. 文档和归档收口
+### 6. 文档和归档收口
 
 - runtime / protocol / 数据面落地后，同步：
   - `docs/project-overview.md`
@@ -109,7 +96,7 @@
 
 ## 当前唯一下一步
 
-- 先做运行时快照投影：把 `rate_policies + rate_policy_bindings` 从 SQL 投影进 `GroupRuntime / ConfigSnapshot / protocol.ConfigPush`，先打通配置下发链路，再进入 limiter 和数据面接入。
+- 先摊平最小 limiter 纯组件：`Direction / BucketConfig / TokenBucket / WaitN / LimiterRegistry`，让 `independent` 和 `shared` 只共用这一套底层语义，暂不接 TCP / UDP 数据面。
 
 ## 进度归档入口
 

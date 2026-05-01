@@ -53,14 +53,18 @@ type ControlConnState struct {
 }
 
 type DesiredTunnelRuntime struct {
-	TunnelID    uint32
-	Protocol    string
-	Enabled     bool
-	RemoteStart uint16
-	RemoteEnd   uint16
-	LocalHost   string
-	LocalStart  uint16
-	LocalEnd    uint16
+	TunnelID              uint32
+	Protocol              string
+	Enabled               bool
+	RemoteStart           uint16
+	RemoteEnd             uint16
+	LocalHost             string
+	LocalStart            uint16
+	LocalEnd              uint16
+	RatePolicyID          uint32
+	RatePolicyMode        uint8
+	RatePolicyDownlinkBPS uint64
+	RatePolicyUplinkBPS   uint64
 }
 
 type DesiredRuntimeSnapshot struct {
