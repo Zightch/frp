@@ -1,5 +1,3 @@
-//go:build testhooks
-
 package testhooks
 
 import (

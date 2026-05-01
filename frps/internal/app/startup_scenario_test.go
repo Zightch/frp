@@ -1,5 +1,3 @@
-//go:build testhooks
-
 package app
 
 import (
@@ -18,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zightch/frp/frps/internal/certassets"
 	"github.com/zightch/frp/frps/internal/config"
 	"github.com/zightch/frp/frps/internal/control"
 	"github.com/zightch/frp/frps/internal/storage"
@@ -204,6 +203,151 @@ func TestAppStartupScenarioPublishesControlBeforeManagementVisibility(t *testing
 
 	if got := result.Observations["control-open-only"].App.ManagementAPIVisible; got {
 		t.Fatal("expected management api to remain hidden when only control listener has been released")
+	}
+}
+
+func TestAppStartupScenarioBlocksInitialScanUntilCertificatePreparationReleases(t *testing.T) {
+	controller := testhooks.NewController()
+	controller.AddBarrier("startup.certificate_assets.before_prepare", 1)
+	controller.AddBarrier("startup.initial_scan.before_full_scan", 1)
+	restoreHooks := testhooks.Install(controller)
+	defer restoreHooks()
+
+	allowPrepare := make(chan struct{})
+	originalPrepare := prepareCertificateAssetRuntime
+	prepareCertificateAssetRuntime = func(ctx context.Context, store *storage.SQL) (*certassets.Runtime, error) {
+		testhooks.Point("startup.certificate_assets.prepare_entered")
+		select {
+		case <-allowPrepare:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &certassets.Runtime{}, nil
+	}
+	defer func() {
+		prepareCertificateAssetRuntime = originalPrepare
+	}()
+
+	application, controlAddr, managementAddr, cancel, done := startStartupScenarioApp(t)
+	defer func() {
+		cancel()
+		waitForAppRunExit(t, done)
+	}()
+
+	ctx, timeoutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer timeoutCancel()
+
+	runner := &scenariotest.Runner{
+		Hooks:   controller,
+		Observe: application.ObserveState,
+	}
+	result, err := runner.Run(ctx, scenariotest.Scenario{
+		Name: "startup-certificate-preparation-gates-initial-scan",
+		Steps: []scenariotest.ScenarioStep{
+			{
+				Name:    "hold-before-certificate-prepare",
+				Actor:   "frps",
+				WaitFor: []scenariotest.BarrierRef{{Point: "startup.certificate_assets.before_prepare", HitIndex: 1}},
+				Do: func(context.Context) error {
+					if err := expectTCPClosed(controlAddr); err != nil {
+						return err
+					}
+					if err := expectTCPClosed(managementAddr); err != nil {
+						return err
+					}
+					if hits := controller.Hits("startup.initial_scan.before_full_scan"); len(hits) != 0 {
+						return fmt.Errorf("initial runtime scan started before certificate preparation: %#v", hits)
+					}
+					return nil
+				},
+				Observe: "before-prepare",
+				Assert: []scenariotest.InvariantFunc{
+					expectAppState(sharedtestsupport.AppObservedState{
+						InitialRuntimeScanDone: false,
+						ControlListenerOpen:    false,
+						LoginGateOpen:          false,
+						ManagementAPIVisible:   false,
+					}),
+				},
+			},
+			{
+				Name:    "release-before-certificate-prepare",
+				Actor:   "test",
+				Release: []scenariotest.BarrierRef{{Point: "startup.certificate_assets.before_prepare", HitIndex: 1}},
+			},
+			{
+				Name:    "prepare-entered-and-blocked",
+				Actor:   "frps",
+				WaitFor: []scenariotest.BarrierRef{{Point: "startup.certificate_assets.prepare_entered", HitIndex: 1}},
+				Do: func(context.Context) error {
+					if err := expectTCPClosed(controlAddr); err != nil {
+						return err
+					}
+					if err := expectTCPClosed(managementAddr); err != nil {
+						return err
+					}
+					if hits := controller.Hits("startup.initial_scan.before_full_scan"); len(hits) != 0 {
+						return fmt.Errorf("initial runtime scan started while certificate preparation was blocked: %#v", hits)
+					}
+					return nil
+				},
+				Observe: "prepare-blocked",
+				Assert: []scenariotest.InvariantFunc{
+					expectAppState(sharedtestsupport.AppObservedState{
+						InitialRuntimeScanDone: false,
+						ControlListenerOpen:    false,
+						LoginGateOpen:          false,
+						ManagementAPIVisible:   false,
+					}),
+				},
+			},
+			{
+				Name:  "release-certificate-prepare",
+				Actor: "test",
+				Do: func(context.Context) error {
+					close(allowPrepare)
+					return nil
+				},
+			},
+			{
+				Name:    "scan-starts-after-certificate-prepare",
+				Actor:   "frps",
+				WaitFor: []scenariotest.BarrierRef{{Point: "startup.initial_scan.before_full_scan", HitIndex: 1}},
+				Do: func(context.Context) error {
+					if err := expectTCPClosed(controlAddr); err != nil {
+						return err
+					}
+					if err := expectTCPClosed(managementAddr); err != nil {
+						return err
+					}
+					return nil
+				},
+				Observe: "scan-starting",
+				Assert: []scenariotest.InvariantFunc{
+					expectAppState(sharedtestsupport.AppObservedState{
+						InitialRuntimeScanDone: false,
+						ControlListenerOpen:    false,
+						LoginGateOpen:          false,
+						ManagementAPIVisible:   false,
+					}),
+				},
+			},
+			{
+				Name:    "release-initial-scan",
+				Actor:   "test",
+				Release: []scenariotest.BarrierRef{{Point: "startup.initial_scan.before_full_scan", HitIndex: 1}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run startup certificate preparation scenario: %v", err)
+	}
+
+	waitForHookHit(t, controller, "startup.control_listener.after_open", 1)
+	waitForHookHit(t, controller, "startup.management_api.after_open", 1)
+
+	if observed := result.Observations["prepare-blocked"].App; observed.InitialRuntimeScanDone {
+		t.Fatalf("expected initial runtime scan to remain unpublished while certificate preparation is blocked, got %#v", observed)
 	}
 }
 
