@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	controlprotocolerrors "github.com/zightch/frp/frps/internal/control/protocol/errors"
 	controlruntimestate "github.com/zightch/frp/frps/internal/control/runtime/state"
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/ratepolicy"
 )
 
 type Stream = controlruntimestate.Stream
@@ -29,6 +31,7 @@ type Session interface {
 	AddPublicStream(streamID uint32, stream *Stream, configVersion uint64) bool
 	PublicStream(streamID uint32) *Stream
 	ClosePublicStream(streamID uint32) bool
+	StreamRateLimit(streamID uint32) (context.Context, ratepolicy.TunnelLimiters, bool)
 }
 
 type RuntimeFrameWriter interface {
@@ -159,7 +162,17 @@ func (h Handler) HandleStreamData(writer FrameWriter, session Session, frame pro
 		return SendStreamClose(writer, frame.StreamID, protocol.CloseReasonProtocolError, "stream not found")
 	}
 
-	if err := WriteConnFull(stream.Conn, frame.Body); err != nil {
+	limitCtx, limiters, ok := session.StreamRateLimit(frame.StreamID)
+	if !ok || limitCtx == nil {
+		limitCtx = context.Background()
+	}
+
+	if err := ratepolicy.WritePayload(limitCtx, limiters.Uplink, protocol.MaxDataBodyLen, frame.Body, func(chunk []byte) error {
+		return WriteConnFull(stream.Conn, chunk)
+	}); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
 		if session.ClosePublicStream(frame.StreamID) {
 			return SendStreamClose(writer, frame.StreamID, protocol.CloseReasonWriteError, err.Error())
 		}
@@ -185,22 +198,34 @@ func (h Handler) HandleStreamClose(session Session, frame protocol.Frame) error 
 
 func (h Handler) CopyPublicToClient(runtimeWriter RuntimeFrameWriter, controlWriter FrameWriter, session Session, streamID uint32, stream *Stream) {
 	buffer := make([]byte, protocol.MaxDataBodyLen)
+	limitCtx, limiters, ok := session.StreamRateLimit(streamID)
+	if !ok || limitCtx == nil {
+		limitCtx = context.Background()
+	}
 	for {
 		n, err := stream.Conn.Read(buffer)
 		if n > 0 {
 			payload := append([]byte(nil), buffer[:n]...)
-			writeErr := runtimeWriter.WriteFrame(protocol.Frame{
-				Type:     protocol.TypeStreamData,
-				StreamID: streamID,
-				Body:     payload,
+			writeErr := ratepolicy.WritePayload(limitCtx, limiters.Downlink, protocol.MaxDataBodyLen, payload, func(chunk []byte) error {
+				err := runtimeWriter.WriteFrame(protocol.Frame{
+					Type:     protocol.TypeStreamData,
+					StreamID: streamID,
+					Body:     chunk,
+				})
+				if err == nil {
+					stream.Touch(h.now())
+				}
+				return err
 			})
 			if writeErr != nil {
+				if errors.Is(writeErr, context.Canceled) {
+					return
+				}
 				if h.RuntimeWriteStopped == nil || !h.RuntimeWriteStopped(writeErr) {
 					session.ClosePublicStream(streamID)
 				}
 				return
 			}
-			stream.Touch(h.now())
 		}
 
 		if err == nil {

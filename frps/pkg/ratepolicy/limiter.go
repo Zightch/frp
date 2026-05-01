@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+type Limiter interface {
+	Config() BucketConfig
+	WaitN(ctx context.Context, bytes int) error
+}
+
 type Direction string
 
 const (
@@ -45,8 +50,8 @@ type LimiterSpec struct {
 }
 
 type TunnelLimiters struct {
-	Downlink *TokenBucket
-	Uplink   *TokenBucket
+	Downlink Limiter
+	Uplink   Limiter
 }
 
 type LimiterRegistry struct {
@@ -307,6 +312,25 @@ func NewLimiterRegistry() *LimiterRegistry {
 	}
 }
 
+func NewLimiterSpec(mode Mode, policyID, tunnelID uint32, downlinkBPS, uplinkBPS uint64) (LimiterSpec, error) {
+	downlink, err := NewBucketConfig(downlinkBPS)
+	if err != nil {
+		return LimiterSpec{}, fmt.Errorf("downlink bucket: %w", err)
+	}
+	uplink, err := NewBucketConfig(uplinkBPS)
+	if err != nil {
+		return LimiterSpec{}, fmt.Errorf("uplink bucket: %w", err)
+	}
+
+	return LimiterSpec{
+		Mode:     mode,
+		PolicyID: policyID,
+		TunnelID: tunnelID,
+		Downlink: downlink,
+		Uplink:   uplink,
+	}, nil
+}
+
 func (r *LimiterRegistry) Limiters(spec LimiterSpec) (TunnelLimiters, error) {
 	if r == nil {
 		return TunnelLimiters{}, fmt.Errorf("limiter registry is nil")
@@ -328,6 +352,52 @@ func (r *LimiterRegistry) Limiters(spec LimiterSpec) (TunnelLimiters, error) {
 		Downlink: downlink,
 		Uplink:   uplink,
 	}, nil
+}
+
+func ChunkSize(limiter Limiter, ceiling int) int {
+	size := ceiling
+	if limiter != nil {
+		burst := limiter.Config().BurstBytes
+		if size <= 0 || (burst > 0 && burst < size) {
+			size = burst
+		}
+	}
+	if size < 1 {
+		size = 1
+	}
+	return size
+}
+
+func WritePayload(ctx context.Context, limiter Limiter, ceiling int, payload []byte, write func([]byte) error) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	if write == nil {
+		return fmt.Errorf("payload writer is nil")
+	}
+	if ctx == nil {
+		return fmt.Errorf("payload context is nil")
+	}
+
+	chunkSize := ChunkSize(limiter, ceiling)
+	for len(payload) > 0 {
+		chunk := payload
+		if len(chunk) > chunkSize {
+			chunk = payload[:chunkSize]
+		}
+
+		if limiter != nil {
+			if err := limiter.WaitN(ctx, len(chunk)); err != nil {
+				return err
+			}
+		}
+		if err := write(chunk); err != nil {
+			return err
+		}
+		payload = payload[len(chunk):]
+	}
+
+	return nil
 }
 
 func (r *LimiterRegistry) getOrCreate(spec LimiterSpec, direction Direction, config BucketConfig) (*TokenBucket, error) {

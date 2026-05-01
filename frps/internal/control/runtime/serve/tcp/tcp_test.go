@@ -2,12 +2,14 @@ package tcp
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/ratepolicy"
 )
 
 func TestPreparePublicStreamOpenBuildsFrameAndTracksStream(t *testing.T) {
@@ -118,6 +120,136 @@ func TestCopyPublicToClientSendsDataAndClose(t *testing.T) {
 	}
 }
 
+func TestCopyPublicToClientSplitsDownlinkByLimiterBurst(t *testing.T) {
+	session := newFakeSession()
+	stream := &Stream{
+		Conn:  &fakeConn{reads: [][]byte{[]byte("payload")}, readErr: io.EOF},
+		Ready: make(chan error, 1),
+	}
+	session.streams[12] = stream
+	limiter := &fakeRateLimiter{config: ratepolicy.BucketConfig{RateBPS: 8_000, BurstBytes: 3}}
+	session.rateLimits[12] = fakeStreamRateLimit{
+		ctx: context.Background(),
+		limiters: ratepolicy.TunnelLimiters{
+			Downlink: limiter,
+		},
+	}
+	runtimeWriter := &recordingWriter{}
+	controlWriter := &recordingWriter{}
+
+	(Handler{Clock: staticClock{now: time.Unix(10, 0)}}).CopyPublicToClient(runtimeWriter, controlWriter, session, 12, stream)
+
+	if len(runtimeWriter.frames) != 3 {
+		t.Fatalf("unexpected runtime frame count: %#v", runtimeWriter.frames)
+	}
+	if string(runtimeWriter.frames[0].Body) != "pay" || string(runtimeWriter.frames[1].Body) != "loa" || string(runtimeWriter.frames[2].Body) != "d" {
+		t.Fatalf("unexpected runtime frame bodies: %#v", runtimeWriter.frames)
+	}
+	if len(limiter.waits) != 3 || limiter.waits[0] != 3 || limiter.waits[1] != 3 || limiter.waits[2] != 1 {
+		t.Fatalf("unexpected limiter waits: %#v", limiter.waits)
+	}
+}
+
+func TestCopyPublicToClientReturnsOnLimiterCancel(t *testing.T) {
+	session := newFakeSession()
+	stream := &Stream{
+		Conn:  &fakeConn{reads: [][]byte{[]byte("payload")}},
+		Ready: make(chan error, 1),
+	}
+	session.streams[12] = stream
+	ctx, cancel := context.WithCancel(context.Background())
+	limiter := &fakeRateLimiter{
+		config: ratepolicy.BucketConfig{RateBPS: 8_000, BurstBytes: 3},
+		wait: func(ctx context.Context, bytes int) error {
+			cancel()
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	session.rateLimits[12] = fakeStreamRateLimit{
+		ctx:      ctx,
+		cancel:   cancel,
+		limiters: ratepolicy.TunnelLimiters{Downlink: limiter},
+	}
+	runtimeWriter := &recordingWriter{}
+	controlWriter := &recordingWriter{}
+
+	(Handler{Clock: staticClock{now: time.Unix(10, 0)}}).CopyPublicToClient(runtimeWriter, controlWriter, session, 12, stream)
+
+	if len(runtimeWriter.frames) != 0 {
+		t.Fatalf("expected no runtime frames after limiter cancel, got %#v", runtimeWriter.frames)
+	}
+	if len(controlWriter.frames) != 0 {
+		t.Fatalf("expected no control close after limiter cancel, got %#v", controlWriter.frames)
+	}
+}
+
+func TestHandleStreamDataSplitsUplinkByLimiterBurst(t *testing.T) {
+	session := newFakeSession()
+	publicConn := &fakeConn{}
+	session.streams[12] = &Stream{
+		Conn:  publicConn,
+		Ready: make(chan error, 1),
+	}
+	limiter := &fakeRateLimiter{config: ratepolicy.BucketConfig{RateBPS: 8_000, BurstBytes: 2}}
+	session.rateLimits[12] = fakeStreamRateLimit{
+		ctx:      context.Background(),
+		limiters: ratepolicy.TunnelLimiters{Uplink: limiter},
+	}
+
+	if err := (Handler{Clock: staticClock{now: time.Unix(10, 0)}}).HandleStreamData(&recordingWriter{}, session, protocol.Frame{
+		Type:     protocol.TypeStreamData,
+		StreamID: 12,
+		Body:     []byte("hello"),
+	}); err != nil {
+		t.Fatalf("handle stream.data: %v", err)
+	}
+	if got := publicConn.writes.String(); got != "hello" {
+		t.Fatalf("unexpected public write: %q", got)
+	}
+	if len(limiter.waits) != 3 || limiter.waits[0] != 2 || limiter.waits[1] != 2 || limiter.waits[2] != 1 {
+		t.Fatalf("unexpected uplink limiter waits: %#v", limiter.waits)
+	}
+}
+
+func TestHandleStreamDataReturnsOnLimiterCancel(t *testing.T) {
+	session := newFakeSession()
+	publicConn := &fakeConn{}
+	session.streams[12] = &Stream{
+		Conn:  publicConn,
+		Ready: make(chan error, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	limiter := &fakeRateLimiter{
+		config: ratepolicy.BucketConfig{RateBPS: 8_000, BurstBytes: 2},
+		wait: func(ctx context.Context, bytes int) error {
+			cancel()
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	session.rateLimits[12] = fakeStreamRateLimit{
+		ctx:      ctx,
+		cancel:   cancel,
+		limiters: ratepolicy.TunnelLimiters{Uplink: limiter},
+	}
+	writer := &recordingWriter{}
+
+	if err := (Handler{Clock: staticClock{now: time.Unix(10, 0)}}).HandleStreamData(writer, session, protocol.Frame{
+		Type:     protocol.TypeStreamData,
+		StreamID: 12,
+		Body:     []byte("hello"),
+	}); err != nil {
+		t.Fatalf("handle stream.data: %v", err)
+	}
+	if got := publicConn.writes.String(); got != "" {
+		t.Fatalf("expected no public writes after limiter cancel, got %q", got)
+	}
+	if len(writer.frames) != 0 {
+		t.Fatalf("expected no control frames after limiter cancel, got %#v", writer.frames)
+	}
+}
+
 func mustMarshalStreamOpened(t *testing.T, opened protocol.StreamOpened) []byte {
 	t.Helper()
 	body, err := protocol.MarshalStreamOpened(opened)
@@ -131,6 +263,7 @@ type fakeSession struct {
 	nextRequestID uint32
 	nextStreamID  uint32
 	streams       map[uint32]*Stream
+	rateLimits    map[uint32]fakeStreamRateLimit
 	admit         bool
 }
 
@@ -139,6 +272,7 @@ func newFakeSession() *fakeSession {
 		nextRequestID: 76,
 		nextStreamID:  11,
 		streams:       make(map[uint32]*Stream),
+		rateLimits:    make(map[uint32]fakeStreamRateLimit),
 		admit:         true,
 	}
 }
@@ -168,10 +302,24 @@ func (s *fakeSession) PublicStream(streamID uint32) *Stream {
 func (s *fakeSession) ClosePublicStream(streamID uint32) bool {
 	stream, ok := s.streams[streamID]
 	delete(s.streams, streamID)
+	if entry, ok := s.rateLimits[streamID]; ok {
+		delete(s.rateLimits, streamID)
+		if entry.cancel != nil {
+			entry.cancel()
+		}
+	}
 	if ok && stream != nil {
 		stream.SignalReady(net.ErrClosed)
 	}
 	return ok
+}
+
+func (s *fakeSession) StreamRateLimit(streamID uint32) (context.Context, ratepolicy.TunnelLimiters, bool) {
+	entry, ok := s.rateLimits[streamID]
+	if !ok {
+		return nil, ratepolicy.TunnelLimiters{}, false
+	}
+	return entry.ctx, entry.limiters, true
 }
 
 type recordingWriter struct {
@@ -193,6 +341,30 @@ type staticClock struct {
 
 func (c staticClock) Now() time.Time {
 	return c.now
+}
+
+type fakeStreamRateLimit struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	limiters ratepolicy.TunnelLimiters
+}
+
+type fakeRateLimiter struct {
+	config ratepolicy.BucketConfig
+	waits  []int
+	wait   func(context.Context, int) error
+}
+
+func (l *fakeRateLimiter) Config() ratepolicy.BucketConfig {
+	return l.config
+}
+
+func (l *fakeRateLimiter) WaitN(ctx context.Context, bytes int) error {
+	l.waits = append(l.waits, bytes)
+	if l.wait != nil {
+		return l.wait(ctx, bytes)
+	}
+	return nil
 }
 
 type fakeConn struct {

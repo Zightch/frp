@@ -3,6 +3,7 @@ package ratepolicy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -243,4 +244,66 @@ func TestLimiterRegistryRejectsConfigMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected shared limiter config mismatch to fail")
 	}
+}
+
+func TestWritePayloadSplitsByLimiterBurst(t *testing.T) {
+	writes := make([]string, 0, 3)
+	limiter := &fakeLimiter{
+		config: BucketConfig{RateBPS: 8_000, BurstBytes: 3},
+	}
+
+	err := WritePayload(context.Background(), limiter, 64*1024, []byte("payload"), func(chunk []byte) error {
+		writes = append(writes, string(chunk))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	if len(writes) != 3 {
+		t.Fatalf("unexpected chunk count: %#v", writes)
+	}
+	if writes[0] != "pay" || writes[1] != "loa" || writes[2] != "d" {
+		t.Fatalf("unexpected chunk sequence: %#v", writes)
+	}
+	if len(limiter.waits) != 3 || limiter.waits[0] != 3 || limiter.waits[1] != 3 || limiter.waits[2] != 1 {
+		t.Fatalf("unexpected wait sizes: %#v", limiter.waits)
+	}
+}
+
+func TestWritePayloadReturnsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	limiter := &fakeLimiter{
+		config: BucketConfig{RateBPS: 8_000, BurstBytes: 3},
+		wait: func(ctx context.Context, bytes int) error {
+			cancel()
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+
+	err := WritePayload(ctx, limiter, 64*1024, []byte("payload"), func(chunk []byte) error {
+		return fmt.Errorf("write callback must not be reached")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
+
+type fakeLimiter struct {
+	config BucketConfig
+	waits  []int
+	wait   func(context.Context, int) error
+}
+
+func (l *fakeLimiter) Config() BucketConfig {
+	return l.config
+}
+
+func (l *fakeLimiter) WaitN(ctx context.Context, bytes int) error {
+	l.waits = append(l.waits, bytes)
+	if l.wait != nil {
+		return l.wait(ctx, bytes)
+	}
+	return nil
 }

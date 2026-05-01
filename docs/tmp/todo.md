@@ -3,11 +3,11 @@
 ## 当前总目标
 
 - 完成“限速策略”最小闭环，并让自动化测试通过。
-- 本轮剩余闭环定义固定为：
-  - `frps` / `frpc` 在首次登录和在线热重载后，都能按最新策略执行限速。
-  - 单端口 TCP / UDP 的上下行都真正进入限速执行链路。
+- 当前闭环定义固定为：
+  - `frps` 在首次登录和在线热重载后，能按最新策略执行限速。
+  - 单端口 TCP / UDP 都真正进入 `frps` 限速执行链路。
   - `independent` 和 `shared` 两种策略模式都可用。
-  - `frps` / `frpc` Go 测试、控制面场景测试和 Python e2e 都通过。
+  - `frps` Go 测试、控制面场景测试和 Python e2e 都通过。
 
 ## 当前轮边界
 
@@ -19,6 +19,9 @@
   - 多策略叠加
   - 一个隧道绑定多个策略
   - 旧版本兼容层
+- 当前执行边界再明确收口：
+  - `frpc` 保持轻量，只负责接收配置和转发数据，不执行限速
+  - 权威限速逻辑全部放在 `frps`
 - 后续结构仍必须按多层收口：
   - 底层纯组件
   - 中层快照投影和 limiter 协作
@@ -27,33 +30,17 @@
 
 ## 子步骤
 
-### 1. 把限速真正接进 TCP 数据面
+### 1. 把限速真正接进 `frps` UDP 数据面
 
-- `frps` 下行：公网 TCP -> `stream.data`
-- `frpc` 上行：本地 TCP -> `stream.data`
+- 下行：公网 UDP ingress -> `udp.data`
+- 上行：`udp.data` -> 公网 UDP listener
 - 必须明确：
-  - 扣令牌点
-  - 大块数据切片策略
-  - reload / shutdown / session close 时的等待取消
-- 不能把限速逻辑散落到现有 copy loop 各处。
+  - datagram 的扣令牌点
+  - 大 datagram 等待和分片策略
+  - `udp.close` / reload / shutdown / session close 时的等待取消
+- 不能把限速逻辑散落到现有 UDP 转发分支各处。
 
-### 2. 把限速真正接进 UDP 数据面
-
-- `frps` 下行：公网 UDP ingress -> `udp.data`
-- `frpc` 上行：本地 UDP response -> `udp.data`
-- 必须额外处理：
-  - 大 datagram 等待
-  - idle cleanup 与限速等待并存
-  - `udp.close` / reload / session close 时取消等待
-
-### 3. 补齐 `shared` 模式最小闭环
-
-- 在 `independent` 打通后，再复用同一套组件补 `shared`。
-- `shared` 需要额外确认：
-  - session 内同策略多 tunnel 共用同一方向 limiter
-  - reload 后旧 registry 清理、新 registry 按新快照重建
-
-### 4. 测试收口
+### 2. 补齐最小闭环测试
 
 - 纯单测：
   - bucket refill / wait / cancel
@@ -73,7 +60,7 @@
   - 单端口 UDP `shared`
   - 在线修改策略后的 reload 生效
 
-### 5. 文档和归档收口
+### 3. 文档和归档收口
 
 - runtime / protocol / 数据面落地后，同步：
   - `docs/project-overview.md`
@@ -85,7 +72,7 @@
 
 ## 当前唯一下一步
 
-- 先把限速真正接进 TCP 数据面：在 `frps` 公网 TCP 读路径和 `frpc` 本地 TCP 读路径之间插入 `TokenBucket.WaitN`，明确切片策略和 reload / shutdown / session close 取消语义，暂不碰 UDP。
+- 先把限速真正接进 `frps` UDP 数据面，明确 datagram 限速执行点、等待推进策略，以及 `udp.close / reload / shutdown / session close` 的取消语义，暂不碰新的 e2e 和文档扩写。
 
 ## 进度归档入口
 
