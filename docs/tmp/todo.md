@@ -1,1095 +1,268 @@
-# frps control 拆分 Todo
+# 限速最小闭环 Todo
 
-## 总目标
+## 当前总目标
 
-- 目标保持单一稳定入口：`frps/internal/control/`。
-- `frps/internal/controlv2/` 只允许作为迁移中间态存在，最终必须整体删除。
-- 后续不再给旧 `control/` 和 `controlv2/` 双轨补功能；所有改动都服务“去分叉”和“组件摊平后重新拼装”。
-- 拆分方向不是简单按现有文件切小，而是先识别最小职责组件，再按领域分类形成多级子包，最后由最上层业务 facade 逐层拼装。
+- 完成“限速策略”最小闭环，并让自动化测试通过。
+- 本轮闭环定义固定为：
+  - 管理面可以创建、修改、删除限速策略。
+  - 管理面可以把已有单端口隧道绑定到限速策略，也可以解绑或迁移绑定。
+  - `frps` / `frpc` 在首次登录和在线热重载后，都能按最新策略执行限速。
+  - 单端口 TCP / UDP 的上下行都真正进入限速执行链路。
+  - `independent` 和 `shared` 两种策略模式都可用。
+  - 所有限制条件都在唯一边界闸口拦住，而不是在运行时散落补判断。
+  - `frps` / `frpc` Go 测试、控制面场景测试和 Python e2e 都通过。
 
-最终形态应该是：
+## 当前轮边界
 
-```text
-app/api
-  |
-internal/control            # 对外 facade，只暴露 Server / Options / Refresh / Observe / TLS runtime
-  |
-  +-- protocol/*            # frpc 控制连接线协议
-  +-- session/*             # 会话状态机与 supervisor
-  +-- runtime/*             # listener、数据面、扫描、恢复、issue
-  +-- domain/*              # 运行时配置模型与转换
-  +-- repo/*                # SQL 到 runtime projection
-```
+- 只做最小核心闭环，不做 WebUI 页面和交互。
+- 只支持单端口隧道：
+  - TCP single
+  - UDP single
+- 当前明确不做：
+  - TCP range
+  - UDP range
+  - 限速统计页、实时观测页、图表页
+  - 限速 burst 对外配置项
+  - 多策略叠加
+  - 一个隧道绑定多个策略
+  - 旧版本兼容层
+- 实现顺序必须先纵切再横扩：
+  - 先做 schema / API / runtime snapshot / `independent` 最小闭环
+  - 再在相同组件上补 `shared`
+  - 不允许一开始同时铺两套执行结构
+- 结构必须按多层收口，不允许把校验、持久化、快照投影、令牌桶和数据面编排糊在一个包里。
+- 当前轮如果要改结构，优先删除旧残留、旧字段、旧入口，不保留中转兼容层。
 
-## 当前 control 最小组件摊开
+## 子步骤
 
-### 入口生命周期
+### 1. 冻结最小执行语义和分层方案
 
-- `Options`
-  - 控制监听地址
-  - SQL store / runtime repository
-  - network snapshot reader
-  - read/write/challenge/heartbeat/runtime-scan timeout
-  - clock / scheduler
-  - listener factory
-  - frame IO
-- `Server`
-  - 控制监听器生命周期
-  - 活动连接集合
-  - shutdown channel / closeOnce / wait groups
-  - 首轮 runtime scan 门闩
-  - runtime scan cancel 和 in-flight 状态
-  - supervisor 引用
-  - runtime issue store
-  - control TLS certificate runtime
-- `ListenAndServe`
-  - 确保首轮扫描完成
-  - 打开控制监听口
-  - 启动 runtime issue polling
-  - accept frpc 控制连接
-- `Shutdown`
-  - 关闭监听器
-  - cancel runtime scan
-  - stop supervisor
-  - 关闭活动连接
-  - 等待连接 goroutine 和 scan goroutine 退出
-- `EnsureInitialRuntimeScan`
-  - 控制面和管理面共享启动门闩
-  - 必须在 login gate 打开前完成一次全量 runtime scan
+- 明确本轮唯一正式资源：
+  - `proxy_group`
+  - `tunnel`
+  - `rate_policy`
+  - `rate_policy_binding`
+- 明确唯一状态源：
+  - 持久化层：`rate_policies` + `rate_policy_bindings`
+  - 运行时层：`ConfigSnapshot` 中每条隧道携带最终可执行限速配置
+  - 会话执行层：session 内部 limiter registry 只消费快照，不回查数据库
+- 明确最小组件层次：
+  - 底层纯组件：速率单位归一、方向枚举、令牌桶、共享 limiter registry、等待/取消语义
+  - 中层投影组件：schema、repo 查询、binding 解析、snapshot 拼装、API 输入归一
+  - 上层业务拼装：管理 API、config push、TCP/UDP 数据面限速接入、在线热重载
+- 明确最小执行点：
+  - 下行限速：`frps` 公网入口收到数据后，在发往 `frpc` 前限速
+  - 上行限速：`frpc` 本地后端返回数据后，在发往 `frps` 前限速
+  - 不做双端双重限速，避免同方向重复扣桶
+- 明确固定速率语义：
+  - 存储单位：`bps`
+  - 输入展示单位：`K/M/G`
+  - 对外默认单位：`M`
+  - 不新增 burst 字段
+  - 桶容量固定为内部常量策略，必须保证小速率下 TCP 帧和 UDP datagram 仍能前进
+- 明确 reload / shutdown / session close 语义：
+  - 等待令牌时如果 session 关闭、reload 或 context cancel，必须立刻退出等待
+  - 不允许因限速等待导致热重载卡死、关闭卡死或 goroutine 泄漏
 
-### 控制连接线协议
+### 2. 建立持久化模型和边界闸口
 
-- frame IO
-  - `readFrame`
-  - `readFrameWithTimeout`
-  - `readFrameWithSessionTimeout`
-  - `writeFrame`
-  - `writeFrameWithContext`
-  - `writeFrameWithSession`
-  - `writeRuntimeFrameWithSession`
-  - `writeRuntimeFramesWithSession`
-  - `frameContext`
-- protocol error reply
-  - `replyProtocolError`
-  - `replyProtocolErrorWithSession`
-  - `replyError`
-  - `replyErrorWithSession`
-  - `writeError`
-  - `writeErrorWithSession`
-- connection logging
-  - expected close 判断
-  - EOF / closed / timeout / protocol error reason 映射
-  - accept/login/session ended 日志分类
-- transport handshake
-  - `transport.client_hello`
-  - 按 client id 查询 group
-  - 选择 plain / tls
-  - `transport.server_hello`
-  - TLS upgrade
-- auth handshake
-  - `auth.begin`
-  - challenge issue / ttl / replay protection
-  - `auth.finish`
-  - challenge response 常量时间校验
-  - group enabled 校验
-  - session id 分配
-  - attach supervisor
-- control handlers
-  - `config.ack`
-  - `heartbeat.ping`
+- 新增正式表：
+  - `rate_policies`
+  - `rate_policy_bindings`
+- `rate_policies` 至少需要承接：
+  - `id`
+  - `name`
+  - `mode`
+  - `downlink_bps`
+  - `uplink_bps`
+  - `created_at`
+  - `updated_at`
+- `rate_policy_bindings` 至少需要承接：
+  - `id` 或稳定唯一键
+  - `rate_policy_id`
+  - `tunnel_id`
+  - `created_at`
+  - `updated_at`
+- 约束固定为：
+  - 一个隧道最多只能绑定一个策略
+  - 一个策略可以绑定多条隧道
+  - 删除隧道时自动删除 binding
+  - 删除 `proxy_group` 时，其下隧道删除并带走 binding，但策略本体保留
+  - 删除仍有 binding 的策略默认拒绝
+- schema 改动必须同步：
+  - `frps/internal/dbschema/schema.go`
+  - 启动 schema 校验测试
+  - SQLite / MySQL 一致性测试
+- 不把 `rate_policy_id` 正式落回 `tunnels` 表，避免重新把独立资源耦回隧道表。
+
+### 3. 建立管理 API 最小闭环
+
+- 新增独立限速策略 API 模块，和 `groupconfig` 分开，不混职责。
+- 路由层至少需要：
+  - `GET /api/v1/rate-policies`
+  - `POST /api/v1/rate-policies`
+  - `PATCH /api/v1/rate-policies/{id}`
+  - `DELETE /api/v1/rate-policies/{id}`
+  - `GET /api/v1/rate-policies/{id}/bindings`
+  - `POST /api/v1/rate-policies/{id}/bindings`
+  - `DELETE /api/v1/rate-policies/{id}/bindings/{tunnel_id}`
+- 视图层至少需要返回：
+  - 策略基础字段
+  - 当前绑定隧道数量
+  - 绑定隧道明细或最小绑定视图
+- `TunnelView` 可以追加只读投影字段用于回显：
+  - `rate_policy_id`
+  - `rate_policy_name`
+  - 但这些只作为查询投影，不作为正式持久化真实来源
+- 所有组合约束必须在 API 入口收住：
+  - 只允许绑定单端口 TCP / UDP 隧道
+  - range 隧道不可绑定
+  - 已绑定隧道不能再绑定第二个策略
+  - 可先创建空策略
+  - 速率输入必须能稳定归一到 `bps`
+  - 名称、模式、速率范围、单位非法值都在入口拒绝
+- 任何影响在线执行结果的策略或 binding 变更，都要触发对应 `proxy_group` 的 runtime refresh。
+
+### 4. 把限速策略投影进运行时快照
+
+- repo 层需要在加载 `GroupRuntime` 时，额外解析：
+  - 该 `proxy_group` 下所有隧道
+  - 这些隧道关联到的 `rate_policy`
+  - 需要投影进快照的最终执行配置
+- 快照层要明确：
+  - 哪些字段属于“策略身份”
+  - 哪些字段属于“执行参数”
+  - 哪些字段属于“共享协作 key”
+- `ConfigSnapshot` / `protocol.ConfigPush` / `protocol.TunnelEntry` 需要扩展最小限速字段。
+- `frps/pkg/protocol` 必须同步：
+  - marshal / unmarshal
+  - 兼容当前单版本协议定义
+  - 新旧测试全部改到当前真相
+- `frpc` 快照替换逻辑必须把限速执行字段纳入“隧道执行配置是否变化”的判断，避免策略变了却被误判为未变化。
+- reload 语义必须保持当前已有约定：
+  - 命中运行态字段时整组冻结
+  - 下发新快照
+  - `ack` 后再恢复 listener / 数据面
+
+### 5. 摊平最小限速组件
+
+- 底层纯组件要先摊开，再由上层拼装：
+  - `RateValue` / 单位归一
+  - `Direction`
+  - `Mode`
+  - `BucketConfig`
+  - `TokenBucket`
+  - `LimiterRegistry`
+  - `WaitN` / context cancel
+- `independent` 和 `shared` 不能做两套完全分叉实现。
+- 推荐收口方式：
+  - `independent`：每条 tunnel / 每个方向各自持有 limiter
+  - `shared`：session 级 registry 按 `rate_policy_id + direction` 复用 limiter
+- `shared` 的共享边界固定为单个已登录 session 内部，不做跨 session、跨进程、跨节点共享。
+- `shared` 不增加额外 `proxy_group` 锁定字段；管理入口仍然只做“逐条隧道绑定”。
+- 低层组件必须可单测，不能一上来就绑到 TCP/UDP socket 或控制面 session 上。
+
+### 6. 把限速真正接进 TCP 数据面
+
+- `frps` 侧需要把下行 limiter 接到公网 TCP -> `stream.data` 这条链路。
+- `frpc` 侧需要把上行 limiter 接到本地 TCP -> `stream.data` 这条链路。
+- 需要明确：
+  - 限速等待发生在读前还是写前
+  - 大块数据切片后如何扣令牌
+  - 等待中 session 关闭时如何退出
+  - reload 关闭旧 stream 时如何打断等待
+- 不能把限速逻辑直接散落到 `copy loop` 各处；需要通过清晰的 rate-limited reader / sender 组件接入。
+- 任何接入都不能破坏现有：
+  - `stream.open`
   - `stream.opened`
   - `stream.data`
   - `stream.close`
-  - `udp.data`
-  - `udp.close`
-  - unknown frame type error
-
-### 会话状态机
-
-- 当前 `internal/control/session/` 已经相对干净。
-- 最小组件：
-  - `SessionState`
-  - `SessionPhase`
-  - `RuntimePhase`
-  - `BlockReason`
-  - `BindingPhase`
-  - `ControlConnState`
-  - desired / pending / applied runtime snapshot
-  - binding state
-  - TCP stream state
-  - UDP session state
-  - events
-  - actions
-  - reducer
-  - reconcile
-  - agent event loop
-  - executor seam
-- 继续拆时要保持原则：
-  - reducer 只做状态决策，不直接做 IO。
-  - action 表达“需要发生什么”，不表达“怎么发生”。
-  - executor 是状态机到外部世界的唯一副作用桥。
-
-### session 运行态容器
-
-- 当前 `sessionState` 仍在根包 `runtime.go`，职责过多。
-- 最小组件：
-  - `ConcreteSessionState`
-  - control state mutex
-  - runtime state mutex
-  - write mutex
-  - runtime IO mutex
-  - done channel
-  - request id allocator
-  - stream id allocator
-  - current group / snapshot
-  - pending group / recovery mode
-  - listener attachment
-  - runtime freeze / reset / allow start
-  - active tunnel id projection
-  - public stream map
-  - UDP session map
-  - UDP key index
-  - observe config state
-  - observe runtime state
-
-### 配置同步
-
-- 最小组件：
-  - desired runtime snapshot conversion
-  - runtime config snapshot conversion
-  - `prepareConfigPush`
-  - `pushReloadConfig`
-  - `handleConfigAck`
-  - `acceptConfigAck`
-  - initial startup ack 校验
-  - effective IP startup rejection
-  - pending config refresh
-  - online `RefreshGroup`
-  - empty config snapshot
-  - same pushed/runtime snapshot 判断
-- 当前问题：
-  - `config.push` 写帧逻辑与 session state mutation 混在一起。
-  - `config.ack` 既做协议校验，又做状态变更，还做 initial startup runtime 校验。
-  - `RefreshGroup` 同时查询仓储、更新 desired、触发 supervisor、影响 runtime recovery。
-
-### listener 和 bind
-
-- 已有 `internal/control/bind/`，但还有职责散在根包和 `runtime/` 包。
-- 最小组件：
-  - listen key
-  - bind kind
-  - listener bind context
-  - listener factory
-  - scripted listener factory
-  - UDP listener abstraction
-  - binding claim owner
-  - binding conflict
-  - binding manager
-  - expand desired tunnels to binding keys
-  - tunnel listener operation context
-  - TCP listener start
-  - UDP resolve + listener start
-  - tunnel listener TLS config loading
-  - probe listener start
-  - close started listeners
-- 当前问题：
-  - `bind.Manager` 基本没有接入主路径，实际启动仍主要依赖 OS bind/probe 和 runtime conflict scan。
-  - tunnel listener TLS 读取依赖 storage 和 entrycerts，放在 `bind` 里会让底层 bind 包承担证书业务。
-  - listener test hook 包在 `Server.listenTCP/listenUDP/resolveUDPAddr`，导致 runtime 包不能独立测试真实 listener start 编排。
-
-### TCP 数据面
-
-- 最小组件：
-  - accept public TCP connection
-  - allocate stream id / request id
-  - build `stream.open`
-  - add public stream
-  - wait `stream.opened`
-  - public -> frpc copy loop
-  - frpc -> public `stream.data`
-  - stream close frame
-  - close public stream
-  - write full payload
-  - client addr projection
-  - stream observe state
-- 当前问题：
-  - 数据面 TCP 逻辑在 `wire.go`，但依赖 `Server` 的 clock/options/frame writer/sessionState。
-  - session FSM 已有 stream action/event，但主路径仍直接操作 `sessionState`，状态机和真实数据面没有完全闭环。
-
-### UDP 数据面
-
-- 最小组件：
-  - UDP listener read loop
-  - public UDP session key
-  - allocate UDP pseudo stream id
-  - build `udp.open`
-  - forward `udp.data`
-  - frpc -> public UDP write
-  - UDP idle cleanup scheduler
-  - close public UDP session
-  - clone UDP addr
-  - UDP observe state
-- 当前问题：
-  - idle cleanup 由 `Server` 直接调度。
-  - UDP session map 和 key index 在 session runtime state 内，但行为方法仍在根包 `wire.go`。
-  - 和 TCP 一样，FSM 中的 UDP action/event 还没有成为唯一数据面入口。
-
-### runtime 审计、扫描、恢复
-
-- 已有 `internal/control/runtime/`，但 `RuntimeOperator` 太宽。
-- 最小组件：
-  - runtime issue store
-  - static configured conflict detection
-  - active runtime conflict detection
-  - runtime snapshot index
-  - non-listening tunnel selection
-  - tunnel status projection
-  - listener probe
-  - scan round concurrency guard
-  - polling scheduler
-  - scan all groups
-  - preserve healthy issue until recovery
-  - active session config recovery
-  - audited listener recovery
-  - runtime issue clear/record/apply semantics
-- 当前问题：
-  - `RuntimeOperator` 同时包含状态、仓储、supervisor、listener、serve loop、scan、recovery、logging、scheduler。
-  - interface 里有 `any` 和 placeholder `Supervisor`，说明包边界仍有循环依赖压力。
-  - runtime 包既包含纯计算，又调用实际副作用，测试边界不够清楚。
-
-### supervisor / session registry
-
-- 最小组件：
-  - group -> agent
-  - session -> agent
-  - group -> runtime executor
-  - session -> runtime executor
-  - session state cache
-  - group slot
-  - cancel registry
-  - attach session
-  - takeover old session
-  - dispatch event by session id
-  - update desired runtime
-  - network change broadcast
-  - runtime snapshot
-  - active session lookup
-  - shutdown all agents
-- 当前问题：
-  - supervisor 在根包，直接依赖 `runtimeExecutor` 和 `sessionState`。
-  - `control/runtime` 又定义 placeholder `Supervisor`，这是需要拆掉的临时适配味道。
-  - active session 对外返回的是 runtime 包模型，但内部仍是根包私有结构。
-
-### action executor
-
-- 最小组件：
-  - send server hello
-  - push config
-  - send config error
-  - heartbeat pong
-  - prepare bindings
-  - start bindings
-  - stop bindings
-  - drain streams
-  - drain UDP sessions
-  - reset runtime
-  - close control connection
-  - binding failure mapping
-  - binding outcome mapping
-  - block reason mapping
-- 当前问题：
-  - executor 直接依赖 `Server` 全量能力。
-  - executor 里同时包含协议编码、frame 写入、effective IP 解析、listener start、runtime drain。
-  - 这是后续“业务拼装层”的核心拆分点。
-
-### 仓储投影
-
-- 已有 `internal/control/repo/`。
-- 最小组件：
-  - `Repository`
-  - `GroupRuntime`
-  - `ConfigSnapshot`
-  - load by client id
-  - load by group id
-  - list group runtimes
-  - group row decode
-  - tunnel row decode
-  - tunnel TLS usage map
-  - snapshot version / generated_at 计算
-  - DB enum decode
-- 第二阶段进展：
-  - `GroupRuntime` 和 `ConfigSnapshot` 已落到 `internal/control/domain/runtime`。
-  - `repo` 通过 type alias 返回 domain model，职责收敛为 SQL projection。
-  - 旧 `control` 和 `control/runtime` API 暂保留 alias/delegate，避免上层一次性迁移。
-
-### 观测输出
-
-- 最小组件：
-  - server observed state
-  - initial scan / control listener / login gate 状态
-  - group slots
-  - session observed state
-  - attached listeners
-  - missing listeners
-  - runtime connections
-  - tunnel status
-  - runtime issue kind
-  - static conflict projection
-- 当前问题：
-  - `ObserveState` 直接从 server 内部抓 supervisor、repo、issue store。
-  - 观测 projection 应下沉为独立 query/projection 层，Server 只提供快照数据源。
-
-## 目标多级子包结构
-
-### 第一层：对外 facade
-
-```text
-frps/internal/control
-  server.go
-  options.go
-  aliases.go
-```
-
-职责：
-
-- 对 `internal/app` 和 `internal/api` 暴露稳定类型。
-- 保持 `NewServer(options, logger, version)`。
-- 保持 `ListenAndServe`、`Shutdown`、`EnsureInitialRuntimeScan`。
-- 保持 `RefreshGroup`、`ObserveState`。
-- 保持 `ConfigureControlTLS`、`ClearControlTLS`。
-- 不直接实现 frame handler、listener serve loop、runtime scan 算法。
-
-### 第二层：server 生命周期
-
-```text
-frps/internal/control/server
-  lifecycle/
-  accept/
-  gate/
-```
-
-职责：
-
-- control listener 打开/关闭。
-- accept loop。
-- active connection registry。
-- shutdown orchestration。
-- initial runtime scan gate。
-- runtime scan polling 的启动时机。
-
-注意：
-
-- 这里可以保留 `net.Listener` 和 goroutine 管理。
-- 不应该知道 `config.ack`、`stream.data`、`udp.data` 的内部协议规则。
-
-### 第二层：protocol
-
-```text
-frps/internal/control/protocol
-  frameio/
-  errors/
-  handshake/
-  auth/
-  dispatch/
-  heartbeat/
-  configsync/
-  streams/
-  udp/
-```
-
-职责：
-
-- 所有 frpc 控制连接 frame 校验。
-- frame body marshal/unmarshal。
-- protocol error 回复。
-- transport hello 和 TLS upgrade。
-- auth challenge 生命周期。
-- session frame dispatch。
-
-设计要求：
-
-- `frameio` 只关心 `transport.FrameIO`、timeout、frame context。
-- `handshake` 只依赖 repo、TLS certificate provider、frame reader/writer。
-- `auth` 只依赖 repo、clock、challenge store、session factory/supervisor seam。
-- `dispatch` 只把 frame 转成 session event 或调用数据面 handler。
-
-### 第二层：domain
-
-```text
-frps/internal/control/domain
-  runtime/
-  snapshot/
-  tunnel/
-```
-
-职责：
-
-- `GroupRuntime`
-- `ConfigSnapshot`
-- desired/applied snapshot 转换
-- runtime snapshot 比较
-- enabled tunnel 过滤
-- protocol name/value 转换
-- config version 语义
-- empty config 语义
-
-设计要求：
-
-- domain 不能依赖 storage、net listener、scheduler、server。
-- domain 可以依赖 `pkg/protocol`，因为 wire tunnel entry 目前是运行时配置载体。
-
-### 第二层：repo
-
-```text
-frps/internal/control/repo
-  runtime/
-  auth/
-  sql/
-  decode/
-```
-
-职责：
-
-- SQL 查询。
-- row decode。
-- persistent config -> domain runtime projection。
-- auth 登录所需 group credential projection。
-- tunnel certificate usage projection。
-
-设计要求：
-
-- repo 返回 domain model。
-- repo 不做 runtime listener 决策。
-- repo 不记录 runtime issue。
-
-### 第二层：session
-
-```text
-frps/internal/control/session
-  state/
-  event/
-  action/
-  reducer/
-  reconcile/
-  agent/
-  supervisor/
-  executor/
-```
-
-职责：
-
-- state machine 保持纯逻辑。
-- supervisor 管 session/agent/group slot。
-- executor 只定义副作用接口和 action dispatch。
-
-设计要求：
-
-- reducer 不依赖 protocol marshal。
-- reducer 不依赖 net.Conn。
-- supervisor 不依赖 server 根对象。
-- executor 不应该只有一个巨型 `Server` 依赖，应拆成小 capability。
-
-### 第二层：runtime
-
-```text
-frps/internal/control/runtime
-  state/
-  bind/
-  listener/
-  listener/tls/
-  serve/tcp/
-  serve/udp/
-  scan/
-  recovery/
-  conflict/
-  issues/
-  observe/
-```
-
-职责：
-
-- session concrete runtime state。
-- listener 启停。
-- TCP/UDP 数据面服务。
-- runtime issue 记录。
-- runtime scan。
-- runtime recovery。
-- runtime observed projection。
-
-设计要求：
-
-- `runtime/state` 管数据结构和并发锁。
-- `runtime/listener` 管监听器创建、probe、close。
-- `runtime/serve/tcp` 只管 TCP 数据面。
-- `runtime/serve/udp` 只管 UDP 数据面和 idle。
-- `runtime/scan` 不直接知道 server，只依赖小接口。
-- `runtime/recovery` 不直接持有 supervisor 实现，只依赖 session registry seam。
-
-### 第三层：wiring / assembly
-
-```text
-frps/internal/control/wiring
-  container.go
-  capabilities.go
-  executor.go
-```
-
-职责：
-
-- 把 repo、protocol、session、runtime、scanner、observer 拼起来。
-- 统一注入 clock/scheduler/logger/frameIO/listenerFactory/network/store。
-- 给 facade `control.Server` 提供最终组合对象。
-
-设计要求：
-
-- wiring 可以依赖所有子包。
-- 子包之间不能反向依赖 wiring。
-- 当发现循环依赖时，优先提取 interface 到更底层或单独 seam 包。
-
-## 关键接口拆分
-
-当前 `control/runtime.RuntimeOperator` 太宽，应拆成以下小接口。
-
-### RuntimeReadiness
-
-```go
-type RuntimeReadiness interface {
-    IsShuttingDown() bool
-}
-```
-
-### RuntimeIssueWriter
-
-```go
-type RuntimeIssueWriter interface {
-    RecordTunnelRuntimeIssueForConfig(tunnelID uint32, configVersion uint64, reason string)
-    ClearUnknownTunnelRuntimeIssues(knownTunnelIDs map[int64]struct{})
-    ApplyScannedTunnelRuntimeIssues(snapshot ConfigSnapshot, staticConflictIDs map[int64]struct{}, issues map[uint32]string, preserved map[uint32]struct{})
-}
-```
-
-### RuntimeIPResolver
-
-```go
-type RuntimeIPResolver interface {
-    ResolveGroupEffectiveIP(group GroupRuntime) (string, error)
-}
-```
-
-### ListenerStarter
-
-```go
-type ListenerStarter interface {
-    StartTunnelListeners(ctx TunnelListenerOperationContext) (TunnelListenerBatch, error)
-    ProbeTunnelRuntimeIssue(groupID int64, bindIP string, tunnel protocol.TunnelEntry) string
-}
-```
-
-### RuntimeSessionRegistry
-
-```go
-type RuntimeSessionRegistry interface {
-    ActiveSession(groupID int64) (*ActiveSession, bool)
-    ActiveRuntimeGroups(exclude any) []RuntimeGroupSnapshot
-    RuntimeSnapshotIndex() RuntimeSnapshotIndex
-    SessionState(sessionID uint64) (session.SessionState, bool)
-    DispatchBySessionID(sessionID uint64, event session.Event) bool
-    ApplySessionEvent(sessionID uint64, event session.Event)
-}
-```
-
-### RuntimeScannerDeps
-
-```go
-type RuntimeScannerDeps interface {
-    RuntimeReadiness
-    RuntimeIssueWriter
-    RuntimeIPResolver
-    ListenerStarter
-    RuntimeSessionRegistry
-    Repo() Repository
-    Logger() *slog.Logger
-}
-```
-
-### RuntimeServeDeps
-
-```go
-type RuntimeServeDeps interface {
-    Clock() clock.Clock
-    Scheduler() clock.Scheduler
-    FrameWriter() protocol.FrameWriter
-}
-```
-
-拆分目标：
-
-- scan 不再要求 listener serve loop 能力。
-- listener start 不再要求 repo 能力。
-- TCP/UDP data plane 不再要求 runtime scan 能力。
-- executor 按 action 类型依赖最小 capability。
-
-## 推荐迁移顺序
-
-### 第 1 阶段：建立文档和边界保护
-
-- 更新 `docs/tmp/todo.md` 作为拆分总路线。
-- 在 `docs/frps/technical/control-plane.md` 补充最新目标边界。
-- 标记不再继续扩大 `RuntimeOperator`。
-- 新增包时优先写 compile-only seam，避免一次迁移过大。
-
-验收：
-
-- 文档能说明每个组件归属。
-- 新增代码不引入 controlv2 新功能。
-
-### 第 2 阶段：下沉 domain model（已完成）
-
-- 新建 `internal/control/domain/runtime`。
-- 移动或别名：
-  - `GroupRuntime`
-  - `ConfigSnapshot`
-  - snapshot conversion
-  - enabled tunnel helpers
-  - same snapshot helpers
-  - protocol name/value helpers
-- `repo` 改为返回 domain model。
-- 根 `control` 保留 aliases，避免外部一次性全改。
-
-完成内容：
-
-- `internal/control/domain/runtime` 持有 `GroupRuntime`、`ConfigSnapshot`。
-- snapshot conversion、enabled tunnel helper、same snapshot helper、protocol name/value helper 已下沉到 domain runtime。
-- `repo.Repository` 仍保持原签名形态，但返回类型实际是 domain runtime alias。
-- `control/runtime` 仅保留兼容 wrapper，内部委托 domain runtime。
-- `runtime/scan` 不再为了 domain 类型导入 `repo`。
-- `internal/app` 仍可通过 `control.GroupRuntime` 和 `control.ConfigSnapshot` 编译。
-
-验收：
-
-- `go test ./internal/control/...`
-- `go test ./internal/app ./internal/api/...`
-- `internal/app` tests 仍可通过 `control.GroupRuntime` alias 编译。
-
-### 第 3 阶段：拆 frame IO 和 protocol error（已完成）
-
-- 新建 `internal/control/protocol/frameio`。
-- 下沉：
-  - frame context
-  - read frame with timeout
-  - write frame with timeout
-  - session-aware writer lock seam
-- 新建 `internal/control/protocol/errors`。
-- 下沉：
-  - protocol error reply
-  - error body marshal
-  - connection reason mapping
-
-完成内容：
-
-- `internal/control/protocol/frameio` 持有 server frame context 构造、read frame with timeout、write frame with timeout。
-- `frameio.Writer` 成为根包和协议错误包之间的写帧 seam，frame marshal/write 细节不再留在 `server.go`。
-- `internal/control/protocol/errors` 持有 protocol error reply、error body marshal、连接关闭原因映射。
-- session-aware error reply 通过 `sessionFrameWriter` 继续复用 `writeFrameWithSession`，保留 control frame 写锁。
-- runtime IO 写入仍先进入 `lockRuntimeIOWrite`，再委托 `frameio.Writer`，保持 runtime IO 锁顺序。
-
-验收：
-
-- `server.go` 不再直接包含 frame marshal/write 细节。
-- session-aware writer 仍能保证 control frame 和 runtime IO 的写锁顺序。
-
-### 第 4 阶段：拆 transport handshake 和 control TLS runtime（已完成）
-
-- 新建 `internal/control/protocol/handshake`。
-- 下沉：
-  - `negotiateTransport`
-  - `selectTransportSecurityMode`
-  - `upgradeControlConnToTLS`
-- 新建 control TLS certificate provider。
-- `ConfigureControlTLS` / `ClearControlTLS` 保持在 facade，内部委托给 TLS runtime store。
-
-完成内容：
-
-- `internal/control/protocol/handshake` 持有 transport client/server hello 编排、client id 加载 group、plain/tls 模式选择和 TLS upgrade。
-- `handshake.Repository`、`handshake.FrameReader`、`protocol/errors.FrameWriter`、`handshake.TLSCertificateProvider` 成为 transport negotiation 的最小 seam。
-- `handshake.ControlTLSStore` 持有 control listener TLS 证书运行态，root `Server` 不再直接维护 TLS 证书锁和证书字段。
-- 根包 `tls.go` 压缩为 facade/adapter：`ConfigureControlTLS`、`ClearControlTLS` 仍保持对 app/api 的稳定入口，`negotiateTransport`、`selectTransportSecurityMode`、`upgradeControlConnToTLS` 只委托子包。
-- 新增 TLS required / unsupported / unavailable 选择逻辑单测，保持原有错误码优先级：证书不可用优先返回 `transport_tls_unavailable`，证书可用但客户端不支持 TLS 返回 `transport_tls_unsupported`。
-
-验收：
-
-- TLS required / unsupported / unavailable 测试通过。
-- `tls.go` 从根包移除或只剩 facade adapter。
-- `go test ./internal/control/...`
-- `go test ./internal/app ./internal/api/...`
-
-### 第 5 阶段：拆 auth challenge service（已完成）
-
-- 新建 `internal/control/protocol/auth`。
-- 下沉：
-  - `authChallenge`
-  - issue challenge
-  - consume challenge
-  - purge expired challenge
-  - auth begin/finish frame 校验
-- auth service 输出“已认证 group + session attach request”，不要直接构造完整 server runtime。
-
-完成内容：
-
-- `internal/control/protocol/auth` 持有 auth.begin/auth.finish 帧校验、auth.challenge 写出、challenge issue/consume/purge 和 group enabled 二次校验。
-- `auth.ChallengeService` 接管 challenge 运行态，root `Server` 不再直接维护 `challengeMu`、`challenges`、`nextChallengeID`。
-- `auth.Authenticate` 通过 `Repository`、`FrameReader`、`FrameWriter`、`ChallengeService` 这些最小 seam 完成协议认证，返回已认证 `GroupRuntime` 和 finish request id。
-- 根包 `auth.go` 只保留登录后的 session/runtime/supervisor 拼装；`issueChallenge` 和 `consumeChallenge` 暂留兼容 adapter，内部委托 `auth.ChallengeService`。
-- 新增 auth 子包单测，覆盖 challenge replay、expired、mismatch 后标记 used、auth.begin client mismatch、auth.finish stream id 校验，以及不启动完整 Server 的认证成功路径。
-
-验收：
-
-- auth 单测可以不启动完整 Server。
-- challenge replay / expired / mismatch 行为保持不变。
-- `go test ./internal/control/...`
-- `go test ./internal/app ./internal/api/...`
-
-### 第 6 阶段：拆 concrete session runtime state（已完成）
-
-- 新建 `internal/control/runtime/state`。
-- 移动：
-  - `ConcreteSessionState`
-  - stream model
-  - UDP session model
-  - listener state
-  - runtime freeze/reset/allow
-  - active tunnel ids
-  - observe runtime state
-- 根包 `sessionState` 临时变成 thin wrapper 或 type alias。
-
-完成内容：
-
-- 新建 `internal/control/runtime/state`，集中承载 concrete session 运行态数据结构和并发锁。
-- `ConcreteSessionState`、listener state、stream model、UDP session model、runtime freeze/reset/allow、active tunnel id projection、runtime observe projection 已下沉。
-- `control/runtime` 保留 alias/delegate 兼容层，避免一次性改动上层 app/api 和 runtime scanner 边界。
-- 根包 `sessionState` 改为嵌入 `controlruntime.ConcreteSessionState` 的 thin wrapper，`runtime.go` 中 runtime state mutation 只做委托。
-- `wire.go` 中 UDP session map/key/index/idle cleanup 行为改为委托 `runtime/state`，根包不再持有对应 map 操作实现。
-- 新增 `runtime/state` 单测，覆盖 listener attach、TCP/UDP connection tracking、observe projection 和 freeze drain。
-
-验收：
-
-- 根包 `runtime.go` 行数显著下降。
-- `sessionState` 不再是所有 runtime 行为的聚合地。
-- `go test ./internal/control/runtime/state`
-- `go test ./internal/control/...`
-- `go test ./internal/app ./internal/api/...`
-
-### 第 7 阶段：拆 config sync（已完成）
-
-- 新建 `internal/control/protocol/configsync`。
-- 下沉：
-  - config push body build
-  - config ack frame 校验
-  - ack accept error mapping
-  - initial startup runtime validation
-- 把 `prepareConfigPush` / `acceptConfigAck` 留在 session runtime state 或专门 `session/config`。
-- `RefreshGroup` 拆成：
-  - load latest group
-  - compute runtime refresh snapshot
-  - update desired runtime
-  - notify supervisor
-
-验收：
-
-- `handleConfigAck` 不再同时承担 frame 校验、状态变更、runtime 校验、agent enqueue。
-- refresh 相关场景测试通过。
-
-完成内容：
-
-- 新建 `internal/control/protocol/configsync`，集中承载 `config.push` body/frame 构造、`config.ack` frame 校验、ack accept 错误映射和 initial startup runtime 校验编排。
-- `handleConfigAck` 压缩为：读取 pending ack state、委托协议校验、提交 session state、委托启动期 runtime 校验、通知 agent。
-- `pushReloadConfig` 和 executor 的 `ActionPushConfig` 复用 configsync 的 push 构造逻辑；`pushReloadConfig` 保持“先 marshal、再 pending mutation”的原行为顺序。
-- `RefreshGroup` 拆为活动会话查找、最新 group 加载、runtime refresh snapshot 计算、active session desired 更新、supervisor 通知五段私有编排函数。
-- 新增 configsync 单测覆盖 push 构造、ack 请求/stream/version/status 校验、accept 错误映射和启动期 runtime issue 记录。
-
-### 第 8 阶段：拆 listener start/probe/close（已完成）
-
-- 新建 `internal/control/runtime/listener`。
-- 移动：
-  - `TunnelListenerOperationContext`
-  - `TunnelListenerBatch`
-  - TCP/UDP listener start
-  - probe listener start
-  - close started listeners
-  - listener test hooks
-- 新建 `internal/control/runtime/listener/tls`。
-- 移动 tunnel listener TLS config loading。
-
-验收：
-
-- listener start 可以用 fake listener factory 单测，不依赖完整 Server。
-- probe 和 start 共用同一 listener starter。
-
-完成内容：
-
-- 新建 `internal/control/runtime/listener`，承载 listener operation context、listener batch、TCP/UDP listener runtime model、start/probe/close 和监听器 testhook。
-- 新建 `internal/control/runtime/listener/tls`，承载 tunnel listener TLS 配置读取，`bind` 包不再承担证书业务。
-- `control/runtime` 保留兼容 alias/delegate，现有 scanner、plan、server RuntimeOperator 边界不需要一次性迁移。
-- 根包 `Server.startTunnelListeners` 压缩为 assembly adapter，只注入 listener factory 和 TLS config loader。
-- 新增 listener 包单测，覆盖 TCP/UDP start、range 中途失败自动清理、probe 复用同一 starter。
-
-### 第 9 阶段：拆 TCP 数据面（已完成）
-
-- 新建 `internal/control/runtime/serve/tcp`。
-- 移动：
-  - `serveTunnelListener`
-  - `handlePublicConnection`
-  - stream open operation
-  - stream opened/data/close handlers
-  - public -> frpc copy loop
-  - stream close sender
-  - `writeConnFull`
-  - sock addr helpers中 TCP 相关部分
-
-验收：
-
-- TCP 数据面只依赖 session runtime state、frame writer、clock、logger。
-- `wire.go` 中 TCP 相关逻辑清空或只剩 adapter。
-
-完成内容：
-
-- 新建 `internal/control/runtime/serve/tcp`，承载 TCP listener accept loop、public TCP connection open、stream.opened/data/close handler、public -> frpc copy loop、stream.close 发送、`WriteConnFull` 和 TCP sock addr projection。
-- `wire.go` 中 TCP 主逻辑压缩为 adapter，继续保留同包测试需要的兼容 wrapper；UDP 逻辑暂留待第10阶段。
-- 新 TCP 包通过最小 seam 依赖 session runtime state、runtime/control frame writer、clock、logger，不直接依赖完整 `Server`。
-- 新增 TCP 数据面单测，覆盖 stream.open 构造与连接元数据、stream.opened ready signal、stream.data 写 public conn、public read EOF 发送 stream.close。
-
-### 第 10 阶段：拆 UDP 数据面（已完成）
-
-- 新建 `internal/control/runtime/serve/udp`。
-- 移动：
-  - `serveUDPTunnelListener`
-  - `handlePublicUDPDatagram`
-  - UDP datagram forward operation
-  - UDP session bind/lookup/close
-  - idle cleanup
-  - UDP close sender
-  - UDP addr clone/key helpers
-
-验收：
-
-- UDP idle cleanup 可以用 manual scheduler 单测。
-- UDP path 不再需要完整 Server。
-
-完成内容：
-
-- 新建 `internal/control/runtime/serve/udp`，承载 UDP listener read loop、public UDP datagram forward、frpc -> public UDP data、udp.close handler、udp.close 发送和 idle cleanup。
-- UDP public session 创建、client addr projection、UDP addr clone 和 datagram frame 构造下沉到 UDP 数据面包。
-- `wire.go` / `runtime.go` 中 UDP 主路径压缩为 adapter，继续保留同包测试兼容 wrapper。
-- 新增 UDP 数据面单测，覆盖 UDP open/data frame 构造与 session 复用、frpc UDP data 写回 public listener、missing session close、manual scheduler 驱动 idle cleanup。
-
-### 第 11 阶段：拆 supervisor（已完成）
-
-- 新建 `internal/control/session/supervisor`。
-- 移动：
-  - group/session agent registry
-  - runtime executor registry
-  - group slots
-  - cancel registry
-  - snapshot builder
-  - active session lookup
-- 消除 `control/runtime` 中 placeholder `Supervisor`。
-
-验收：
-
-- runtime 包不再通过 `any` 获取 supervisor。
-- takeover、shutdown、active session 测试通过。
-
-完成内容：
-
-- 新建 `internal/control/session/supervisor`，集中承载 group/session agent registry、runtime registry、group slot、cancel registry、snapshot builder 和 active session lookup。
-- 根包 `Supervisor` 压缩为兼容适配层，只负责把现有私有 `runtimeExecutor` / `sessionState` 接到新 supervisor registry。
-- `runtimeExecutor` 实现 supervisor runtime handle seam，snapshot 构造由新 supervisor 包统一编排。
-- 删除 `control/runtime` 中的 placeholder `Supervisor`，移除 `RuntimeOperator.Supervisor()`。
-- supervisor 相关 `ActiveRuntimeGroups` / `RuntimeExecutor.Session` 边界改为 typed `SessionStateProjectionTarget`，不再使用 `any` 传递 session。
-- runtime data-plane 的 session 生命周期 seam 改为 `SessionRuntimeStartTarget`，顺手收掉剩余 session `any` 适配。
-- 新增 `session/supervisor` 单测覆盖 group slot、active session、snapshot exclude、takeover 和 shutdown。
-
-### 第 12 阶段：拆 executor capabilities（已完成）
-
-- 新建 `internal/control/session/executor`。
-- 将当前 `serverActionExecutor` 拆成多个 handler：
-  - hello sender
-  - config pusher
-  - heartbeat pong sender
-  - binding preparer
-  - binding starter
-  - runtime drainer
-  - control closer
-- 每个 handler 只依赖自己的 capability。
-
-验收：
-
-- action executor 不再直接依赖完整 `Server`。
-- binding failure/outcome mapping 有独立测试。
-
-完成内容：
-
-- 新建 `internal/control/session/executor`，把 session action dispatch 从根包 `serverActionExecutor` 下沉到独立 action executor。
-- 拆出 hello sender、config pusher、config error sender、heartbeat pong sender、binding preparer、binding starter、runtime stopper、stream/UDP drainer、runtime resetter 和 control closer。
-- 新 executor 通过 `RuntimeProvider`、`FrameSender`、`EffectiveIPResolver`、`BindingStarter`、`StreamCloser`、`UDPCloser`、`Clock` 小接口组合能力，不再持有完整 `Server`。
-- 根包 `serverActionExecutor` 改为 thin adapter，只持有 `controlsession.Executor`；`Server` 只在组装处注入各个小能力适配器。
-- `runtimeExecutor` 实现 executor runtime seam，暴露 desired group、active tunnel ids、freeze/drain/reset 等最小 runtime 操作。
-- binding failure/outcome mapping 下沉到 executor 包，并新增单测覆盖 effective IP 错误映射、端口冲突、默认 listener start failure、active binding 和 runtime issue projection。
-
-### 第 13 阶段：拆 runtime scan/recovery 接口（已完成）
-
-- 把 `RuntimeOperator` 拆成小接口。
-- `scan` 只依赖 scanner deps。
-- `recovery` 只依赖 session registry + desired updater。
-- `conflict` 保持纯函数。
-- `issues` 保持状态 store。
-
-验收：
-
-- `runtime/interface.go` 不再是 300 行级别巨型接口文件。
-- 不再出现 placeholder type 和 `any` 作为主要边界。
-
-完成内容：
-
-- 删除 `control/runtime.RuntimeOperator` 聚合接口，`runtime/interface.go` 不再承载跨扫描、恢复、listener、serve、repo、scheduler 的大接口。
-- `runtime/capabilities.go` 拆出实际使用的小 seam：readiness、issue writer、IP resolver、listener probe/starter、active session finder、active runtime group provider、snapshot provider、session event/state/executor provider、scan coordinator、repository/logger/scheduler provider、runtime start planner/apply deps、serve deps。
-- `StartRuntimeIssuePolling` 和 `ScanNonListeningTunnelRuntimeIssues` 改为依赖 `RuntimeScannerDeps`；`ScanGroupRuntimeIssues` 改为只依赖 `RuntimeIPResolver`、`RuntimeListenerProbe` 和显式 active runtime group data。
-- `RecoverScannedActiveSessionTunnels` 改为依赖扫描恢复最小 seam，`RequestAuditedSessionRuntimeRecovery` 改为依赖 audited recovery session registry seam，`AwaitAuditedSessionRecovery` 改为只依赖 runtime executor provider。
-- `PlanSessionRuntimeStart` / `ApplySessionRuntimeStartPlan` 拆成 planner deps 和 apply deps，listener start 路径不再通过 scan/recovery 聚合接口取能力。
-- runtime conflict 检测去掉 `RuntimeOperator` 入参，只使用 `RuntimeGroupData` 显式数据，保持 conflict 逻辑为纯计算。
-
-### 第 14 阶段：拆 observe projection（已完成）
-
-- 新建 `internal/control/runtime/observe` 或 `internal/control/observe` 子包。
-- 下沉：
-  - server observed state builder
-  - tunnel status projection
-  - runtime issue kind
-  - sorting
-- Server 只提供：
-  - lifecycle snapshot
-  - supervisor snapshot
-  - group runtime list
-  - issue snapshot
-
-验收：
-
-- `ObserveState` 变成 facade 方法。
-- projection 可以用构造数据单测。
-
-完成内容：
-
-- 新建 `internal/control/runtime/observe`，集中承载 server observed state builder、生命周期/login gate projection、session/listener/missing listener/connection/tunnel projection 聚合和 deterministic sorting。
-- 下沉 tunnel final status projection：启用、禁用、配置冲突、异常，以及 runtime issue kind 分类：effective_ip_invalid、effective_ip_not_local、runtime_bind_conflict、runtime_bind_error。
-- 根包 `ObserveState` 压缩为 facade：只读取 lifecycle snapshot、supervisor snapshot、group runtime list 和 runtime issue snapshot，然后委托 observe builder。
-- 新增 observe 包构造数据单测，覆盖生命周期、session/listener/connection 排序、静态冲突、禁用 tunnel、runtime issue kind 和 missing listener projection。
-
-### 第 15 阶段：收口根包 facade
-
-- 根包只保留：
-  - `Options`
-  - `Server`
-  - `NewServer`
-  - 对 app/api 需要的接口方法
-  - 兼容 alias
-- 删除或压缩：
-  - 根包 `runtime.go`
-  - 根包 `wire.go`
-  - 根包 `executor.go`
-  - 根包 `supervisor.go`
-  - 根包 `auth.go`
-  - 根包 `tls.go`
-- 删除 `internal/controlv2/`。
-
-验收：
-
-- `go test ./...`
-- 根包没有大型业务实现文件。
-- docs 更新到新结构。
-
-完成内容：
-
-- `frps/internal/controlv2/` 当前已无代码实体，仓库代码引用只剩历史/规划文档引用。
-- 根包保留稳定入口 `Options`、`Server`、`NewServer`、`RefreshGroup`、`ObserveState`、`ConfigureControlTLS`、`ClearControlTLS` 和兼容 alias。
-- 删除根包大型业务文件 `runtime.go`、`wire.go`、`executor.go`，改拆为小型 facade/assembly adapter：
-  - `options.go` / `aliases.go` / `server.go`
-  - `lifecycle.go` / `connection.go` / `frame_adapter.go`
-  - `session_state.go` / `session_frame_adapter.go` / `session_shutdown.go`
-  - `configsync_adapter.go` / `refresh.go`
-  - `runtime_start_adapter.go` / `runtime_scan_adapter.go` / `runtime_capabilities.go` / `runtime_issues.go`
-  - `data_plane_adapter.go` / `runtime_executor.go` / `action_executor_adapter.go`
-- `auth.go`、`tls.go` 继续作为根包 facade/adapter，但删除了无引用的 challenge/TLS 兼容私有 wrapper。
-- 根包单个非测试实现文件已压缩到小型拼装层，协议、session FSM、supervisor、executor、runtime state、listener、TCP/UDP 数据面、scan/recovery/observe 的实际逻辑继续由子包承载。
-- 技术文档已同步：`RuntimeOperator` 聚合接口已经删除，后续只能通过小 capability seam 接入 runtime 能力。
-
-### 第 16 阶段：最终 facade 收口（已完成）
-
-- 新建并接入 `frps/internal/control/wiring/` 作为最终 assembly 层。
-- 根 `frps/internal/control/` 当前只剩 `facade.go`，通过 type alias / wrapper 暴露：
-  - `Options`
-  - `Server`
-  - `NewServer`
-  - repository / listener / bind 兼容 alias
-  - `NewRepository`
-  - `NewNetListenerFactory`
-  - `NewScriptedListenerFactory`
-- 原根包生产实现文件和默认白盒场景测试已整体迁入 `control/wiring`：
-  - lifecycle / connection / frame adapter
-  - auth / tls / configsync adapter
-  - runtime start / scan / capabilities / issue adapter
-  - data plane adapter
-  - runtime executor / action executor adapter
-  - supervisor / session runtime state wrapper
-- app/api 仍只依赖 `frps/internal/control`，不直接依赖 `control/wiring`。
-- 默认验收通过：
-  - `go test ./internal/control/...`
-  - `go test ./internal/app ./internal/api/...`
-  - `go test ./...`
-
-验收状态：
-
-- 根包没有业务实现文件，只保留 facade。
-- `control/wiring` 可以依赖所有子包；其他子包不反向依赖 `wiring`。
-- 默认测试已覆盖 facade alias 后的 app/api 编译链路和 wiring 白盒测试。
-
-### 待跟进：testhooks 隐藏场景与 1ce6212e 对比
-
-- 已在本地补充详细记录：`docs/tmp/control-regression-1ce6212e.md`。
-- 当前 `go test -tags testhooks ./internal/control/wiring` 可以编译并运行，但部分 refresh / runtime scan / recovery 竞争窗口场景失败。
-- 对比基线 `1ce6212e` 上，默认测试通过；但 `go test -mod=mod -tags testhooks ./internal/control` 不是绿色基线，单测会先失败在 scripted FrameIO 测试写法：`write frame: scripted conn raw io is unsupported; use FrameIO`。
-- 因此隐藏场景失败不能直接判定为 facade / wiring 迁移引入的功能回归；它是一组长期未纳入默认验收、需要单独对齐 FrameIO 与 recovery 语义的场景。
-- 对外入口对比发现一个兼容缺口：`1ce6212e` 根包导出了 `control.Logger`，facade 收口后遗漏该 alias；当前已补回 `type Logger = wiring.Logger`。
-- 默认对照结果：
-  - `1ce6212e`：`go test -mod=mod ./internal/control/...`、`go test -mod=mod ./internal/app ./internal/api/...`、`go test -mod=mod ./...` 均通过。
-  - 当前版本：`go test ./internal/control/...`、`go test ./internal/app ./internal/api/...`、`go test ./...` 均通过。
-- 当前没有发现 app/api 可见功能损失；剩余风险集中在 `testhooks` 隐藏竞争场景，需要单独决策是更新测试预期，还是恢复“pending refresh 强制关闭旧 session / scan recovery 必发 config.push”等旧测试语义。
-
-## 风险点和约束
-
-- 不要一次性大搬迁所有文件；测试体量大，容易把行为回归藏在移动噪声里。
-- 每一阶段都要保持 `control.NewServer` 对 app/api 的外部形态稳定。
-- 不要在拆包时同时改协议语义。
-- 不要在拆包时同时改 runtime recovery 策略。
-- 不要让 `runtime` 重新反向依赖根 `control`。
-- 不要继续扩大 `RuntimeOperator`。
-- 遇到循环依赖时，先拆模型或 capability，不要用 `any` 绕过去。
-- 保持 test hook 名称稳定；现有场景测试依赖 hook 名，不依赖函数名。
-- 保持 manual clock/scheduler seam，不要退回 `time.Now()` / `time.After()` 的硬编码路径。
-- listener fake 和 frame fake 要继续走同一生产 seam，避免测试特化路径。
-
-## 推荐阶段性命令
-
-```powershell
-go test ./internal/control/...
-go test ./internal/app ./internal/api/...
-go test ./...
-```
-
-如果只改文档：
-
-```powershell
-git status --short
-git diff -- docs/tmp/todo.md
-git add docs/tmp/todo.md
-git commit -m "docs: outline frps control decomposition plan"
-```
+  - 热重载关闭旧 stream
+  - 故障回收
+
+### 7. 把限速真正接进 UDP 数据面
+
+- `frps` 侧需要把下行 limiter 接到公网 UDP ingress -> `udp.data`。
+- `frpc` 侧需要把上行 limiter 接到本地 UDP response -> `udp.data`。
+- UDP 接入要额外处理：
+  - 单个 datagram 大于当前瞬时令牌时的等待
+  - session idle cleanup 与限速等待并存
+  - `udp.close`、reload、session close 时取消等待
+- 必须避免：
+  - UDP 限速等待导致 idle cleanup 失真
+  - 共享策略下多 UDP tunnel 争抢同一 limiter 时死锁
+  - `udp.open` / `udp.data` / `udp.close` 顺序被破坏
+
+### 8. 补齐 `shared` 模式最小闭环
+
+- 在 `independent` 打通后，再复用同一套底层组件补 `shared`。
+- `shared` 需要额外完成：
+  - session 内同策略多 tunnel 共用同一方向 limiter
+  - reload 后旧 registry 清理、新 registry 按新快照重建
+- 不能为 `shared` 新做第二套 bucket、第二套 registry、第二套路由。
+
+### 9. 测试收口
+
+- 纯单测：
+  - 速率单位换算
+  - `bps` 边界值
+  - bucket refill / wait / cancel
+  - `independent` / `shared` registry 语义
+  - 小速率下大帧 / 大 datagram 仍可前进
+- schema / repo / API 测试：
+  - 建表与校验
+  - 策略 CRUD
+  - binding CRUD
+  - 单隧道唯一绑定
+  - range 隧道拒绝绑定
+  - 删除仍有 binding 的策略拒绝
+- 协议与快照测试：
+  - `ConfigPush` 新字段编解码
+  - snapshot compare / reload 判定
+- 控制面 / 数据面场景测试：
+  - 在线 reload 后限速生效
+  - session close / shutdown 时等待中的 limiter 退出
+  - TCP `independent`
+  - TCP `shared`
+  - UDP `independent`
+  - UDP `shared`
+  - 多 tunnel 竞争同一共享 limiter
+  - UDP idle cleanup 与限速并存
+- Python e2e：
+  - 单端口 TCP `independent`
+  - 单端口 TCP `shared`
+  - 单端口 UDP `independent`
+  - 单端口 UDP `shared`
+  - 绑定非法场景
+  - 在线修改策略后的 reload 生效
+- 最终验收命令至少包括：
+  - `cd frps && go test ./...`
+  - `cd frps && go test -tags testhooks ./...`
+  - `cd frpc && go test ./...`
+  - 对应 rate policy e2e 脚本
+  - 现有 TCP / UDP 基线 e2e，确保没把旧链路打坏
+
+### 10. 文档和归档收口
+
+- 实现边界一旦落地，必须同步正式文档：
+  - `docs/project-overview.md`
+  - `docs/frps/design/rate-policy.md`
+  - `docs/frps/technical/data-model.md`
+  - `docs/frps/technical/management-api.md`
+  - `docs/frps/features/control-and-data-plane.md`
+  - 如有必要再补 `docs/frps/features/overview.md`
+- 任一子步骤完成后，立即归档到 `docs/progress/YYYY-MM-DD.md`，不把完成项留在当前 `todo`。
+- 每一子步骤完成后都要检查：
+  - `.gitignore` 是否需要补临时产物
+  - 是否形成一个可提交的稳定状态
+
+## 当前唯一下一步
+
+- 先冻结第 1-3 步的正式落点：确定 `rate_policies` / `rate_policy_bindings` 的表结构、管理 API 路由和所有边界校验规则，然后先实现这层 schema + API 闸口，再进入 runtime snapshot 和数据面限速。
+
+## 进度归档入口
+
+- 当前轮待办只看：`docs/tmp/todo.md`
+- 已完成事项归档到：`docs/progress/YYYY-MM-DD.md`
+- 轮换规则见：`docs/workflow.md`
+- 归档说明见：`docs/progress/README.md`
