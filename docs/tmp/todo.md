@@ -27,18 +27,7 @@
 
 ## 子步骤
 
-### 1. 摊平最小限速组件
-
-- 继续下沉纯组件：
-  - `Direction`
-  - `BucketConfig`
-  - `TokenBucket`
-  - `LimiterRegistry`
-  - `WaitN / context cancel`
-- `independent` 和 `shared` 必须共用同一套底层组件，不允许做两套分叉实现。
-- `shared` 当前只允许在单个已登录 session 内共享，不做跨 session / 跨进程 / 跨节点共享。
-
-### 2. 把限速真正接进 TCP 数据面
+### 1. 把限速真正接进 TCP 数据面
 
 - `frps` 下行：公网 TCP -> `stream.data`
 - `frpc` 上行：本地 TCP -> `stream.data`
@@ -48,7 +37,7 @@
   - reload / shutdown / session close 时的等待取消
 - 不能把限速逻辑散落到现有 copy loop 各处。
 
-### 3. 把限速真正接进 UDP 数据面
+### 2. 把限速真正接进 UDP 数据面
 
 - `frps` 下行：公网 UDP ingress -> `udp.data`
 - `frpc` 上行：本地 UDP response -> `udp.data`
@@ -57,14 +46,14 @@
   - idle cleanup 与限速等待并存
   - `udp.close` / reload / session close 时取消等待
 
-### 4. 补齐 `shared` 模式最小闭环
+### 3. 补齐 `shared` 模式最小闭环
 
 - 在 `independent` 打通后，再复用同一套组件补 `shared`。
 - `shared` 需要额外确认：
   - session 内同策略多 tunnel 共用同一方向 limiter
   - reload 后旧 registry 清理、新 registry 按新快照重建
 
-### 5. 测试收口
+### 4. 测试收口
 
 - 纯单测：
   - bucket refill / wait / cancel
@@ -84,7 +73,7 @@
   - 单端口 UDP `shared`
   - 在线修改策略后的 reload 生效
 
-### 6. 文档和归档收口
+### 5. 文档和归档收口
 
 - runtime / protocol / 数据面落地后，同步：
   - `docs/project-overview.md`
@@ -96,7 +85,7 @@
 
 ## 当前唯一下一步
 
-- 先摊平最小 limiter 纯组件：`Direction / BucketConfig / TokenBucket / WaitN / LimiterRegistry`，让 `independent` 和 `shared` 只共用这一套底层语义，暂不接 TCP / UDP 数据面。
+- 先把限速真正接进 TCP 数据面：在 `frps` 公网 TCP 读路径和 `frpc` 本地 TCP 读路径之间插入 `TokenBucket.WaitN`，明确切片策略和 reload / shutdown / session close 取消语义，暂不碰 UDP。
 
 ## 进度归档入口
 
