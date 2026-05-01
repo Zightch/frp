@@ -44,6 +44,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/GroupConfigView.vue')
       },
       {
+        path: 'rate-policies',
+        name: 'RatePolicy',
+        component: () => import('@/views/RatePolicyView.vue')
+      },
+      {
         path: 'certificate-assets',
         name: 'CertificateAssets',
         component: () => import('@/views/CertificateAssetsView.vue')

@@ -498,3 +498,75 @@ export const certificateUsagesApi = {
       method: 'DELETE'
     })
 }
+
+// --- Rate Policy API ---
+
+export type RatePolicyMode = 'independent' | 'shared'
+export type RatePolicyUnit = 'K' | 'M' | 'G'
+
+export interface RatePolicy {
+  id: number
+  name: string
+  mode: RatePolicyMode
+  downlink_value: number
+  downlink_unit: RatePolicyUnit
+  uplink_value: number
+  uplink_unit: RatePolicyUnit
+  tunnel_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface RatePolicyPayload {
+  name: string
+  mode: RatePolicyMode
+  downlink_value: number
+  downlink_unit: RatePolicyUnit
+  uplink_value: number
+  uplink_unit: RatePolicyUnit
+}
+
+export interface TunnelBinding {
+  id: number
+  group_id: number
+  group_name: string
+  name: string
+  protocol: 'tcp' | 'udp'
+  remote_start: number
+  remote_end: number
+  rate_policy_id?: number
+  rate_policy_name?: string
+}
+
+export const ratePoliciesApi = {
+  list: () => request<{ items: RatePolicy[] }>('/rate-policies'),
+
+  create: (data: RatePolicyPayload) =>
+    request<{ item: RatePolicy }>('/rate-policies', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+
+  update: (id: number, data: Partial<RatePolicyPayload>) =>
+    request<{ item: RatePolicy }>(`/rate-policies/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    }),
+
+  delete: (id: number) => request(`/rate-policies/${id}`, { method: 'DELETE' }),
+
+  getTunnels: (id: number) => request<{ items: TunnelBinding[] }>(`/rate-policies/${id}/tunnels`),
+
+  bindTunnels: (id: number, tunnelIds: number[]) =>
+    request<{ bound: number }>(`/rate-policies/${id}/tunnels`, {
+      method: 'POST',
+      body: JSON.stringify({ tunnel_ids: tunnelIds })
+    }),
+
+  unbindTunnel: (policyId: number, tunnelId: number) =>
+    request(`/rate-policies/${policyId}/tunnels/${tunnelId}`, { method: 'DELETE' })
+}
+
+export const bindableTunnelsApi = {
+  list: () => request<{ items: TunnelBinding[] }>('/tunnels/bindable')
+}

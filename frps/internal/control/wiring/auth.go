@@ -32,6 +32,7 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 		controlruntime.RuntimeSnapshotForGroup(group),
 		controlruntime.SessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
 	)
+	session.SetSharedRateLimitStore(s.sharedRate)
 	initial := controlsession.NewState(group.ID, session.ID)
 	desired := controlruntime.DesiredRuntimeFromGroup(group)
 	initial.Desired = &desired

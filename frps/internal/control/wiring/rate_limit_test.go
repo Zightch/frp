@@ -370,6 +370,185 @@ func TestSessionStateBindPublicUDPSessionRegistersSharedPolicyAcrossTunnels(t *t
 	}
 }
 
+func TestSessionStateSharedPolicyReusesLimiterPairAcrossSessionsAndProtocols(t *testing.T) {
+	shared := newSharedRateLimitStore()
+
+	tcpTunnel := protocol.TunnelEntry{
+		TunnelID:    7,
+		Protocol:    protocol.ProtocolTCP,
+		TunnelFlags: protocol.TunnelFlagEnabled,
+		RemoteStart: 20000,
+		RemoteEnd:   20000,
+		RatePolicy: protocol.TunnelRatePolicy{
+			PolicyID:    9,
+			Mode:        protocol.RatePolicyModeShared,
+			DownlinkBPS: 10_000_000,
+			UplinkBPS:   5_000_000,
+		},
+	}
+	udpTunnel := protocol.TunnelEntry{
+		TunnelID:    8,
+		Protocol:    protocol.ProtocolUDP,
+		TunnelFlags: protocol.TunnelFlagEnabled,
+		RemoteStart: 20001,
+		RemoteEnd:   20001,
+		RatePolicy:  tcpTunnel.RatePolicy,
+	}
+
+	tcpSession := newSessionState(11, GroupRuntime{ID: 1, Snapshot: ConfigSnapshot{Version: 3, Tunnels: []protocol.TunnelEntry{tcpTunnel}}}, ConfigSnapshot{Version: 3, Tunnels: []protocol.TunnelEntry{tcpTunnel}}, 0)
+	tcpSession.SetSharedRateLimitStore(shared)
+	markSessionRateLimitRuntimeStarted(tcpSession, 3)
+
+	udpSession := newSessionState(12, GroupRuntime{ID: 2, Snapshot: ConfigSnapshot{Version: 4, Tunnels: []protocol.TunnelEntry{udpTunnel}}}, ConfigSnapshot{Version: 4, Tunnels: []protocol.TunnelEntry{udpTunnel}}, 0)
+	udpSession.SetSharedRateLimitStore(shared)
+	markSessionRateLimitRuntimeStarted(udpSession, 4)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	if !tcpSession.AddPublicStream(101, &publicStream{Conn: serverConn, Tunnel: tcpTunnel, Ready: make(chan error, 1)}, 3) {
+		t.Fatal("expected tcp shared stream to register")
+	}
+
+	listener := &rateLimitTestUDPListener{}
+	boundUDPSession, created := udpSession.BindPublicUDPSession(newPublicUDPSession(201, udpTunnel, 20001, listener, &net.UDPAddr{IP: net.ParseIP("198.51.100.20"), Port: 53020}, time.Now().UTC()), 4)
+	if boundUDPSession == nil || !created {
+		t.Fatal("expected udp shared session to register")
+	}
+
+	_, tcpLimiters, ok := tcpSession.StreamRateLimit(101)
+	if !ok {
+		t.Fatal("expected tcp shared limiter entry")
+	}
+	_, udpLimiters, ok := udpSession.UDPSessionRateLimit(boundUDPSession.SessionID)
+	if !ok {
+		t.Fatal("expected udp shared limiter entry")
+	}
+	if tcpLimiters.Downlink != udpLimiters.Downlink || tcpLimiters.Uplink != udpLimiters.Uplink {
+		t.Fatal("shared policy must reuse one limiter pair across sessions and protocols")
+	}
+	if got := sharedStoreEntryCount(shared); got != 1 {
+		t.Fatalf("expected one shared limiter entry, got %d", got)
+	}
+}
+
+func TestSessionStateSharedPolicyConfigChangeBuildsNewLimiterPairAcrossSessions(t *testing.T) {
+	shared := newSharedRateLimitStore()
+
+	oldTunnel := protocol.TunnelEntry{
+		TunnelID:    7,
+		Protocol:    protocol.ProtocolTCP,
+		TunnelFlags: protocol.TunnelFlagEnabled,
+		RemoteStart: 20000,
+		RemoteEnd:   20000,
+		RatePolicy: protocol.TunnelRatePolicy{
+			PolicyID:    9,
+			Mode:        protocol.RatePolicyModeShared,
+			DownlinkBPS: 10_000_000,
+			UplinkBPS:   5_000_000,
+		},
+	}
+	newTunnel := oldTunnel
+	newTunnel.TunnelID = 8
+	newTunnel.RemoteStart = 20001
+	newTunnel.RemoteEnd = 20001
+	newTunnel.RatePolicy.DownlinkBPS = 20_000_000
+	newTunnel.RatePolicy.UplinkBPS = 8_000_000
+
+	oldSession := newSessionState(11, GroupRuntime{ID: 1, Snapshot: ConfigSnapshot{Version: 3, Tunnels: []protocol.TunnelEntry{oldTunnel}}}, ConfigSnapshot{Version: 3, Tunnels: []protocol.TunnelEntry{oldTunnel}}, 0)
+	oldSession.SetSharedRateLimitStore(shared)
+	markSessionRateLimitRuntimeStarted(oldSession, 3)
+
+	newSession := newSessionState(12, GroupRuntime{ID: 2, Snapshot: ConfigSnapshot{Version: 4, Tunnels: []protocol.TunnelEntry{newTunnel}}}, ConfigSnapshot{Version: 4, Tunnels: []protocol.TunnelEntry{newTunnel}}, 0)
+	newSession.SetSharedRateLimitStore(shared)
+	markSessionRateLimitRuntimeStarted(newSession, 4)
+
+	clientA, serverA := net.Pipe()
+	defer clientA.Close()
+	defer serverA.Close()
+	if !oldSession.AddPublicStream(101, &publicStream{Conn: serverA, Tunnel: oldTunnel, Ready: make(chan error, 1)}, 3) {
+		t.Fatal("expected old shared stream to register")
+	}
+	clientB, serverB := net.Pipe()
+	defer clientB.Close()
+	defer serverB.Close()
+	if !newSession.AddPublicStream(102, &publicStream{Conn: serverB, Tunnel: newTunnel, Ready: make(chan error, 1)}, 4) {
+		t.Fatal("expected new shared stream to register")
+	}
+
+	_, oldLimiters, ok := oldSession.StreamRateLimit(101)
+	if !ok {
+		t.Fatal("expected old shared limiter entry")
+	}
+	_, newLimiters, ok := newSession.StreamRateLimit(102)
+	if !ok {
+		t.Fatal("expected new shared limiter entry")
+	}
+	if oldLimiters.Downlink == newLimiters.Downlink || oldLimiters.Uplink == newLimiters.Uplink {
+		t.Fatal("shared policy config change must not reuse the old limiter pair")
+	}
+	if got := sharedStoreEntryCount(shared); got != 2 {
+		t.Fatalf("expected two shared limiter entries after config change, got %d", got)
+	}
+}
+
+func TestSessionStateSharedPolicyReleaseRemovesServerEntry(t *testing.T) {
+	shared := newSharedRateLimitStore()
+	tunnel := protocol.TunnelEntry{
+		TunnelID:    7,
+		Protocol:    protocol.ProtocolTCP,
+		TunnelFlags: protocol.TunnelFlagEnabled,
+		RemoteStart: 20000,
+		RemoteEnd:   20000,
+		RatePolicy: protocol.TunnelRatePolicy{
+			PolicyID:    9,
+			Mode:        protocol.RatePolicyModeShared,
+			DownlinkBPS: 10_000_000,
+			UplinkBPS:   5_000_000,
+		},
+	}
+
+	sessionA := newSessionState(11, GroupRuntime{ID: 1, Snapshot: ConfigSnapshot{Version: 3, Tunnels: []protocol.TunnelEntry{tunnel}}}, ConfigSnapshot{Version: 3, Tunnels: []protocol.TunnelEntry{tunnel}}, 0)
+	sessionA.SetSharedRateLimitStore(shared)
+	markSessionRateLimitRuntimeStarted(sessionA, 3)
+
+	tunnelB := tunnel
+	tunnelB.TunnelID = 8
+	tunnelB.RemoteStart = 20001
+	tunnelB.RemoteEnd = 20001
+	sessionB := newSessionState(12, GroupRuntime{ID: 2, Snapshot: ConfigSnapshot{Version: 4, Tunnels: []protocol.TunnelEntry{tunnelB}}}, ConfigSnapshot{Version: 4, Tunnels: []protocol.TunnelEntry{tunnelB}}, 0)
+	sessionB.SetSharedRateLimitStore(shared)
+	markSessionRateLimitRuntimeStarted(sessionB, 4)
+
+	clientA, serverA := net.Pipe()
+	defer clientA.Close()
+	defer serverA.Close()
+	if !sessionA.AddPublicStream(101, &publicStream{Conn: serverA, Tunnel: tunnel, Ready: make(chan error, 1)}, 3) {
+		t.Fatal("expected first shared stream to register")
+	}
+	clientB, serverB := net.Pipe()
+	defer clientB.Close()
+	defer serverB.Close()
+	if !sessionB.AddPublicStream(102, &publicStream{Conn: serverB, Tunnel: tunnelB, Ready: make(chan error, 1)}, 4) {
+		t.Fatal("expected second shared stream to register")
+	}
+	if refs := sharedStoreRefCount(shared, tunnel); refs != 2 {
+		t.Fatalf("expected shared limiter refcount 2, got %d", refs)
+	}
+
+	sessionA.FreezeTunnelRuntime()
+	if refs := sharedStoreRefCount(shared, tunnel); refs != 1 {
+		t.Fatalf("expected shared limiter refcount 1 after first freeze, got %d", refs)
+	}
+
+	if !sessionB.ClosePublicStream(102) {
+		t.Fatal("expected second shared stream close to succeed")
+	}
+	if got := sharedStoreEntryCount(shared); got != 0 {
+		t.Fatalf("expected shared limiter entry cleanup after final release, got %d entries", got)
+	}
+}
+
 func TestSessionStateClosePublicUDPSessionCancelsRateLimitContext(t *testing.T) {
 	tunnel := protocol.TunnelEntry{
 		TunnelID:    7,
@@ -535,4 +714,32 @@ func (rateLimitTestUDPListener) ReadFromUDP([]byte) (int, *net.UDPAddr, error) {
 
 func (rateLimitTestUDPListener) WriteToUDP(payload []byte, addr *net.UDPAddr) (int, error) {
 	return len(payload), nil
+}
+
+func markSessionRateLimitRuntimeStarted(session *sessionState, version uint64) {
+	session.RuntimeMu.Lock()
+	session.Runtime.Listeners.Started = true
+	session.Runtime.Generation = version
+	session.RuntimeMu.Unlock()
+}
+
+func sharedStoreEntryCount(store *sharedRateLimitStore) int {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return len(store.entries)
+}
+
+func sharedStoreRefCount(store *sharedRateLimitStore, tunnel protocol.TunnelEntry) int {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	spec, err := rateLimitSpecForTunnel(tunnel)
+	if err != nil {
+		return 0
+	}
+	entry := store.entries[sharedRateLimitKeyForSpec(spec)]
+	if entry == nil {
+		return 0
+	}
+	return entry.refs
 }

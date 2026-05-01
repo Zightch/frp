@@ -47,6 +47,7 @@ type Server struct {
 	nextSessionID atomic.Uint64
 
 	controlTLS *controlhandshake.ControlTLSStore
+	sharedRate *sharedRateLimitStore
 
 	supervisor *Supervisor
 }
@@ -108,6 +109,7 @@ func NewServer(options Options, logger *slog.Logger, version string) *Server {
 			TTL:   options.ChallengeTTL,
 		}),
 		controlTLS: controlhandshake.NewControlTLSStore(),
+		sharedRate: newSharedRateLimitStore(),
 	}
 	server.supervisor = NewSupervisor(newServerActionExecutor(server))
 	return server

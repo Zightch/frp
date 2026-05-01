@@ -48,6 +48,10 @@ function handleMenuSelect() {
             <el-icon><Connection /></el-icon>
             <span>分组配置</span>
           </el-menu-item>
+          <el-menu-item index="/rate-policies">
+            <el-icon><Timer /></el-icon>
+            <span>限速策略</span>
+          </el-menu-item>
           <el-menu-item index="/certificate-assets">
             <el-icon><Key /></el-icon>
             <span>证书资产</span>
@@ -74,6 +78,10 @@ function handleMenuSelect() {
           <el-menu-item index="/proxy-groups">
             <el-icon><Connection /></el-icon>
             <span>分组配置</span>
+          </el-menu-item>
+          <el-menu-item index="/rate-policies">
+            <el-icon><Timer /></el-icon>
+            <span>限速策略</span>
           </el-menu-item>
           <el-menu-item index="/certificate-assets">
             <el-icon><Key /></el-icon>

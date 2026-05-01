@@ -18,3 +18,13 @@ func newSessionState(id uint64, group GroupRuntime, snapshot ConfigSnapshot, rea
 		rateLimit:            newSessionRateLimitState(),
 	}
 }
+
+func (s *sessionState) SetSharedRateLimitStore(store *sharedRateLimitStore) {
+	if s == nil || s.rateLimit == nil || store == nil {
+		return
+	}
+
+	s.rateLimit.mu.Lock()
+	s.rateLimit.shared = store
+	s.rateLimit.mu.Unlock()
+}

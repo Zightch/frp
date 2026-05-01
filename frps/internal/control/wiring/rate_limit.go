@@ -12,22 +12,25 @@ import (
 )
 
 type sessionRateLimitState struct {
-	mu       sync.Mutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	registry *ratepolicy.LimiterRegistry
-	entries  map[uint32]rateLimitEntry
+	mu          sync.Mutex
+	ctx         context.Context
+	cancel      context.CancelFunc
+	independent *ratepolicy.LimiterRegistry
+	shared      *sharedRateLimitStore
+	entries     map[uint32]rateLimitEntry
 }
 
 type rateLimitEntry struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	limiters ratepolicy.TunnelLimiters
+	release  func()
 }
 
 func newSessionRateLimitState() *sessionRateLimitState {
 	state := &sessionRateLimitState{
 		entries: make(map[uint32]rateLimitEntry),
+		shared:  newSharedRateLimitStore(),
 	}
 	state.resetRuntimeLocked()
 	return state
@@ -131,7 +134,7 @@ func (s *sessionState) registerRateLimit(id uint32, tunnel protocol.TunnelEntry)
 	s.rateLimit.mu.Lock()
 	defer s.rateLimit.mu.Unlock()
 
-	limiters, err := buildTunnelLimitersLocked(s.rateLimit, tunnel)
+	limiters, release, err := buildTunnelLimitersLocked(s.rateLimit, tunnel)
 	if err != nil {
 		return err
 	}
@@ -141,6 +144,7 @@ func (s *sessionState) registerRateLimit(id uint32, tunnel protocol.TunnelEntry)
 		ctx:      entryCtx,
 		cancel:   entryCancel,
 		limiters: limiters,
+		release:  release,
 	}
 	return nil
 }
@@ -160,6 +164,9 @@ func (s *sessionState) cancelRateLimit(id uint32) {
 	if ok && entry.cancel != nil {
 		entry.cancel()
 	}
+	if ok && entry.release != nil {
+		entry.release()
+	}
 }
 
 func (s *sessionState) resetRateLimitRuntime() {
@@ -173,6 +180,9 @@ func (s *sessionState) resetRateLimitRuntime() {
 		if entry.cancel != nil {
 			entry.cancel()
 		}
+		if entry.release != nil {
+			entry.release()
+		}
 	}
 	s.rateLimit.resetRuntimeLocked()
 	s.rateLimit.mu.Unlock()
@@ -183,25 +193,36 @@ func (s *sessionRateLimitState) resetRuntimeLocked() {
 		s.cancel()
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
-	s.registry = ratepolicy.NewLimiterRegistry()
+	s.independent = ratepolicy.NewLimiterRegistry()
 }
 
-func buildTunnelLimitersLocked(state *sessionRateLimitState, tunnel protocol.TunnelEntry) (ratepolicy.TunnelLimiters, error) {
+func buildTunnelLimitersLocked(state *sessionRateLimitState, tunnel protocol.TunnelEntry) (ratepolicy.TunnelLimiters, func(), error) {
 	if state == nil {
-		return ratepolicy.TunnelLimiters{}, fmt.Errorf("session rate limit state is nil")
-	}
-	if state.registry == nil {
-		state.registry = ratepolicy.NewLimiterRegistry()
+		return ratepolicy.TunnelLimiters{}, nil, fmt.Errorf("session rate limit state is nil")
 	}
 	if tunnel.RatePolicy.PolicyID == 0 {
-		return ratepolicy.TunnelLimiters{}, nil
+		return ratepolicy.TunnelLimiters{}, nil, nil
 	}
 
 	spec, err := rateLimitSpecForTunnel(tunnel)
 	if err != nil {
-		return ratepolicy.TunnelLimiters{}, err
+		return ratepolicy.TunnelLimiters{}, nil, err
 	}
-	return state.registry.Limiters(spec)
+	switch spec.Mode {
+	case ratepolicy.ModeIndependent:
+		if state.independent == nil {
+			state.independent = ratepolicy.NewLimiterRegistry()
+		}
+		limiters, err := state.independent.Limiters(spec)
+		return limiters, nil, err
+	case ratepolicy.ModeShared:
+		if state.shared == nil {
+			state.shared = newSharedRateLimitStore()
+		}
+		return state.shared.Acquire(spec)
+	default:
+		return ratepolicy.TunnelLimiters{}, nil, fmt.Errorf("unsupported rate policy mode %q", spec.Mode)
+	}
 }
 
 func rateLimitSpecForTunnel(tunnel protocol.TunnelEntry) (ratepolicy.LimiterSpec, error) {
