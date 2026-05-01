@@ -21,8 +21,21 @@
 - `POST /api/v1/auth/init`
 - `POST /api/v1/auth/challenge`
 - `POST /api/v1/auth/login`
+- `POST /api/v1/auth/takeover`
 - `GET /api/v1/auth/session`
 - `POST /api/v1/auth/logout`
+
+管理登录语义固定为：
+
+- `POST /api/v1/auth/login` 固定先验证 `challenge_id + proof`，只要管理密钥认证还没通过，就不会进入管理员占用判断。
+- 管理密钥认证通过后，服务端会在签发管理会话前检查当前是否已有在线管理员。
+- 如果当前无人占用，则直接签发新的管理会话。
+- 如果当前已有管理员在线，则 `POST /api/v1/auth/login` 不签发正式管理会话，只返回等待态结果，并携带一次性的 `pending_login_ticket` 与当前占用者的 `observed_generation`。
+- `pending_login_ticket` 只用于后续显式 `POST /api/v1/auth/takeover`，不表示排队资格，不表示候补资格，也不表示预留了空位。
+- `POST /api/v1/auth/takeover` 必须同时提交 `pending_login_ticket` 与 `observed_generation`；服务端要在同一原子判断里确认“当前占用者是否仍然是这一个 generation/version”。
+- 只有当当前占用者仍然等于 `observed_generation` 时，顶掉才成功，并签发新的管理会话。
+- 如果当前占用者已经下线，或已经被别人替换，则 `POST /api/v1/auth/takeover` 必须失败，并返回“页面已失效，请重新登录”语义；旧等待页不能顺手抢走空闲管理位。
+- 当前管理员下线后，管理位直接回到空闲；等待页如果已经失效，必须重新走一轮新的 `challenge -> proof` 登录流程。
 
 ## `proxy_group` 接口
 
