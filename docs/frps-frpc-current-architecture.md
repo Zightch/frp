@@ -214,7 +214,7 @@ sequenceDiagram
 - `frps` 是 UDP session 生命周期的唯一裁决方；当前会在公网收包和 `frpc` 回包时立即刷新 UDP session 活跃时间，并由后台短周期 sweep 按 `lastActive + timeout` 裁决空闲会话，在“最后一次成功双向转发后空闲约 `30s`”时删除本地 session、向 `frpc` 发送 `udp.close`。
 - `frpc` 当前会在收到 `udp.open` 后按 `sessionId` 建立真实本地 `UDPConn`，收到 `udp.data` 后把 datagram 写到本地 UDP 服务，并由后台读循环把本地响应按同一 `sessionId` 回发给 `frps`。
 - `frpc` 当前不做本地 idle timer；只有在收到 `udp.close`、发生本地不可恢复读写错误，或控制会话结束时才释放本地 UDP session。
-- TCP/UDP range 当前都已经完成最小闭环：`config.ack` 后 `frps` 会按 `remoteStart..remoteEnd` 展开 TCP/UDP listener，并把实际命中的公网端口写入 `stream.open.remotePort` / `udp.open.remotePort`；`frpc` 则统一按 `offset = remotePort - remoteStart` 计算目标 `localPort`。`test/e2e_tcp_range.py`、`test/e2e_udp_range.py` 和 `test/e2e_udp_single.py` 持续覆盖 range 偏移、单端口不回退和 UDP idle cleanup。隧道入口 ACL、限速、抓包、在线观测等能力仍未进入真实执行链路。
+- TCP/UDP range 当前都已经完成最小闭环：`config.ack` 后 `frps` 会按 `remoteStart..remoteEnd` 展开 TCP/UDP listener，并把实际命中的公网端口写入 `stream.open.remotePort` / `udp.open.remotePort`；`frpc` 则统一按 `offset = remotePort - remoteStart` 计算目标 `localPort`。`test/e2e_tcp_range.py`、`test/e2e_udp_range.py` 和 `test/e2e_udp_single.py` 持续覆盖 range 偏移、单端口不回退和 UDP idle cleanup。当前单端口 TCP / UDP 限速已经进入 `frps` 真实执行链路；隧道入口 ACL、抓包、在线观测等能力仍未进入真实执行链路。
 
 ## 6. 数据库模型关系
 

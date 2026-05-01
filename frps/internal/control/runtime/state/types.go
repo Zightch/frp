@@ -150,6 +150,7 @@ type Stream struct {
 
 type UDPSession struct {
 	SessionID        uint32
+	Tunnel           protocol.TunnelEntry
 	TunnelID         uint32
 	RemotePort       uint16
 	ClientAddr       protocol.SockAddr
@@ -158,6 +159,7 @@ type UDPSession struct {
 	OpenedAtMs       uint64
 	IdleTimeout      time.Duration
 	LastActiveUnixMs atomic.Int64
+	ActiveTransfers  atomic.Int32
 }
 
 func mergeObservedGroupRuntime(current GroupRuntime, desired GroupRuntime, snapshot ConfigSnapshot, effectiveIP string) GroupRuntime {
@@ -277,6 +279,17 @@ func (s *UDPSession) Touch(now time.Time) {
 		return
 	}
 	s.LastActiveUnixMs.Store(now.UTC().UnixMilli())
+}
+
+func (s *UDPSession) BeginTransfer() func() {
+	if s == nil {
+		return func() {}
+	}
+
+	s.ActiveTransfers.Add(1)
+	return func() {
+		s.ActiveTransfers.Add(-1)
+	}
 }
 
 func (s *UDPSession) Key() string {
@@ -829,6 +842,9 @@ func (s *ConcreteSessionState) TakeIdlePublicUDPSessions(now time.Time) []*UDPSe
 
 	idleSessions := make([]*UDPSession, 0)
 	for sessionID, udpSession := range s.Runtime.UDP.Sessions {
+		if udpSession.ActiveTransfers.Load() != 0 {
+			continue
+		}
 		lastActiveUnixMs := udpSession.LastActiveUnixMs.Load()
 		if lastActiveUnixMs == 0 {
 			continue

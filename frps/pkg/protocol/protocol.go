@@ -972,10 +972,6 @@ func encodeTunnelEntry(enc *bodyEncoder, tunnel TunnelEntry) error {
 	if err := enc.longstr(tunnel.BackendTLSClientKeyPEM); err != nil {
 		return err
 	}
-	enc.u32(tunnel.RatePolicy.PolicyID)
-	enc.u8(tunnel.RatePolicy.Mode)
-	enc.u64(tunnel.RatePolicy.DownlinkBPS)
-	enc.u64(tunnel.RatePolicy.UplinkBPS)
 	return nil
 }
 
@@ -1035,18 +1031,6 @@ func decodeTunnelEntry(dec *bodyDecoder) (TunnelEntry, error) {
 		return tunnel, err
 	}
 	if tunnel.BackendTLSClientKeyPEM, err = dec.longstr(); err != nil {
-		return tunnel, err
-	}
-	if tunnel.RatePolicy.PolicyID, err = dec.u32(); err != nil {
-		return tunnel, err
-	}
-	if tunnel.RatePolicy.Mode, err = dec.u8(); err != nil {
-		return tunnel, err
-	}
-	if tunnel.RatePolicy.DownlinkBPS, err = dec.u64(); err != nil {
-		return tunnel, err
-	}
-	if tunnel.RatePolicy.UplinkBPS, err = dec.u64(); err != nil {
 		return tunnel, err
 	}
 	return tunnel, nil

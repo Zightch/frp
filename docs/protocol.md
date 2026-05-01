@@ -457,7 +457,7 @@ body：
 
 - `config.push` 始终发送完整快照，不发送增量 patch。
 - body 只包含 `frpc` 执行转发所需字段。
-- `client/tunnel` ACL、限速、抓包策略等只在 `frps` 执行的字段，不得下发到 `frpc`。
+- `client/tunnel` ACL、限速、抓包策略等只在 `frps` 执行的字段，不得下发到 `frpc`；`frpc` 不感知这类权威治理配置。
 - `wire tunnel id` 由 `frps` 分配，只要求在当前连接与当前配置快照下稳定。
 - 当 `tunnelFlags` 含 `range` 时，`remoteStart..remoteEnd` 与 `localStart..localEnd` 表示连续且跨度一致的一一对应范围。
 

@@ -63,15 +63,11 @@ frps -> start listeners
 - `backend_tls_insecure_skip_verify`
 - backend TLS 所需 CA PEM
 - backend mTLS 所需 client cert / key PEM
-- 限速策略最终执行字段：
-  - `policy_id`
-  - `mode`
-  - `downlink_bps`
-  - `uplink_bps`
 
 当前仍不下发：
 
 - ACL
+- 限速策略执行字段
 - 抓包控制
 - 反向代理配置
 - `frps` 监听侧 TLS 私钥材料
@@ -79,9 +75,10 @@ frps -> start listeners
 其中：
 
 - `frps` 监听侧 TLS 材料由 `frps` 本地按 tunnel id 解析
-- `frpc` backend TLS 材料和限速策略最终执行字段会进入 `ConfigSnapshot`
+- `frpc` 只接收完成本地转发必需的 backend TLS 材料
+- 限速策略只保留在 `frps` 本地运行态，不进入 `config.push`
 
-当前限速模型已经收口为独立 [限速策略设计](../design/rate-policy.md)。当前控制面已经把限速策略投影进 `ConfigSnapshot` 并下发到 `frpc`，但 TCP / UDP 数据面令牌桶执行仍未接入。
+当前限速模型已经收口为独立 [限速策略设计](../design/rate-policy.md)。当前 `frps` 已在单端口 TCP / UDP 数据面接入令牌桶执行；`frpc` 不执行限速，也不接收限速字段。
 
 ## 运行态恢复
 
@@ -100,6 +97,7 @@ frps -> start listeners
 - `frps` 发送 `stream.open`
 - `frpc` 返回 `stream.opened`
 - 双方通过 `stream.data` 传输原始字节
+- 限速只在 `frps` 数据面执行
 - 任一侧结束时用 `stream.close` 收口
 
 ## UDP 转发
@@ -110,5 +108,6 @@ frps -> start listeners
 - 首包和后续包都通过 `udp.data` 转发
 - `sessionId` 由 `frps` 分配
 - `frps` 按 `tunnelId + remotePort + public client addr` 识别会话
+- 限速只在 `frps` 数据面执行，且保持整包等待、不拆 datagram
 - `frpc` 不做本地 idle timer
 - `frps` 空闲约 `30s` 后删除会话并发送 `udp.close`

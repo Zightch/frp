@@ -20,7 +20,9 @@
   - 一个隧道绑定多个策略
   - 旧版本兼容层
 - 当前执行边界再明确收口：
-  - `frpc` 保持轻量，只负责接收配置和转发数据，不执行限速
+  - `frpc` 保持轻量，只负责接收配置和转发数据
+  - `frpc` 不执行限速
+  - `frpc` 不接收限速字段
   - 权威限速逻辑全部放在 `frps`
 - 后续结构仍必须按多层收口：
   - 底层纯组件
@@ -30,49 +32,35 @@
 
 ## 子步骤
 
-### 1. 把限速真正接进 `frps` UDP 数据面
+### 1. 补齐最小闭环测试
 
-- 下行：公网 UDP ingress -> `udp.data`
-- 上行：`udp.data` -> 公网 UDP listener
-- 必须明确：
-  - datagram 的扣令牌点
-  - 大 datagram 等待和分片策略
-  - `udp.close` / reload / shutdown / session close 时的等待取消
-- 不能把限速逻辑散落到现有 UDP 转发分支各处。
-
-### 2. 补齐最小闭环测试
-
-- 纯单测：
-  - bucket refill / wait / cancel
-  - `independent` / `shared` registry 语义
-  - 小速率下大帧 / 大 datagram 仍可前进
-- 控制面 / 数据面场景测试：
+- Go 场景测试继续补：
   - 在线 reload 后限速生效
   - session close / shutdown 时等待中的 limiter 退出
   - TCP `independent` / `shared`
   - UDP `independent` / `shared`
   - 多 tunnel 竞争同一共享 limiter
   - UDP idle cleanup 与限速并存
-- Python e2e：
+- Python e2e 继续补：
   - 单端口 TCP `independent`
   - 单端口 TCP `shared`
   - 单端口 UDP `independent`
   - 单端口 UDP `shared`
   - 在线修改策略后的 reload 生效
 
-### 3. 文档和归档收口
+### 2. 文档和归档收口
 
-- runtime / protocol / 数据面落地后，同步：
+- 测试闭环落地后，同步：
   - `docs/project-overview.md`
+  - `docs/protocol.md`
   - `docs/frps/design/rate-policy.md`
-  - `docs/frps/technical/data-model.md`
-  - `docs/frps/technical/management-api.md`
   - `docs/frps/features/control-and-data-plane.md`
+  - 其他仍残留分叉的正式文档
 - 每完成一层就归档到 `docs/progress/YYYY-MM-DD.md`，并提交稳定状态。
 
 ## 当前唯一下一步
 
-- 先把限速真正接进 `frps` UDP 数据面，明确 datagram 限速执行点、等待推进策略，以及 `udp.close / reload / shutdown / session close` 的取消语义，暂不碰新的 e2e 和文档扩写。
+- 先补限速最小闭环测试，优先覆盖单端口 TCP / UDP 的 `independent` / `shared`、共享桶竞争，以及在线 reload 生效路径，暂不碰 range 和观测页。
 
 ## 进度归档入口
 

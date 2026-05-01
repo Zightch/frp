@@ -12,6 +12,7 @@ import (
 	controlprotocolerrors "github.com/zightch/frp/frps/internal/control/protocol/errors"
 	controlruntimestate "github.com/zightch/frp/frps/internal/control/runtime/state"
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/ratepolicy"
 )
 
 type Session = controlruntimestate.UDPSession
@@ -34,6 +35,7 @@ type SessionState interface {
 	PublicUDPSession(sessionID uint32) *Session
 	ClosePublicUDPSession(sessionID uint32) bool
 	TakeIdlePublicUDPSessions(now time.Time) []*Session
+	UDPSessionRateLimit(sessionID uint32) (context.Context, ratepolicy.TunnelLimiters, bool)
 	DoneCh() <-chan struct{}
 }
 
@@ -104,6 +106,24 @@ func (h Handler) HandlePublicDatagram(serve ServeContext, listener UDPListener, 
 	if forwardOp.Blocked {
 		return nil
 	}
+
+	limitCtx, limiters, ok := serve.Session.UDPSessionRateLimit(forwardOp.UDPSession.SessionID)
+	if !ok || limitCtx == nil {
+		limitCtx = context.Background()
+	}
+	release := forwardOp.UDPSession.BeginTransfer()
+	defer release()
+	forwardOp.UDPSession.Touch(h.now())
+	if limiters.Downlink != nil {
+		if err := limiters.Downlink.WaitN(limitCtx, len(payload)); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			serve.Session.ClosePublicUDPSession(forwardOp.UDPSession.SessionID)
+			return err
+		}
+	}
+
 	err = serve.RuntimeWriter.WriteFrames(forwardOp.Frames...)
 	if err != nil {
 		if forwardOp.Created {
@@ -135,6 +155,25 @@ func (h Handler) HandleUDPData(writer FrameWriter, session SessionState, frame p
 	udpSession := session.PublicUDPSession(frame.StreamID)
 	if udpSession == nil {
 		return SendUDPClose(writer, frame.StreamID, protocol.CloseReasonProtocolError, "udp session not found")
+	}
+
+	limitCtx, limiters, ok := session.UDPSessionRateLimit(frame.StreamID)
+	if !ok || limitCtx == nil {
+		limitCtx = context.Background()
+	}
+	release := udpSession.BeginTransfer()
+	defer release()
+	udpSession.Touch(h.now())
+	if limiters.Uplink != nil {
+		if err := limiters.Uplink.WaitN(limitCtx, len(frame.Body)); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			if session.ClosePublicUDPSession(frame.StreamID) {
+				return SendUDPClose(writer, frame.StreamID, protocol.CloseReasonWriteError, err.Error())
+			}
+			return nil
+		}
 	}
 
 	if _, err := udpSession.Listener.WriteToUDP(frame.Body, udpSession.PublicAddr); err != nil {
@@ -266,6 +305,7 @@ func SendUDPClose(writer FrameWriter, sessionID uint32, reasonCode uint16, messa
 func NewPublicSession(sessionID uint32, tunnel protocol.TunnelEntry, remotePort uint16, listener UDPListener, clientAddr *net.UDPAddr, idleTimeout time.Duration, now time.Time) *Session {
 	udpSession := &Session{
 		SessionID:   sessionID,
+		Tunnel:      tunnel,
 		TunnelID:    tunnel.TunnelID,
 		RemotePort:  remotePort,
 		ClientAddr:  SockAddrFromUDPAddr(clientAddr),

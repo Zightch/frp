@@ -1,6 +1,6 @@
 # 限速策略设计
 
-本文档描述已确认的“限速策略”业务模型。当前代码已经落地 `schema + 管理 API` 闸口，并已把限速策略投影进 `GroupRuntime / ConfigSnapshot / config.push`；本文继续固定整体边界，避免重新回到 `proxy_group` 内嵌限速的旧设想。
+本文档描述已确认的“限速策略”业务模型。当前代码已经落地 `schema + 管理 API` 闸口，并已把限速策略投影进 `GroupRuntime / ConfigSnapshot`，同时只在 `frps` 单端口 TCP / UDP 数据面执行；本文继续固定整体边界，避免重新回到 `proxy_group` 内嵌限速的旧设想。
 
 ## 1. 术语约定
 
@@ -258,7 +258,12 @@
 - `rate_policies`
 - `rate_policy_bindings`
 - `GroupRuntime / ConfigSnapshot`
-- `protocol.ConfigPush / protocol.TunnelEntry`
+
+当前执行边界固定为：
+
+- 限速策略只在 `frps` 本地运行态和数据面生效
+- `frpc` 不执行限速
+- `config.push` 不再下发限速字段
 
 后续继续正式实现限速时，应直接围绕：
 

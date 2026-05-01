@@ -8,6 +8,7 @@ import (
 
 	"github.com/zightch/frp/frps/internal/clock"
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/ratepolicy"
 )
 
 func TestPrepareDatagramForwardCreatesAndReusesSession(t *testing.T) {
@@ -70,6 +71,78 @@ func TestHandleUDPDataWritesToPublicListener(t *testing.T) {
 	}
 }
 
+func TestHandlePublicDatagramWaitsOnDownlinkLimiterWithoutSplitting(t *testing.T) {
+	session := newFakeSession()
+	listener := &fakeUDPListener{}
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 53000}
+	tunnel := protocol.TunnelEntry{TunnelID: 9, Protocol: protocol.ProtocolUDP}
+	udpSession := NewPublicSession(12, tunnel, 22000, listener, clientAddr, 30*time.Second, time.Unix(10, 0))
+	session.sessions[12] = udpSession
+	session.keys[udpSession.Key()] = udpSession.SessionID
+	limiter := &fakeRateLimiter{config: ratepolicy.BucketConfig{RateBPS: 8_000, BurstBytes: 2}}
+	session.rateLimits[12] = fakeUDPSessionRateLimit{
+		ctx:      context.Background(),
+		limiters: ratepolicy.TunnelLimiters{Downlink: limiter},
+	}
+	runtimeWriter := &recordingWriter{}
+
+	err := (Handler{Clock: staticClock{now: time.Unix(11, 0)}}).HandlePublicDatagram(ServeContext{
+		Session:       session,
+		RuntimeWriter: runtimeWriter,
+		ConfigVersion: 7,
+		Tunnel:        tunnel,
+		RemotePort:    22000,
+	}, listener, clientAddr, []byte("hello"))
+	if err != nil {
+		t.Fatalf("handle public datagram: %v", err)
+	}
+	if len(runtimeWriter.frames) != 1 || runtimeWriter.frames[0].Type != protocol.TypeUDPData || string(runtimeWriter.frames[0].Body) != "hello" {
+		t.Fatalf("unexpected runtime frames: %#v", runtimeWriter.frames)
+	}
+	if len(limiter.waits) != 1 || limiter.waits[0] != 5 {
+		t.Fatalf("unexpected limiter waits: %#v", limiter.waits)
+	}
+}
+
+func TestHandlePublicDatagramReturnsOnLimiterCancel(t *testing.T) {
+	session := newFakeSession()
+	listener := &fakeUDPListener{}
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 53000}
+	tunnel := protocol.TunnelEntry{TunnelID: 9, Protocol: protocol.ProtocolUDP}
+	udpSession := NewPublicSession(12, tunnel, 22000, listener, clientAddr, 30*time.Second, time.Unix(10, 0))
+	session.sessions[12] = udpSession
+	session.keys[udpSession.Key()] = udpSession.SessionID
+	ctx, cancel := context.WithCancel(context.Background())
+	limiter := &fakeRateLimiter{
+		config: ratepolicy.BucketConfig{RateBPS: 8_000, BurstBytes: 2},
+		wait: func(ctx context.Context, bytes int) error {
+			cancel()
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	session.rateLimits[12] = fakeUDPSessionRateLimit{
+		ctx:      ctx,
+		cancel:   cancel,
+		limiters: ratepolicy.TunnelLimiters{Downlink: limiter},
+	}
+	runtimeWriter := &recordingWriter{}
+
+	err := (Handler{Clock: staticClock{now: time.Unix(11, 0)}}).HandlePublicDatagram(ServeContext{
+		Session:       session,
+		RuntimeWriter: runtimeWriter,
+		ConfigVersion: 7,
+		Tunnel:        tunnel,
+		RemotePort:    22000,
+	}, listener, clientAddr, []byte("hello"))
+	if err != nil {
+		t.Fatalf("handle public datagram: %v", err)
+	}
+	if len(runtimeWriter.frames) != 0 {
+		t.Fatalf("expected no runtime frames after limiter cancel, got %#v", runtimeWriter.frames)
+	}
+}
+
 func TestHandleUDPDataSendsCloseForMissingSession(t *testing.T) {
 	writer := &recordingWriter{}
 
@@ -89,6 +162,68 @@ func TestHandleUDPDataSendsCloseForMissingSession(t *testing.T) {
 	}
 	if closeBody.ReasonCode != protocol.CloseReasonProtocolError {
 		t.Fatalf("unexpected close body: %#v", closeBody)
+	}
+}
+
+func TestHandleUDPDataWaitsOnUplinkLimiterWithoutSplitting(t *testing.T) {
+	session := newFakeSession()
+	listener := &fakeUDPListener{}
+	udpSession := NewPublicSession(12, protocol.TunnelEntry{TunnelID: 9}, 22000, listener, &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 53000}, 30*time.Second, time.Unix(10, 0))
+	session.sessions[12] = udpSession
+	limiter := &fakeRateLimiter{config: ratepolicy.BucketConfig{RateBPS: 8_000, BurstBytes: 2}}
+	session.rateLimits[12] = fakeUDPSessionRateLimit{
+		ctx:      context.Background(),
+		limiters: ratepolicy.TunnelLimiters{Uplink: limiter},
+	}
+
+	if err := (Handler{Clock: staticClock{now: time.Unix(11, 0)}}).HandleUDPData(&recordingWriter{}, session, protocol.Frame{
+		Type:     protocol.TypeUDPData,
+		StreamID: 12,
+		Body:     []byte("payload"),
+	}); err != nil {
+		t.Fatalf("handle udp.data: %v", err)
+	}
+	if len(listener.writes) != 1 || string(listener.writes[0].payload) != "payload" {
+		t.Fatalf("unexpected udp writes: %#v", listener.writes)
+	}
+	if len(limiter.waits) != 1 || limiter.waits[0] != len("payload") {
+		t.Fatalf("unexpected limiter waits: %#v", limiter.waits)
+	}
+}
+
+func TestHandleUDPDataReturnsOnLimiterCancel(t *testing.T) {
+	session := newFakeSession()
+	listener := &fakeUDPListener{}
+	udpSession := NewPublicSession(12, protocol.TunnelEntry{TunnelID: 9}, 22000, listener, &net.UDPAddr{IP: net.ParseIP("198.51.100.10"), Port: 53000}, 30*time.Second, time.Unix(10, 0))
+	session.sessions[12] = udpSession
+	ctx, cancel := context.WithCancel(context.Background())
+	limiter := &fakeRateLimiter{
+		config: ratepolicy.BucketConfig{RateBPS: 8_000, BurstBytes: 2},
+		wait: func(ctx context.Context, bytes int) error {
+			cancel()
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	session.rateLimits[12] = fakeUDPSessionRateLimit{
+		ctx:      ctx,
+		cancel:   cancel,
+		limiters: ratepolicy.TunnelLimiters{Uplink: limiter},
+	}
+	writer := &recordingWriter{}
+
+	if err := (Handler{Clock: staticClock{now: time.Unix(11, 0)}}).HandleUDPData(writer, session, protocol.Frame{
+		Type:     protocol.TypeUDPData,
+		StreamID: 12,
+		Body:     []byte("payload"),
+	}); err != nil {
+		t.Fatalf("handle udp.data: %v", err)
+	}
+	if len(listener.writes) != 0 {
+		t.Fatalf("expected no udp writes after limiter cancel, got %#v", listener.writes)
+	}
+	if len(writer.frames) != 0 {
+		t.Fatalf("expected no control frames after limiter cancel, got %#v", writer.frames)
 	}
 }
 
@@ -134,6 +269,7 @@ type fakeSession struct {
 	nextStreamID  uint32
 	sessions      map[uint32]*Session
 	keys          map[string]uint32
+	rateLimits    map[uint32]fakeUDPSessionRateLimit
 	admit         bool
 	idle          []*Session
 	done          chan struct{}
@@ -145,6 +281,7 @@ func newFakeSession() *fakeSession {
 		nextStreamID:  11,
 		sessions:      make(map[uint32]*Session),
 		keys:          make(map[string]uint32),
+		rateLimits:    make(map[uint32]fakeUDPSessionRateLimit),
 		admit:         true,
 		done:          make(chan struct{}),
 	}
@@ -182,6 +319,12 @@ func (s *fakeSession) ClosePublicUDPSession(sessionID uint32) bool {
 	if udpSession != nil {
 		delete(s.keys, udpSession.Key())
 	}
+	if entry, ok := s.rateLimits[sessionID]; ok {
+		delete(s.rateLimits, sessionID)
+		if entry.cancel != nil {
+			entry.cancel()
+		}
+	}
 	return ok
 }
 
@@ -189,6 +332,14 @@ func (s *fakeSession) TakeIdlePublicUDPSessions(time.Time) []*Session {
 	idle := s.idle
 	s.idle = nil
 	return idle
+}
+
+func (s *fakeSession) UDPSessionRateLimit(sessionID uint32) (context.Context, ratepolicy.TunnelLimiters, bool) {
+	entry, ok := s.rateLimits[sessionID]
+	if !ok {
+		return nil, ratepolicy.TunnelLimiters{}, false
+	}
+	return entry.ctx, entry.limiters, true
 }
 
 func (s *fakeSession) DoneCh() <-chan struct{} {
@@ -208,6 +359,14 @@ func (w *recordingWriter) WriteFrame(frame protocol.Frame) error {
 	return nil
 }
 
+func (w *recordingWriter) WriteFrames(frames ...protocol.Frame) error {
+	if w.err != nil {
+		return w.err
+	}
+	w.frames = append(w.frames, frames...)
+	return nil
+}
+
 type staticClock struct {
 	now time.Time
 }
@@ -220,6 +379,30 @@ type discardLogger struct{}
 
 func (discardLogger) Info(string, ...any) {}
 func (discardLogger) Warn(string, ...any) {}
+
+type fakeUDPSessionRateLimit struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	limiters ratepolicy.TunnelLimiters
+}
+
+type fakeRateLimiter struct {
+	config ratepolicy.BucketConfig
+	waits  []int
+	wait   func(context.Context, int) error
+}
+
+func (l *fakeRateLimiter) Config() ratepolicy.BucketConfig {
+	return l.config
+}
+
+func (l *fakeRateLimiter) WaitN(ctx context.Context, bytes int) error {
+	l.waits = append(l.waits, bytes)
+	if l.wait != nil {
+		return l.wait(ctx, bytes)
+	}
+	return nil
+}
 
 type udpWrite struct {
 	payload []byte

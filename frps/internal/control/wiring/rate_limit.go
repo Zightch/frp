@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
 	"github.com/zightch/frp/frps/pkg/ratepolicy"
@@ -15,10 +16,10 @@ type sessionRateLimitState struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	registry *ratepolicy.LimiterRegistry
-	streams  map[uint32]streamRateLimitEntry
+	entries  map[uint32]rateLimitEntry
 }
 
-type streamRateLimitEntry struct {
+type rateLimitEntry struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	limiters ratepolicy.TunnelLimiters
@@ -26,7 +27,7 @@ type streamRateLimitEntry struct {
 
 func newSessionRateLimitState() *sessionRateLimitState {
 	state := &sessionRateLimitState{
-		streams: make(map[uint32]streamRateLimitEntry),
+		entries: make(map[uint32]rateLimitEntry),
 	}
 	state.resetRuntimeLocked()
 	return state
@@ -39,19 +40,43 @@ func (s *sessionState) AddPublicStream(streamID uint32, stream *publicStream, co
 	if !s.ConcreteSessionState.AddPublicStream(streamID, stream, configVersion) {
 		return false
 	}
-	if err := s.registerStreamRateLimit(streamID, stream); err != nil {
+	if err := s.registerRateLimit(streamID, stream.Tunnel); err != nil {
 		s.ConcreteSessionState.ClosePublicStream(streamID)
 		return false
 	}
 	return true
 }
 
+func (s *sessionState) BindPublicUDPSession(udpSession *publicUDPSession, configVersion uint64) (*publicUDPSession, bool) {
+	if s == nil || s.ConcreteSessionState == nil {
+		return nil, false
+	}
+
+	bound, created := s.ConcreteSessionState.BindPublicUDPSession(udpSession, configVersion)
+	if bound == nil || !created {
+		return bound, created
+	}
+	if err := s.registerRateLimit(bound.SessionID, bound.Tunnel); err != nil {
+		s.ConcreteSessionState.ClosePublicUDPSession(bound.SessionID)
+		return nil, false
+	}
+	return bound, true
+}
+
 func (s *sessionState) ClosePublicStream(streamID uint32) bool {
 	if s == nil || s.ConcreteSessionState == nil {
 		return false
 	}
-	s.cancelStreamRateLimit(streamID)
+	s.cancelRateLimit(streamID)
 	return s.ConcreteSessionState.ClosePublicStream(streamID)
+}
+
+func (s *sessionState) ClosePublicUDPSession(sessionID uint32) bool {
+	if s == nil || s.ConcreteSessionState == nil {
+		return false
+	}
+	s.cancelRateLimit(sessionID)
+	return s.ConcreteSessionState.ClosePublicUDPSession(sessionID)
 }
 
 func (s *sessionState) FreezeTunnelRuntime() ([]net.Listener, []UDPListener, map[uint32]*publicStream, []*publicUDPSession) {
@@ -63,7 +88,27 @@ func (s *sessionState) FreezeTunnelRuntime() ([]net.Listener, []UDPListener, map
 	return listeners, udpListeners, streams, udpSessions
 }
 
+func (s *sessionState) TakeIdlePublicUDPSessions(now time.Time) []*publicUDPSession {
+	if s == nil || s.ConcreteSessionState == nil {
+		return nil
+	}
+
+	sessions := s.ConcreteSessionState.TakeIdlePublicUDPSessions(now)
+	for _, session := range sessions {
+		s.cancelRateLimit(session.SessionID)
+	}
+	return sessions
+}
+
 func (s *sessionState) StreamRateLimit(streamID uint32) (context.Context, ratepolicy.TunnelLimiters, bool) {
+	return s.lookupRateLimit(streamID)
+}
+
+func (s *sessionState) UDPSessionRateLimit(sessionID uint32) (context.Context, ratepolicy.TunnelLimiters, bool) {
+	return s.lookupRateLimit(sessionID)
+}
+
+func (s *sessionState) lookupRateLimit(id uint32) (context.Context, ratepolicy.TunnelLimiters, bool) {
 	if s == nil || s.rateLimit == nil {
 		return nil, ratepolicy.TunnelLimiters{}, false
 	}
@@ -71,47 +116,44 @@ func (s *sessionState) StreamRateLimit(streamID uint32) (context.Context, ratepo
 	s.rateLimit.mu.Lock()
 	defer s.rateLimit.mu.Unlock()
 
-	entry, ok := s.rateLimit.streams[streamID]
+	entry, ok := s.rateLimit.entries[id]
 	if !ok {
 		return nil, ratepolicy.TunnelLimiters{}, false
 	}
 	return entry.ctx, entry.limiters, true
 }
 
-func (s *sessionState) registerStreamRateLimit(streamID uint32, stream *publicStream) error {
+func (s *sessionState) registerRateLimit(id uint32, tunnel protocol.TunnelEntry) error {
 	if s == nil || s.rateLimit == nil {
 		return fmt.Errorf("session rate limit state is nil")
-	}
-	if stream == nil {
-		return fmt.Errorf("public stream is nil")
 	}
 
 	s.rateLimit.mu.Lock()
 	defer s.rateLimit.mu.Unlock()
 
-	limiters, err := buildTunnelLimitersLocked(s.rateLimit, stream.Tunnel)
+	limiters, err := buildTunnelLimitersLocked(s.rateLimit, tunnel)
 	if err != nil {
 		return err
 	}
 
-	streamCtx, streamCancel := context.WithCancel(s.rateLimit.ctx)
-	s.rateLimit.streams[streamID] = streamRateLimitEntry{
-		ctx:      streamCtx,
-		cancel:   streamCancel,
+	entryCtx, entryCancel := context.WithCancel(s.rateLimit.ctx)
+	s.rateLimit.entries[id] = rateLimitEntry{
+		ctx:      entryCtx,
+		cancel:   entryCancel,
 		limiters: limiters,
 	}
 	return nil
 }
 
-func (s *sessionState) cancelStreamRateLimit(streamID uint32) {
+func (s *sessionState) cancelRateLimit(id uint32) {
 	if s == nil || s.rateLimit == nil {
 		return
 	}
 
 	s.rateLimit.mu.Lock()
-	entry, ok := s.rateLimit.streams[streamID]
+	entry, ok := s.rateLimit.entries[id]
 	if ok {
-		delete(s.rateLimit.streams, streamID)
+		delete(s.rateLimit.entries, id)
 	}
 	s.rateLimit.mu.Unlock()
 
@@ -126,8 +168,8 @@ func (s *sessionState) resetRateLimitRuntime() {
 	}
 
 	s.rateLimit.mu.Lock()
-	for streamID, entry := range s.rateLimit.streams {
-		delete(s.rateLimit.streams, streamID)
+	for id, entry := range s.rateLimit.entries {
+		delete(s.rateLimit.entries, id)
 		if entry.cancel != nil {
 			entry.cancel()
 		}

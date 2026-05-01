@@ -5,7 +5,7 @@
 本仓库当前实现的是一个“服务端托管配置”的最小正向代理平台。
 
 - `frps`：服务端，负责管理认证、管理 API、WebUI、`frpc` 控制面和公网 TCP/UDP 入口。
-- `frpc`：轻量客户端，只接收 `--server` 和 `--key` 两个启动参数，从 `frps` 领取配置并执行本地转发。
+- `frpc`：轻量客户端，只接收 `--server` 和 `--key` 两个启动参数，从 `frps` 领取配置并执行本地转发；默认不承载任何非必要的权威功能。
 
 当前主线只覆盖正向代理，不包含反向代理。
 
@@ -38,14 +38,18 @@
   - 独立绑定层 `rate_policy_bindings`
   - 单端口 TCP / UDP 隧道绑定约束
   - 隧道删除 / `proxy_group` 删除时的 binding 自动清理
-  - `GroupRuntime` / `ConfigSnapshot` / `config.push` 已携带最终执行限速字段
+  - `GroupRuntime` / `ConfigSnapshot` 已携带最终执行限速字段
+- `frps` 当前已经在单端口 TCP / UDP 数据面执行限速策略：
+  - 只在 `frps` 令牌桶执行
+  - `frpc` 不执行限速
+  - `config.push` 不下发限速字段
 
 ## 3. 当前明确未实现
 
 - 反向代理。
 - 隧道入口 ACL 执行。
 - WebSocket、在线连接注册表、实时速率页、日志页。
-- 限速执行和抓包执行。
+- 抓包执行。
 - 一个 `proxy_group` 多个在线 `frpc`。
 - 数据库 schema 迁移兼容层。
 
@@ -54,7 +58,7 @@
 - 持久化配置：管理 API / WebUI 写入 SQLite / MySQL 中的 `proxy_groups`、`tunnels`、`rate_policies`、`rate_policy_bindings`。
 - 运行时配置：`frpc` 登录或在线热重载时，`frps` 从数据库读取持久化配置并构造内存里的 `GroupRuntime` / `ConfigSnapshot`，后续 listener 启停和实际转发只消费这份运行时快照。
 
-当前已确认的限速业务模型改为独立的 [限速策略设计](frps/design/rate-policy.md)。当前正式 schema 中已经不再保留旧的 `proxy_groups.rate_limit` 字段；但数据面令牌桶执行仍在后续步骤中。
+当前已确认的限速业务模型改为独立的 [限速策略设计](frps/design/rate-policy.md)。当前正式 schema 中已经不再保留旧的 `proxy_groups.rate_limit` 字段；限速执行现已固定只在 `frps` 单端口 TCP / UDP 数据面生效，不再把限速配置下发给 `frpc`。
 
 抓包相关控制当前未实现；如果后续引入，只应属于运行时配置层，不应再落成 `tunnels` 表字段。
 
@@ -86,6 +90,7 @@ External clients
 - `frps` 只在 `frpc` 确认配置后开放公网 listener。
 - TCP/UDP 范围映射都按相同偏移规则计算目标本地端口。
 - `frpc` 不做本地 UDP idle timer，只接受 `frps` 的 `udp.close`。
+- ACL、限速、抓包等权威治理能力默认收敛在 `frps`；`frpc` 只保留转发执行所需最小状态。
 
 ## 5. 当前仓库结构
 

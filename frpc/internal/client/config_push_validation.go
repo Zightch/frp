@@ -81,36 +81,6 @@ func validateConfigPushTunnel(tunnel protocol.TunnelEntry) error {
 		tunnel.BackendTLSCAPEM == "" {
 		return fmt.Errorf("backend tls requires system ca, custom ca, or insecure skip verify")
 	}
-	if err := validateTunnelRatePolicy(tunnel); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func validateTunnelRatePolicy(tunnel protocol.TunnelEntry) error {
-	policy := tunnel.RatePolicy
-	if policy.PolicyID == 0 {
-		if policy.Mode != protocol.RatePolicyModeNone ||
-			policy.DownlinkBPS != 0 ||
-			policy.UplinkBPS != 0 {
-			return fmt.Errorf("unbound tunnel rate policy fields must be zero")
-		}
-		return nil
-	}
-
-	switch policy.Mode {
-	case protocol.RatePolicyModeIndependent, protocol.RatePolicyModeShared:
-	default:
-		return fmt.Errorf("unsupported rate policy mode %d", policy.Mode)
-	}
-
-	if tunnel.TunnelFlags&protocol.TunnelFlagRange != 0 {
-		return fmt.Errorf("rate policy is only supported for single-port tunnels")
-	}
-	if policy.DownlinkBPS == 0 || policy.UplinkBPS == 0 {
-		return fmt.Errorf("rate policy downlink and uplink must be non-zero")
-	}
 
 	return nil
 }

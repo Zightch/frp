@@ -326,40 +326,6 @@ func TestClientReadLoopUsesReloadedSnapshotForNewStreams(t *testing.T) {
 	}
 }
 
-func TestSummarizeConfigReloadMarksRatePolicyChangeAsReplacement(t *testing.T) {
-	previous := protocol.ConfigPush{
-		ConfigVersion: 1,
-		Tunnels: []protocol.TunnelEntry{{
-			TunnelID:    7,
-			Protocol:    protocol.ProtocolTCP,
-			TunnelFlags: protocol.TunnelFlagEnabled,
-			RemoteStart: 20000,
-			RemoteEnd:   20000,
-			LocalHost:   mustHost(t, "127.0.0.1"),
-			LocalStart:  5000,
-			LocalEnd:    5000,
-			RatePolicy: protocol.TunnelRatePolicy{
-				PolicyID:    9,
-				Mode:        protocol.RatePolicyModeIndependent,
-				DownlinkBPS: 10_000_000,
-				UplinkBPS:   5_000_000,
-			},
-		}},
-	}
-
-	next := previous
-	next.Tunnels = append([]protocol.TunnelEntry(nil), previous.Tunnels...)
-	next.Tunnels[0].RatePolicy.DownlinkBPS = 20_000_000
-
-	summary := summarizeConfigReload(previous, next)
-	if summary.replacedTunnels != 1 {
-		t.Fatalf("expected rate policy change to replace tunnel, got %#v", summary)
-	}
-	if summary.unchangedTunnels != 0 || summary.addedTunnels != 0 || summary.removedTunnels != 0 {
-		t.Fatalf("unexpected summary for rate policy reload: %#v", summary)
-	}
-}
-
 func waitForPipeEOF(t *testing.T, conn net.Conn) {
 	t.Helper()
 

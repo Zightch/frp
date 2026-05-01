@@ -45,11 +45,8 @@ func TestBuildPushFrame(t *testing.T) {
 	if push.ConfigVersion != snapshot.Version || push.GeneratedAtMs != snapshot.GeneratedAtMs || len(push.Tunnels) != 1 || push.Tunnels[0].TunnelID != 3 {
 		t.Fatalf("unexpected push body: %#v", push)
 	}
-	if push.Tunnels[0].RatePolicy.PolicyID != 9 || push.Tunnels[0].RatePolicy.Mode != protocol.RatePolicyModeIndependent {
-		t.Fatalf("unexpected push rate policy identity: %#v", push.Tunnels[0].RatePolicy)
-	}
-	if push.Tunnels[0].RatePolicy.DownlinkBPS != 10_000_000 || push.Tunnels[0].RatePolicy.UplinkBPS != 5_000_000 {
-		t.Fatalf("unexpected push rate policy rates: %#v", push.Tunnels[0].RatePolicy)
+	if push.Tunnels[0].RatePolicy != (protocol.TunnelRatePolicy{}) {
+		t.Fatalf("expected push wire tunnel to omit rate policy fields, got %#v", push.Tunnels[0].RatePolicy)
 	}
 }
 

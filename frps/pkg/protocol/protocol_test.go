@@ -183,11 +183,8 @@ func TestConfigPushRoundTrip(t *testing.T) {
 	if tunnel.BackendTLSCAPEM != caPEM || tunnel.BackendTLSClientCertPEM != "client-cert" || tunnel.BackendTLSClientKeyPEM != "client-key" {
 		t.Fatalf("unexpected backend tls materials: %#v", tunnel)
 	}
-	if tunnel.RatePolicy.PolicyID != 77 || tunnel.RatePolicy.Mode != RatePolicyModeShared {
-		t.Fatalf("unexpected rate policy identity: %#v", tunnel.RatePolicy)
-	}
-	if tunnel.RatePolicy.DownlinkBPS != 10_000_000 || tunnel.RatePolicy.UplinkBPS != 5_000_000 {
-		t.Fatalf("unexpected rate policy rates: %#v", tunnel.RatePolicy)
+	if tunnel.RatePolicy != (TunnelRatePolicy{}) {
+		t.Fatalf("expected config.push wire tunnel to omit rate policy fields, got %#v", tunnel.RatePolicy)
 	}
 }
 
