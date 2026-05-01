@@ -29,23 +29,28 @@
   - `frps` 按 `webui.dist_dir` 托管静态目录
   - 支持按 `webui.path_prefix` 挂到子路径，并同步提供同前缀下的健康检查与管理 API 别名
   - 前端技术栈收口为 `Node.js + Vue 3 + Element Plus`
-  - 已实现管理密钥初始化、challenge 登录、`proxy_group` 管理、登录 `key` 重置和隧道管理
+  - 已实现管理密钥初始化、challenge 登录、`proxy_group` 管理、登录 `key` 重置、隧道管理和限速策略管理
   - 当前主管理页已经接入 `effective_ip` 下拉、`proxy_group` / 隧道状态展示和一次性 `key` 展示弹窗
 - 存储层已支持 SQLite 和 MySQL 两种数据库。
 - 启动时会自动建当前必需表，并对现有表结构做严格校验；不做 schema 迁移兼容。
+- 限速策略当前已经具备持久化和管理 API 闸口：
+  - 独立资源 `rate_policies`
+  - 独立绑定层 `rate_policy_bindings`
+  - 单端口 TCP / UDP 隧道绑定约束
+  - 隧道删除 / `proxy_group` 删除时的 binding 自动清理
 
 ## 3. 当前明确未实现
 
 - 反向代理。
 - 隧道入口 ACL 执行。
 - WebSocket、在线连接注册表、实时速率页、日志页。
-- 限速策略管理、限速执行和抓包执行。
+- 限速执行和抓包执行。
 - 一个 `proxy_group` 多个在线 `frpc`。
 - 数据库 schema 迁移兼容层。
 
 当前配置明确分成两层：
 
-- 持久化配置：管理 API / WebUI 写入 SQLite / MySQL 中的 `proxy_groups`、`tunnels`。
+- 持久化配置：管理 API / WebUI 写入 SQLite / MySQL 中的 `proxy_groups`、`tunnels`、`rate_policies`、`rate_policy_bindings`。
 - 运行时配置：`frpc` 登录或在线热重载时，`frps` 从数据库读取持久化配置并构造内存里的 `GroupRuntime` / `ConfigSnapshot`，后续 listener 启停和实际转发只消费这份运行时快照。
 
 当前已确认的后续限速业务模型改为独立的 [限速策略设计](frps/design/rate-policy.md)。当前正式 schema 中已经不再保留旧的 `proxy_groups.rate_limit` 字段。

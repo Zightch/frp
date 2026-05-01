@@ -988,6 +988,707 @@ func TestManagementMutationsRefreshAffectedGroups(t *testing.T) {
 	}
 }
 
+func TestRatePolicyCRUDAndBindings(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			Auth: manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	group := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-rate",
+			"effective_ip": "127.0.0.1",
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupID := int64(group.JSON["item"].(map[string]any)["id"].(float64))
+
+	tcpTunnel := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupID,
+			"name":         "tcp-single",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 20010,
+			"remote_end":   20010,
+			"local_host":   "127.0.0.1",
+			"local_start":  8080,
+			"local_end":    8080,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	tcpTunnelID := int64(tcpTunnel.JSON["item"].(map[string]any)["id"].(float64))
+
+	udpTunnel := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupID,
+			"name":         "udp-single",
+			"protocol":     "udp",
+			"remote_type":  "single",
+			"remote_start": 20011,
+			"remote_end":   20011,
+			"local_host":   "127.0.0.1",
+			"local_start":  8081,
+			"local_end":    8081,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	udpTunnelID := int64(udpTunnel.JSON["item"].(map[string]any)["id"].(float64))
+
+	rangeTunnel := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupID,
+			"name":         "tcp-range",
+			"protocol":     "tcp",
+			"remote_type":  "range",
+			"remote_start": 20020,
+			"remote_end":   20021,
+			"local_host":   "127.0.0.1",
+			"local_start":  8090,
+			"local_end":    8091,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	rangeTunnelID := int64(rangeTunnel.JSON["item"].(map[string]any)["id"].(float64))
+
+	created := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies",
+		map[string]any{
+			"name": "policy-a",
+			"mode": "independent",
+			"downlink": map[string]any{
+				"value": 10,
+				"unit":  "M",
+			},
+			"uplink": map[string]any{
+				"value": 5,
+				"unit":  "M",
+			},
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	policy := created.JSON["item"].(map[string]any)
+	policyID := int64(policy["id"].(float64))
+	if got := int64(policy["downlink_bps"].(float64)); got != 10_000_000 {
+		t.Fatalf("unexpected downlink bps: %d", got)
+	}
+	if got := int64(policy["uplink_bps"].(float64)); got != 5_000_000 {
+		t.Fatalf("unexpected uplink bps: %d", got)
+	}
+	if got := int64(policy["binding_count"].(float64)); got != 0 {
+		t.Fatalf("unexpected initial binding count: %d", got)
+	}
+
+	listed := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/rate-policies",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	items := listed.JSON["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("unexpected rate policy list payload: %#v", listed.JSON)
+	}
+
+	updated := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10),
+		map[string]any{
+			"name": "policy-a-shared",
+			"mode": "shared",
+			"downlink": map[string]any{
+				"value": 25,
+				"unit":  "K",
+			},
+			"uplink": map[string]any{
+				"value": 1,
+				"unit":  "G",
+			},
+		},
+		http.StatusOK,
+		sessionCookie,
+	)
+	updatedItem := updated.JSON["item"].(map[string]any)
+	if updatedItem["mode"] != "shared" {
+		t.Fatalf("unexpected rate policy update payload: %#v", updated.JSON)
+	}
+	if got := int64(updatedItem["downlink_bps"].(float64)); got != 25_000 {
+		t.Fatalf("unexpected updated downlink bps: %d", got)
+	}
+	if got := int64(updatedItem["uplink_bps"].(float64)); got != 1_000_000_000 {
+		t.Fatalf("unexpected updated uplink bps: %d", got)
+	}
+
+	boundTCP := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		map[string]any{"tunnel_id": tcpTunnelID},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	if got := int64(boundTCP.JSON["item"].(map[string]any)["tunnel_id"].(float64)); got != tcpTunnelID {
+		t.Fatalf("unexpected tcp binding payload: %#v", boundTCP.JSON)
+	}
+
+	boundUDP := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		map[string]any{"tunnel_id": udpTunnelID},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	if got := int64(boundUDP.JSON["item"].(map[string]any)["tunnel_id"].(float64)); got != udpTunnelID {
+		t.Fatalf("unexpected udp binding payload: %#v", boundUDP.JSON)
+	}
+
+	bindings := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	bindingItems := bindings.JSON["items"].([]any)
+	if len(bindingItems) != 2 {
+		t.Fatalf("unexpected rate policy binding list payload: %#v", bindings.JSON)
+	}
+
+	secondPolicy := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies",
+		map[string]any{
+			"name": "policy-b",
+			"mode": "independent",
+			"downlink": map[string]any{
+				"value": 1,
+				"unit":  "M",
+			},
+			"uplink": map[string]any{
+				"value": 1,
+				"unit":  "M",
+			},
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	secondPolicyID := int64(secondPolicy.JSON["item"].(map[string]any)["id"].(float64))
+
+	rangeBind := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		map[string]any{"tunnel_id": rangeTunnelID},
+		http.StatusBadRequest,
+		sessionCookie,
+	)
+	if !strings.Contains(rangeBind.JSON["error"].(string), "single-port tcp or udp") {
+		t.Fatalf("unexpected range binding error: %#v", rangeBind.JSON)
+	}
+
+	duplicateBind := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies/"+strconv.FormatInt(secondPolicyID, 10)+"/bindings",
+		map[string]any{"tunnel_id": tcpTunnelID},
+		http.StatusConflict,
+		sessionCookie,
+	)
+	if !strings.Contains(duplicateBind.JSON["error"].(string), "already bound") {
+		t.Fatalf("unexpected duplicate binding error: %#v", duplicateBind.JSON)
+	}
+
+	deleteConflict := performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10),
+		nil,
+		http.StatusConflict,
+		sessionCookie,
+	)
+	if !strings.Contains(deleteConflict.JSON["error"].(string), "still has bound tunnels") {
+		t.Fatalf("unexpected delete conflict error: %#v", deleteConflict.JSON)
+	}
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings/"+strconv.FormatInt(tcpTunnelID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings/"+strconv.FormatInt(udpTunnelID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+}
+
+func TestRatePolicyMutationsRefreshAffectedGroups(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+	refresher := &recordingGroupRefresher{}
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			RuntimeRefresher: refresher,
+			Auth:             manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	groupA := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{"name": "group-a", "effective_ip": "127.0.0.1"},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupAID := int64(groupA.JSON["item"].(map[string]any)["id"].(float64))
+
+	groupB := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{"name": "group-b", "effective_ip": "127.0.0.1"},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupBID := int64(groupB.JSON["item"].(map[string]any)["id"].(float64))
+
+	tunnelA := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupAID,
+			"name":         "tunnel-a",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 21000,
+			"remote_end":   21000,
+			"local_host":   "127.0.0.1",
+			"local_start":  8100,
+			"local_end":    8100,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	tunnelAID := int64(tunnelA.JSON["item"].(map[string]any)["id"].(float64))
+
+	tunnelB := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupBID,
+			"name":         "tunnel-b",
+			"protocol":     "udp",
+			"remote_type":  "single",
+			"remote_start": 21001,
+			"remote_end":   21001,
+			"local_host":   "127.0.0.1",
+			"local_start":  8101,
+			"local_end":    8101,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	tunnelBID := int64(tunnelB.JSON["item"].(map[string]any)["id"].(float64))
+
+	refresher.reset()
+
+	created := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies",
+		map[string]any{
+			"name":     "policy-refresh",
+			"mode":     "independent",
+			"downlink": map[string]any{"value": 5, "unit": "M"},
+			"uplink":   map[string]any{"value": 5, "unit": "M"},
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	policyID := int64(created.JSON["item"].(map[string]any)["id"].(float64))
+	if got := refresher.calls(); len(got) != 0 {
+		t.Fatalf("unexpected refresh calls after rate policy create: %#v", got)
+	}
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		map[string]any{"tunnel_id": tunnelAID},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	if got := refresher.calls(); len(got) != 1 || got[0] != groupAID {
+		t.Fatalf("unexpected refresh calls after first binding create: %#v", got)
+	}
+	refresher.reset()
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		map[string]any{"tunnel_id": tunnelBID},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	if got := refresher.calls(); len(got) != 1 || got[0] != groupBID {
+		t.Fatalf("unexpected refresh calls after second binding create: %#v", got)
+	}
+	refresher.reset()
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10),
+		map[string]any{
+			"name":     "policy-refresh-updated",
+			"mode":     "shared",
+			"downlink": map[string]any{"value": 6, "unit": "M"},
+			"uplink":   map[string]any{"value": 7, "unit": "M"},
+		},
+		http.StatusOK,
+		sessionCookie,
+	)
+	if got := refresher.calls(); len(got) != 2 || got[0] != groupAID || got[1] != groupBID {
+		t.Fatalf("unexpected refresh calls after rate policy update: %#v", got)
+	}
+	refresher.reset()
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings/"+strconv.FormatInt(tunnelAID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if got := refresher.calls(); len(got) != 1 || got[0] != groupAID {
+		t.Fatalf("unexpected refresh calls after first binding delete: %#v", got)
+	}
+	refresher.reset()
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings/"+strconv.FormatInt(tunnelBID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if got := refresher.calls(); len(got) != 1 || got[0] != groupBID {
+		t.Fatalf("unexpected refresh calls after second binding delete: %#v", got)
+	}
+	refresher.reset()
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if got := refresher.calls(); len(got) != 0 {
+		t.Fatalf("unexpected refresh calls after empty rate policy delete: %#v", got)
+	}
+}
+
+func TestDeletingTunnelOrProxyGroupCleansRatePolicyBindings(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			Auth: manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	groupA := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{"name": "cleanup-a", "effective_ip": "127.0.0.1"},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupAID := int64(groupA.JSON["item"].(map[string]any)["id"].(float64))
+
+	tunnelA := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupAID,
+			"name":         "cleanup-tunnel-a",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 22000,
+			"remote_end":   22000,
+			"local_host":   "127.0.0.1",
+			"local_start":  8200,
+			"local_end":    8200,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	tunnelAID := int64(tunnelA.JSON["item"].(map[string]any)["id"].(float64))
+
+	policyA := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies",
+		map[string]any{
+			"name":     "cleanup-policy-a",
+			"mode":     "independent",
+			"downlink": map[string]any{"value": 1, "unit": "M"},
+			"uplink":   map[string]any{"value": 1, "unit": "M"},
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	policyAID := int64(policyA.JSON["item"].(map[string]any)["id"].(float64))
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyAID, 10)+"/bindings",
+		map[string]any{"tunnel_id": tunnelAID},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/tunnels/"+strconv.FormatInt(tunnelAID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyAID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+
+	groupB := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{"name": "cleanup-b", "effective_ip": "127.0.0.1"},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupBID := int64(groupB.JSON["item"].(map[string]any)["id"].(float64))
+
+	tunnelB := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupBID,
+			"name":         "cleanup-tunnel-b",
+			"protocol":     "udp",
+			"remote_type":  "single",
+			"remote_start": 22001,
+			"remote_end":   22001,
+			"local_host":   "127.0.0.1",
+			"local_start":  8201,
+			"local_end":    8201,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	tunnelBID := int64(tunnelB.JSON["item"].(map[string]any)["id"].(float64))
+
+	policyB := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies",
+		map[string]any{
+			"name":     "cleanup-policy-b",
+			"mode":     "shared",
+			"downlink": map[string]any{"value": 2, "unit": "M"},
+			"uplink":   map[string]any{"value": 2, "unit": "M"},
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	policyBID := int64(policyB.JSON["item"].(map[string]any)["id"].(float64))
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyBID, 10)+"/bindings",
+		map[string]any{"tunnel_id": tunnelBID},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/proxy-groups/"+strconv.FormatInt(groupBID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyBID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+}
+
 func TestTunnelStatusesIncludeEnabledDisabledConflictAndAbnormal(t *testing.T) {
 	store := newTestStore(t)
 	manager := newTestAuthManager(t, true)

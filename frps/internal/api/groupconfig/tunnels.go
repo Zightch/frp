@@ -147,6 +147,9 @@ func (s *Service) UpdateTunnel(ctx context.Context, id int64, payload TunnelRequ
 		if err != nil {
 			return err
 		}
+		if err := s.ensureRatePolicyBindingCompatibleWithTunnelUpdate(ctx, tx, id, normalized); err != nil {
+			return err
+		}
 		if err := s.ensureConflictFreeForTunnelUpdate(ctx, tx, id, normalized, group); err != nil {
 			return err
 		}
@@ -238,6 +241,9 @@ func (s *Service) DeleteTunnel(ctx context.Context, id int64) error {
 
 		if err := s.deleteTunnelCertificateUsages(ctx, tx, id); err != nil {
 			return err
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM rate_policy_bindings WHERE tunnel_id = ?", id); err != nil {
+			return fmt.Errorf("delete tunnel rate policy bindings: %w", err)
 		}
 
 		result, err := tx.ExecContext(ctx, "DELETE FROM tunnels WHERE id = ?", id)
@@ -668,4 +674,35 @@ func wrapUniqueConstraintError(err error, message string) error {
 		return &Error{Status: 409, Message: message}
 	}
 	return err
+}
+
+func (s *Service) ensureRatePolicyBindingCompatibleWithTunnelUpdate(
+	ctx context.Context,
+	conn storage.Conn,
+	tunnelID int64,
+	normalized normalizedTunnel,
+) error {
+	if strings.TrimSpace(normalized.RemoteType) == "single" {
+		return nil
+	}
+
+	row, err := conn.QueryOneContext(
+		ctx,
+		`SELECT COUNT(1) AS count FROM rate_policy_bindings WHERE tunnel_id = ?`,
+		tunnelID,
+	)
+	if err != nil {
+		return fmt.Errorf("count tunnel rate policy bindings: %w", err)
+	}
+	count, err := rowInt64(row, "count")
+	if err != nil {
+		return fmt.Errorf("decode tunnel rate policy binding count: %w", err)
+	}
+	if count > 0 {
+		return &Error{
+			Status:  409,
+			Message: "tunnel must be unbound from rate policy before changing to range",
+		}
+	}
+	return nil
 }

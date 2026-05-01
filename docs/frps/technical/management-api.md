@@ -68,6 +68,49 @@ Tunnel TLS 仅支持 `protocol=tcp` 且 `remote_type=single` 的单端口 TCP �
 - tunnel backend TLS 需要向 `frpc` 下发 CA 或客户端证书
 - 但该 `proxy_group` 的控制连接策略仍为 `control_transport_security=plain`
 
+如果隧道已经绑定限速策略，则当前不允许直接把它改成 `remote_type=range`；应先解绑对应限速策略。
+
+## 限速策略接口
+
+- `GET /api/v1/rate-policies`
+- `POST /api/v1/rate-policies`
+- `PATCH /api/v1/rate-policies/{id}`
+- `DELETE /api/v1/rate-policies/{id}`
+- `GET /api/v1/rate-policies/{id}/bindings`
+- `POST /api/v1/rate-policies/{id}/bindings`
+- `DELETE /api/v1/rate-policies/{id}/bindings/{tunnel_id}`
+
+`POST /api/v1/rate-policies` 与 `PATCH /api/v1/rate-policies/{id}` 当前使用统一请求体：
+
+- `name`
+- `mode = independent | shared`
+- `downlink = {value, unit}`
+- `uplink = {value, unit}`
+
+约束固定为：
+
+- `unit` 只允许 `K / M / G`
+- 省略 `unit` 时默认按 `M`
+- 速率内部统一归一为 `bps`
+- `value` 必须大于 `0`
+
+当前返回：
+
+- `GET /api/v1/rate-policies` -> `{items: RatePolicyView[]}`
+- `POST /api/v1/rate-policies` -> `{item: RatePolicyView}`
+- `PATCH /api/v1/rate-policies/{id}` -> `{item: RatePolicyView}`
+- `GET /api/v1/rate-policies/{id}/bindings` -> `{items: RatePolicyBindingView[]}`
+- `POST /api/v1/rate-policies/{id}/bindings` -> `{item: RatePolicyBindingView}`
+
+当前 binding 约束固定为：
+
+- 只允许绑定单端口 TCP / UDP 隧道
+- range 隧道不可绑定
+- 一个隧道最多绑定一个限速策略
+- 删除隧道时自动删除对应 binding
+- 删除 `proxy_group` 时，其下隧道和 binding 一起删除
+- 删除仍有 binding 的限速策略会被拒绝
+
 ## 证书资产接口
 
 - `GET /api/v1/certificate-assets`
@@ -111,7 +154,7 @@ Tunnel TLS 仅支持 `protocol=tcp` 且 `remote_type=single` 的单端口 TCP �
 下面这些资源当前还不存在：
 
 - 连接观察与连接级操作
-- 抓包与限速控制
+- 抓包控制
 
 补充说明：
 

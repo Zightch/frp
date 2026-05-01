@@ -82,6 +82,27 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	UNIQUE(group_id, name)
 )`,
 			`
+CREATE TABLE IF NOT EXISTS rate_policies (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	mode TEXT NOT NULL,
+	downlink_bps INTEGER NOT NULL,
+	uplink_bps INTEGER NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS uk_rate_policies_name ON rate_policies (name)`,
+			`
+CREATE TABLE IF NOT EXISTS rate_policy_bindings (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	rate_policy_id INTEGER NOT NULL,
+	tunnel_id INTEGER NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`,
+			`CREATE INDEX IF NOT EXISTS idx_rate_policy_bindings_rate_policy_id ON rate_policy_bindings (rate_policy_id)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS uk_rate_policy_bindings_tunnel_id ON rate_policy_bindings (tunnel_id)`,
+			`
 CREATE TABLE IF NOT EXISTS certificate_assets (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	name TEXT NOT NULL,
@@ -166,6 +187,37 @@ CREATE TABLE IF NOT EXISTS certificate_asset_usages (
 				},
 				uniqueIndexes: [][]string{
 					{"group_id", "name"},
+				},
+			},
+			{
+				name: "rate_policies",
+				columns: []columnSpec{
+					{name: "id", columnType: "integer", nullable: false, primaryKey: true},
+					{name: "name", columnType: "text", nullable: false},
+					{name: "mode", columnType: "text", nullable: false},
+					{name: "downlink_bps", columnType: "integer", nullable: false},
+					{name: "uplink_bps", columnType: "integer", nullable: false},
+					{name: "created_at", columnType: "text", nullable: false},
+					{name: "updated_at", columnType: "text", nullable: false},
+				},
+				uniqueIndexes: [][]string{
+					{"name"},
+				},
+			},
+			{
+				name: "rate_policy_bindings",
+				columns: []columnSpec{
+					{name: "id", columnType: "integer", nullable: false, primaryKey: true},
+					{name: "rate_policy_id", columnType: "integer", nullable: false},
+					{name: "tunnel_id", columnType: "integer", nullable: false},
+					{name: "created_at", columnType: "text", nullable: false},
+					{name: "updated_at", columnType: "text", nullable: false},
+				},
+				indexes: [][]string{
+					{"rate_policy_id"},
+				},
+				uniqueIndexes: [][]string{
+					{"tunnel_id"},
 				},
 			},
 			{
@@ -270,6 +322,29 @@ CREATE TABLE IF NOT EXISTS tunnels (
 	UNIQUE KEY uk_tunnels_group_name (group_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 			`
+CREATE TABLE IF NOT EXISTS rate_policies (
+	id BIGINT NOT NULL AUTO_INCREMENT,
+	name VARCHAR(128) NOT NULL,
+	mode VARCHAR(32) NOT NULL,
+	downlink_bps BIGINT NOT NULL,
+	uplink_bps BIGINT NOT NULL,
+	created_at DATETIME(6) NOT NULL,
+	updated_at DATETIME(6) NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE KEY uk_rate_policies_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`
+CREATE TABLE IF NOT EXISTS rate_policy_bindings (
+	id BIGINT NOT NULL AUTO_INCREMENT,
+	rate_policy_id BIGINT NOT NULL,
+	tunnel_id BIGINT NOT NULL,
+	created_at DATETIME(6) NOT NULL,
+	updated_at DATETIME(6) NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE KEY uk_rate_policy_bindings_tunnel_id (tunnel_id),
+	KEY idx_rate_policy_bindings_rate_policy_id (rate_policy_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`
 CREATE TABLE IF NOT EXISTS certificate_assets (
 	id BIGINT NOT NULL AUTO_INCREMENT,
 	name VARCHAR(128) NOT NULL,
@@ -357,6 +432,37 @@ CREATE TABLE IF NOT EXISTS certificate_asset_usages (
 				},
 				uniqueIndexes: [][]string{
 					{"group_id", "name"},
+				},
+			},
+			{
+				name: "rate_policies",
+				columns: []columnSpec{
+					{name: "id", columnType: "bigint", nullable: false, primaryKey: true, autoIncrement: true},
+					{name: "name", columnType: "varchar(128)", nullable: false},
+					{name: "mode", columnType: "varchar(32)", nullable: false},
+					{name: "downlink_bps", columnType: "bigint", nullable: false},
+					{name: "uplink_bps", columnType: "bigint", nullable: false},
+					{name: "created_at", columnType: "datetime(6)", nullable: false},
+					{name: "updated_at", columnType: "datetime(6)", nullable: false},
+				},
+				uniqueIndexes: [][]string{
+					{"name"},
+				},
+			},
+			{
+				name: "rate_policy_bindings",
+				columns: []columnSpec{
+					{name: "id", columnType: "bigint", nullable: false, primaryKey: true, autoIncrement: true},
+					{name: "rate_policy_id", columnType: "bigint", nullable: false},
+					{name: "tunnel_id", columnType: "bigint", nullable: false},
+					{name: "created_at", columnType: "datetime(6)", nullable: false},
+					{name: "updated_at", columnType: "datetime(6)", nullable: false},
+				},
+				indexes: [][]string{
+					{"rate_policy_id"},
+				},
+				uniqueIndexes: [][]string{
+					{"tunnel_id"},
 				},
 			},
 			{

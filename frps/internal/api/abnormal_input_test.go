@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -282,6 +283,203 @@ func TestTunnelStatusesDisableCombinationsDoNotParticipateInConflicts(t *testing
 	}
 	if statuses["healthy"]["status_reason"] != nil {
 		t.Fatalf("expected healthy tunnel to stay conflict-free, got %#v", statuses["healthy"])
+	}
+}
+
+func TestRatePolicyRejectsInvalidInputMatrix(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+
+	cases := []struct {
+		name        string
+		body        map[string]any
+		wantMessage string
+	}{
+		{
+			name: "missing name",
+			body: map[string]any{
+				"mode":     "independent",
+				"downlink": map[string]any{"value": 1, "unit": "M"},
+				"uplink":   map[string]any{"value": 1, "unit": "M"},
+			},
+			wantMessage: "rate policy name is required",
+		},
+		{
+			name: "invalid mode",
+			body: map[string]any{
+				"name":     "policy-invalid-mode",
+				"mode":     "burst",
+				"downlink": map[string]any{"value": 1, "unit": "M"},
+				"uplink":   map[string]any{"value": 1, "unit": "M"},
+			},
+			wantMessage: "mode must be independent or shared",
+		},
+		{
+			name: "invalid unit",
+			body: map[string]any{
+				"name":     "policy-invalid-unit",
+				"mode":     "shared",
+				"downlink": map[string]any{"value": 1, "unit": "bps"},
+				"uplink":   map[string]any{"value": 1, "unit": "M"},
+			},
+			wantMessage: "rate unit must be K, M or G",
+		},
+		{
+			name: "zero value",
+			body: map[string]any{
+				"name":     "policy-zero-value",
+				"mode":     "shared",
+				"downlink": map[string]any{"value": 0, "unit": "M"},
+				"uplink":   map[string]any{"value": 1, "unit": "M"},
+			},
+			wantMessage: "rate value must be greater than 0",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			response := performRequest(
+				t,
+				server.Handler(),
+				http.MethodPost,
+				"/api/v1/rate-policies",
+				tc.body,
+				http.StatusBadRequest,
+				sessionCookie,
+			)
+			if !strings.Contains(response.JSON["error"].(string), tc.wantMessage) {
+				t.Fatalf("unexpected error payload: %#v", response.JSON)
+			}
+		})
+	}
+}
+
+func TestUpdateBoundTunnelToRangeRequiresUnbind(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Network: staticSnapshotReader{
+				snapshot: system.Snapshot{
+					AvailableIPs: []system.IPAddress{
+						{Addr: "127.0.0.1", Family: system.FamilyIPv4},
+					},
+				},
+			},
+			Auth: manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+	group := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/proxy-groups",
+		map[string]any{
+			"name":         "group-range-guard",
+			"effective_ip": "127.0.0.1",
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	groupID := int64(group.JSON["item"].(map[string]any)["id"].(float64))
+
+	tunnel := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/tunnels",
+		map[string]any{
+			"group_id":     groupID,
+			"name":         "single-before-range",
+			"protocol":     "tcp",
+			"remote_type":  "single",
+			"remote_start": 26000,
+			"remote_end":   26000,
+			"local_host":   "127.0.0.1",
+			"local_start":  8600,
+			"local_end":    8600,
+			"enabled":      true,
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	tunnelID := int64(tunnel.JSON["item"].(map[string]any)["id"].(float64))
+
+	policy := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies",
+		map[string]any{
+			"name":     "policy-bound-range",
+			"mode":     "independent",
+			"downlink": map[string]any{"value": 3, "unit": "M"},
+			"uplink":   map[string]any{"value": 2, "unit": "M"},
+		},
+		http.StatusCreated,
+		sessionCookie,
+	)
+	policyID := int64(policy.JSON["item"].(map[string]any)["id"].(float64))
+
+	performRequest(
+		t,
+		server.Handler(),
+		http.MethodPost,
+		"/api/v1/rate-policies/"+strconv.FormatInt(policyID, 10)+"/bindings",
+		map[string]any{"tunnel_id": tunnelID},
+		http.StatusCreated,
+		sessionCookie,
+	)
+
+	response := performRequest(
+		t,
+		server.Handler(),
+		http.MethodPatch,
+		"/api/v1/tunnels/"+strconv.FormatInt(tunnelID, 10),
+		map[string]any{
+			"group_id":     groupID,
+			"name":         "single-before-range",
+			"protocol":     "tcp",
+			"remote_type":  "range",
+			"remote_start": 26000,
+			"remote_end":   26001,
+			"local_host":   "127.0.0.1",
+			"local_start":  8600,
+			"local_end":    8601,
+			"enabled":      true,
+		},
+		http.StatusConflict,
+		sessionCookie,
+	)
+	if !strings.Contains(response.JSON["error"].(string), "must be unbound from rate policy before changing to range") {
+		t.Fatalf("unexpected update tunnel error: %#v", response.JSON)
 	}
 }
 

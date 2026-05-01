@@ -15,6 +15,7 @@ import (
 
 	apicertassets "github.com/zightch/frp/frps/internal/api/certassets"
 	"github.com/zightch/frp/frps/internal/api/groupconfig"
+	apiratepolicy "github.com/zightch/frp/frps/internal/api/ratepolicy"
 	apisettings "github.com/zightch/frp/frps/internal/api/settings"
 	authn "github.com/zightch/frp/frps/internal/auth"
 	"github.com/zightch/frp/frps/internal/config"
@@ -129,6 +130,12 @@ func NewServer(options Options, logger *slog.Logger, version string) (*Server, e
 	})
 	groupconfig.NewHandler(groupConfigService, srv.requireManagementSession).RegisterRoutes(apiMux)
 
+	ratePolicyService := apiratepolicy.NewService(apiratepolicy.Options{
+		Store:            options.Store,
+		RuntimeRefresher: options.RuntimeRefresher,
+	})
+	apiratepolicy.NewHandler(ratePolicyService, srv.requireManagementSession).RegisterRoutes(apiMux)
+
 	certificateAssetService := apicertassets.NewService(apicertassets.Options{
 		Store: options.Store,
 	})
@@ -217,6 +224,7 @@ func isAPIPath(path string) bool {
 		path == "/api/v1/auth/login",
 		path == "/api/v1/auth/session",
 		path == "/api/v1/auth/logout",
+		path == "/api/v1/rate-policies",
 		path == apisettings.EntryCertificatesPath,
 		path == "/api/v1/proxy-groups",
 		path == "/api/v1/tunnels",
@@ -227,6 +235,7 @@ func isAPIPath(path string) bool {
 		path == apicertassets.Path+"/generate":
 		return true
 	case strings.HasPrefix(path, apisettings.EntryCertificatesPath+"/"),
+		strings.HasPrefix(path, "/api/v1/rate-policies/"),
 		strings.HasPrefix(path, "/api/v1/proxy-groups/"),
 		strings.HasPrefix(path, "/api/v1/tunnels/"),
 		strings.HasPrefix(path, apicertassets.Path+"/"):

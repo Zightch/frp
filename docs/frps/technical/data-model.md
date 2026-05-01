@@ -5,7 +5,7 @@
 当前数据明确分成两层：
 
 - 持久化配置
-  - 数据库中的 `proxy_groups`、`tunnels`、`certificate_assets`、`certificate_asset_relations`、`certificate_asset_usages`
+  - 数据库中的 `proxy_groups`、`tunnels`、`rate_policies`、`rate_policy_bindings`、`certificate_assets`、`certificate_asset_relations`、`certificate_asset_usages`
 - 运行时配置
   - `internal/control/repo` 从 SQL row 投影出来的 `GroupRuntime` / `ConfigSnapshot`
   - `internal/control/domain/runtime` 定义运行时模型和 desired/applied snapshot 转换
@@ -85,9 +85,52 @@
 - `listen_tls_mode = off | tls | mtls`
 - `backend_tls_mode = off | tls | mtls`
 - tunnel TLS 字段只对 `protocol=tcp` 且 `remote_type=single` 的隧道生效
+- 如果隧道已经绑定限速策略，则当前不允许直接改成 `remote_type=range`；需要先解绑
 - `listen_tls_*` 只作用于外网客户端到 `frps` 隧道监听器
 - `backend_tls_*` 只作用于 `frpc` 到内网后端目标
 - `listen_tls_server_cert_asset_id`、`listen_tls_client_ca_asset_ids`、`backend_tls_client_cert_asset_id` 和 `backend_tls_ca_asset_ids` 是管理 API 字段；实际绑定存放在 `certificate_asset_usages`，不是 `tunnels` 表列
+
+## `rate_policies`
+
+当前字段：
+
+- `id`
+- `name`
+- `mode`
+- `downlink_bps`
+- `uplink_bps`
+- `created_at`
+- `updated_at`
+
+当前语义：
+
+- `name` 全局唯一
+- `mode = independent | shared`
+- `downlink_bps`、`uplink_bps` 是内部真实来源
+- 管理 API 输入时用 `K/M/G`，落库后统一归一为 `bps`
+- 当前不保存原始展示单位，不保存 burst
+
+## `rate_policy_bindings`
+
+当前字段：
+
+- `id`
+- `rate_policy_id`
+- `tunnel_id`
+- `created_at`
+- `updated_at`
+
+当前约束：
+
+- `UNIQUE (tunnel_id)`
+- `INDEX (rate_policy_id)`
+- 一个限速策略可以绑定多条隧道
+- 一个隧道最多只能绑定一个限速策略
+- 当前只允许绑定单端口 TCP / UDP 隧道
+- range 隧道不进入这张绑定表
+- 删除隧道时，对应 binding 必须一起删除
+- 删除 `proxy_group` 时，其下隧道和对应 binding 一起删除
+- 删除仍有 binding 的限速策略时，管理 API 默认拒绝
 
 ## `certificate_assets`
 

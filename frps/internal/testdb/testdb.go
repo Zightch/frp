@@ -22,6 +22,8 @@ var FRPSTableNames = []string{
 	"certificate_asset_usages",
 	"certificate_asset_relations",
 	"certificate_assets",
+	"rate_policy_bindings",
+	"rate_policies",
 	"tunnels",
 	"proxy_groups",
 }

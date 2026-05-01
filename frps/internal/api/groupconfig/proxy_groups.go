@@ -175,6 +175,9 @@ func (s *Service) DeleteProxyGroup(ctx context.Context, id int64) error {
 			if err := s.deleteTunnelCertificateUsages(ctx, tx, tunnelID); err != nil {
 				return err
 			}
+			if _, err := tx.ExecContext(ctx, "DELETE FROM rate_policy_bindings WHERE tunnel_id = ?", tunnelID); err != nil {
+				return fmt.Errorf("delete proxy group tunnel rate policy bindings: %w", err)
+			}
 		}
 
 		for _, statement := range []string{
