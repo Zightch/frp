@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
+import { ArrowRight } from '@element-plus/icons-vue'
 import {
   authApi,
   ratePoliciesApi,
@@ -82,6 +83,9 @@ const filteredPolicies = computed(() => {
 const bindableGroups = computed(() => {
   const groupMap = new Map<number, { id: number; name: string; tunnels: TunnelBinding[] }>()
   for (const tunnel of bindableTunnels.value) {
+    if (tunnel.rate_policy_id === selectedPolicyId.value) {
+      continue
+    }
     if (!groupMap.has(tunnel.group_id)) {
       groupMap.set(tunnel.group_id, {
         id: tunnel.group_id,
@@ -100,6 +104,13 @@ const currentGroupTunnels = computed(() => {
 })
 
 const cartTunnelIds = computed(() => new Set(bindCart.value.map(t => t.id)))
+
+watch(modeFilter, () => {
+  if (!filteredPolicies.value.some(policy => policy.id === selectedPolicyId.value)) {
+    selectedPolicyId.value = null
+    boundTunnels.value = []
+  }
+})
 
 // Lifecycle
 onMounted(async () => {
@@ -132,24 +143,22 @@ async function loadData() {
   error.value = ''
 
   try {
-    const [policiesResult, bindableResult] = await Promise.all([
-      ratePoliciesApi.list(),
-      bindableTunnelsApi.list()
-    ])
+    const policiesResult = await ratePoliciesApi.list()
 
     if (policiesResult.error) {
       error.value = policiesResult.error
       return
     }
 
+    policies.value = policiesResult.data?.items ?? []
+
+    const bindableResult = await bindableTunnelsApi.list(policies.value)
     if (bindableResult.error) {
       ElMessage.warning(`可绑定隧道加载失败: ${bindableResult.error}`)
       bindableTunnels.value = []
     } else {
       bindableTunnels.value = bindableResult.data?.items ?? []
     }
-
-    policies.value = policiesResult.data?.items ?? []
 
     if (!policies.value.some(p => p.id === selectedPolicyId.value)) {
       selectedPolicyId.value = policies.value[0]?.id ?? null
@@ -262,6 +271,7 @@ async function submitPolicyForm() {
         ElMessage.error(result.error)
         return
       }
+      selectedPolicyId.value = result.data?.item.id ?? selectedPolicyId.value
       ElMessage.success('策略创建成功')
     } else {
       if (!selectedPolicyId.value) return
@@ -270,6 +280,7 @@ async function submitPolicyForm() {
         ElMessage.error(result.error)
         return
       }
+      selectedPolicyId.value = result.data?.item.id ?? selectedPolicyId.value
       ElMessage.success('策略更新成功')
     }
 
@@ -281,9 +292,12 @@ async function submitPolicyForm() {
 }
 
 async function handleDeletePolicy(policy: RatePolicy) {
-  const message = policy.tunnel_count > 0
-    ? `确定删除策略"${policy.name}"吗？该策略下有 ${policy.tunnel_count} 条绑定隧道将自动解绑。此操作不可恢复。`
-    : `确定删除策略"${policy.name}"吗？此操作不可恢复。`
+  if (policy.tunnel_count > 0) {
+    ElMessage.warning(`策略"${policy.name}"仍绑定 ${policy.tunnel_count} 条隧道，请先解绑或迁移后再删除`)
+    return
+  }
+
+  const message = `确定删除策略"${policy.name}"吗？此操作不可恢复。`
 
   try {
     await ElMessageBox.confirm(message, '删除策略', {
@@ -375,12 +389,11 @@ async function handleConfirmBind() {
     return
   }
 
-  // Check for tunnels already bound to other policies
   const alreadyBound = bindCart.value.filter(t => t.rate_policy_id && t.rate_policy_id !== selectedPolicyId.value)
   if (alreadyBound.length > 0) {
     try {
       await ElMessageBox.confirm(
-        `选中的 ${alreadyBound.length} 条隧道已绑定其他策略，绑定后将自动解绑原策略。是否继续？`,
+        `选中的 ${alreadyBound.length} 条隧道已绑定其他策略，确认后会先从原策略解绑，再迁移到当前策略。是否继续？`,
         '确认绑定',
         { type: 'warning' }
       )
@@ -392,8 +405,7 @@ async function handleConfirmBind() {
   bindSubmitting.value = true
 
   try {
-    const tunnelIds = bindCart.value.map(t => t.id)
-    const result = await ratePoliciesApi.bindTunnels(selectedPolicyId.value!, tunnelIds)
+    const result = await ratePoliciesApi.bindTunnels(selectedPolicyId.value!, bindCart.value)
 
     if (result.error) {
       ElMessage.error(result.error)
@@ -734,7 +746,7 @@ async function handleUnbindTunnel(tunnel: TunnelBinding) {
         <div class="bind-middle">
           <el-button
             type="primary"
-            :icon="'ArrowRight'"
+            :icon="ArrowRight"
             :disabled="bindLeftSelected.length === 0"
             @click="handleAddToCart"
           >

@@ -504,6 +504,32 @@ export const certificateUsagesApi = {
 export type RatePolicyMode = 'independent' | 'shared'
 export type RatePolicyUnit = 'K' | 'M' | 'G'
 
+interface RatePolicyWire {
+  id: number
+  name: string
+  mode: RatePolicyMode
+  downlink_bps: number
+  uplink_bps: number
+  binding_count: number
+  created_at: string
+  updated_at: string
+}
+
+interface RatePolicyBindingWire {
+  id: number
+  rate_policy_id: number
+  tunnel_id: number
+  group_id: number
+  group_name: string
+  tunnel_name: string
+  protocol: 'tcp' | 'udp'
+  remote_type: 'single' | 'range'
+  remote_start: number
+  remote_end: number
+  created_at: string
+  updated_at: string
+}
+
 export interface RatePolicy {
   id: number
   name: string
@@ -538,35 +564,240 @@ export interface TunnelBinding {
   rate_policy_name?: string
 }
 
+const ratePolicyUnitFactors: Record<RatePolicyUnit, number> = {
+  K: 1_000,
+  M: 1_000_000,
+  G: 1_000_000_000
+}
+
+function pickRatePolicyUnit(bps: number): RatePolicyUnit {
+  if (bps >= ratePolicyUnitFactors.G && bps % ratePolicyUnitFactors.G === 0) {
+    return 'G'
+  }
+  if (bps >= ratePolicyUnitFactors.M && bps % ratePolicyUnitFactors.M === 0) {
+    return 'M'
+  }
+  return 'K'
+}
+
+function normalizeRatePolicyItem(item: RatePolicyWire): RatePolicy {
+  const downlinkUnit = pickRatePolicyUnit(item.downlink_bps)
+  const uplinkUnit = pickRatePolicyUnit(item.uplink_bps)
+
+  return {
+    id: item.id,
+    name: item.name,
+    mode: item.mode,
+    downlink_value: item.downlink_bps / ratePolicyUnitFactors[downlinkUnit],
+    downlink_unit: downlinkUnit,
+    uplink_value: item.uplink_bps / ratePolicyUnitFactors[uplinkUnit],
+    uplink_unit: uplinkUnit,
+    tunnel_count: item.binding_count,
+    created_at: item.created_at,
+    updated_at: item.updated_at
+  }
+}
+
+function normalizeTunnelBindingItem(item: RatePolicyBindingWire, policyName?: string): TunnelBinding {
+  return {
+    id: item.tunnel_id,
+    group_id: item.group_id,
+    group_name: item.group_name,
+    name: item.tunnel_name,
+    protocol: item.protocol,
+    remote_start: item.remote_start,
+    remote_end: item.remote_end,
+    rate_policy_id: item.rate_policy_id,
+    rate_policy_name: policyName
+  }
+}
+
+function serializeRatePolicyPayload(data: RatePolicyPayload) {
+  return {
+    name: data.name,
+    mode: data.mode,
+    downlink: {
+      value: data.downlink_value,
+      unit: data.downlink_unit
+    },
+    uplink: {
+      value: data.uplink_value,
+      unit: data.uplink_unit
+    }
+  }
+}
+
+async function listRatePolicyBindingMap(policies: RatePolicy[]): Promise<ApiResponse<Map<number, { policy_id: number; policy_name: string }>>> {
+  if (policies.length === 0) {
+    return { data: new Map() }
+  }
+
+  const results = await Promise.all(
+    policies.map(async (policy) => {
+      const response = await request<{ items: RatePolicyBindingWire[] }>(`/rate-policies/${policy.id}/bindings`)
+      return { policy, response }
+    })
+  )
+
+  const bindingMap = new Map<number, { policy_id: number; policy_name: string }>()
+  for (const { policy, response } of results) {
+    if (response.error) {
+      return { error: response.error, errorCode: response.errorCode, details: response.details }
+    }
+
+    for (const item of response.data?.items ?? []) {
+      bindingMap.set(item.tunnel_id, {
+        policy_id: policy.id,
+        policy_name: policy.name
+      })
+    }
+  }
+
+  return { data: bindingMap }
+}
+
 export const ratePoliciesApi = {
-  list: () => request<{ items: RatePolicy[] }>('/rate-policies'),
+  list: async () => {
+    const result = await request<{ items: RatePolicyWire[] }>('/rate-policies')
+    if (result.error) {
+      return { error: result.error, errorCode: result.errorCode, details: result.details }
+    }
+    return {
+      data: {
+        items: (result.data?.items ?? []).map(normalizeRatePolicyItem)
+      }
+    } satisfies ApiResponse<{ items: RatePolicy[] }>
+  },
 
-  create: (data: RatePolicyPayload) =>
-    request<{ item: RatePolicy }>('/rate-policies', {
+  create: async (data: RatePolicyPayload) => {
+    const result = await request<{ item: RatePolicyWire }>('/rate-policies', {
       method: 'POST',
-      body: JSON.stringify(data)
-    }),
+      body: JSON.stringify(serializeRatePolicyPayload(data))
+    })
+    if (result.error) {
+      return { error: result.error, errorCode: result.errorCode, details: result.details }
+    }
+    return {
+      data: result.data?.item
+        ? { item: normalizeRatePolicyItem(result.data.item) }
+        : undefined
+    } satisfies ApiResponse<{ item: RatePolicy }>
+  },
 
-  update: (id: number, data: Partial<RatePolicyPayload>) =>
-    request<{ item: RatePolicy }>(`/rate-policies/${id}`, {
+  update: async (id: number, data: RatePolicyPayload) => {
+    const result = await request<{ item: RatePolicyWire }>(`/rate-policies/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify(data)
-    }),
+      body: JSON.stringify(serializeRatePolicyPayload(data))
+    })
+    if (result.error) {
+      return { error: result.error, errorCode: result.errorCode, details: result.details }
+    }
+    return {
+      data: result.data?.item
+        ? { item: normalizeRatePolicyItem(result.data.item) }
+        : undefined
+    } satisfies ApiResponse<{ item: RatePolicy }>
+  },
 
   delete: (id: number) => request(`/rate-policies/${id}`, { method: 'DELETE' }),
 
-  getTunnels: (id: number) => request<{ items: TunnelBinding[] }>(`/rate-policies/${id}/tunnels`),
+  getTunnels: async (id: number) => {
+    const result = await request<{ items: RatePolicyBindingWire[] }>(`/rate-policies/${id}/bindings`)
+    if (result.error) {
+      return { error: result.error, errorCode: result.errorCode, details: result.details }
+    }
+    return {
+      data: {
+        items: (result.data?.items ?? []).map(item => normalizeTunnelBindingItem(item))
+      }
+    } satisfies ApiResponse<{ items: TunnelBinding[] }>
+  },
 
-  bindTunnels: (id: number, tunnelIds: number[]) =>
-    request<{ bound: number }>(`/rate-policies/${id}/tunnels`, {
-      method: 'POST',
-      body: JSON.stringify({ tunnel_ids: tunnelIds })
-    }),
+  bindTunnels: async (policyId: number, tunnels: TunnelBinding[]) => {
+    let bound = 0
+
+    for (const tunnel of tunnels) {
+      if (tunnel.rate_policy_id === policyId) {
+        continue
+      }
+
+      if (tunnel.rate_policy_id && tunnel.rate_policy_id !== policyId) {
+        const unbindResult = await request(
+          `/rate-policies/${tunnel.rate_policy_id}/bindings/${tunnel.id}`,
+          { method: 'DELETE' }
+        )
+        if (unbindResult.error) {
+          return { error: unbindResult.error, errorCode: unbindResult.errorCode, details: unbindResult.details }
+        }
+      }
+
+      const bindResult = await request<{ item: RatePolicyBindingWire }>(`/rate-policies/${policyId}/bindings`, {
+        method: 'POST',
+        body: JSON.stringify({ tunnel_id: tunnel.id })
+      })
+      if (bindResult.error) {
+        return { error: bindResult.error, errorCode: bindResult.errorCode, details: bindResult.details }
+      }
+      bound++
+    }
+
+    return { data: { bound } }
+  },
 
   unbindTunnel: (policyId: number, tunnelId: number) =>
-    request(`/rate-policies/${policyId}/tunnels/${tunnelId}`, { method: 'DELETE' })
+    request(`/rate-policies/${policyId}/bindings/${tunnelId}`, { method: 'DELETE' })
 }
 
 export const bindableTunnelsApi = {
-  list: () => request<{ items: TunnelBinding[] }>('/tunnels/bindable')
+  list: async (policies?: RatePolicy[]): Promise<ApiResponse<{ items: TunnelBinding[] }>> => {
+    const tunnelsResult = await tunnelsApi.list()
+    if (tunnelsResult.error) {
+      return { error: tunnelsResult.error, errorCode: tunnelsResult.errorCode, details: tunnelsResult.details }
+    }
+
+    let policyItems = policies
+    if (!policyItems) {
+      const policiesResult = await ratePoliciesApi.list()
+      if (policiesResult.error) {
+        return { error: policiesResult.error, errorCode: policiesResult.errorCode, details: policiesResult.details }
+      }
+      policyItems = policiesResult.data?.items ?? []
+    }
+
+    const bindingMapResult = await listRatePolicyBindingMap(policyItems)
+    if (bindingMapResult.error) {
+      return {
+        error: bindingMapResult.error,
+        errorCode: bindingMapResult.errorCode,
+        details: bindingMapResult.details
+      }
+    }
+
+    const bindingMap = bindingMapResult.data ?? new Map()
+    const items = (tunnelsResult.data?.items ?? [])
+      .filter(tunnel => tunnel.remote_type === 'single' && (tunnel.protocol === 'tcp' || tunnel.protocol === 'udp'))
+      .map((tunnel) => {
+        const binding = bindingMap.get(tunnel.id)
+        return {
+          id: tunnel.id,
+          group_id: tunnel.group_id,
+          group_name: tunnel.group_name,
+          name: tunnel.name,
+          protocol: tunnel.protocol,
+          remote_start: tunnel.remote_start,
+          remote_end: tunnel.remote_end,
+          rate_policy_id: binding?.policy_id,
+          rate_policy_name: binding?.policy_name
+        } satisfies TunnelBinding
+      })
+      .sort((left, right) => {
+        const groupDiff = left.group_name.localeCompare(right.group_name)
+        if (groupDiff !== 0) {
+          return groupDiff
+        }
+        return left.name.localeCompare(right.name)
+      })
+
+    return { data: { items } }
+  }
 }
