@@ -32,7 +32,7 @@ func TestNoteReconnectLogsOnlyOncePerReconnectCycle(t *testing.T) {
 	}
 }
 
-func TestLogConfigAppliedUsesCompactMessagesAndTLSDetails(t *testing.T) {
+func TestLogConfigAppliedUsesCompactMessagesAndTLSSummary(t *testing.T) {
 	buffer := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(buffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	client := New(testConfig(), logger, "test-client")
@@ -66,10 +66,10 @@ func TestLogConfigAppliedUsesCompactMessagesAndTLSDetails(t *testing.T) {
 	if strings.Contains(got, "version=7") {
 		t.Fatalf("did not expect config version in log, got %q", got)
 	}
-	if !strings.Contains(got, "隧道[tls-api] 已启动 tcp 17443 -> 127.0.0.1:18443 tls=tls") {
+	if !strings.Contains(got, "隧道[tls-api] 已启动 tcp 17443 -> 127.0.0.1:18443 tls:listen=off,backend=tls") {
 		t.Fatalf("expected tunnel ready summary with tls mode, got %q", got)
 	}
-	if !strings.Contains(got, "ca=system") || !strings.Contains(got, "sni=api.internal") {
-		t.Fatalf("expected backend tls details in log, got %q", got)
+	if strings.Contains(got, "ca=") || strings.Contains(got, "sni=") || strings.Contains(got, "cert=") {
+		t.Fatalf("did not expect backend tls detail expansion in log, got %q", got)
 	}
 }

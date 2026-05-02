@@ -118,28 +118,13 @@ func (c *Client) logConfigApplied(push protocol.ConfigPush, summary configReload
 }
 
 func tunnelReadySummary(tunnel protocol.TunnelEntry) string {
-	message := fmt.Sprintf(
-		"隧道[%s] 已启动 %s %s -> %s tls=%s",
+	return fmt.Sprintf(
+		"隧道[%s] 已启动 %s %s -> %s tls:listen=off,backend=%s",
 		tunnelDisplayName(tunnel),
 		protocolName(tunnel.Protocol),
 		portSpan(tunnel.RemoteStart, tunnel.RemoteEnd),
 		localTargetSummary(tunnel),
 		tlsModeLabel(tunnel.BackendTLSMode),
-	)
-	if tunnel.BackendTLSMode == protocol.TunnelTLSModeOff {
-		return message
-	}
-
-	verify := "ca=" + tlsCALabel(tunnel)
-	if tunnel.BackendTLSInsecureSkipVerify {
-		verify = "verify=skip"
-	}
-	return fmt.Sprintf(
-		"%s %s cert=%s sni=%s",
-		message,
-		verify,
-		yesNo(tunnel.BackendTLSClientCertPEM != ""),
-		serverNameLabel(tunnel.BackendTLSServerName),
 	)
 }
 
@@ -175,32 +160,4 @@ func tlsModeLabel(mode uint8) string {
 	default:
 		return "off"
 	}
-}
-
-func tlsCALabel(tunnel protocol.TunnelEntry) string {
-	switch {
-	case tunnel.BackendTLSLoadSystemCA && tunnel.BackendTLSCAPEM != "":
-		return "system+custom"
-	case tunnel.BackendTLSLoadSystemCA:
-		return "system"
-	case tunnel.BackendTLSCAPEM != "":
-		return "custom"
-	default:
-		return "none"
-	}
-}
-
-func serverNameLabel(serverName string) string {
-	serverName = strings.TrimSpace(serverName)
-	if serverName == "" {
-		return "-"
-	}
-	return serverName
-}
-
-func yesNo(value bool) string {
-	if value {
-		return "yes"
-	}
-	return "no"
 }
