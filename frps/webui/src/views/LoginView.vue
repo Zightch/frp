@@ -11,6 +11,12 @@ const secret = ref('')
 const loading = ref(false)
 const checking = ref(true)
 
+// Waiting state for admin occupied
+const waitingState = ref(false)
+const pendingLoginTicket = ref('')
+const observedGeneration = ref(0)
+const takeoverLoading = ref(false)
+
 onMounted(async () => {
   const result = await authApi.state()
   checking.value = false
@@ -42,6 +48,17 @@ async function handleLogin() {
 
     const loginResult = await authApi.login(challengeResult.data!.challenge_id, proof)
     if (loginResult.error) {
+      // Check for 409 management_admin_occupied
+      if (loginResult.errorCode === 'management_admin_occupied' && loginResult.details) {
+        const details = loginResult.details as {
+          pending_login_ticket: string
+          observed_generation: number
+        }
+        pendingLoginTicket.value = details.pending_login_ticket
+        observedGeneration.value = details.observed_generation
+        waitingState.value = true
+        return
+      }
       ElMessage.error(loginResult.error)
       return
     }
@@ -54,6 +71,36 @@ async function handleLogin() {
     loading.value = false
   }
 }
+
+async function handleTakeover() {
+  takeoverLoading.value = true
+  try {
+    const result = await authApi.takeover(pendingLoginTicket.value, observedGeneration.value)
+    if (result.error) {
+      // Check for 409 management_takeover_stale
+      if (result.errorCode === 'management_takeover_stale') {
+        ElMessage.error('页面已失效，请重新登录')
+        resetToLoginForm()
+        return
+      }
+      ElMessage.error(result.error)
+      return
+    }
+
+    ElMessage.success('登录成功')
+    router.push({ name: 'GroupConfig' })
+  } catch {
+    ElMessage.error('操作失败')
+  } finally {
+    takeoverLoading.value = false
+  }
+}
+
+function resetToLoginForm() {
+  waitingState.value = false
+  pendingLoginTicket.value = ''
+  observedGeneration.value = 0
+}
 </script>
 
 <template>
@@ -61,7 +108,9 @@ async function handleLogin() {
     <template #header>
       <span class="card-title">管理登录</span>
     </template>
-    <el-form @submit.prevent="handleLogin" class="login-form">
+
+    <!-- Login Form -->
+    <el-form v-if="!waitingState" @submit.prevent="handleLogin" class="login-form">
       <el-form-item>
         <el-input
           v-model="secret"
@@ -82,6 +131,22 @@ async function handleLogin() {
         </el-button>
       </el-form-item>
     </el-form>
+
+    <el-result
+      v-else
+      icon="warning"
+      title="当前已有管理员在线"
+      sub-title="另一个管理员会话正在占用管理位，您可以选择顶掉并登录。"
+    >
+      <template #extra>
+        <el-space wrap size="small">
+          <el-button @click="resetToLoginForm">返回</el-button>
+          <el-button type="primary" :loading="takeoverLoading" @click="handleTakeover">
+            顶掉并登录
+          </el-button>
+        </el-space>
+      </template>
+    </el-result>
   </el-card>
 </template>
 
@@ -101,5 +166,9 @@ async function handleLogin() {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-base);
+}
+
+.full-width {
+  width: 100%;
 }
 </style>

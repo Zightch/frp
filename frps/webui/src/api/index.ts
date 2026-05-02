@@ -219,6 +219,11 @@ export const authApi = {
     body: JSON.stringify({ challenge_id: challengeId, proof })
   }),
 
+  takeover: (pendingLoginTicket: string, observedGeneration: number) => request<{ initialized: boolean; authenticated: boolean; expires_at: string }>('/auth/takeover', {
+    method: 'POST',
+    body: JSON.stringify({ pending_login_ticket: pendingLoginTicket, observed_generation: observedGeneration })
+  }),
+
   logout: () => request<{ initialized: boolean; authenticated: boolean; logged_out: boolean }>('/auth/logout', {
     method: 'POST'
   }),
@@ -713,39 +718,20 @@ export const ratePoliciesApi = {
     } satisfies ApiResponse<{ items: TunnelBinding[] }>
   },
 
-  bindTunnels: async (policyId: number, tunnels: TunnelBinding[]) => {
-    let bound = 0
-
-    for (const tunnel of tunnels) {
-      if (tunnel.rate_policy_id === policyId) {
-        continue
-      }
-
-      if (tunnel.rate_policy_id && tunnel.rate_policy_id !== policyId) {
-        const unbindResult = await request(
-          `/rate-policies/${tunnel.rate_policy_id}/bindings/${tunnel.id}`,
-          { method: 'DELETE' }
-        )
-        if (unbindResult.error) {
-          return { error: unbindResult.error, errorCode: unbindResult.errorCode, details: unbindResult.details }
-        }
-      }
-
-      const bindResult = await request<{ item: RatePolicyBindingWire }>(`/rate-policies/${policyId}/bindings`, {
-        method: 'POST',
-        body: JSON.stringify({ tunnel_id: tunnel.id })
-      })
-      if (bindResult.error) {
-        return { error: bindResult.error, errorCode: bindResult.errorCode, details: bindResult.details }
-      }
-      bound++
+  syncBindings: async (policyId: number, tunnelIds: number[]) => {
+    const result = await request<{ items: RatePolicyBindingWire[] }>(`/rate-policies/${policyId}/bindings`, {
+      method: 'PUT',
+      body: JSON.stringify({ tunnel_ids: tunnelIds })
+    })
+    if (result.error) {
+      return { error: result.error, errorCode: result.errorCode, details: result.details }
     }
-
-    return { data: { bound } }
-  },
-
-  unbindTunnel: (policyId: number, tunnelId: number) =>
-    request(`/rate-policies/${policyId}/bindings/${tunnelId}`, { method: 'DELETE' })
+    return {
+      data: {
+        items: (result.data?.items ?? []).map(item => normalizeTunnelBindingItem(item))
+      }
+    } satisfies ApiResponse<{ items: TunnelBinding[] }>
+  }
 }
 
 export const bindableTunnelsApi = {
