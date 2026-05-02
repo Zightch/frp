@@ -1,12 +1,15 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,6 +170,96 @@ func TestClientRunSession(t *testing.T) {
 
 	if err := client.runSession(ctx, clientConn, credentials); err != nil {
 		t.Fatalf("run session: %v", err)
+	}
+
+	select {
+	case <-serverDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mock server did not exit")
+	}
+}
+
+func TestClientRunExitsOnTerminalRemoteErrorWithoutReconnect(t *testing.T) {
+	credentials := testCredentials(t)
+	logBuffer := &bytes.Buffer{}
+	client := New(
+		testConfig(),
+		slog.New(slog.NewTextHandler(logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		"test-client",
+	)
+
+	dialCount := 0
+	serverDone := make(chan struct{}, 2)
+	client.dialContext = func(_ context.Context, _, _ string) (net.Conn, error) {
+		dialCount++
+		clientConn, serverConn := net.Pipe()
+		go func() {
+			defer func() {
+				serverDone <- struct{}{}
+			}()
+			defer serverConn.Close()
+
+			performPlainTransportHello(t, serverConn, credentials.ClientID)
+
+			frame := readFrame(t, serverConn)
+			if frame.Type != protocol.TypeAuthBegin {
+				t.Errorf("expected auth.begin, got %s", frame.Type.String())
+				return
+			}
+
+			challenge := protocol.AuthChallenge{
+				ChallengeID: 9,
+				ExpiresInMs: 5000,
+			}
+			copy(challenge.Nonce[:], []byte("nonce-1234567890"))
+			challengeBody, err := protocol.MarshalAuthChallenge(challenge)
+			if err != nil {
+				t.Errorf("marshal auth.challenge: %v", err)
+				return
+			}
+			writeFrame(t, serverConn, protocol.Frame{
+				Type:      protocol.TypeAuthChallenge,
+				RequestID: frame.RequestID,
+				Body:      challengeBody,
+			})
+
+			frame = readFrame(t, serverConn)
+			if frame.Type != protocol.TypeAuthFinish {
+				t.Errorf("expected auth.finish, got %s", frame.Type.String())
+				return
+			}
+
+			errorBody, err := protocol.MarshalErrorBody(protocol.ErrorBody{
+				ErrorCode: protocol.ErrorCodeAuthClientLimitReached,
+				Retryable: false,
+				Message:   "other frpc already online ip=203.0.113.10",
+			})
+			if err != nil {
+				t.Errorf("marshal error body: %v", err)
+				return
+			}
+			writeFrame(t, serverConn, protocol.Frame{
+				Type:      protocol.TypeError,
+				RequestID: frame.RequestID,
+				Body:      errorBody,
+			})
+		}()
+		return clientConn, nil
+	}
+
+	err := client.Run(context.Background())
+	var remote *remoteError
+	if !errors.As(err, &remote) {
+		t.Fatalf("expected remoteError, got %v", err)
+	}
+	if remote.Code != protocol.ErrorCodeAuthClientLimitReached {
+		t.Fatalf("unexpected remote error code: %d", remote.Code)
+	}
+	if dialCount != 1 {
+		t.Fatalf("expected one dial attempt, got %d", dialCount)
+	}
+	if strings.Contains(logBuffer.String(), "重连 frps 中...") {
+		t.Fatalf("did not expect reconnect log, got %q", logBuffer.String())
 	}
 
 	select {

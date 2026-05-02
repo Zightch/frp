@@ -39,7 +39,7 @@ func (c *Client) markSessionActive() {
 	c.connectState = connectionStateActive
 }
 
-func (c *Client) noteReconnect(err error) {
+func (c *Client) noteReconnect() {
 	if c == nil {
 		return
 	}
@@ -50,11 +50,6 @@ func (c *Client) noteReconnect(err error) {
 	c.logMu.Unlock()
 
 	if alreadyReconnecting {
-		c.debugf("client", "重连失败 error=%v", err)
-		return
-	}
-	if isLoginConflictError(err) {
-		c.infof("login", "登录冲突，当前分组已有其他 frpc 在线，重连 frps 中...")
 		return
 	}
 	c.infof("client", "重连 frps 中...")
@@ -106,8 +101,7 @@ func (c *Client) logConfigApplied(push protocol.ConfigPush, summary configReload
 
 	c.infof(
 		"config",
-		"配置已同步 version=%d 隧道=%d 启用=%d 新增=%d 替换=%d 删除=%d",
-		push.ConfigVersion,
+		"领取配置 隧道数量%d 启用%d +%d ~%d -%d",
 		len(push.Tunnels),
 		enabled,
 		summary.addedTunnels,
@@ -125,7 +119,7 @@ func (c *Client) logConfigApplied(push protocol.ConfigPush, summary configReload
 
 func tunnelReadySummary(tunnel protocol.TunnelEntry) string {
 	message := fmt.Sprintf(
-		"隧道[%s] 已就绪 %s %s -> %s tls=%s",
+		"隧道[%s] 已启动 %s %s -> %s tls=%s",
 		tunnelDisplayName(tunnel),
 		protocolName(tunnel.Protocol),
 		portSpan(tunnel.RemoteStart, tunnel.RemoteEnd),

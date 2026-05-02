@@ -77,8 +77,11 @@ func (c *Client) Run(ctx context.Context) error {
 		if err == nil {
 			return nil
 		}
+		if isTerminalRemoteError(err) {
+			return err
+		}
 
-		c.noteReconnect(err)
+		c.noteReconnect()
 		timer := time.NewTimer(reconnectInterval)
 		select {
 		case <-ctx.Done():
@@ -96,7 +99,6 @@ func (c *Client) runOnce(ctx context.Context, credentials appconfig.Credentials)
 	}
 	defer conn.Close()
 
-	c.debugf("client", "已连接 frps server=%s", c.config.Server)
 	err = c.runSession(ctx, conn, credentials)
 	if err == nil {
 		return nil

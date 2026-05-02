@@ -1506,16 +1506,16 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 		"test-server",
 	)
 
-	_, firstDone, _ := authenticateServerSession(t, server, tokenID, tokenHash)
+	firstConn, firstDone, _ := authenticateServerSession(t, server, tokenID, tokenHash)
 
 	secondClientRaw, secondServerRaw := net.Pipe()
 	secondClientConn := &connWithRemoteAddr{
 		Conn:   secondClientRaw,
-		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 10002},
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.2"), Port: 10002},
 	}
 	secondServerConn := &connWithRemoteAddr{
 		Conn:   secondServerRaw,
-		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20002},
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.2"), Port: 20002},
 	}
 
 	secondDone := make(chan struct{})
@@ -1566,27 +1566,38 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 		Body:      authFinishBody,
 	})
 
-	helloFrame := readMessage(t, secondClientConn)
-	if helloFrame.Type != protocol.TypeServerHello || helloFrame.RequestID != 3 {
-		t.Fatalf("unexpected replacement server.hello frame: %#v", helloFrame)
+	errorFrame := readMessage(t, secondClientConn)
+	if errorFrame.Type != protocol.TypeError || errorFrame.RequestID != 3 {
+		t.Fatalf("unexpected login conflict frame: %#v", errorFrame)
+	}
+	errorBody, err := protocol.UnmarshalErrorBody(errorFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal error frame: %v", err)
+	}
+	if errorBody.ErrorCode != protocol.ErrorCodeAuthClientLimitReached {
+		t.Fatalf("unexpected error code: %d", errorBody.ErrorCode)
+	}
+	if errorBody.Retryable {
+		t.Fatalf("expected non-retryable login conflict, got %#v", errorBody)
+	}
+	if !strings.Contains(errorBody.Message, "127.0.0.1") {
+		t.Fatalf("expected current online frpc ip in message, got %q", errorBody.Message)
 	}
 
-	replacementConfigFrame := readMessage(t, secondClientConn)
-	if replacementConfigFrame.Type != protocol.TypeConfigPush {
-		t.Fatalf("expected replacement config.push, got %s", replacementConfigFrame.Type.String())
-	}
-
-	select {
-	case <-firstDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stale first server connection did not exit after replacement login")
-	}
+	assertSessionHeartbeatStillWorks(t, firstConn)
 
 	_ = secondClientConn.Close()
 	select {
 	case <-secondDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("replacement server connection did not exit")
+		t.Fatal("rejected second server connection did not exit")
+	}
+
+	_ = firstConn.Close()
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first server connection did not exit")
 	}
 
 	thirdConn, thirdDone, _ := authenticateServerSession(t, server, tokenID, tokenHash)

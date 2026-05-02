@@ -35,3 +35,11 @@ func isLoginConflictError(err error) bool {
 		strings.Contains(message, "other frpc online") ||
 		strings.Contains(message, "登录冲突")
 }
+
+func isTerminalRemoteError(err error) bool {
+	var remote *remoteError
+	if !errors.As(err, &remote) {
+		return false
+	}
+	return !remote.Retryable
+}

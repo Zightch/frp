@@ -14,3 +14,12 @@ func TestIsLoginConflictErrorRecognizesProtocolCode(t *testing.T) {
 		t.Fatal("did not expect non-conflict code to be recognized")
 	}
 }
+
+func TestIsTerminalRemoteErrorFollowsRetryableFlag(t *testing.T) {
+	if !isTerminalRemoteError(&remoteError{Code: protocol.ErrorCodeAuthClientLimitReached, Retryable: false}) {
+		t.Fatal("expected non-retryable remote error to be terminal")
+	}
+	if isTerminalRemoteError(&remoteError{Code: protocol.ErrorCodeAuthClientLimitReached, Retryable: true}) {
+		t.Fatal("did not expect retryable remote error to be terminal")
+	}
+}

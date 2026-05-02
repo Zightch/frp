@@ -46,6 +46,9 @@ func TestSupervisorRuntimeSnapshotActiveGroupsAndExclude(t *testing.T) {
 	if agent := s.AttachSession(context.Background(), state, runtime); agent == nil {
 		t.Fatal("expected supervisor to attach session")
 	}
+	if got := s.GroupSlotRemoteIP(group.ID); got != "pipe" {
+		t.Fatalf("unexpected group slot remote ip: %q", got)
+	}
 
 	snapshotState := s.Snapshot(nil)
 	if got := snapshotState.GroupSlots[group.ID]; got != session.id {
@@ -69,7 +72,7 @@ func TestSupervisorRuntimeSnapshotActiveGroupsAndExclude(t *testing.T) {
 	}
 }
 
-func TestSupervisorTakeoverAndShutdown(t *testing.T) {
+func TestSupervisorRejectsSecondAttachForOccupiedGroup(t *testing.T) {
 	group, snapshot := testGroupRuntime()
 	firstSession := &testSession{id: 11, group: group, snapshot: snapshot}
 	secondSession := &testSession{id: 12, group: group, snapshot: snapshot}
@@ -96,16 +99,16 @@ func TestSupervisorTakeoverAndShutdown(t *testing.T) {
 		session: secondSession,
 		group:   group,
 	})
-	if secondAgent == nil {
-		t.Fatal("expected replacement session to attach")
+	if secondAgent != nil {
+		t.Fatal("expected second session attach to be rejected")
 	}
 
-	waitFor(t, func() bool {
-		return firstAgent.State().BlockReason == controlsession.BlockReasonSessionReplaced
-	})
 	active, ok := s.ActiveRuntime(group.ID)
-	if !ok || active.Session == nil || active.Session.SessionID() != secondSession.id {
-		t.Fatalf("expected replacement session to be active, got ok=%v active=%#v", ok, active)
+	if !ok || active.Session == nil || active.Session.SessionID() != firstSession.id {
+		t.Fatalf("expected first session to remain active, got ok=%v active=%#v", ok, active)
+	}
+	if got := s.GroupSlotRemoteIP(group.ID); got != "pipe" {
+		t.Fatalf("unexpected group slot remote ip: %q", got)
 	}
 
 	s.Shutdown()
@@ -117,14 +120,26 @@ func TestSupervisorTakeoverAndShutdown(t *testing.T) {
 			return false
 		}
 	})
-	waitFor(t, func() bool {
-		select {
-		case <-secondAgent.Done():
-			return true
-		default:
-			return false
-		}
-	})
+}
+
+func TestSupervisorReserveGroupSlotWithRemoteIP(t *testing.T) {
+	s := New(controlsession.NoopExecutor{})
+	defer s.Shutdown()
+
+	if !s.ReserveGroupSlotWithRemoteIP(1, 11, "203.0.113.10") {
+		t.Fatal("expected group slot reservation to succeed")
+	}
+	if got := s.GroupSlotRemoteIP(1); got != "203.0.113.10" {
+		t.Fatalf("unexpected reserved remote ip: %q", got)
+	}
+	if s.ReserveGroupSlotWithRemoteIP(1, 12, "203.0.113.11") {
+		t.Fatal("expected duplicate reservation to fail")
+	}
+
+	s.ReleaseGroupSlot(1, 11)
+	if got := s.GroupSlotRemoteIP(1); got != "" {
+		t.Fatalf("expected released slot ip to be cleared, got %q", got)
+	}
 }
 
 type testRuntime struct {

@@ -44,6 +44,7 @@ type Supervisor struct {
 	runtimeByGroup   map[int64]Runtime
 	runtimeBySession map[uint64]Runtime
 	groupSlots       map[int64]uint64
+	groupSlotIPs     map[int64]string
 	cancelByID       map[uint64]context.CancelFunc
 }
 
@@ -55,6 +56,7 @@ func New(executor controlsession.Executor) *Supervisor {
 		runtimeByGroup:   make(map[int64]Runtime),
 		runtimeBySession: make(map[uint64]Runtime),
 		groupSlots:       make(map[int64]uint64),
+		groupSlotIPs:     make(map[int64]string),
 		cancelByID:       make(map[uint64]context.CancelFunc),
 	}
 }
@@ -78,8 +80,40 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 	ctx, cancel := context.WithCancel(parent)
 
 	s.mu.Lock()
+	slotSessionID, slotReserved := s.groupSlots[initial.GroupID]
+	switch {
+	case !slotReserved:
+		s.groupSlots[initial.GroupID] = initial.SessionID
+		if remoteIP := runtimeRemoteIP(runtime); remoteIP != "" {
+			s.groupSlotIPs[initial.GroupID] = remoteIP
+		}
+	case slotSessionID != initial.SessionID:
+		s.mu.Unlock()
+		cancel()
+		return nil
+	}
+	if s.groupSlotIPs[initial.GroupID] == "" {
+		if remoteIP := runtimeRemoteIP(runtime); remoteIP != "" {
+			s.groupSlotIPs[initial.GroupID] = remoteIP
+		}
+	}
 	if existing := s.byGroup[initial.GroupID]; existing != nil {
-		_ = existing.Enqueue(controlsession.SessionTakeoverRequested{ReplacementSessionID: initial.SessionID})
+		if !slotReserved && s.groupSlots[initial.GroupID] == initial.SessionID {
+			delete(s.groupSlots, initial.GroupID)
+			delete(s.groupSlotIPs, initial.GroupID)
+		}
+		s.mu.Unlock()
+		cancel()
+		return nil
+	}
+	if existing := s.bySession[initial.SessionID]; existing != nil {
+		if !slotReserved && s.groupSlots[initial.GroupID] == initial.SessionID {
+			delete(s.groupSlots, initial.GroupID)
+			delete(s.groupSlotIPs, initial.GroupID)
+		}
+		s.mu.Unlock()
+		cancel()
+		return nil
 	}
 	s.byGroup[initial.GroupID] = agent
 	s.bySession[initial.SessionID] = agent
@@ -87,7 +121,6 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 		s.runtimeByGroup[initial.GroupID] = runtime
 		s.runtimeBySession[initial.SessionID] = runtime
 	}
-	s.groupSlots[initial.GroupID] = initial.SessionID
 	s.cancelByID[initial.SessionID] = cancel
 	s.mu.Unlock()
 
@@ -102,6 +135,7 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 			delete(s.runtimeByGroup, initial.GroupID)
 			if s.groupSlots[initial.GroupID] == initial.SessionID {
 				delete(s.groupSlots, initial.GroupID)
+				delete(s.groupSlotIPs, initial.GroupID)
 			}
 		}
 		if s.bySession[initial.SessionID] == agent {
@@ -188,6 +222,7 @@ func (s *Supervisor) DetachRuntime(sessionID uint64) {
 		}
 		if s.groupSlots[groupID] == sessionID {
 			delete(s.groupSlots, groupID)
+			delete(s.groupSlotIPs, groupID)
 		}
 	}
 	s.mu.Unlock()
@@ -244,6 +279,10 @@ func (s *Supervisor) ActiveRuntimeGroups(exclude controlruntime.SessionStateProj
 }
 
 func (s *Supervisor) ReserveGroupSlot(groupID int64, sessionID uint64) bool {
+	return s.ReserveGroupSlotWithRemoteIP(groupID, sessionID, "")
+}
+
+func (s *Supervisor) ReserveGroupSlotWithRemoteIP(groupID int64, sessionID uint64, remoteIP string) bool {
 	if s == nil || groupID <= 0 || sessionID == 0 {
 		return false
 	}
@@ -254,6 +293,9 @@ func (s *Supervisor) ReserveGroupSlot(groupID int64, sessionID uint64) bool {
 		return false
 	}
 	s.groupSlots[groupID] = sessionID
+	if remoteIP != "" {
+		s.groupSlotIPs[groupID] = remoteIP
+	}
 	return true
 }
 
@@ -265,8 +307,20 @@ func (s *Supervisor) ReleaseGroupSlot(groupID int64, sessionID uint64) {
 	s.mu.Lock()
 	if s.groupSlots[groupID] == sessionID {
 		delete(s.groupSlots, groupID)
+		delete(s.groupSlotIPs, groupID)
 	}
 	s.mu.Unlock()
+}
+
+func (s *Supervisor) GroupSlotRemoteIP(groupID int64) string {
+	if s == nil || groupID <= 0 {
+		return ""
+	}
+
+	s.mu.RLock()
+	remoteIP := s.groupSlotIPs[groupID]
+	s.mu.RUnlock()
+	return remoteIP
 }
 
 func (s *Supervisor) Snapshot(exclude controlruntime.SessionStateProjectionTarget) Snapshot {
@@ -336,4 +390,32 @@ func (s *Supervisor) Shutdown() {
 	for _, cancel := range cancels {
 		cancel()
 	}
+}
+
+func runtimeRemoteIP(runtime Runtime) string {
+	if runtime == nil || runtime.RuntimeConn() == nil {
+		return ""
+	}
+	return addrRemoteIP(runtime.RuntimeConn().RemoteAddr())
+}
+
+func addrRemoteIP(addr net.Addr) string {
+	switch typed := addr.(type) {
+	case *net.TCPAddr:
+		if typed.IP != nil {
+			return typed.IP.String()
+		}
+	case *net.UDPAddr:
+		if typed.IP != nil {
+			return typed.IP.String()
+		}
+	}
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err == nil {
+		return host
+	}
+	return addr.String()
 }

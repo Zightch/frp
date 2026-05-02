@@ -80,6 +80,7 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (net.Co
 	}
 	state := newSessionState(hello.HeartbeatIntervalMs)
 	state.setIdentity(hello.SessionID, transport.ConnectionID(conn))
+	c.infof("login", "登录成功 server=%s", c.config.Server)
 
 	frame, err = c.readLoginFrame(conn)
 	if err != nil {
@@ -92,8 +93,6 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (net.Co
 		return nil, nil, err
 	}
 	c.markSessionActive()
-
-	c.infof("login", "登录成功 session=%d heartbeat=%s", hello.SessionID, time.Duration(hello.HeartbeatIntervalMs)*time.Millisecond)
 
 	return conn, state, nil
 }
