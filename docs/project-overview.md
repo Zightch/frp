@@ -17,7 +17,7 @@
 - `proxy_group` 登录 `key` 固定为 `32` 位小写 hex `client_id` 加 `64` 位小写 hex `client_secret`。
 - `frpc` 登录采用 challenge/response：`sha256(client_secret_hash + nonce)`。
 - 一个 `proxy_group` 固定只允许 `1` 个在线 `frpc`。
-- 同 `proxy_group` 后登录的 `frpc` 不再接管当前在线者；服务端会返回 `1107 auth_client_limit_reached`，并在错误消息里携带当前在线 `frpc` IP；客户端直接退出，不进入重连。
+- 同 `proxy_group` 后登录的 `frpc` 不再接管当前在线者；服务端会返回 `1107 auth_client_limit_reached`，并在错误消息里携带当前在线 `frpc` 的 `ip:port`；客户端直接退出，不进入重连。
 - 登录成功后由 `frps` 下发首次 `config.push`，`frpc` 回 `config.ack`。
 - `frps` 在 `config.ack` 后启动启用状态的 TCP/UDP 公网 listener。
 - 管理面命中运行态字段且 `proxy_group` 在线时，会复用现有 `config.push / config.ack` 触发整组热重载。

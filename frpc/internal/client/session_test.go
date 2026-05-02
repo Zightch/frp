@@ -6,12 +6,13 @@ import (
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
-func TestSameTunnelExecutionDetectsTunnelNameAndBackendTLSChanges(t *testing.T) {
+func TestSameTunnelExecutionDetectsTunnelNameAndTLSChanges(t *testing.T) {
 	base := protocol.TunnelEntry{
 		TunnelName:                   "web",
 		TunnelID:                     7,
 		Protocol:                     protocol.ProtocolTCP,
 		TunnelFlags:                  protocol.TunnelFlagEnabled,
+		ListenTLSMode:                protocol.TunnelTLSModeTLS,
 		RemoteStart:                  20000,
 		RemoteEnd:                    20000,
 		LocalHost:                    mustHost(t, "127.0.0.1"),
@@ -34,6 +35,12 @@ func TestSameTunnelExecutionDetectsTunnelNameAndBackendTLSChanges(t *testing.T) 
 	renamed.TunnelName = "api"
 	if sameTunnelExecution(base, renamed) {
 		t.Fatal("expected tunnel name change to invalidate execution equality")
+	}
+
+	listenTLSChanged := base
+	listenTLSChanged.ListenTLSMode = protocol.TunnelTLSModeMTLS
+	if sameTunnelExecution(base, listenTLSChanged) {
+		t.Fatal("expected listen tls change to invalidate execution equality")
 	}
 
 	tlsChanged := base

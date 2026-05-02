@@ -19,6 +19,7 @@ func TestConfigTunnelsFromDesiredPreservesBackendTLSSettings(t *testing.T) {
 		TunnelID:                     3,
 		Protocol:                     protocol.ProtocolTCP,
 		TunnelFlags:                  protocol.TunnelFlagEnabled,
+		ListenTLSMode:                protocol.TunnelTLSModeMTLS,
 		RemoteStart:                  17443,
 		RemoteEnd:                    17443,
 		LocalHost:                    host,
@@ -52,6 +53,7 @@ func TestConfigTunnelsFromDesiredPreservesCustomCAOnlyTLS(t *testing.T) {
 		TunnelName:                   "tls-ca-only",
 		Protocol:                     "tcp",
 		Enabled:                      true,
+		ListenTLSMode:                protocol.TunnelTLSModeTLS,
 		RemoteStart:                  16000,
 		RemoteEnd:                    16000,
 		LocalHost:                    "backend.internal",
@@ -67,7 +69,7 @@ func TestConfigTunnelsFromDesiredPreservesCustomCAOnlyTLS(t *testing.T) {
 	if len(input) != 1 {
 		t.Fatalf("unexpected tunnel count: %d", len(input))
 	}
-	if input[0].BackendTLSMode != protocol.TunnelTLSModeTLS || input[0].BackendTLSCAPEM == "" {
+	if input[0].ListenTLSMode != protocol.TunnelTLSModeTLS || input[0].BackendTLSMode != protocol.TunnelTLSModeTLS || input[0].BackendTLSCAPEM == "" {
 		t.Fatalf("expected backend tls fields to survive desired->config conversion: %#v", input[0])
 	}
 }

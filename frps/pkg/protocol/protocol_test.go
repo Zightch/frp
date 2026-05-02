@@ -132,6 +132,7 @@ func TestConfigPushRoundTrip(t *testing.T) {
 				TunnelID:                     1,
 				Protocol:                     ProtocolTCP,
 				TunnelFlags:                  TunnelFlagEnabled,
+				ListenTLSMode:                TunnelTLSModeTLS,
 				RemoteStart:                  20000,
 				RemoteEnd:                    20000,
 				LocalHost:                    host,
@@ -175,7 +176,7 @@ func TestConfigPushRoundTrip(t *testing.T) {
 	if tunnel.TunnelName != "backend-api" {
 		t.Fatalf("unexpected tunnel name: %q", tunnel.TunnelName)
 	}
-	if tunnel.Revision != 5678 || tunnel.BackendTLSMode != TunnelTLSModeMTLS {
+	if tunnel.Revision != 5678 || tunnel.ListenTLSMode != TunnelTLSModeTLS || tunnel.BackendTLSMode != TunnelTLSModeMTLS {
 		t.Fatalf("unexpected tunnel metadata: %#v", tunnel)
 	}
 	if !tunnel.BackendTLSLoadSystemCA || !tunnel.BackendTLSInsecureSkipVerify {

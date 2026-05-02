@@ -104,11 +104,11 @@ func (s *Supervisor) ReserveGroupSlot(groupID int64, sessionID uint64) bool {
 	return s.registry.ReserveGroupSlot(groupID, sessionID)
 }
 
-func (s *Supervisor) ReserveGroupSlotWithRemoteIP(groupID int64, sessionID uint64, remoteIP string) bool {
+func (s *Supervisor) ReserveGroupSlotWithRemoteEndpoint(groupID int64, sessionID uint64, remoteEndpoint string) bool {
 	if s == nil || s.registry == nil {
 		return false
 	}
-	return s.registry.ReserveGroupSlotWithRemoteIP(groupID, sessionID, remoteIP)
+	return s.registry.ReserveGroupSlotWithRemoteEndpoint(groupID, sessionID, remoteEndpoint)
 }
 
 func (s *Supervisor) ReleaseGroupSlot(groupID int64, sessionID uint64) {
@@ -118,11 +118,11 @@ func (s *Supervisor) ReleaseGroupSlot(groupID int64, sessionID uint64) {
 	s.registry.ReleaseGroupSlot(groupID, sessionID)
 }
 
-func (s *Supervisor) GroupSlotRemoteIP(groupID int64) string {
+func (s *Supervisor) GroupSlotRemoteEndpoint(groupID int64) string {
 	if s == nil || s.registry == nil {
 		return ""
 	}
-	return s.registry.GroupSlotRemoteIP(groupID)
+	return s.registry.GroupSlotRemoteEndpoint(groupID)
 }
 
 func (s *Supervisor) Snapshot(exclude *sessionState) supervisorSnapshot {

@@ -49,6 +49,7 @@ func TestLogConfigAppliedUsesCompactMessagesAndTLSSummary(t *testing.T) {
 			LocalHost:              mustHost(t, "127.0.0.1"),
 			LocalStart:             18443,
 			LocalEnd:               18443,
+			ListenTLSMode:          protocol.TunnelTLSModeMTLS,
 			BackendTLSMode:         protocol.TunnelTLSModeTLS,
 			BackendTLSLoadSystemCA: true,
 			BackendTLSServerName:   "api.internal",
@@ -66,7 +67,7 @@ func TestLogConfigAppliedUsesCompactMessagesAndTLSSummary(t *testing.T) {
 	if strings.Contains(got, "version=7") {
 		t.Fatalf("did not expect config version in log, got %q", got)
 	}
-	if !strings.Contains(got, "隧道[tls-api] 已启动 tcp 17443 -> 127.0.0.1:18443 tls:listen=off,backend=tls") {
+	if !strings.Contains(got, "隧道[tls-api] 已启动 tcp 17443 -> 127.0.0.1:18443 tls:listen=mtls,backend=tls") {
 		t.Fatalf("expected tunnel ready summary with tls mode, got %q", got)
 	}
 	if strings.Contains(got, "ca=") || strings.Contains(got, "sni=") || strings.Contains(got, "cert=") {

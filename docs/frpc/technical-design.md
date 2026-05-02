@@ -87,7 +87,7 @@ if selected security mode == tls:
 - `transport.server_hello` 决定控制连接是否先升级到 TLS
 - 登录成功后立刻应用首次配置
 - 同 `proxy_group` 如果已有在线 `frpc`，`frps` 会在 `auth.finish` 后返回 `1107 auth_client_limit_reached`
-- 该错误当前固定 `retryable=false`，并在消息里携带当前在线 `frpc` IP
+- 该错误当前固定 `retryable=false`，并在消息里携带当前在线 `frpc` 的 `ip:port`
 - `frpc` 收到这类非重试远端错误后直接退出，不进入重连
 
 ### 3.2 会话状态
@@ -145,7 +145,7 @@ max(3 * heartbeat_interval, 5s)
 - 配置会在登录阶段和同一控制连接后续在线热重载阶段重复接收，仍只消费整组完整快照
 - 服务端会按“整组冻结 + 整组全量重建”推进热重载，因此 `frpc` 首版不要求保留未受影响 tunnel 的活动本地连接
 - `config.ack` 只能表示“本地清理和运行态替换已经完成”，不能表示“先答应，后异步切换”
-- tunnel 名称和 backend TLS 字段都属于当前执行快照的一部分；它们会参与热重载对比，并直接影响 `frpc` 日志与本地 backend TLS 拨号配置
+- tunnel 名称、listen TLS 模式和 backend TLS 字段都属于当前执行快照的一部分；它们会参与热重载对比，并直接影响 `frpc` 日志与本地 backend TLS 拨号配置
 
 ### 4.1 当前在线整组配置热重载规则
 

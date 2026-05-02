@@ -138,6 +138,7 @@ SELECT
 	t.local_host,
 	t.local_start,
 	t.local_end,
+	t.listen_tls_mode,
 	t.backend_tls_mode,
 	t.backend_tls_server_name,
 	t.backend_tls_load_system_ca,
@@ -239,6 +240,10 @@ func (r *SQLRepository) decodeTunnelRow(ctx context.Context, row storage.Row, us
 	if err != nil {
 		return tunnel, fmt.Errorf("backend_tls_mode: %w", err)
 	}
+	listenMode, err := decodeTunnelTLSMode(rowString(row, "listen_tls_mode"))
+	if err != nil {
+		return tunnel, fmt.Errorf("listen_tls_mode: %w", err)
+	}
 	backendLoadSystemCA, err := rowBool(row, "backend_tls_load_system_ca")
 	if err != nil {
 		return tunnel, fmt.Errorf("backend_tls_load_system_ca: %w", err)
@@ -291,6 +296,7 @@ func (r *SQLRepository) decodeTunnelRow(ctx context.Context, row storage.Row, us
 		TunnelID:                     uint32(id),
 		Protocol:                     proto,
 		TunnelFlags:                  flags,
+		ListenTLSMode:                listenMode,
 		RemoteStart:                  uint16(remoteStart),
 		RemoteEnd:                    uint16(remoteEnd),
 		LocalHost:                    host,

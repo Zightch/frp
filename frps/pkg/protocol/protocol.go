@@ -374,6 +374,7 @@ type TunnelEntry struct {
 	TunnelID                     uint32
 	Protocol                     uint8
 	TunnelFlags                  uint8
+	ListenTLSMode                uint8
 	RemoteStart                  uint16
 	RemoteEnd                    uint16
 	LocalHost                    Host
@@ -952,7 +953,8 @@ func encodeTunnelEntry(enc *bodyEncoder, tunnel TunnelEntry) error {
 	enc.u32(tunnel.TunnelID)
 	enc.u8(tunnel.Protocol)
 	enc.u8(tunnel.TunnelFlags)
-	enc.u16(0)
+	enc.u8(tunnel.ListenTLSMode)
+	enc.u8(0)
 	enc.u16(tunnel.RemoteStart)
 	enc.u16(tunnel.RemoteEnd)
 	if err := encodeHost(enc, tunnel.LocalHost); err != nil {
@@ -994,7 +996,10 @@ func decodeTunnelEntry(dec *bodyDecoder) (TunnelEntry, error) {
 	if tunnel.TunnelFlags, err = dec.u8(); err != nil {
 		return tunnel, err
 	}
-	reserved, err := dec.u16()
+	if tunnel.ListenTLSMode, err = dec.u8(); err != nil {
+		return tunnel, err
+	}
+	reserved, err := dec.u8()
 	if err != nil {
 		return tunnel, err
 	}

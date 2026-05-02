@@ -73,7 +73,7 @@ python test/e2e_udp_range.py
 当前固定语义：
 
 - 如果同 `proxy_group` 已有在线 `frpc`，后登录客户端会被 `frps` 直接拒绝
-- 错误消息会带当前在线 `frpc` IP
+- 错误消息会带当前在线 `frpc` 的 `ip:port`
 - 该场景下 `frpc` 直接退出，不进入重连
 
 ### 3.3 已登录但无转发
@@ -122,6 +122,7 @@ $env:FRPC_LOG_LEVEL="debug"
 
 - 进入一轮重连时只会打印一次 `重连 frps 中...`
 - 同一轮重连中的中间失败不会持续刷日志
+- tunnel 启动日志中的 TLS 摘要固定为 `tls:listen=<mode>,backend=<mode>`
 
 ### 5.2 TCP 范围映射错误
 

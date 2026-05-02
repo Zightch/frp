@@ -46,8 +46,8 @@ func TestSupervisorRuntimeSnapshotActiveGroupsAndExclude(t *testing.T) {
 	if agent := s.AttachSession(context.Background(), state, runtime); agent == nil {
 		t.Fatal("expected supervisor to attach session")
 	}
-	if got := s.GroupSlotRemoteIP(group.ID); got != "pipe" {
-		t.Fatalf("unexpected group slot remote ip: %q", got)
+	if got := s.GroupSlotRemoteEndpoint(group.ID); got != "pipe" {
+		t.Fatalf("unexpected group slot remote endpoint: %q", got)
 	}
 
 	snapshotState := s.Snapshot(nil)
@@ -107,8 +107,8 @@ func TestSupervisorRejectsSecondAttachForOccupiedGroup(t *testing.T) {
 	if !ok || active.Session == nil || active.Session.SessionID() != firstSession.id {
 		t.Fatalf("expected first session to remain active, got ok=%v active=%#v", ok, active)
 	}
-	if got := s.GroupSlotRemoteIP(group.ID); got != "pipe" {
-		t.Fatalf("unexpected group slot remote ip: %q", got)
+	if got := s.GroupSlotRemoteEndpoint(group.ID); got != "pipe" {
+		t.Fatalf("unexpected group slot remote endpoint: %q", got)
 	}
 
 	s.Shutdown()
@@ -122,23 +122,23 @@ func TestSupervisorRejectsSecondAttachForOccupiedGroup(t *testing.T) {
 	})
 }
 
-func TestSupervisorReserveGroupSlotWithRemoteIP(t *testing.T) {
+func TestSupervisorReserveGroupSlotWithRemoteEndpoint(t *testing.T) {
 	s := New(controlsession.NoopExecutor{})
 	defer s.Shutdown()
 
-	if !s.ReserveGroupSlotWithRemoteIP(1, 11, "203.0.113.10") {
+	if !s.ReserveGroupSlotWithRemoteEndpoint(1, 11, "203.0.113.10:7000") {
 		t.Fatal("expected group slot reservation to succeed")
 	}
-	if got := s.GroupSlotRemoteIP(1); got != "203.0.113.10" {
-		t.Fatalf("unexpected reserved remote ip: %q", got)
+	if got := s.GroupSlotRemoteEndpoint(1); got != "203.0.113.10:7000" {
+		t.Fatalf("unexpected reserved remote endpoint: %q", got)
 	}
-	if s.ReserveGroupSlotWithRemoteIP(1, 12, "203.0.113.11") {
+	if s.ReserveGroupSlotWithRemoteEndpoint(1, 12, "203.0.113.11:7000") {
 		t.Fatal("expected duplicate reservation to fail")
 	}
 
 	s.ReleaseGroupSlot(1, 11)
-	if got := s.GroupSlotRemoteIP(1); got != "" {
-		t.Fatalf("expected released slot ip to be cleared, got %q", got)
+	if got := s.GroupSlotRemoteEndpoint(1); got != "" {
+		t.Fatalf("expected released slot endpoint to be cleared, got %q", got)
 	}
 }
 

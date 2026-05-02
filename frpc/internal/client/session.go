@@ -133,6 +133,7 @@ func sameTunnelExecution(left, right protocol.TunnelEntry) bool {
 	return left.TunnelName == right.TunnelName &&
 		left.Protocol == right.Protocol &&
 		left.TunnelFlags == right.TunnelFlags &&
+		left.ListenTLSMode == right.ListenTLSMode &&
 		left.RemoteStart == right.RemoteStart &&
 		left.RemoteEnd == right.RemoteEnd &&
 		left.BackendTLSMode == right.BackendTLSMode &&

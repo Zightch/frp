@@ -91,6 +91,7 @@ func SameTunnelEntry(left, right protocol.TunnelEntry) bool {
 		left.LocalStart == right.LocalStart &&
 		left.LocalEnd == right.LocalEnd &&
 		left.Revision == right.Revision &&
+		left.ListenTLSMode == right.ListenTLSMode &&
 		left.BackendTLSMode == right.BackendTLSMode &&
 		left.BackendTLSLoadSystemCA == right.BackendTLSLoadSystemCA &&
 		left.BackendTLSInsecureSkipVerify == right.BackendTLSInsecureSkipVerify &&

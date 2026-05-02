@@ -38,26 +38,26 @@ type ActiveRuntime struct {
 type Supervisor struct {
 	executor controlsession.Executor
 
-	mu               sync.RWMutex
-	byGroup          map[int64]*controlsession.Agent
-	bySession        map[uint64]*controlsession.Agent
-	runtimeByGroup   map[int64]Runtime
-	runtimeBySession map[uint64]Runtime
-	groupSlots       map[int64]uint64
-	groupSlotIPs     map[int64]string
-	cancelByID       map[uint64]context.CancelFunc
+	mu                 sync.RWMutex
+	byGroup            map[int64]*controlsession.Agent
+	bySession          map[uint64]*controlsession.Agent
+	runtimeByGroup     map[int64]Runtime
+	runtimeBySession   map[uint64]Runtime
+	groupSlots         map[int64]uint64
+	groupSlotEndpoints map[int64]string
+	cancelByID         map[uint64]context.CancelFunc
 }
 
 func New(executor controlsession.Executor) *Supervisor {
 	return &Supervisor{
-		executor:         executor,
-		byGroup:          make(map[int64]*controlsession.Agent),
-		bySession:        make(map[uint64]*controlsession.Agent),
-		runtimeByGroup:   make(map[int64]Runtime),
-		runtimeBySession: make(map[uint64]Runtime),
-		groupSlots:       make(map[int64]uint64),
-		groupSlotIPs:     make(map[int64]string),
-		cancelByID:       make(map[uint64]context.CancelFunc),
+		executor:           executor,
+		byGroup:            make(map[int64]*controlsession.Agent),
+		bySession:          make(map[uint64]*controlsession.Agent),
+		runtimeByGroup:     make(map[int64]Runtime),
+		runtimeBySession:   make(map[uint64]Runtime),
+		groupSlots:         make(map[int64]uint64),
+		groupSlotEndpoints: make(map[int64]string),
+		cancelByID:         make(map[uint64]context.CancelFunc),
 	}
 }
 
@@ -84,23 +84,23 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 	switch {
 	case !slotReserved:
 		s.groupSlots[initial.GroupID] = initial.SessionID
-		if remoteIP := runtimeRemoteIP(runtime); remoteIP != "" {
-			s.groupSlotIPs[initial.GroupID] = remoteIP
+		if remoteEndpoint := runtimeRemoteEndpoint(runtime); remoteEndpoint != "" {
+			s.groupSlotEndpoints[initial.GroupID] = remoteEndpoint
 		}
 	case slotSessionID != initial.SessionID:
 		s.mu.Unlock()
 		cancel()
 		return nil
 	}
-	if s.groupSlotIPs[initial.GroupID] == "" {
-		if remoteIP := runtimeRemoteIP(runtime); remoteIP != "" {
-			s.groupSlotIPs[initial.GroupID] = remoteIP
+	if s.groupSlotEndpoints[initial.GroupID] == "" {
+		if remoteEndpoint := runtimeRemoteEndpoint(runtime); remoteEndpoint != "" {
+			s.groupSlotEndpoints[initial.GroupID] = remoteEndpoint
 		}
 	}
 	if existing := s.byGroup[initial.GroupID]; existing != nil {
 		if !slotReserved && s.groupSlots[initial.GroupID] == initial.SessionID {
 			delete(s.groupSlots, initial.GroupID)
-			delete(s.groupSlotIPs, initial.GroupID)
+			delete(s.groupSlotEndpoints, initial.GroupID)
 		}
 		s.mu.Unlock()
 		cancel()
@@ -109,7 +109,7 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 	if existing := s.bySession[initial.SessionID]; existing != nil {
 		if !slotReserved && s.groupSlots[initial.GroupID] == initial.SessionID {
 			delete(s.groupSlots, initial.GroupID)
-			delete(s.groupSlotIPs, initial.GroupID)
+			delete(s.groupSlotEndpoints, initial.GroupID)
 		}
 		s.mu.Unlock()
 		cancel()
@@ -135,7 +135,7 @@ func (s *Supervisor) AttachSession(parent context.Context, initial controlsessio
 			delete(s.runtimeByGroup, initial.GroupID)
 			if s.groupSlots[initial.GroupID] == initial.SessionID {
 				delete(s.groupSlots, initial.GroupID)
-				delete(s.groupSlotIPs, initial.GroupID)
+				delete(s.groupSlotEndpoints, initial.GroupID)
 			}
 		}
 		if s.bySession[initial.SessionID] == agent {
@@ -222,7 +222,7 @@ func (s *Supervisor) DetachRuntime(sessionID uint64) {
 		}
 		if s.groupSlots[groupID] == sessionID {
 			delete(s.groupSlots, groupID)
-			delete(s.groupSlotIPs, groupID)
+			delete(s.groupSlotEndpoints, groupID)
 		}
 	}
 	s.mu.Unlock()
@@ -279,10 +279,10 @@ func (s *Supervisor) ActiveRuntimeGroups(exclude controlruntime.SessionStateProj
 }
 
 func (s *Supervisor) ReserveGroupSlot(groupID int64, sessionID uint64) bool {
-	return s.ReserveGroupSlotWithRemoteIP(groupID, sessionID, "")
+	return s.ReserveGroupSlotWithRemoteEndpoint(groupID, sessionID, "")
 }
 
-func (s *Supervisor) ReserveGroupSlotWithRemoteIP(groupID int64, sessionID uint64, remoteIP string) bool {
+func (s *Supervisor) ReserveGroupSlotWithRemoteEndpoint(groupID int64, sessionID uint64, remoteEndpoint string) bool {
 	if s == nil || groupID <= 0 || sessionID == 0 {
 		return false
 	}
@@ -293,8 +293,8 @@ func (s *Supervisor) ReserveGroupSlotWithRemoteIP(groupID int64, sessionID uint6
 		return false
 	}
 	s.groupSlots[groupID] = sessionID
-	if remoteIP != "" {
-		s.groupSlotIPs[groupID] = remoteIP
+	if remoteEndpoint != "" {
+		s.groupSlotEndpoints[groupID] = remoteEndpoint
 	}
 	return true
 }
@@ -307,20 +307,20 @@ func (s *Supervisor) ReleaseGroupSlot(groupID int64, sessionID uint64) {
 	s.mu.Lock()
 	if s.groupSlots[groupID] == sessionID {
 		delete(s.groupSlots, groupID)
-		delete(s.groupSlotIPs, groupID)
+		delete(s.groupSlotEndpoints, groupID)
 	}
 	s.mu.Unlock()
 }
 
-func (s *Supervisor) GroupSlotRemoteIP(groupID int64) string {
+func (s *Supervisor) GroupSlotRemoteEndpoint(groupID int64) string {
 	if s == nil || groupID <= 0 {
 		return ""
 	}
 
 	s.mu.RLock()
-	remoteIP := s.groupSlotIPs[groupID]
+	remoteEndpoint := s.groupSlotEndpoints[groupID]
 	s.mu.RUnlock()
-	return remoteIP
+	return remoteEndpoint
 }
 
 func (s *Supervisor) Snapshot(exclude controlruntime.SessionStateProjectionTarget) Snapshot {
@@ -392,30 +392,16 @@ func (s *Supervisor) Shutdown() {
 	}
 }
 
-func runtimeRemoteIP(runtime Runtime) string {
+func runtimeRemoteEndpoint(runtime Runtime) string {
 	if runtime == nil || runtime.RuntimeConn() == nil {
 		return ""
 	}
-	return addrRemoteIP(runtime.RuntimeConn().RemoteAddr())
+	return addrRemoteEndpoint(runtime.RuntimeConn().RemoteAddr())
 }
 
-func addrRemoteIP(addr net.Addr) string {
-	switch typed := addr.(type) {
-	case *net.TCPAddr:
-		if typed.IP != nil {
-			return typed.IP.String()
-		}
-	case *net.UDPAddr:
-		if typed.IP != nil {
-			return typed.IP.String()
-		}
-	}
+func addrRemoteEndpoint(addr net.Addr) string {
 	if addr == nil {
 		return ""
-	}
-	host, _, err := net.SplitHostPort(addr.String())
-	if err == nil {
-		return host
 	}
 	return addr.String()
 }

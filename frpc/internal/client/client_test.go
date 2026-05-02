@@ -232,7 +232,7 @@ func TestClientRunExitsOnTerminalRemoteErrorWithoutReconnect(t *testing.T) {
 			errorBody, err := protocol.MarshalErrorBody(protocol.ErrorBody{
 				ErrorCode: protocol.ErrorCodeAuthClientLimitReached,
 				Retryable: false,
-				Message:   "other frpc already online ip=203.0.113.10",
+				Message:   "other frpc already online ip=203.0.113.10:7000",
 			})
 			if err != nil {
 				t.Errorf("marshal error body: %v", err)

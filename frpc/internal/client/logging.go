@@ -119,11 +119,12 @@ func (c *Client) logConfigApplied(push protocol.ConfigPush, summary configReload
 
 func tunnelReadySummary(tunnel protocol.TunnelEntry) string {
 	return fmt.Sprintf(
-		"隧道[%s] 已启动 %s %s -> %s tls:listen=off,backend=%s",
+		"隧道[%s] 已启动 %s %s -> %s tls:listen=%s,backend=%s",
 		tunnelDisplayName(tunnel),
 		protocolName(tunnel.Protocol),
 		portSpan(tunnel.RemoteStart, tunnel.RemoteEnd),
 		localTargetSummary(tunnel),
+		tlsModeLabel(tunnel.ListenTLSMode),
 		tlsModeLabel(tunnel.BackendTLSMode),
 	)
 }

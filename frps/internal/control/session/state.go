@@ -57,6 +57,7 @@ type DesiredTunnelRuntime struct {
 	TunnelName                   string
 	Protocol                     string
 	Enabled                      bool
+	ListenTLSMode                uint8
 	RemoteStart                  uint16
 	RemoteEnd                    uint16
 	LocalHost                    string

@@ -185,6 +185,27 @@ func TestClientApplyConfigPushRejectsInvalidSnapshotsWithoutAckOrRuntimeTeardown
 			wantMessage: "remote and local port ranges must be aligned",
 		},
 		{
+			name: "listen tls on udp tunnel",
+			push: protocol.ConfigPush{
+				ConfigVersion: 2,
+				GeneratedAtMs: 200,
+				Tunnels: []protocol.TunnelEntry{
+					{
+						TunnelID:      7,
+						Protocol:      protocol.ProtocolUDP,
+						TunnelFlags:   protocol.TunnelFlagEnabled,
+						RemoteStart:   20000,
+						RemoteEnd:     20000,
+						LocalHost:     mustHost(t, "127.0.0.1"),
+						LocalStart:    5000,
+						LocalEnd:      5000,
+						ListenTLSMode: protocol.TunnelTLSModeTLS,
+					},
+				},
+			},
+			wantMessage: "listen tls is only supported for single-port tcp tunnels",
+		},
+		{
 			name: "backend tls on udp tunnel",
 			push: protocol.ConfigPush{
 				ConfigVersion: 2,

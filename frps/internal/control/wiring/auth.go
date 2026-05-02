@@ -28,11 +28,11 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 	}
 	group := result.Group
 	sessionID := s.nextSessionID.Add(1)
-	remoteIP := connectionRemoteIP(conn)
-	if !s.supervisor.ReserveGroupSlotWithRemoteIP(group.ID, sessionID, remoteIP) {
+	remoteEndpoint := connectionRemoteEndpoint(conn)
+	if !s.supervisor.ReserveGroupSlotWithRemoteEndpoint(group.ID, sessionID, remoteEndpoint) {
 		message := "other frpc already online"
-		if occupiedIP := s.supervisor.GroupSlotRemoteIP(group.ID); occupiedIP != "" {
-			message = fmt.Sprintf("other frpc already online ip=%s", occupiedIP)
+		if occupiedEndpoint := s.supervisor.GroupSlotRemoteEndpoint(group.ID); occupiedEndpoint != "" {
+			message = fmt.Sprintf("other frpc already online ip=%s", occupiedEndpoint)
 		}
 		return nil, nil, controlprotocolerrors.ReplyError(
 			s.frameWriter(conn, nil),
@@ -78,30 +78,16 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 	return session, agent, nil
 }
 
-func connectionRemoteIP(conn net.Conn) string {
+func connectionRemoteEndpoint(conn net.Conn) string {
 	if conn == nil {
 		return ""
 	}
-	return remoteAddrIP(conn.RemoteAddr())
+	return remoteAddrEndpoint(conn.RemoteAddr())
 }
 
-func remoteAddrIP(addr net.Addr) string {
-	switch typed := addr.(type) {
-	case *net.TCPAddr:
-		if typed.IP != nil {
-			return typed.IP.String()
-		}
-	case *net.UDPAddr:
-		if typed.IP != nil {
-			return typed.IP.String()
-		}
-	}
+func remoteAddrEndpoint(addr net.Addr) string {
 	if addr == nil {
 		return ""
-	}
-	host, _, err := net.SplitHostPort(addr.String())
-	if err == nil {
-		return host
 	}
 	return addr.String()
 }
