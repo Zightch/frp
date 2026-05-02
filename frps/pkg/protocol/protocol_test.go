@@ -128,6 +128,7 @@ func TestConfigPushRoundTrip(t *testing.T) {
 		GeneratedAtMs: 34,
 		Tunnels: []TunnelEntry{
 			{
+				TunnelName:                   "backend-api",
 				TunnelID:                     1,
 				Protocol:                     ProtocolTCP,
 				TunnelFlags:                  TunnelFlagEnabled,
@@ -170,6 +171,9 @@ func TestConfigPushRoundTrip(t *testing.T) {
 	tunnel := got.Tunnels[0]
 	if tunnel.LocalHost.String() != "127.0.0.1" {
 		t.Fatalf("unexpected local host: %s", tunnel.LocalHost.String())
+	}
+	if tunnel.TunnelName != "backend-api" {
+		t.Fatalf("unexpected tunnel name: %q", tunnel.TunnelName)
 	}
 	if tunnel.Revision != 5678 || tunnel.BackendTLSMode != TunnelTLSModeMTLS {
 		t.Fatalf("unexpected tunnel metadata: %#v", tunnel)

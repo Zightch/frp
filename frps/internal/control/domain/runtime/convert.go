@@ -31,6 +31,7 @@ func DesiredTunnelsFromConfig(tunnels []protocol.TunnelEntry) []controlsession.D
 	for _, tunnel := range tunnels {
 		desired = append(desired, controlsession.DesiredTunnelRuntime{
 			TunnelID:              tunnel.TunnelID,
+			TunnelName:            tunnel.TunnelName,
 			Protocol:              ProtocolName(tunnel.Protocol),
 			Enabled:               tunnel.TunnelFlags&protocol.TunnelFlagEnabled != 0,
 			RemoteStart:           tunnel.RemoteStart,
@@ -67,6 +68,7 @@ func ConfigTunnelsFromDesired(tunnels []controlsession.DesiredTunnelRuntime) []p
 			flags |= protocol.TunnelFlagRange
 		}
 		configured = append(configured, protocol.TunnelEntry{
+			TunnelName:  tunnel.TunnelName,
 			TunnelID:    tunnel.TunnelID,
 			Protocol:    ProtocolValue(tunnel.Protocol),
 			TunnelFlags: flags,

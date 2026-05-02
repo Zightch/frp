@@ -370,6 +370,7 @@ type TunnelRatePolicy struct {
 }
 
 type TunnelEntry struct {
+	TunnelName                   string
 	TunnelID                     uint32
 	Protocol                     uint8
 	TunnelFlags                  uint8
@@ -945,6 +946,9 @@ func UnmarshalErrorBody(data []byte) (ErrorBody, error) {
 }
 
 func encodeTunnelEntry(enc *bodyEncoder, tunnel TunnelEntry) error {
+	if err := enc.shortstr(tunnel.TunnelName); err != nil {
+		return err
+	}
 	enc.u32(tunnel.TunnelID)
 	enc.u8(tunnel.Protocol)
 	enc.u8(tunnel.TunnelFlags)
@@ -978,6 +982,9 @@ func encodeTunnelEntry(enc *bodyEncoder, tunnel TunnelEntry) error {
 func decodeTunnelEntry(dec *bodyDecoder) (TunnelEntry, error) {
 	var tunnel TunnelEntry
 	var err error
+	if tunnel.TunnelName, err = dec.shortstr(); err != nil {
+		return tunnel, err
+	}
 	if tunnel.TunnelID, err = dec.u32(); err != nil {
 		return tunnel, err
 	}

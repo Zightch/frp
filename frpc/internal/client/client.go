@@ -20,8 +20,7 @@ import (
 const (
 	defaultDialTimeout = 5 * time.Second
 	defaultReadTimeout = 5 * time.Second
-	defaultBackoff     = 1 * time.Second
-	maxBackoff         = 30 * time.Second
+	reconnectInterval  = 5 * time.Second
 )
 
 type dialFunc func(context.Context, string, string) (net.Conn, error)
@@ -37,6 +36,10 @@ type Client struct {
 
 	attempt atomic.Uint64
 
+	logMu           sync.Mutex
+	connectState    clientConnectionState
+	backendFailures map[string]struct{}
+
 	stateMu sync.RWMutex
 	state   *sessionState
 }
@@ -44,12 +47,14 @@ type Client struct {
 func New(cfg appconfig.Config, logger *slog.Logger, version string) *Client {
 	dialer := &net.Dialer{Timeout: defaultDialTimeout}
 	return &Client{
-		config:      cfg,
-		logger:      logger,
-		version:     version,
-		dialContext: dialer.DialContext,
-		readTimeout: defaultReadTimeout,
-		frameIO:     transport.RealFrameIO{},
+		config:          cfg,
+		logger:          logger,
+		version:         version,
+		dialContext:     dialer.DialContext,
+		readTimeout:     defaultReadTimeout,
+		frameIO:         transport.RealFrameIO{},
+		connectState:    connectionStateStartup,
+		backendFailures: make(map[string]struct{}),
 	}
 }
 
@@ -63,7 +68,6 @@ func (c *Client) Run(ctx context.Context) error {
 		return err
 	}
 
-	backoff := defaultBackoff
 	for {
 		c.attempt.Add(1)
 		err := c.runOnce(ctx, credentials)
@@ -74,18 +78,13 @@ func (c *Client) Run(ctx context.Context) error {
 			return nil
 		}
 
-		c.logger.Warn("frpc session ended", "error", err, "retry_in", backoff.String())
-		timer := time.NewTimer(backoff)
+		c.noteReconnect(err)
+		timer := time.NewTimer(reconnectInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return nil
 		case <-timer.C:
-		}
-
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
 		}
 	}
 }
@@ -97,7 +96,7 @@ func (c *Client) runOnce(ctx context.Context, credentials appconfig.Credentials)
 	}
 	defer conn.Close()
 
-	c.logger.Info("connected to frps", "server", c.config.Server)
+	c.debugf("client", "已连接 frps server=%s", c.config.Server)
 	err = c.runSession(ctx, conn, credentials)
 	if err == nil {
 		return nil
@@ -187,17 +186,8 @@ func (c *Client) applyConfigPush(conn net.Conn, state *sessionState, frame proto
 		return err
 	}
 	state.lastAckedConfigVersion.Store(push.ConfigVersion)
-	c.logger.Info(
-		"config applied",
-		"config_version", push.ConfigVersion,
-		"tunnel_count", len(push.Tunnels),
-		"added_tunnels", reloadSummary.addedTunnels,
-		"removed_tunnels", reloadSummary.removedTunnels,
-		"replaced_tunnels", reloadSummary.replacedTunnels,
-		"unchanged_tunnels", reloadSummary.unchangedTunnels,
-		"closed_streams", reloadSummary.closedStreams,
-		"closed_udp_sessions", reloadSummary.closedUDPSessions,
-	)
+	c.resetBackendFailures()
+	c.logConfigApplied(push, reloadSummary)
 	return nil
 }
 
@@ -235,7 +225,11 @@ func (c *Client) remoteError(frame protocol.Frame) error {
 	if err != nil {
 		return err
 	}
-	return fmt.Errorf("frps error %d: %s", errorBody.ErrorCode, errorBody.Message)
+	return &remoteError{
+		Code:      errorBody.ErrorCode,
+		Retryable: errorBody.Retryable,
+		Message:   errorBody.Message,
+	}
 }
 
 func (c *Client) frameContext(conn net.Conn, state *sessionState) transport.FrameContext {

@@ -130,6 +130,7 @@ func (r *SQLRepository) loadTunnels(ctx context.Context, groupID int64) ([]proto
 		`
 SELECT
 	t.id,
+	t.name,
 	t.protocol,
 	t.remote_type,
 	t.remote_start,
@@ -286,6 +287,7 @@ func (r *SQLRepository) decodeTunnelRow(ctx context.Context, row storage.Row, us
 	revisionUpdatedAt = latestTime(revisionUpdatedAt, rowTime(row, "rate_policy_updated_at"))
 
 	tunnel = protocol.TunnelEntry{
+		TunnelName:                   strings.TrimSpace(rowString(row, "name")),
 		TunnelID:                     uint32(id),
 		Protocol:                     proto,
 		TunnelFlags:                  flags,

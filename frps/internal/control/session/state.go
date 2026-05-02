@@ -54,6 +54,7 @@ type ControlConnState struct {
 
 type DesiredTunnelRuntime struct {
 	TunnelID              uint32
+	TunnelName            string
 	Protocol              string
 	Enabled               bool
 	RemoteStart           uint16

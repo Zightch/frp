@@ -48,12 +48,14 @@ func (c *Client) handleStreamOpen(conn net.Conn, state *sessionState, frame prot
 
 	localConn, err := dialTunnelBackend(tunnel, target)
 	if err != nil {
+		c.logBackendDialFailure(tunnel, target, err)
 		return c.replyStreamOpened(conn, state, frame, protocol.StreamOpened{
 			Status:    protocol.StatusError,
 			ErrorCode: protocol.ErrorCodeStreamLocalDialFailed,
 			Message:   err.Error(),
 		})
 	}
+	c.clearBackendDialFailure(tunnel, target)
 
 	stream := &localStream{conn: localConn}
 	if !state.addStream(frame.StreamID, stream) {

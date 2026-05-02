@@ -81,7 +81,8 @@ func SameTunnelEntries(left, right []protocol.TunnelEntry) bool {
 func SameTunnelEntry(left, right protocol.TunnelEntry) bool {
 	leftFlags := left.TunnelFlags &^ protocol.TunnelFlagRange
 	rightFlags := right.TunnelFlags &^ protocol.TunnelFlagRange
-	return left.TunnelID == right.TunnelID &&
+	return left.TunnelName == right.TunnelName &&
+		left.TunnelID == right.TunnelID &&
 		left.Protocol == right.Protocol &&
 		leftFlags == rightFlags &&
 		left.RemoteStart == right.RemoteStart &&

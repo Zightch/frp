@@ -34,16 +34,20 @@ func (c *Client) handleUDPOpen(conn net.Conn, state *sessionState, frame protoco
 	if err != nil {
 		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonProtocolError, err.Error())
 	}
+	tunnel, _ := state.tunnelByID(open.TunnelID)
 
 	localAddr, err := net.ResolveUDPAddr("udp", target)
 	if err != nil {
+		c.logBackendDialFailure(tunnel, target, err)
 		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonLocalDialFailed, err.Error())
 	}
 
 	localConn, err := net.DialUDP("udp", nil, localAddr)
 	if err != nil {
+		c.logBackendDialFailure(tunnel, target, err)
 		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonLocalDialFailed, err.Error())
 	}
+	c.clearBackendDialFailure(tunnel, target)
 
 	udpSession := &localUDPSession{
 		conn:   localConn,
@@ -55,12 +59,7 @@ func (c *Client) handleUDPOpen(conn net.Conn, state *sessionState, frame protoco
 		return c.sendUDPClose(conn, state, frame.StreamID, protocol.CloseReasonProtocolError, fmt.Sprintf("udp session %d already exists", frame.StreamID))
 	}
 
-	c.logger.Info(
-		"udp session opened",
-		"session_id", frame.StreamID,
-		"tunnel_id", open.TunnelID,
-		"target", target,
-	)
+	c.debugf("proxy", "隧道[%s] udp会话已打开 session=%d target=%s", tunnelDisplayName(tunnel), frame.StreamID, target)
 	go c.copyLocalUDPToServer(conn, state, frame.StreamID, udpSession)
 	return nil
 }
@@ -109,12 +108,7 @@ func (c *Client) handleUDPClose(state *sessionState, frame protocol.Frame) error
 		return err
 	}
 	if state.closeUDPSession(frame.StreamID) {
-		c.logger.Info(
-			"udp session closed",
-			"session_id", frame.StreamID,
-			"reason_code", closeMessage.ReasonCode,
-			"message", closeMessage.Message,
-		)
+		c.debugf("proxy", "udp会话已关闭 session=%d reason=%d message=%s", frame.StreamID, closeMessage.ReasonCode, closeMessage.Message)
 	}
 	return nil
 }

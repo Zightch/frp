@@ -130,10 +130,18 @@ func summarizeConfigReload(previous, next protocol.ConfigPush) configReloadSumma
 }
 
 func sameTunnelExecution(left, right protocol.TunnelEntry) bool {
-	return left.Protocol == right.Protocol &&
+	return left.TunnelName == right.TunnelName &&
+		left.Protocol == right.Protocol &&
 		left.TunnelFlags == right.TunnelFlags &&
 		left.RemoteStart == right.RemoteStart &&
 		left.RemoteEnd == right.RemoteEnd &&
+		left.BackendTLSMode == right.BackendTLSMode &&
+		left.BackendTLSLoadSystemCA == right.BackendTLSLoadSystemCA &&
+		left.BackendTLSInsecureSkipVerify == right.BackendTLSInsecureSkipVerify &&
+		left.BackendTLSServerName == right.BackendTLSServerName &&
+		left.BackendTLSCAPEM == right.BackendTLSCAPEM &&
+		left.BackendTLSClientCertPEM == right.BackendTLSClientCertPEM &&
+		left.BackendTLSClientKeyPEM == right.BackendTLSClientKeyPEM &&
 		left.LocalStart == right.LocalStart &&
 		left.LocalEnd == right.LocalEnd &&
 		sameHost(left.LocalHost, right.LocalHost)

@@ -47,7 +47,7 @@ func main() {
 
 	app := client.New(cfg, logger, version)
 	if err := app.Run(ctx); err != nil {
-		logger.Error("frpc exited with error", "error", err)
+		logger.Error("frpc 退出", "source", "app", "error", err)
 		os.Exit(1)
 	}
 }
@@ -63,5 +63,5 @@ func newLogger() *slog.Logger {
 		level = slog.LevelError
 	}
 
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	return slog.New(newCompactHandler(os.Stderr, level))
 }

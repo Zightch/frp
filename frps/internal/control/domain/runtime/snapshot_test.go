@@ -11,6 +11,7 @@ func TestSamePushedConfigSnapshotDetectsRatePolicyChanges(t *testing.T) {
 		Version:       7,
 		GeneratedAtMs: 11,
 		Tunnels: []protocol.TunnelEntry{{
+			TunnelName:  "tcp-a",
 			TunnelID:    3,
 			Protocol:    protocol.ProtocolTCP,
 			TunnelFlags: protocol.TunnelFlagEnabled,
@@ -38,5 +39,24 @@ func TestSamePushedConfigSnapshotDetectsRatePolicyChanges(t *testing.T) {
 	changed.Tunnels[0].RatePolicy.DownlinkBPS = 20_000_000
 	if SamePushedConfigSnapshot(base, changed) {
 		t.Fatal("expected rate policy change to invalidate pushed snapshot equality")
+	}
+}
+
+func TestSamePushedConfigSnapshotDetectsTunnelNameChanges(t *testing.T) {
+	base := ConfigSnapshot{
+		Version:       7,
+		GeneratedAtMs: 11,
+		Tunnels: []protocol.TunnelEntry{{
+			TunnelName: "tcp-a",
+			TunnelID:   3,
+			Protocol:   protocol.ProtocolTCP,
+		}},
+	}
+
+	changed := base
+	changed.Tunnels = append([]protocol.TunnelEntry(nil), base.Tunnels...)
+	changed.Tunnels[0].TunnelName = "tcp-b"
+	if SamePushedConfigSnapshot(base, changed) {
+		t.Fatal("expected tunnel name change to invalidate pushed snapshot equality")
 	}
 }

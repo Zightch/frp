@@ -91,15 +91,9 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (net.Co
 	if err := c.applyConfigPush(conn, state, frame); err != nil {
 		return nil, nil, err
 	}
+	c.markSessionActive()
 
-	snapshot := state.snapshotValue()
-	c.logger.Info(
-		"login succeeded",
-		"session_id", hello.SessionID,
-		"heartbeat_interval_ms", hello.HeartbeatIntervalMs,
-		"config_version", snapshot.ConfigVersion,
-		"tunnel_count", len(snapshot.Tunnels),
-	)
+	c.infof("login", "登录成功 session=%d heartbeat=%s", hello.SessionID, time.Duration(hello.HeartbeatIntervalMs)*time.Millisecond)
 
 	return conn, state, nil
 }
