@@ -56,7 +56,8 @@ frpc --server 1.2.3.4:7000 --key <key>
 当前失败后行为：
 
 - 输出明确错误
-- 进入退避重连
+- 普通可重试失败进入固定 `5s` 重连
+- 非重试错误直接退出
 
 ## 4. 配置接收功能
 
@@ -72,6 +73,7 @@ frpc --server 1.2.3.4:7000 --key <key>
 - 返回 `config.ack` 前，先关闭当前全部活跃 TCP stream 和 UDP session
 - 本地资源清理完成后再替换运行态快照，并更新 `lastAckedConfigVersion`
 - 同一控制连接后续仍可能再次收到新的整组 `config.push`
+- tunnel 名称和 backend TLS 字段属于当前执行快照的一部分，会参与热重载替换判定
 - 当前不接收 ACL、限速、抓包等仅在 `frps` 生效的运行时策略
 
 ## 5. TCP 转发功能
@@ -134,8 +136,12 @@ localPort = localStart + offset
 
 - 清理本地 TCP stream
 - 清理本地 UDP session
-- 退避后重新连接
+- `5s` 后重新连接
 - 重新登录并重新同步配置
+
+当前例外：
+
+- 如果登录阶段收到非重试远端错误，例如同 `proxy_group` 已有在线 `frpc`，则直接退出，不进入重连。
 
 ## 9. 当前不实现的能力
 

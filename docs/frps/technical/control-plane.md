@@ -145,9 +145,10 @@ frps -> start listeners
 5. 读取 `auth.begin`，并校验其中 `client_id` 与 hello 一致
 6. 签发 challenge
 7. 常量时间校验 challenge 响应
-8. 抢占单 `proxy_group` 单客户端槽位
-9. 返回 `server.hello`
-10. 下发首次 `config.push`
+8. 预留单 `proxy_group` 单客户端槽位
+9. 如果槽位已被占用，则返回 `1107 auth_client_limit_reached`，错误消息尽量携带当前在线 `frpc` IP，并立即结束登录
+10. 如果槽位可用，则返回 `server.hello`
+11. 下发首次 `config.push`
 
 ## 首轮扫描门闩
 

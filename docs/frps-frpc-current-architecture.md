@@ -123,7 +123,7 @@ flowchart TB
 
 - `cmd/frpc/main.go`：只接收 `--server` 和 `--key`，日志级别通过 `FRPC_LOG_LEVEL` 控制。
 - `internal/config`：校验 server 地址，按固定长度解析 `key` 为 `client_id` 和 `client_secret`。
-- `internal/client.Client`：连接 `frps`、登录、断线退避重连、启动读循环和心跳循环。
+- `internal/client.Client`：连接 `frps`、登录、固定 `5s` 断线重连、启动读循环和心跳循环。
 - `sessionState`：保存配置快照、活跃 stream、活跃 UDP session、心跳间隔、已确认配置版本和写锁。
 - `targets.go`：统一 tunnel 查找、本地 target 解析和 range 端口换算。
 - `tcp_bridge.go` / `udp_bridge.go`：分别承接 TCP stream 和 UDP session 的本地桥接逻辑。
@@ -154,11 +154,15 @@ sequenceDiagram
     C->>S: auth.finish(challenge_id, response)
     S->>S: consumeChallenge
     S->>S: reserveGroupSlot(group_id, session_id)
-    S->>C: server.hello(session_id, heartbeat interval)
-    S->>C: config.push(config_version, tunnels)
-    C->>C: replace runtime snapshot
-    C->>S: config.ack(config_version)
-    S->>S: ensureTunnelListeners
+    alt slot available
+        S->>C: server.hello(session_id, heartbeat interval)
+        S->>C: config.push(config_version, tunnels)
+        C->>C: replace runtime snapshot
+        C->>S: config.ack(config_version)
+        S->>S: ensureTunnelListeners
+    else slot occupied
+        S->>C: error(1107, retryable=false, current online frpc ip)
+    end
 ```
 
 实际代码约束：
@@ -167,7 +171,7 @@ sequenceDiagram
 - `transport.client_hello` 必须在 `auth.begin` 前到达，服务端会用 hello 中的 `client_id` 决定本连接是否需要升级到 TLS。
 - `frpc` 使用 `key` 中的 `client_secret` 计算响应，`frps` 使用数据库中的 `client_secret_hash` 验证响应。
 - `sha256(client_secret_hash + nonce)` 这条跨端共享纯规则固定收口到 `frps/pkg/protocol.ChallengeResponse`。
-- `frps` 内存中的 `groupSlots` 固定表示每个 `proxy_group` 只有一个已登录客户端槽位。
+- `frps` 内存中的 `groupSlots` 固定表示每个 `proxy_group` 只有一个已登录客户端槽位；后登录客户端不会接管当前在线者，而是直接收到 `1107 auth_client_limit_reached`。
 - 当前配置快照在首次登录和后续在线热重载阶段都会加载并下发；管理面命中运行态字段且 `proxy_group` 在线时，会复用现有 `config.push / config.ack` 主动推进整组热重载。
 - 数据库当前只承担持久化配置层；`LoadGroupRuntime` 会在登录时把 `proxy_groups` / `tunnels` 投影成 `GroupRuntime` / `ConfigSnapshot`，之后 `frps` / `frpc` 只消费内存快照。
 - 抓包相关控制当前未实现；如果后续引入，应属于运行时配置，不应再作为 `tunnels` 表列。

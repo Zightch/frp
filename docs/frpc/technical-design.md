@@ -86,6 +86,9 @@ if selected security mode == tls:
 - challenge 响应通过 `protocol.ChallengeResponse` 计算
 - `transport.server_hello` 决定控制连接是否先升级到 TLS
 - 登录成功后立刻应用首次配置
+- 同 `proxy_group` 如果已有在线 `frpc`，`frps` 会在 `auth.finish` 后返回 `1107 auth_client_limit_reached`
+- 该错误当前固定 `retryable=false`，并在消息里携带当前在线 `frpc` IP
+- `frpc` 收到这类非重试远端错误后直接退出，不进入重连
 
 ### 3.2 会话状态
 
@@ -142,7 +145,7 @@ max(3 * heartbeat_interval, 5s)
 - 配置会在登录阶段和同一控制连接后续在线热重载阶段重复接收，仍只消费整组完整快照
 - 服务端会按“整组冻结 + 整组全量重建”推进热重载，因此 `frpc` 首版不要求保留未受影响 tunnel 的活动本地连接
 - `config.ack` 只能表示“本地清理和运行态替换已经完成”，不能表示“先答应，后异步切换”
-- tunnel 名称不在运行态快照内；因此单纯改名称不会触发 `frpc` 运行态变更
+- tunnel 名称和 backend TLS 字段都属于当前执行快照的一部分；它们会参与热重载对比，并直接影响 `frpc` 日志与本地 backend TLS 拨号配置
 
 ### 4.1 当前在线整组配置热重载规则
 
@@ -232,16 +235,17 @@ localPort = localStart + offset
 
 当前重连策略：
 
-- 初始退避：`1s`
-- 指数退避上限：`30s`
-- 每次成功登录后重新从最小退避开始
+- 普通断线固定每 `5s` 重连一次
+- 同一轮重连周期里只记录一次“重连 frps 中...”
+- 中间重试失败不重复输出 info 日志
+- 非重试远端错误直接退出，不进入重连
 
 断线后当前会：
 
 - 关闭控制连接
 - 关闭所有本地 TCP stream
 - 关闭所有本地 UDP session
-- 等待下一次重连
+- 等待下一次固定周期重连
 
 ## 9. 当前扩展边界
 

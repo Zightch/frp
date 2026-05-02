@@ -17,6 +17,7 @@
 - `proxy_group` 登录 `key` 固定为 `32` 位小写 hex `client_id` 加 `64` 位小写 hex `client_secret`。
 - `frpc` 登录采用 challenge/response：`sha256(client_secret_hash + nonce)`。
 - 一个 `proxy_group` 固定只允许 `1` 个在线 `frpc`。
+- 同 `proxy_group` 后登录的 `frpc` 不再接管当前在线者；服务端会返回 `1107 auth_client_limit_reached`，并在错误消息里携带当前在线 `frpc` IP；客户端直接退出，不进入重连。
 - 登录成功后由 `frps` 下发首次 `config.push`，`frpc` 回 `config.ack`。
 - `frps` 在 `config.ack` 后启动启用状态的 TCP/UDP 公网 listener。
 - 管理面命中运行态字段且 `proxy_group` 在线时，会复用现有 `config.push / config.ack` 触发整组热重载。
@@ -101,6 +102,7 @@ External clients
 - `frps` 只在 `frpc` 确认配置后开放公网 listener。
 - TCP/UDP 范围映射都按相同偏移规则计算目标本地端口。
 - `frpc` 不做本地 UDP idle timer，只接受 `frps` 的 `udp.close`。
+- `frpc` 普通断线固定每 `5s` 重连一次；重连周期内只输出一次“重连 frps 中...”，中间失败不刷屏。
 - ACL、限速、抓包等权威治理能力默认收敛在 `frps`；`frpc` 只保留转发执行所需最小状态。
 
 ## 5. 当前仓库结构
