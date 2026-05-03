@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ArrowRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, ref, watch } from 'vue'
+import type { TableInstance } from 'element-plus'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { TunnelBinding } from '@/api'
 
 defineOptions({
@@ -24,7 +25,6 @@ const props = defineProps<{
   submitting: boolean
   isMobile: boolean
   policyId: number
-  policyName: string
   boundTunnels: TunnelBinding[]
   bindableTunnels: TunnelBinding[]
 }>()
@@ -45,6 +45,8 @@ const bindRightSelected = ref<number[]>([])
 const bindCart = ref<TunnelBinding[]>([])
 const originalBoundIds = ref(new Set<number>())
 const originalOtherPolicyMap = ref(new Map<number, PolicyRef>())
+const leftTableRef = ref<TableInstance>()
+const rightTableRef = ref<TableInstance>()
 
 const cartTunnelIds = computed(() => new Set(bindCart.value.map(tunnel => tunnel.id)))
 
@@ -81,7 +83,7 @@ const shellProps = computed(() => props.isMobile
       class: 'bind-drawer'
     }
   : {
-      width: '1000px',
+      width: '1200px',
       class: 'bind-dialog'
     }
 )
@@ -134,26 +136,13 @@ function getOriginalOtherPolicy(tunnelId: number): PolicyRef | undefined {
   return originalOtherPolicyMap.value.get(tunnelId)
 }
 
-function canSelectTunnel(tunnel: TunnelBinding): boolean {
-  return !tunnel.rate_policy_id || tunnel.rate_policy_id === props.policyId
+function getPreviousPolicyName(tunnelId: number): string {
+  return getOriginalOtherPolicy(tunnelId)?.policy_name ?? ''
 }
 
-function getTunnelPolicyStatus(tunnel: TunnelBinding): string {
-  if (isOriginallyBound(tunnel.id) && !cartTunnelIds.value.has(tunnel.id)) {
-    return '提交后解绑'
-  }
-
-  const otherPolicy = getOriginalOtherPolicy(tunnel.id)
-  if (otherPolicy) {
-    return otherPolicy.policy_name
-  }
-
-  return '-'
-}
-
-function getCartTunnelSource(tunnel: TunnelBinding): string {
+function getCartOperation(tunnel: TunnelBinding): string {
   if (isOriginallyBound(tunnel.id)) {
-    return '原本属于当前策略'
+    return ''
   }
 
   const otherPolicy = getOriginalOtherPolicy(tunnel.id)
@@ -161,10 +150,14 @@ function getCartTunnelSource(tunnel: TunnelBinding): string {
     return `从 ${otherPolicy.policy_name} 迁移`
   }
 
-  return '新绑定'
+  return '新增'
 }
 
-function handleAddToCart() {
+function canSelectTunnel(tunnel: TunnelBinding): boolean {
+  return !tunnel.rate_policy_id || tunnel.rate_policy_id === props.policyId
+}
+
+async function handleAddToCart() {
   if (bindLeftSelected.value.length === 0) {
     return
   }
@@ -174,7 +167,8 @@ function handleAddToCart() {
   )
 
   bindCart.value.push(...toAdd)
-  bindLeftSelected.value = []
+  await nextTick()
+  clearLeftSelection()
 }
 
 function handleMigrateTunnel(tunnel: TunnelBinding) {
@@ -191,17 +185,35 @@ function handleRemoveFromCart(tunnelId: number) {
 
 function handleRemoveSelectedFromCart() {
   bindCart.value = bindCart.value.filter(tunnel => !bindRightSelected.value.includes(tunnel.id))
+  clearRightSelection()
+}
+
+function clearLeftSelection() {
+  bindLeftSelected.value = []
+  leftTableRef.value?.clearSelection()
+}
+
+function clearRightSelection() {
   bindRightSelected.value = []
+  rightTableRef.value?.clearSelection()
 }
 
-function handleSelectAllLeft() {
-  bindLeftSelected.value = currentGroupTunnels.value
-    .filter(tunnel => canSelectTunnel(tunnel) && !cartTunnelIds.value.has(tunnel.id))
-    .map(tunnel => tunnel.id)
+async function handleSelectAllLeft() {
+  await nextTick()
+  leftTableRef.value?.clearSelection()
+  for (const tunnel of currentGroupTunnels.value) {
+    if (canSelectTunnel(tunnel) && !cartTunnelIds.value.has(tunnel.id)) {
+      leftTableRef.value?.toggleRowSelection(tunnel, true)
+    }
+  }
 }
 
-function handleSelectAllRight() {
-  bindRightSelected.value = bindCart.value.map(tunnel => tunnel.id)
+async function handleSelectAllRight() {
+  await nextTick()
+  rightTableRef.value?.clearSelection()
+  for (const tunnel of bindCart.value) {
+    rightTableRef.value?.toggleRowSelection(tunnel, true)
+  }
 }
 
 function handleSubmit() {
@@ -282,6 +294,7 @@ function handleSubmit() {
 
         <div class="tunnel-pool">
           <el-table
+            ref="leftTableRef"
             :data="currentGroupTunnels"
             height="100%"
             @selection-change="(rows: TunnelBinding[]) => bindLeftSelected = rows.map(row => row.id)"
@@ -291,22 +304,15 @@ function handleSubmit() {
               width="40"
               :selectable="(row: TunnelBinding) => canSelectTunnel(row)"
             />
-            <el-table-column prop="name" label="隧道名称" />
-            <el-table-column prop="protocol" label="协议" width="60" align="center">
+            <el-table-column prop="name" label="隧道名称" min-width="120" />
+            <el-table-column prop="protocol" label="类型" width="80" align="center">
               <template #default="{ row }">
                 <el-tag size="small">{{ row.protocol.toUpperCase() }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="远端" width="80">
+            <el-table-column label="迁移前策略" min-width="110">
               <template #default="{ row }">
-                {{ row.remote_start }}
-              </template>
-            </el-table-column>
-            <el-table-column label="当前策略" min-width="100">
-              <template #default="{ row }">
-                <span :class="{ 'will-unbind': getTunnelPolicyStatus(row) === '提交后解绑' }">
-                  {{ getTunnelPolicyStatus(row) }}
-                </span>
+                {{ getPreviousPolicyName(row.id) }}
               </template>
             </el-table-column>
             <el-table-column label="操作" width="70" align="center">
@@ -326,7 +332,7 @@ function handleSubmit() {
 
           <el-space wrap size="small" class="action-row">
             <el-button size="small" @click="handleSelectAllLeft">全选</el-button>
-            <el-button size="small" @click="bindLeftSelected = []">清空</el-button>
+            <el-button size="small" @click="clearLeftSelection">清空</el-button>
           </el-space>
         </div>
       </div>
@@ -345,32 +351,24 @@ function handleSubmit() {
       <div class="bind-right">
         <div class="cart-header">
           <span class="cart-title">当前策略目标集合 ({{ bindCart.length }})</span>
-          <span class="cart-subtitle">({{ policyName }})</span>
         </div>
 
         <el-table
+          ref="rightTableRef"
           :data="bindCart"
           height="100%"
           @selection-change="(rows: TunnelBinding[]) => bindRightSelected = rows.map(row => row.id)"
         >
           <el-table-column type="selection" width="40" />
-          <el-table-column prop="group_name" label="分组" width="100" />
-          <el-table-column prop="name" label="隧道名称" />
-          <el-table-column prop="protocol" label="协议" width="60" align="center">
+          <el-table-column prop="name" label="隧道名称" min-width="140" />
+          <el-table-column prop="protocol" label="类型" width="80" align="center">
             <template #default="{ row }">
               <el-tag size="small">{{ row.protocol.toUpperCase() }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="远端" width="80">
+          <el-table-column label="当前操作" min-width="110">
             <template #default="{ row }">
-              {{ row.remote_start }}
-            </template>
-          </el-table-column>
-          <el-table-column label="来源" min-width="120">
-            <template #default="{ row }">
-              <span :class="['source-label', { 'source-original': isOriginallyBound(row.id) }]">
-                {{ getCartTunnelSource(row) }}
-              </span>
+              {{ getCartOperation(row) }}
             </template>
           </el-table-column>
           <el-table-column label="操作" width="70" align="center">
@@ -382,7 +380,7 @@ function handleSubmit() {
 
         <el-space wrap size="small" class="action-row">
           <el-button size="small" @click="handleSelectAllRight">全选</el-button>
-          <el-button size="small" @click="bindRightSelected = []">清空</el-button>
+          <el-button size="small" @click="clearRightSelection">清空</el-button>
           <el-button
             size="small"
             type="danger"
@@ -414,7 +412,7 @@ function handleSubmit() {
 .bind-container {
   display: flex;
   gap: var(--spacing-md);
-  height: 450px;
+  height: 560px;
 }
 
 .bind-container-mobile {
@@ -425,7 +423,7 @@ function handleSubmit() {
 
 .bind-left {
   display: flex;
-  flex: 0 0 460px;
+  flex: 0 0 560px;
   gap: var(--spacing-sm);
   min-width: 0;
 }
@@ -436,11 +434,15 @@ function handleSubmit() {
 }
 
 .group-tabs {
-  flex: 0 0 140px;
+  flex: 0 0 112px;
 }
 
 .group-tabs :deep(.el-tabs__header) {
   margin-right: 0;
+}
+
+.group-tabs :deep(.el-tabs__content) {
+  display: none;
 }
 
 .group-tabs :deep(.el-tabs__nav-wrap) {
@@ -457,6 +459,15 @@ function handleSubmit() {
   height: auto;
 }
 
+.group-tabs :deep(.el-tabs__item) {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  height: auto;
+  min-height: 40px;
+  line-height: 18px;
+}
+
 .bind-left-mobile .group-tabs {
   flex: 0 0 auto;
 }
@@ -467,10 +478,10 @@ function handleSubmit() {
 
 .group-tab-label {
   display: block;
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: 96px;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .tunnel-pool,
@@ -481,11 +492,15 @@ function handleSubmit() {
   min-width: 0;
 }
 
+.bind-container :deep(.cell) {
+  overflow-wrap: anywhere;
+}
+
 .bind-middle {
   display: flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 80px;
+  flex: 0 0 50px;
 }
 
 .bind-middle-mobile {
@@ -501,26 +516,8 @@ function handleSubmit() {
   color: var(--el-text-color-primary);
 }
 
-.cart-subtitle {
-  margin-left: var(--spacing-xs);
-  color: var(--el-text-color-secondary);
-}
-
 .action-row {
   padding-top: var(--spacing-sm);
-}
-
-.will-unbind {
-  color: var(--el-color-warning);
-  font-size: 12px;
-}
-
-.source-label {
-  font-size: 12px;
-}
-
-.source-original {
-  color: var(--el-text-color-secondary);
 }
 
 .bind-footer {

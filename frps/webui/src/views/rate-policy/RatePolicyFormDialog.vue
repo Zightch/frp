@@ -142,9 +142,9 @@ async function handleSubmit() {
           </el-col>
           <el-col :span="8">
             <el-select v-model="form.downlink_unit" class="full-width">
-              <el-option label="Kbps" value="K" />
-              <el-option label="Mbps" value="M" />
-              <el-option label="Gbps" value="G" />
+              <el-option label="K" value="K" />
+              <el-option label="M" value="M" />
+              <el-option label="G" value="G" />
             </el-select>
           </el-col>
         </el-row>
@@ -165,9 +165,9 @@ async function handleSubmit() {
           </el-col>
           <el-col :span="8">
             <el-select v-model="form.uplink_unit" class="full-width">
-              <el-option label="Kbps" value="K" />
-              <el-option label="Mbps" value="M" />
-              <el-option label="Gbps" value="G" />
+              <el-option label="K" value="K" />
+              <el-option label="M" value="M" />
+              <el-option label="G" value="G" />
             </el-select>
           </el-col>
         </el-row>

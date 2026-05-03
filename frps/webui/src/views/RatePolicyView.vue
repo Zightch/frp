@@ -174,10 +174,6 @@ function modeTagType(mode: RatePolicyMode): 'primary' | 'success' {
   return mode === 'independent' ? 'primary' : 'success'
 }
 
-function formatRemotePort(tunnel: TunnelBinding): string {
-  return String(tunnel.remote_start)
-}
-
 function handlePolicyRowClick(row: RatePolicy) {
   if (selectedPolicyId.value === row.id) {
     return
@@ -463,16 +459,10 @@ async function handleUnbindTunnel(tunnel: TunnelBinding) {
               <el-empty v-if="!selectedPolicyId" description="请选择策略查看绑定隧道" />
               <el-empty v-else-if="!bindingsLoading && boundTunnels.length === 0" description="该策略暂无绑定隧道" />
               <el-table v-else :data="boundTunnels" height="100%" stripe v-loading="bindingsLoading">
-                <el-table-column prop="group_name" label="分组" width="120" />
-                <el-table-column prop="name" label="隧道名称" width="120" />
-                <el-table-column prop="protocol" label="协议" width="70" align="center">
+                <el-table-column prop="name" label="隧道名称" min-width="160" />
+                <el-table-column prop="protocol" label="类型" width="80" align="center">
                   <template #default="{ row }">
                     <el-tag size="small">{{ row.protocol.toUpperCase() }}</el-tag>
-                  </template>
-                </el-table-column>
-                <el-table-column label="远端" width="100">
-                  <template #default="{ row }">
-                    {{ formatRemotePort(row) }}
                   </template>
                 </el-table-column>
                 <el-table-column label="操作" width="80" align="center">
@@ -501,7 +491,6 @@ async function handleUnbindTunnel(tunnel: TunnelBinding) {
       :submitting="bindSubmitting"
       :is-mobile="isMobile"
       :policy-id="selectedPolicyId"
-      :policy-name="selectedPolicy.name"
       :bound-tunnels="boundTunnels"
       :bindable-tunnels="bindableTunnels"
       @submit="handleSubmitBindings"
@@ -589,14 +578,25 @@ async function handleUnbindTunnel(tunnel: TunnelBinding) {
   flex-direction: column;
 }
 
+.list-card :deep(.el-card__body) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .list-title {
   font-weight: 600;
   color: var(--el-text-color-primary);
 }
 
-.filter-group,
-.policy-table {
+.filter-group {
   margin-bottom: var(--spacing-sm);
+}
+
+.policy-table {
+  flex: 1;
+  min-height: 0;
 }
 
 .tunnel-count {
