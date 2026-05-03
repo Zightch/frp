@@ -20,6 +20,7 @@ docs/tmp/*
 **/.coverage
 **/htmlcov/
 **/*.sqlite
+**/build/
 
 frps/data/
 frps/configs/
