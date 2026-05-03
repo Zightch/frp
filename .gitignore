@@ -10,7 +10,7 @@
 **/go.sum
 **/*.exe
 **/*.log
-**/tmp/
+**/tmp*/
 !docs/tmp/
 docs/tmp/*
 !docs/tmp/todo.md
