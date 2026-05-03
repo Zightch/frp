@@ -24,6 +24,21 @@ go test -tags testhooks ./...
 go test -tags testhooks ./internal/control/...
 ```
 
+如果设置了 `FRPS_TEST_MYSQL_DSN`，当前 MySQL 测试只能串行执行：
+
+```powershell
+cd frps
+$env:FRPS_TEST_MYSQL_DSN="frps:123456@tcp(127.0.0.1:3306)/frps"
+go test -p 1 -parallel 1 ./...
+go test -p 1 -parallel 1 -tags testhooks ./...
+```
+
+当前口径固定如下：
+
+- MySQL 测试复用 DSN 指向的现有数据库，不负责建库，只验表和按当前 schema 建表。
+- 不能并发跑多个共享同一 MySQL 库的 `frps` 测试包，否则会因为删表、残留数据或事务竞争导致假失败。
+- 只要启用了 `FRPS_TEST_MYSQL_DSN`，无论是模块级 `go test ./...`，还是跨多个包的定向回归，都应显式加上 `-p 1 -parallel 1`。
+
 当前重点覆盖：
 
 - `internal/app`

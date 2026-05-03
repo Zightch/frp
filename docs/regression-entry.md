@@ -16,6 +16,7 @@
 - Python e2e 命令在仓库根目录执行。
 - 每完成一个最小代码步骤，先按改动面跑对应定向 Go 测试；阶段收束或准备归档时，再跑模块级 `go test ./...` 和核心 Python e2e。
 - 涉及 `frps/internal/control` 的状态机、故障注入、竞争窗口或稳定性改动时，必须跑 `go test -tags testhooks ./internal/control/...`。
+- 如果设置了 `FRPS_TEST_MYSQL_DSN`，`frps` 的 Go 回归只能串行执行，统一显式加 `-p 1 -parallel 1`，避免多个测试包共享同一 MySQL 库时互相删表或污染数据。
 - 如果当前改动只是 `docs/`、`todo` 或进度归档文档，可以不额外执行代码回归。
 
 ## 2. 当前核心 Go 定向回归
@@ -36,6 +37,15 @@ go test -tags testhooks ./internal/control/...
 cd frps
 go test ./...
 go test -tags testhooks ./...
+```
+
+如果当前回归切到 MySQL：
+
+```powershell
+cd frps
+$env:FRPS_TEST_MYSQL_DSN="frps:123456@tcp(127.0.0.1:3306)/frps"
+go test -p 1 -parallel 1 ./...
+go test -p 1 -parallel 1 -tags testhooks ./...
 ```
 
 稳定性补充层入口：
