@@ -81,14 +81,35 @@ WebUI 是这个项目面向管理员的主要入口。
 
 这个流程里，客户端只负责“连上来并执行”。后续端口调整、隧道启停、证书绑定和状态查看都回到服务端完成。
 
+## 构建与打包
+
+仓库根目录已经提供 `Makefile`，可以直接构建：
+
+```powershell
+make init
+make
+make package
+```
+
+可选变量：
+
+- `PLATFORM=windows|linux|termux`
+- `ARCH=amd64|arm_hf|arm64`
+
+默认规则：
+
+- `make` / `make all` 只构建，产物输出到 `build/frp-<PLATFORM>-<ARCH>/`
+- `make package` 会额外生成归档，Windows 为 `.zip`，其他平台为 `.tar.gz`
+- `PLATFORM` 不传时默认当前本机平台
+- `ARCH` 不传时按平台默认值，Windows/Linux 为 `amd64`，Termux 为 `arm64`
+
 ## 快速体验
 
 服务端：
 
 ```powershell
-cd frps
-go build -o ./frps.exe ./cmd/frps
-.\frps.exe
+make
+.\build\frp-<PLATFORM>-<ARCH>\frps.exe
 ```
 
 `frps` 默认读取当前工作目录下的 `data/config.json`。默认管理入口为：
@@ -100,9 +121,7 @@ http://127.0.0.1:7080
 客户端：
 
 ```powershell
-cd frpc
-go build -o ./frpc.exe ./cmd/frpc
-.\frpc.exe --server <frps-host>:7000 --key <proxy-group-key>
+.\build\frp-<PLATFORM>-<ARCH>\frpc.exe --server <frps-host>:7000 --key <proxy-group-key>
 ```
 
 其中 `<proxy-group-key>` 来自 WebUI 创建或重置分组时的一次性展示。
