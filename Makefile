@@ -107,11 +107,11 @@ GO_BUILD_ENV_CMD := GOOS=$(GOOS) GOARCH=$(GOARCH) GOARM=$(GOARM)
 endif
 endif
 
-.PHONY: all init package clean clean-target prepare init-frps init-frpc build-frps build-frpc build-webui build-config create-archive print-target
+.PHONY: all init package clean clean-target prepare init-frps init-frpc init-webui build-frps build-frpc build-webui build-config create-archive print-target
 
 all: clean-target prepare build-frps build-frpc build-webui build-config
 
-init: init-frps init-frpc
+init: init-frps init-frpc init-webui
 
 package: all create-archive
 
@@ -145,6 +145,10 @@ init-frps:
 init-frpc:
 	@echo Tidying frpc module
 	@cd /D frpc && go mod tidy
+
+init-webui:
+	@echo Installing webui dependencies
+	@cd /D frps\webui && $(NPM_BIN) install
 
 build-frps:
 	@echo Building frps for $(PLATFORM)/$(ARCH)
@@ -192,6 +196,10 @@ init-frps:
 init-frpc:
 	@echo "Tidying frpc module"
 	@cd frpc && go mod tidy
+
+init-webui:
+	@echo "Installing webui dependencies"
+	@cd frps/webui && $(NPM_BIN) install
 
 build-frps:
 	@echo "Building frps for $(PLATFORM)/$(ARCH)"
