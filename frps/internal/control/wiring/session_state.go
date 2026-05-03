@@ -1,6 +1,7 @@
 package wiring
 
 import (
+	"net"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 type sessionState struct {
 	*controlruntime.ConcreteSessionState
 	rateLimit *sessionRateLimitState
+	tcpWork   *tcpWorkConnPool
 
 	tcpWorkMu       sync.RWMutex
 	tcpWorkPoolSize uint16
@@ -21,6 +23,7 @@ func newSessionState(id uint64, group GroupRuntime, snapshot ConfigSnapshot, rea
 	return &sessionState{
 		ConcreteSessionState: controlruntime.NewConcreteSessionState(id, group, snapshot, readTimeout),
 		rateLimit:            newSessionRateLimitState(),
+		tcpWork:              newTCPWorkConnPool(),
 	}
 }
 
@@ -60,4 +63,46 @@ func (s *sessionState) MatchTCPWorkSecret(secret [32]byte) bool {
 	s.tcpWorkMu.RLock()
 	defer s.tcpWorkMu.RUnlock()
 	return s.tcpWorkSecret == secret
+}
+
+func (s *sessionState) RegisterTCPWorkConn(conn net.Conn) (*tcpWorkConnHandle, error) {
+	if s == nil || s.tcpWork == nil {
+		return nil, errTCPWorkPoolClosed
+	}
+	return s.tcpWork.Register(conn)
+}
+
+func (s *sessionState) AcquireTCPWorkConn() (net.Conn, bool) {
+	if s == nil || s.tcpWork == nil {
+		return nil, false
+	}
+	return s.tcpWork.Acquire()
+}
+
+func (s *sessionState) ReleaseTCPWorkConn(conn net.Conn) bool {
+	if s == nil || s.tcpWork == nil {
+		return false
+	}
+	return s.tcpWork.Release(conn)
+}
+
+func (s *sessionState) RetireTCPWorkConn(conn net.Conn) bool {
+	if s == nil || s.tcpWork == nil {
+		return false
+	}
+	return s.tcpWork.Retire(conn)
+}
+
+func (s *sessionState) CloseTCPWorkConns() {
+	if s == nil || s.tcpWork == nil {
+		return
+	}
+	s.tcpWork.CloseAll()
+}
+
+func (s *sessionState) TCPWorkConnCounts() (int, int) {
+	if s == nil || s.tcpWork == nil {
+		return 0, 0
+	}
+	return s.tcpWork.Counts()
 }

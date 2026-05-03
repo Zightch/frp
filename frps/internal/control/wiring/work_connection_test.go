@@ -66,71 +66,33 @@ func TestServerAcceptsTCPWorkConnection(t *testing.T) {
 		_ = controlConn.Close()
 	}()
 
-	clientRaw, serverRaw := net.Pipe()
-	clientConn := &connWithRemoteAddr{
-		Conn:   clientRaw,
-		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 10002},
-	}
-	serverConn := &connWithRemoteAddr{
-		Conn:   serverRaw,
-		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20002},
-	}
+	clientConn, workDone := openTCPWorkConnForTest(t, server, hello)
 	defer clientConn.Close()
 
-	workDone := make(chan struct{})
-	server.registerConn(serverConn)
-	server.connWG.Add(1)
-	go func() {
-		defer close(workDone)
-		server.handleConnection(serverConn)
-	}()
+	waitForTCPWorkCounts(t, server, hello.SessionID, 1, 0)
 
-	workHelloBody, err := protocol.MarshalTCPWorkHello(protocol.TCPWorkHello{
-		SessionID:              hello.SessionID,
-		SupportedSecurityModes: protocol.TransportSecurityModePlain | protocol.TransportSecurityModeTLS,
-	})
-	if err != nil {
-		t.Fatalf("marshal tcp.work.hello: %v", err)
+	workConn, ok := server.acquireTCPWorkConn(hello.SessionID)
+	if !ok || workConn == nil {
+		t.Fatal("expected tcp work connection to be acquired")
 	}
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeTCPWorkHello,
-		RequestID: 1,
-		Body:      workHelloBody,
-	})
+	waitForTCPWorkCounts(t, server, hello.SessionID, 0, 1)
 
-	serverHelloFrame := readMessage(t, clientConn)
-	if serverHelloFrame.Type != protocol.TypeTCPWorkServerHello || serverHelloFrame.RequestID != 1 {
-		t.Fatalf("unexpected tcp.work.server_hello frame: %#v", serverHelloFrame)
+	if !server.releaseTCPWorkConn(hello.SessionID, workConn) {
+		t.Fatal("expected tcp work connection to be released")
 	}
-	serverHello, err := protocol.UnmarshalTCPWorkServerHello(serverHelloFrame.Body)
-	if err != nil {
-		t.Fatalf("unmarshal tcp.work.server_hello: %v", err)
-	}
-	if serverHello.SelectedSecurityMode != protocol.TransportSecurityModePlain {
-		t.Fatalf("unexpected tcp work transport mode: %d", serverHello.SelectedSecurityMode)
-	}
+	waitForTCPWorkCounts(t, server, hello.SessionID, 1, 0)
 
-	registerBody, err := protocol.MarshalTCPWorkRegister(protocol.TCPWorkRegister{
-		WorkSecret: hello.TCPWorkSecret,
-	})
-	if err != nil {
-		t.Fatalf("marshal tcp.work.register: %v", err)
+	workConn, ok = server.acquireTCPWorkConn(hello.SessionID)
+	if !ok || workConn == nil {
+		t.Fatal("expected tcp work connection to be re-acquired")
 	}
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeTCPWorkRegister,
-		RequestID: 2,
-		Body:      registerBody,
-	})
+	waitForTCPWorkCounts(t, server, hello.SessionID, 0, 1)
 
-	readyFrame := readMessage(t, clientConn)
-	if readyFrame.Type != protocol.TypeTCPWorkReady || readyFrame.RequestID != 2 {
-		t.Fatalf("unexpected tcp.work.ready frame: %#v", readyFrame)
+	if !server.retireTCPWorkConn(hello.SessionID, workConn) {
+		t.Fatal("expected tcp work connection to be retired")
 	}
-	if _, err := protocol.UnmarshalTCPWorkReady(readyFrame.Body); err != nil {
-		t.Fatalf("unmarshal tcp.work.ready: %v", err)
-	}
+	waitForTCPWorkCounts(t, server, hello.SessionID, 0, 0)
 
-	_ = clientConn.Close()
 	select {
 	case <-workDone:
 	case <-time.After(2 * time.Second):
@@ -206,6 +168,92 @@ func TestServerRejectsTCPWorkConnectionWhenSessionMissing(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("server connection did not exit")
+	}
+}
+
+func TestServerShutdownSessionClosesBusyTCPWorkConnection(t *testing.T) {
+	var tokenID [16]byte
+	copy(tokenID[:], []byte("token-id-1234567"))
+
+	var tokenSecret [32]byte
+	copy(tokenSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+	tokenHash := sha256.Sum256(tokenSecret[:])
+
+	host, err := protocol.ParseHost("127.0.0.1")
+	if err != nil {
+		t.Fatalf("parse host: %v", err)
+	}
+
+	server := NewServer(
+		Options{
+			Repository: stubRepository{
+				group: GroupRuntime{
+					ID:               1,
+					Name:             "group-a",
+					Enabled:          true,
+					EffectiveIP:      system.AnyIPv4,
+					ClientSecretHash: tokenHash,
+					Snapshot: ConfigSnapshot{
+						Version:       99,
+						GeneratedAtMs: 1234,
+						Tunnels: []protocol.TunnelEntry{
+							{
+								TunnelID:    7,
+								Protocol:    protocol.ProtocolTCP,
+								TunnelFlags: protocol.TunnelFlagEnabled,
+								RemoteStart: 20000,
+								RemoteEnd:   20000,
+								LocalHost:   host,
+								LocalStart:  22,
+								LocalEnd:    22,
+							},
+						},
+					},
+				},
+			},
+			ReadTimeout:       time.Second,
+			WriteTimeout:      time.Second,
+			ChallengeTTL:      5 * time.Second,
+			HeartbeatInterval: 2 * time.Second,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test-server",
+	)
+
+	controlConn, controlDone, hello := loginControlSessionForTCPWorkTest(t, server, tokenID, tokenHash)
+	defer func() {
+		_ = controlConn.Close()
+	}()
+
+	clientConn, workDone := openTCPWorkConnForTest(t, server, hello)
+	defer clientConn.Close()
+
+	waitForTCPWorkCounts(t, server, hello.SessionID, 1, 0)
+
+	workConn, ok := server.acquireTCPWorkConn(hello.SessionID)
+	if !ok || workConn == nil {
+		t.Fatal("expected tcp work connection to be acquired")
+	}
+	waitForTCPWorkCounts(t, server, hello.SessionID, 0, 1)
+
+	runtime := server.runtimeExecutor(hello.SessionID)
+	if runtime == nil || runtime.session == nil {
+		t.Fatal("expected runtime session")
+	}
+	server.shutdownSession(runtime.session)
+	waitForTCPWorkCounts(t, server, hello.SessionID, 0, 0)
+
+	select {
+	case <-workDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tcp work connection did not exit")
+	}
+
+	_ = controlConn.Close()
+	select {
+	case <-controlDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control connection did not exit")
 	}
 }
 
@@ -288,4 +336,89 @@ func loginControlSessionForTCPWorkTest(t *testing.T, server *Server, tokenID [16
 	}
 
 	return clientConn, done, hello
+}
+
+func openTCPWorkConnForTest(t *testing.T, server *Server, hello protocol.ServerHello) (*connWithRemoteAddr, chan struct{}) {
+	t.Helper()
+
+	clientRaw, serverRaw := net.Pipe()
+	clientConn := &connWithRemoteAddr{
+		Conn:   clientRaw,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 10002},
+	}
+	serverConn := &connWithRemoteAddr{
+		Conn:   serverRaw,
+		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20002},
+	}
+
+	workDone := make(chan struct{})
+	server.registerConn(serverConn)
+	server.connWG.Add(1)
+	go func() {
+		defer close(workDone)
+		server.handleConnection(serverConn)
+	}()
+
+	workHelloBody, err := protocol.MarshalTCPWorkHello(protocol.TCPWorkHello{
+		SessionID:              hello.SessionID,
+		SupportedSecurityModes: protocol.TransportSecurityModePlain | protocol.TransportSecurityModeTLS,
+	})
+	if err != nil {
+		t.Fatalf("marshal tcp.work.hello: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeTCPWorkHello,
+		RequestID: 1,
+		Body:      workHelloBody,
+	})
+
+	serverHelloFrame := readMessage(t, clientConn)
+	if serverHelloFrame.Type != protocol.TypeTCPWorkServerHello || serverHelloFrame.RequestID != 1 {
+		t.Fatalf("unexpected tcp.work.server_hello frame: %#v", serverHelloFrame)
+	}
+	serverHello, err := protocol.UnmarshalTCPWorkServerHello(serverHelloFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal tcp.work.server_hello: %v", err)
+	}
+	if serverHello.SelectedSecurityMode != protocol.TransportSecurityModePlain {
+		t.Fatalf("unexpected tcp work transport mode: %d", serverHello.SelectedSecurityMode)
+	}
+
+	registerBody, err := protocol.MarshalTCPWorkRegister(protocol.TCPWorkRegister{
+		WorkSecret: hello.TCPWorkSecret,
+	})
+	if err != nil {
+		t.Fatalf("marshal tcp.work.register: %v", err)
+	}
+	writeMessage(t, clientConn, protocol.Frame{
+		Type:      protocol.TypeTCPWorkRegister,
+		RequestID: 2,
+		Body:      registerBody,
+	})
+
+	readyFrame := readMessage(t, clientConn)
+	if readyFrame.Type != protocol.TypeTCPWorkReady || readyFrame.RequestID != 2 {
+		t.Fatalf("unexpected tcp.work.ready frame: %#v", readyFrame)
+	}
+	if _, err := protocol.UnmarshalTCPWorkReady(readyFrame.Body); err != nil {
+		t.Fatalf("unmarshal tcp.work.ready: %v", err)
+	}
+
+	return clientConn, workDone
+}
+
+func waitForTCPWorkCounts(t *testing.T, server *Server, sessionID uint64, wantIdle int, wantBusy int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		idle, busy, ok := server.tcpWorkConnCounts(sessionID)
+		if ok && idle == wantIdle && busy == wantBusy {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for tcp work counts idle=%d busy=%d, got idle=%d busy=%d ok=%v", wantIdle, wantBusy, idle, busy, ok)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

@@ -78,14 +78,14 @@ func (s *Server) handleControlConnection(conn net.Conn, initialFrame protocol.Fr
 		"group_id", group.ID,
 		"group_name", group.Name,
 	)
-	defer s.unregisterRuntimeExecutor(session.ID)
+	defer s.shutdownSession(session)
 	defer func() {
 		if agent != nil {
 			session.ApplyControlEvent(controlsession.ControlConnClosed{Reason: "connection closed"})
 			_ = agent.Enqueue(controlsession.ControlConnClosed{Reason: "connection closed"})
 		}
 	}()
-	defer s.shutdownSession(session)
+	defer s.unregisterRuntimeExecutor(session.ID)
 	logger.Info(
 		"frpc control login succeeded",
 		"config_version", snapshot.Version,

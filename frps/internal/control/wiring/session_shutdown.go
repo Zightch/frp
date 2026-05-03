@@ -7,6 +7,7 @@ import (
 )
 
 func (s *Server) shutdownSession(session *sessionState) {
+	session.CloseTCPWorkConns()
 	session.CloseDone()
 	listeners, udpListeners, streams, _ := session.FreezeTunnelRuntime()
 	controlruntime.CloseStartedTunnelListeners(listeners, udpListeners)

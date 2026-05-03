@@ -1,7 +1,7 @@
 package wiring
 
 import (
-	"io"
+	"errors"
 	"log/slog"
 	"net"
 
@@ -13,7 +13,7 @@ import (
 func (s *Server) handleTCPWorkConnection(conn net.Conn, initialFrame protocol.Frame, logger *slog.Logger) {
 	logger.Info("frpc tcp work connection accepted")
 
-	conn, session, err := s.negotiateTCPWork(conn, initialFrame)
+	handle, session, err := s.negotiateTCPWork(conn, initialFrame)
 	if err != nil {
 		level, reason := controlprotocolerrors.ConnectionDetails(err)
 		logConnection(logger, level, "frpc tcp work handshake failed", err)
@@ -29,17 +29,12 @@ func (s *Server) handleTCPWorkConnection(conn net.Conn, initialFrame protocol.Fr
 	)
 	logger.Info("frpc tcp work connection ready")
 
-	if _, err := io.Copy(io.Discard, conn); err != nil {
-		level, reason := controlprotocolerrors.ConnectionDetails(err)
-		logConnection(logger, level, "frpc tcp work connection ended", err)
-		logger.Info("frpc tcp work connection closed", "reason", reason)
-		return
-	}
+	<-handle.Done()
 
 	logger.Info("frpc tcp work connection closed", "reason", "completed")
 }
 
-func (s *Server) negotiateTCPWork(conn net.Conn, initialFrame protocol.Frame) (net.Conn, *sessionState, error) {
+func (s *Server) negotiateTCPWork(conn net.Conn, initialFrame protocol.Frame) (*tcpWorkConnHandle, *sessionState, error) {
 	if initialFrame.Type != protocol.TypeTCPWorkHello {
 		return nil, nil, s.replyError(
 			conn,
@@ -138,8 +133,14 @@ func (s *Server) negotiateTCPWork(conn net.Conn, initialFrame protocol.Frame) (n
 		)
 	}
 
+	handle, err := session.RegisterTCPWorkConn(conn)
+	if err != nil {
+		return nil, nil, s.replyTCPWorkRegisterError(conn, session, registerFrame, err)
+	}
+
 	readyBody, err := protocol.MarshalTCPWorkReady(protocol.TCPWorkReady{})
 	if err != nil {
+		session.RetireTCPWorkConn(conn)
 		return nil, nil, err
 	}
 	if err := s.writeFrameWithSession(conn, session, protocol.Frame{
@@ -147,7 +148,66 @@ func (s *Server) negotiateTCPWork(conn net.Conn, initialFrame protocol.Frame) (n
 		RequestID: registerFrame.RequestID,
 		Body:      readyBody,
 	}); err != nil {
+		session.RetireTCPWorkConn(conn)
 		return nil, nil, err
 	}
-	return conn, session, nil
+	return handle, session, nil
+}
+
+func (s *Server) replyTCPWorkRegisterError(conn net.Conn, session *sessionState, frame protocol.Frame, err error) error {
+	switch {
+	case errors.Is(err, errTCPWorkPoolClosed), errors.Is(err, net.ErrClosed):
+		return s.replyErrorWithSession(
+			conn,
+			session,
+			frame.RequestID,
+			0,
+			protocol.ErrorCodeAuthSessionNotFound,
+			"session %d closed",
+			session.ID,
+		)
+	default:
+		return s.replyErrorWithSession(
+			conn,
+			session,
+			frame.RequestID,
+			0,
+			protocol.ErrorCodeProtocolBadBody,
+			"%s",
+			err.Error(),
+		)
+	}
+}
+
+func (s *Server) acquireTCPWorkConn(sessionID uint64) (net.Conn, bool) {
+	runtime := s.runtimeExecutor(sessionID)
+	if runtime == nil || runtime.session == nil {
+		return nil, false
+	}
+	return runtime.session.AcquireTCPWorkConn()
+}
+
+func (s *Server) releaseTCPWorkConn(sessionID uint64, conn net.Conn) bool {
+	runtime := s.runtimeExecutor(sessionID)
+	if runtime == nil || runtime.session == nil {
+		return false
+	}
+	return runtime.session.ReleaseTCPWorkConn(conn)
+}
+
+func (s *Server) retireTCPWorkConn(sessionID uint64, conn net.Conn) bool {
+	runtime := s.runtimeExecutor(sessionID)
+	if runtime == nil || runtime.session == nil {
+		return false
+	}
+	return runtime.session.RetireTCPWorkConn(conn)
+}
+
+func (s *Server) tcpWorkConnCounts(sessionID uint64) (int, int, bool) {
+	runtime := s.runtimeExecutor(sessionID)
+	if runtime == nil || runtime.session == nil {
+		return 0, 0, false
+	}
+	idle, busy := runtime.session.TCPWorkConnCounts()
+	return idle, busy, true
 }
