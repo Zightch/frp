@@ -124,16 +124,26 @@ func (c *Client) runSession(ctx context.Context, conn net.Conn, credentials appc
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer state.closeAllTCPWorkConns()
 	defer state.closeAllStreams()
 	defer state.closeAllUDPSessions()
 
-	errCh := make(chan error, 2)
+	workers := 2
+	if state.tcpWorkPoolTargetValue() > 0 {
+		workers++
+	}
+	errCh := make(chan error, workers)
 	go func() {
 		errCh <- c.readLoop(sessionCtx, conn, state)
 	}()
 	go func() {
 		errCh <- c.heartbeatLoop(sessionCtx, conn, state)
 	}()
+	if state.tcpWorkPoolTargetValue() > 0 {
+		go func() {
+			errCh <- c.workPoolLoop(sessionCtx, state)
+		}()
+	}
 
 	select {
 	case <-ctx.Done():

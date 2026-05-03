@@ -18,6 +18,7 @@ type sessionState struct {
 	readTimeout       time.Duration
 
 	writeMu sync.Mutex
+	tcpWork *tcpWorkPoolState
 
 	nextRequestID          atomic.Uint32
 	lastAckedConfigVersion atomic.Uint64
@@ -58,6 +59,7 @@ func newSessionState(heartbeatIntervalMs uint32) *sessionState {
 	state := &sessionState{
 		heartbeatInterval: heartbeatInterval,
 		readTimeout:       sessionReadTimeout(heartbeatInterval),
+		tcpWork:           newTCPWorkPoolState(),
 		streams:           make(map[uint32]*localStream),
 		udpSessions:       make(map[uint32]*localUDPSession),
 	}
@@ -279,6 +281,40 @@ func (s *sessionState) tcpWorkConfig() (uint64, uint16, [32]byte) {
 	s.snapshotMu.RLock()
 	defer s.snapshotMu.RUnlock()
 	return s.sessionID, s.workPoolTarget, s.workSecret
+}
+
+func (s *sessionState) tcpWorkPoolTargetValue() uint16 {
+	s.snapshotMu.RLock()
+	defer s.snapshotMu.RUnlock()
+	return s.workPoolTarget
+}
+
+func (s *sessionState) registerTCPWorkConn(conn net.Conn) error {
+	if s == nil || s.tcpWork == nil {
+		return errTCPWorkPoolClosed
+	}
+	return s.tcpWork.Register(conn)
+}
+
+func (s *sessionState) removeTCPWorkConn(conn net.Conn) bool {
+	if s == nil || s.tcpWork == nil {
+		return false
+	}
+	return s.tcpWork.Remove(conn)
+}
+
+func (s *sessionState) tcpWorkConnCount() int {
+	if s == nil || s.tcpWork == nil {
+		return 0
+	}
+	return s.tcpWork.Count()
+}
+
+func (s *sessionState) closeAllTCPWorkConns() {
+	if s == nil || s.tcpWork == nil {
+		return
+	}
+	s.tcpWork.CloseAll()
 }
 
 func (s *sessionState) setRecoveryMode(mode testsupport.RecoveryMode) {
