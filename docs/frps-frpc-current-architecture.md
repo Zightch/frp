@@ -161,7 +161,7 @@ sequenceDiagram
         C->>S: config.ack(config_version)
         S->>S: ensureTunnelListeners
     else slot occupied
-        S->>C: error(1107, retryable=false, current online frpc ip)
+        S->>C: error(1107, retryable=false, current online frpc ip:port)
     end
 ```
 
@@ -172,6 +172,7 @@ sequenceDiagram
 - `frpc` 使用 `key` 中的 `client_secret` 计算响应，`frps` 使用数据库中的 `client_secret_hash` 验证响应。
 - `sha256(client_secret_hash + nonce)` 这条跨端共享纯规则固定收口到 `frps/pkg/protocol.ChallengeResponse`。
 - `frps` 内存中的 `groupSlots` 固定表示每个 `proxy_group` 只有一个已登录客户端槽位；后登录客户端不会接管当前在线者，而是直接收到 `1107 auth_client_limit_reached`。
+- 该拒绝错误当前会尽量携带当前在线 `frpc` 的 `ip:port`，便于直接定位占用者。
 - 当前配置快照在首次登录和后续在线热重载阶段都会加载并下发；管理面命中运行态字段且 `proxy_group` 在线时，会复用现有 `config.push / config.ack` 主动推进整组热重载。
 - 数据库当前只承担持久化配置层；`LoadGroupRuntime` 会在登录时把 `proxy_groups` / `tunnels` 投影成 `GroupRuntime` / `ConfigSnapshot`，之后 `frps` / `frpc` 只消费内存快照。
 - 抓包相关控制当前未实现；如果后续引入，应属于运行时配置，不应再作为 `tunnels` 表列。

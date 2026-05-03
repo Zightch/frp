@@ -448,29 +448,30 @@ body：
 | 2 | `tunnelId` | `u32` | wire tunnel id，`0` 非法 |
 | 3 | `protocol` | `u8` | `1=tcp`，`2=udp` |
 | 4 | `tunnelFlags` | `u8` | bit0=`enabled`，bit1=`range`，其余位固定为 `0` |
-| 5 | `reserved` | `u16` | 固定为 `0` |
-| 6 | `remoteStart` | `u16` | 远端起始端口 |
-| 7 | `remoteEnd` | `u16` | 远端结束端口；单端口时等于 `remoteStart` |
-| 8 | `localHost` | `Host` | 本地目标主机 |
-| 9 | `localStart` | `u16` | 本地起始端口 |
-| 10 | `localEnd` | `u16` | 本地结束端口；单端口时等于 `localStart` |
-| 11 | `revision` | `u64` | 当前 tunnel 执行修订号 |
-| 12 | `backendTlsMode` | `u8` | `0=off`，`1=tls`，`2=mtls` |
-| 13 | `backendTlsLoadSystemCA` | `bool` | 是否加载系统 CA |
-| 14 | `backendTlsInsecureSkipVerify` | `bool` | 是否跳过服务端证书校验 |
-| 15 | `backendTlsServerName` | `shortstr` | backend TLS SNI / verify name |
-| 16 | `backendTlsCAPEM` | `longstr` | 自定义 CA PEM，可为空 |
-| 17 | `backendTlsClientCertPEM` | `longstr` | backend mTLS 客户端证书 PEM，可为空 |
-| 18 | `backendTlsClientKeyPEM` | `longstr` | backend mTLS 客户端私钥 PEM，可为空 |
+| 5 | `listenTlsMode` | `u8` | `0=off`，`1=tls`，`2=mtls` |
+| 6 | `reserved` | `u8` | 固定为 `0` |
+| 7 | `remoteStart` | `u16` | 远端起始端口 |
+| 8 | `remoteEnd` | `u16` | 远端结束端口；单端口时等于 `remoteStart` |
+| 9 | `localHost` | `Host` | 本地目标主机 |
+| 10 | `localStart` | `u16` | 本地起始端口 |
+| 11 | `localEnd` | `u16` | 本地结束端口；单端口时等于 `localStart` |
+| 12 | `revision` | `u64` | 当前 tunnel 执行修订号 |
+| 13 | `backendTlsMode` | `u8` | `0=off`，`1=tls`，`2=mtls` |
+| 14 | `backendTlsLoadSystemCA` | `bool` | 是否加载系统 CA |
+| 15 | `backendTlsInsecureSkipVerify` | `bool` | 是否跳过服务端证书校验 |
+| 16 | `backendTlsServerName` | `shortstr` | backend TLS SNI / verify name |
+| 17 | `backendTlsCAPEM` | `longstr` | 自定义 CA PEM，可为空 |
+| 18 | `backendTlsClientCertPEM` | `longstr` | backend mTLS 客户端证书 PEM，可为空 |
+| 19 | `backendTlsClientKeyPEM` | `longstr` | backend mTLS 客户端私钥 PEM，可为空 |
 
 约束如下：
 
 - `config.push` 始终发送完整快照，不发送增量 patch。
-- body 只包含 `frpc` 执行转发和 backend TLS 拨号所需字段。
+- body 只包含 `frpc` 执行转发、监听侧 TLS 展示签名以及 backend TLS 拨号所需字段。
 - `client/tunnel` ACL、限速、抓包策略等只在 `frps` 执行的字段，不得下发到 `frpc`；`frpc` 不感知这类权威治理配置。
 - `wire tunnel id` 由 `frps` 分配，只要求在当前连接与当前配置快照下稳定。
 - 当 `tunnelFlags` 含 `range` 时，`remoteStart..remoteEnd` 与 `localStart..localEnd` 表示连续且跨度一致的一一对应范围。
-- `tunnelName` 和 backend TLS 字段都属于当前执行快照的一部分；名称、SNI、CA 或客户端证书变化都应视为 tunnel 执行配置替换。
+- `tunnelName`、`listenTlsMode` 和 backend TLS 字段都属于当前执行快照的一部分；名称、监听 TLS 模式、SNI、CA 或客户端证书变化都应视为 tunnel 执行配置替换。
 
 ## 8.2 `config.ack`
 
@@ -800,7 +801,7 @@ body：
 
 - 发生在同一 `proxy_group` 已有其他 `frpc` 在线时。
 - 服务端返回 `error(retryable=false)` 后立即关闭连接。
-- 错误消息应尽量带当前在线 `frpc` 的 IP，便于诊断。
+- 错误消息应尽量带当前在线 `frpc` 的 `ip:port`，便于诊断。
 
 ## 11.4 关闭原因码
 

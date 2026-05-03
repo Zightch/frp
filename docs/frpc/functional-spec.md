@@ -73,7 +73,7 @@ frpc --server 1.2.3.4:7000 --key <key>
 - 返回 `config.ack` 前，先关闭当前全部活跃 TCP stream 和 UDP session
 - 本地资源清理完成后再替换运行态快照，并更新 `lastAckedConfigVersion`
 - 同一控制连接后续仍可能再次收到新的整组 `config.push`
-- tunnel 名称和 backend TLS 字段属于当前执行快照的一部分，会参与热重载替换判定
+- tunnel 名称、listen TLS 模式和 backend TLS 字段属于当前执行快照的一部分，会参与热重载替换判定
 - 当前不接收 ACL、限速、抓包等仅在 `frps` 生效的运行时策略
 
 ## 5. TCP 转发功能
@@ -141,7 +141,20 @@ localPort = localStart + offset
 
 当前例外：
 
-- 如果登录阶段收到非重试远端错误，例如同 `proxy_group` 已有在线 `frpc`，则直接退出，不进入重连。
+- 如果登录阶段收到非重试远端错误，例如同 `proxy_group` 已有在线 `frpc`，则直接退出，不进入重连；错误消息会带当前在线 `frpc` 的 `ip:port`。
+
+## 8.1 当前日志摘要
+
+当前启用 tunnel 的启动日志会输出统一 TLS 摘要：
+
+```text
+tls:listen=<mode>,backend=<mode>
+```
+
+其中：
+
+- `listen` 表示 `frps` 监听侧 TLS 模式签名
+- `backend` 表示 `frpc` 拨内网目标时使用的 backend TLS 模式
 
 ## 9. 当前不实现的能力
 
