@@ -26,6 +26,8 @@ type sessionState struct {
 	sessionID              uint64
 	connID                 string
 	recoveryMode           testsupport.RecoveryMode
+	workPoolTarget         uint16
+	workSecret             [32]byte
 
 	snapshotMu sync.RWMutex
 	snapshot   protocol.ConfigPush
@@ -264,6 +266,19 @@ func (s *sessionState) setIdentity(sessionID uint64, connID string) {
 	defer s.snapshotMu.Unlock()
 	s.sessionID = sessionID
 	s.connID = connID
+}
+
+func (s *sessionState) setTCPWorkConfig(poolTarget uint16, secret [32]byte) {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+	s.workPoolTarget = poolTarget
+	s.workSecret = secret
+}
+
+func (s *sessionState) tcpWorkConfig() (uint64, uint16, [32]byte) {
+	s.snapshotMu.RLock()
+	defer s.snapshotMu.RUnlock()
+	return s.sessionID, s.workPoolTarget, s.workSecret
 }
 
 func (s *sessionState) setRecoveryMode(mode testsupport.RecoveryMode) {

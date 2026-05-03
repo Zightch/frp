@@ -38,6 +38,10 @@ const (
 	TypeError                Type = 0x41
 	TypeTransportClientHello Type = 0x50
 	TypeTransportServerHello Type = 0x51
+	TypeTCPWorkHello         Type = 0x52
+	TypeTCPWorkServerHello   Type = 0x53
+	TypeTCPWorkRegister      Type = 0x54
+	TypeTCPWorkReady         Type = 0x55
 )
 
 const (
@@ -116,6 +120,8 @@ const (
 	ErrorCodeAuthChallengeExpired    uint16 = 1104
 	ErrorCodeAuthChallengeReplayed   uint16 = 1105
 	ErrorCodeAuthClientLimitReached  uint16 = 1107
+	ErrorCodeAuthSessionNotFound     uint16 = 1108
+	ErrorCodeAuthWorkSecretMismatch  uint16 = 1109
 	ErrorCodeConfigApplyFailed       uint16 = 1201
 	ErrorCodeStreamTunnelNotFound    uint16 = 1301
 	ErrorCodeStreamLocalDialFailed   uint16 = 1302
@@ -259,7 +265,11 @@ func (t Type) Known() bool {
 		TypeEventReport,
 		TypeError,
 		TypeTransportClientHello,
-		TypeTransportServerHello:
+		TypeTransportServerHello,
+		TypeTCPWorkHello,
+		TypeTCPWorkServerHello,
+		TypeTCPWorkRegister,
+		TypeTCPWorkReady:
 		return true
 	default:
 		return false
@@ -306,6 +316,14 @@ func (t Type) String() string {
 		return "transport.client_hello"
 	case TypeTransportServerHello:
 		return "transport.server_hello"
+	case TypeTCPWorkHello:
+		return "tcp.work.hello"
+	case TypeTCPWorkServerHello:
+		return "tcp.work.server_hello"
+	case TypeTCPWorkRegister:
+		return "tcp.work.register"
+	case TypeTCPWorkReady:
+		return "tcp.work.ready"
 	default:
 		return fmt.Sprintf("unknown(0x%02x)", uint8(t))
 	}
@@ -331,6 +349,21 @@ type TransportServerHello struct {
 	CapabilityBits       uint32
 }
 
+type TCPWorkHello struct {
+	SessionID              uint64
+	SupportedSecurityModes uint8
+}
+
+type TCPWorkServerHello struct {
+	SelectedSecurityMode uint8
+}
+
+type TCPWorkRegister struct {
+	WorkSecret [32]byte
+}
+
+type TCPWorkReady struct{}
+
 type AuthChallenge struct {
 	ChallengeID uint32
 	Nonce       [16]byte
@@ -354,6 +387,8 @@ type ServerHello struct {
 	SessionID           uint64
 	CapabilityBits      uint32
 	ServerVersion       string
+	TCPWorkPoolSize     uint16
+	TCPWorkSecret       [32]byte
 }
 
 type ConfigPush struct {
@@ -536,6 +571,70 @@ func UnmarshalTransportServerHello(data []byte) (TransportServerHello, error) {
 	return message, dec.done()
 }
 
+func MarshalTCPWorkHello(message TCPWorkHello) ([]byte, error) {
+	var enc bodyEncoder
+	enc.u64(message.SessionID)
+	enc.u8(message.SupportedSecurityModes)
+	return enc.bytesValue(), nil
+}
+
+func UnmarshalTCPWorkHello(data []byte) (TCPWorkHello, error) {
+	var message TCPWorkHello
+	dec := newBodyDecoder(data)
+	var err error
+	if message.SessionID, err = dec.u64(); err != nil {
+		return message, err
+	}
+	if message.SupportedSecurityModes, err = dec.u8(); err != nil {
+		return message, err
+	}
+	return message, dec.done()
+}
+
+func MarshalTCPWorkServerHello(message TCPWorkServerHello) ([]byte, error) {
+	var enc bodyEncoder
+	enc.u8(message.SelectedSecurityMode)
+	return enc.bytesValue(), nil
+}
+
+func UnmarshalTCPWorkServerHello(data []byte) (TCPWorkServerHello, error) {
+	var message TCPWorkServerHello
+	dec := newBodyDecoder(data)
+	var err error
+	if message.SelectedSecurityMode, err = dec.u8(); err != nil {
+		return message, err
+	}
+	return message, dec.done()
+}
+
+func MarshalTCPWorkRegister(message TCPWorkRegister) ([]byte, error) {
+	var enc bodyEncoder
+	enc.bytes(message.WorkSecret[:])
+	return enc.bytesValue(), nil
+}
+
+func UnmarshalTCPWorkRegister(data []byte) (TCPWorkRegister, error) {
+	var message TCPWorkRegister
+	dec := newBodyDecoder(data)
+	value, err := dec.fixedBytes(32)
+	if err != nil {
+		return message, err
+	}
+	copy(message.WorkSecret[:], value)
+	return message, dec.done()
+}
+
+func MarshalTCPWorkReady(message TCPWorkReady) ([]byte, error) {
+	var enc bodyEncoder
+	return enc.bytesValue(), nil
+}
+
+func UnmarshalTCPWorkReady(data []byte) (TCPWorkReady, error) {
+	var message TCPWorkReady
+	dec := newBodyDecoder(data)
+	return message, dec.done()
+}
+
 func MarshalAuthBegin(message AuthBegin) ([]byte, error) {
 	var enc bodyEncoder
 	enc.bytes(message.ClientID[:])
@@ -633,6 +732,8 @@ func MarshalServerHello(message ServerHello) ([]byte, error) {
 	if err := enc.shortstr(message.ServerVersion); err != nil {
 		return nil, err
 	}
+	enc.u16(message.TCPWorkPoolSize)
+	enc.bytes(message.TCPWorkSecret[:])
 	return enc.bytesValue(), nil
 }
 
@@ -652,6 +753,14 @@ func UnmarshalServerHello(data []byte) (ServerHello, error) {
 	if message.ServerVersion, err = dec.shortstr(); err != nil {
 		return message, err
 	}
+	if message.TCPWorkPoolSize, err = dec.u16(); err != nil {
+		return message, err
+	}
+	secret, err := dec.fixedBytes(32)
+	if err != nil {
+		return message, err
+	}
+	copy(message.TCPWorkSecret[:], secret)
 	return message, dec.done()
 }
 

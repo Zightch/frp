@@ -16,15 +16,47 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	logger := s.logger.With("remote_addr", conn.RemoteAddr().String())
-	logger.Info("frpc control connection accepted")
+	logger.Info("frpc connection accepted")
 
 	if s.repo == nil {
-		logger.Error("frpc control connection rejected", "reason", "repository not configured")
-		logger.Info("frpc control connection closed", "reason", "repository not configured")
+		logger.Error("frpc connection rejected", "reason", "repository not configured")
+		logger.Info("frpc connection closed", "reason", "repository not configured")
 		return
 	}
 
-	conn, clientID, err := s.negotiateTransport(conn)
+	initialFrame, err := s.readFrame(conn)
+	if err != nil {
+		err = s.replyProtocolError(conn, initialFrame, err)
+		level, reason := controlprotocolerrors.ConnectionDetails(err)
+		logConnection(logger, level, "frpc initial frame read failed", err)
+		logger.Info("frpc connection closed", "reason", reason)
+		return
+	}
+
+	switch initialFrame.Type {
+	case protocol.TypeTransportClientHello:
+		s.handleControlConnection(conn, initialFrame, logger)
+	case protocol.TypeTCPWorkHello:
+		s.handleTCPWorkConnection(conn, initialFrame, logger)
+	default:
+		err := s.replyError(
+			conn,
+			initialFrame.RequestID,
+			initialFrame.StreamID,
+			protocol.ErrorCodeProtocolBadBody,
+			"expected transport.client_hello or tcp.work.hello, got %s",
+			initialFrame.Type.String(),
+		)
+		level, reason := controlprotocolerrors.ConnectionDetails(err)
+		logConnection(logger, level, "frpc initial frame rejected", err)
+		logger.Info("frpc connection closed", "reason", reason)
+	}
+}
+
+func (s *Server) handleControlConnection(conn net.Conn, initialFrame protocol.Frame, logger *slog.Logger) {
+	logger.Info("frpc control connection accepted")
+
+	conn, clientID, err := s.negotiateTransport(conn, initialFrame)
 	if err != nil {
 		level, reason := controlprotocolerrors.ConnectionDetails(err)
 		logConnection(logger, level, "frpc control transport negotiation failed", err)

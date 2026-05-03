@@ -30,6 +30,7 @@ func (fn FrameReaderFunc) ReadFrame(conn net.Conn) (protocol.Frame, error) {
 
 type NegotiateOptions struct {
 	Conn         net.Conn
+	InitialFrame *protocol.Frame
 	Reader       FrameReader
 	Writer       controlprotocolerrors.FrameWriter
 	Repository   Repository
@@ -42,7 +43,7 @@ func NegotiateTransport(options NegotiateOptions) (net.Conn, [16]byte, error) {
 	if options.Conn == nil {
 		return nil, [16]byte{}, fmt.Errorf("control connection is nil")
 	}
-	if options.Reader == nil {
+	if options.InitialFrame == nil && options.Reader == nil {
 		return nil, [16]byte{}, fmt.Errorf("transport frame reader is nil")
 	}
 	if options.Writer == nil {
@@ -52,9 +53,15 @@ func NegotiateTransport(options NegotiateOptions) (net.Conn, [16]byte, error) {
 		return nil, [16]byte{}, fmt.Errorf("transport repository is nil")
 	}
 
-	frame, err := options.Reader.ReadFrame(options.Conn)
-	if err != nil {
-		return nil, [16]byte{}, controlprotocolerrors.ReplyProtocolError(options.Writer, frame, err)
+	frame := protocol.Frame{}
+	var err error
+	if options.InitialFrame != nil {
+		frame = *options.InitialFrame
+	} else {
+		frame, err = options.Reader.ReadFrame(options.Conn)
+		if err != nil {
+			return nil, [16]byte{}, controlprotocolerrors.ReplyProtocolError(options.Writer, frame, err)
+		}
 	}
 	if frame.Type != protocol.TypeTransportClientHello {
 		return nil, [16]byte{}, controlprotocolerrors.ReplyError(

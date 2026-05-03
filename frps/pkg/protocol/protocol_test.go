@@ -116,6 +116,91 @@ func TestAuthBeginRoundTrip(t *testing.T) {
 	}
 }
 
+func TestServerHelloRoundTrip(t *testing.T) {
+	var workSecret [32]byte
+	for i := range workSecret {
+		workSecret[i] = byte(i + 1)
+	}
+
+	body, err := MarshalServerHello(ServerHello{
+		HeartbeatIntervalMs: 15000,
+		SessionID:           77,
+		CapabilityBits:      9,
+		ServerVersion:       "dev",
+		TCPWorkPoolSize:     8,
+		TCPWorkSecret:       workSecret,
+	})
+	if err != nil {
+		t.Fatalf("marshal server hello: %v", err)
+	}
+
+	got, err := UnmarshalServerHello(body)
+	if err != nil {
+		t.Fatalf("unmarshal server hello: %v", err)
+	}
+	if got.HeartbeatIntervalMs != 15000 || got.SessionID != 77 || got.CapabilityBits != 9 || got.ServerVersion != "dev" {
+		t.Fatalf("unexpected server hello metadata: %#v", got)
+	}
+	if got.TCPWorkPoolSize != 8 || got.TCPWorkSecret != workSecret {
+		t.Fatalf("unexpected tcp work config: %#v", got)
+	}
+}
+
+func TestTCPWorkMessagesRoundTrip(t *testing.T) {
+	helloBody, err := MarshalTCPWorkHello(TCPWorkHello{
+		SessionID:              11,
+		SupportedSecurityModes: TransportSecurityModePlain | TransportSecurityModeTLS,
+	})
+	if err != nil {
+		t.Fatalf("marshal tcp.work.hello: %v", err)
+	}
+	hello, err := UnmarshalTCPWorkHello(helloBody)
+	if err != nil {
+		t.Fatalf("unmarshal tcp.work.hello: %v", err)
+	}
+	if hello.SessionID != 11 || hello.SupportedSecurityModes != TransportSecurityModePlain|TransportSecurityModeTLS {
+		t.Fatalf("unexpected tcp.work.hello: %#v", hello)
+	}
+
+	serverHelloBody, err := MarshalTCPWorkServerHello(TCPWorkServerHello{
+		SelectedSecurityMode: TransportSecurityModeTLS,
+	})
+	if err != nil {
+		t.Fatalf("marshal tcp.work.server_hello: %v", err)
+	}
+	serverHello, err := UnmarshalTCPWorkServerHello(serverHelloBody)
+	if err != nil {
+		t.Fatalf("unmarshal tcp.work.server_hello: %v", err)
+	}
+	if serverHello.SelectedSecurityMode != TransportSecurityModeTLS {
+		t.Fatalf("unexpected tcp.work.server_hello: %#v", serverHello)
+	}
+
+	var workSecret [32]byte
+	for i := range workSecret {
+		workSecret[i] = byte(0xa0 + i)
+	}
+	registerBody, err := MarshalTCPWorkRegister(TCPWorkRegister{WorkSecret: workSecret})
+	if err != nil {
+		t.Fatalf("marshal tcp.work.register: %v", err)
+	}
+	register, err := UnmarshalTCPWorkRegister(registerBody)
+	if err != nil {
+		t.Fatalf("unmarshal tcp.work.register: %v", err)
+	}
+	if register.WorkSecret != workSecret {
+		t.Fatalf("unexpected tcp.work.register: %#v", register)
+	}
+
+	readyBody, err := MarshalTCPWorkReady(TCPWorkReady{})
+	if err != nil {
+		t.Fatalf("marshal tcp.work.ready: %v", err)
+	}
+	if _, err := UnmarshalTCPWorkReady(readyBody); err != nil {
+		t.Fatalf("unmarshal tcp.work.ready: %v", err)
+	}
+}
+
 func TestConfigPushRoundTrip(t *testing.T) {
 	host, err := ParseHost("127.0.0.1")
 	if err != nil {

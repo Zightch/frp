@@ -6,11 +6,13 @@ import (
 
 	controlhandshake "github.com/zightch/frp/frps/internal/control/protocol/handshake"
 	"github.com/zightch/frp/frps/internal/settings/entrycerts"
+	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
-func (s *Server) negotiateTransport(conn net.Conn) (net.Conn, [16]byte, error) {
+func (s *Server) negotiateTransport(conn net.Conn, initialFrame protocol.Frame) (net.Conn, [16]byte, error) {
 	return controlhandshake.NegotiateTransport(controlhandshake.NegotiateOptions{
 		Conn:         conn,
+		InitialFrame: &initialFrame,
 		Reader:       controlhandshake.FrameReaderFunc(s.readFrame),
 		Writer:       s.frameWriter(conn, nil),
 		Repository:   s.repo,

@@ -132,6 +132,35 @@ func TestNegotiateTransportTLSRequiredUnsupportedWritesError(t *testing.T) {
 	}
 }
 
+func TestNegotiateTransportUsesInitialFrame(t *testing.T) {
+	writer := &recordingFrameWriter{}
+	initialFrame := transportClientHelloFrame(t, protocol.TransportSecurityModePlain)
+
+	conn, clientID, err := NegotiateTransport(NegotiateOptions{
+		Conn:         noopConn{},
+		InitialFrame: &initialFrame,
+		Writer:       writer,
+		Repository: staticRepository{group: controldomainruntime.GroupRuntime{
+			Enabled: true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("negotiate transport: %v", err)
+	}
+	if conn == nil {
+		t.Fatal("expected negotiated connection")
+	}
+	if clientID != [16]byte{1, 2, 3, 4} {
+		t.Fatalf("unexpected client id: %v", clientID)
+	}
+	if len(writer.frames) != 1 {
+		t.Fatalf("expected one written frame, got %d", len(writer.frames))
+	}
+	if writer.frames[0].Type != protocol.TypeTransportServerHello {
+		t.Fatalf("expected transport.server_hello, got %s", writer.frames[0].Type.String())
+	}
+}
+
 func protocolErrorCode(t *testing.T, err error) uint16 {
 	t.Helper()
 

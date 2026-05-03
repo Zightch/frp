@@ -2,6 +2,7 @@ package wiring
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,6 +13,8 @@ import (
 	controlsession "github.com/zightch/frp/frps/internal/control/session"
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
+
+const defaultTCPWorkPoolSize = 8
 
 func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *slog.Logger) (*sessionState, *controlsession.Agent, error) {
 	result, err := controlauth.Authenticate(controlauth.AuthenticateOptions{
@@ -50,6 +53,12 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 		controlruntime.RuntimeSnapshotForGroup(group),
 		controlruntime.SessionReadTimeout(s.options.HeartbeatInterval, s.options.ReadTimeout),
 	)
+	workSecret, err := randomTCPWorkSecret()
+	if err != nil {
+		s.supervisor.ReleaseGroupSlot(group.ID, sessionID)
+		return nil, nil, fmt.Errorf("generate tcp work secret: %w", err)
+	}
+	session.SetTCPWorkConfig(defaultTCPWorkPoolSize, workSecret)
 	session.SetSharedRateLimitStore(s.sharedRate)
 	initial := controlsession.NewState(group.ID, session.ID)
 	desired := controlruntime.DesiredRuntimeFromGroup(group)
@@ -76,6 +85,12 @@ func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *
 	}
 
 	return session, agent, nil
+}
+
+func randomTCPWorkSecret() ([32]byte, error) {
+	var secret [32]byte
+	_, err := rand.Read(secret[:])
+	return secret, err
 }
 
 func connectionRemoteEndpoint(conn net.Conn) string {

@@ -109,6 +109,13 @@ func (r *runtimeExecutor) SessionID() uint64 {
 	return r.session.ID
 }
 
+func (r *runtimeExecutor) TCPWorkConfig() (uint16, [32]byte) {
+	if r == nil || r.session == nil {
+		return 0, [32]byte{}
+	}
+	return r.session.TCPWorkConfig()
+}
+
 func (r *runtimeExecutor) RuntimeGroupID() int64 {
 	if r == nil {
 		return 0

@@ -80,6 +80,7 @@ func (c *Client) login(conn net.Conn, credentials appconfig.Credentials) (net.Co
 	}
 	state := newSessionState(hello.HeartbeatIntervalMs)
 	state.setIdentity(hello.SessionID, transport.ConnectionID(conn))
+	state.setTCPWorkConfig(hello.TCPWorkPoolSize, hello.TCPWorkSecret)
 	c.infof("login", "登录成功 server=%s", c.config.Server)
 
 	frame, err = c.readLoginFrame(conn)

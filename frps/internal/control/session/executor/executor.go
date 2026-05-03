@@ -35,6 +35,7 @@ type Runtime interface {
 	TakeDrainedUDPSessions() []*controlruntime.UDPSession
 	AllowTunnelRuntimeStart()
 	SessionID() uint64
+	TCPWorkConfig() (uint16, [32]byte)
 }
 
 type RuntimeDrain struct {
@@ -175,11 +176,14 @@ type HelloSender struct {
 }
 
 func (h HelloSender) Handle(runtime Runtime, state controlsession.SessionState, action controlsession.ActionSendServerHello) []controlsession.Event {
+	workPoolSize, workSecret := runtime.TCPWorkConfig()
 	body, err := protocol.MarshalServerHello(protocol.ServerHello{
 		HeartbeatIntervalMs: uint32(h.HeartbeatInterval.Milliseconds()),
 		SessionID:           state.SessionID,
 		CapabilityBits:      0,
 		ServerVersion:       h.Version,
+		TCPWorkPoolSize:     workPoolSize,
+		TCPWorkSecret:       workSecret,
 	})
 	if err != nil {
 		return protocolError(err)
