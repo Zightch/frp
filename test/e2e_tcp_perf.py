@@ -30,6 +30,9 @@ DEFAULT_STABILITY_CONCURRENCY = 64
 DEFAULT_STABILITY_PAYLOAD_BYTES = 1024
 DEFAULT_TRANSFER_CONCURRENCY = 4
 DEFAULT_TRANSFER_BYTES_PER_CONNECTION = 8 * 1024 * 1024
+DEFAULT_TRANSFER_WRITE_CHUNK_BYTES = 64 * 1024
+DEFAULT_TRANSFER_WRITE_BURST_CHUNKS = 0
+DEFAULT_TRANSFER_WRITE_BURST_PAUSE_MICROS = 0
 PROCESS_SAMPLE_INTERVAL_SECONDS = 1.0
 PROCESS_SAMPLE_HISTORY_LIMIT = 512
 LINE_LIMIT_BYTES = 256
@@ -87,6 +90,13 @@ class ProcessSnapshot:
     rss_bytes: int
 
 
+@dataclass(frozen=True)
+class TransferPattern:
+    write_chunk_bytes: int
+    burst_chunks: int
+    burst_pause_micros: int
+
+
 class ThreadedPerfTargetServer(ThreadingMixIn, TCPServer):
     allow_reuse_address = True
     daemon_threads = True
@@ -102,16 +112,9 @@ class PerfTargetRequestHandler(BaseRequestHandler):
         if not command_line:
             return
 
-        parts = command_line.decode("ascii", errors="strict").strip().split(" ", 1)
-        if len(parts) != 2:
-            return
-
-        command = parts[0].upper()
         try:
-            byte_count = int(parts[1])
+            command, byte_count, pattern = parse_perf_command(command_line)
         except ValueError:
-            return
-        if byte_count < 0:
             return
 
         if command == "ECHO":
@@ -126,11 +129,13 @@ class PerfTargetRequestHandler(BaseRequestHandler):
 
         if command == "DOWNLOAD":
             remaining = byte_count
-            chunk = self.server.send_chunk
+            chunk = b"x" * pattern.write_chunk_bytes
+            sent_chunks = 0
             while remaining > 0:
                 payload = chunk if remaining >= len(chunk) else chunk[:remaining]
                 self.request.sendall(payload)
                 remaining -= len(payload)
+                sent_chunks = maybe_pause_after_burst(pattern, sent_chunks, remaining)
             return
 
         if command == "SINK":
@@ -286,6 +291,38 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--transfer-write-chunk-bytes",
+        type=int,
+        default=DEFAULT_TRANSFER_WRITE_CHUNK_BYTES,
+        help=(
+            "Logical write size used by transfer senders. "
+            f"Default: {DEFAULT_TRANSFER_WRITE_CHUNK_BYTES}."
+        ),
+    )
+    parser.add_argument(
+        "--transfer-write-burst-chunks",
+        type=int,
+        default=DEFAULT_TRANSFER_WRITE_BURST_CHUNKS,
+        help=(
+            "Pause after this many writes during transfer workloads. "
+            f"Default: {DEFAULT_TRANSFER_WRITE_BURST_CHUNKS} (disabled)."
+        ),
+    )
+    parser.add_argument(
+        "--transfer-write-burst-pause-micros",
+        type=int,
+        default=DEFAULT_TRANSFER_WRITE_BURST_PAUSE_MICROS,
+        help=(
+            "Pause duration in microseconds after each transfer burst. "
+            f"Default: {DEFAULT_TRANSFER_WRITE_BURST_PAUSE_MICROS}."
+        ),
+    )
+    parser.add_argument(
+        "--skip-stability",
+        action="store_true",
+        help="Skip the short-connection stability workload and only run symmetric transfer benchmarks.",
+    )
+    parser.add_argument(
         "--frps-log-level",
         default="info",
         choices=("debug", "info", "warn", "error"),
@@ -309,6 +346,11 @@ def main() -> int:
         return 1
 
     validate_args(args)
+    transfer_pattern = TransferPattern(
+        write_chunk_bytes=args.transfer_write_chunk_bytes,
+        burst_chunks=args.transfer_write_burst_chunks,
+        burst_pause_micros=args.transfer_write_burst_pause_micros,
+    )
 
     output_dir = resolve_output_dir(args, repo_root)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -427,6 +469,7 @@ def main() -> int:
             port=ports.remote,
             concurrency=args.transfer_concurrency,
             bytes_per_connection=args.transfer_bytes_per_connection,
+            transfer_pattern=transfer_pattern,
             timeout_seconds=args.timeout,
             processes=processes,
         )
@@ -439,21 +482,25 @@ def main() -> int:
             port=ports.remote,
             concurrency=args.transfer_concurrency,
             bytes_per_connection=args.transfer_bytes_per_connection,
+            transfer_pattern=transfer_pattern,
             timeout_seconds=args.timeout,
             processes=processes,
         )
 
-        stage = "run stability benchmark"
-        print(f"[stage] {stage}")
-        stability = run_stability_workload(
-            host="127.0.0.1",
-            port=ports.remote,
-            concurrency=args.stability_concurrency,
-            duration_seconds=args.stability_duration,
-            payload_bytes=args.stability_payload_bytes,
-            timeout_seconds=args.timeout,
-            processes=processes,
-        )
+        if args.skip_stability:
+            stability = build_skipped_stability_workload(args)
+        else:
+            stage = "run stability benchmark"
+            print(f"[stage] {stage}")
+            stability = run_stability_workload(
+                host="127.0.0.1",
+                port=ports.remote,
+                concurrency=args.stability_concurrency,
+                duration_seconds=args.stability_duration,
+                payload_bytes=args.stability_payload_bytes,
+                timeout_seconds=args.timeout,
+                processes=processes,
+            )
 
         stage = "collect process summary"
         print(f"[stage] {stage}")
@@ -482,7 +529,10 @@ def main() -> int:
         print(f"[info] output_dir={paths.output_dir}")
         print(f"[info] report_json={paths.report_json_path}")
         print(f"[info] report_md={paths.report_md_path}")
-        print(f"[info] stability_attempts={stability['attempts']} success={stability['success']} failures={stability['failures']}")
+        if args.skip_stability:
+            print("[info] stability_skipped=1")
+        else:
+            print(f"[info] stability_attempts={stability['attempts']} success={stability['success']} failures={stability['failures']}")
         print(
             "[info] upload_symmetric_mbps="
             f"{upload['throughput_mbps']:.2f} "
@@ -520,6 +570,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--transfer-concurrency must be positive")
     if args.transfer_bytes_per_connection <= 0:
         raise ValueError("--transfer-bytes-per-connection must be positive")
+    if args.transfer_write_chunk_bytes <= 0:
+        raise ValueError("--transfer-write-chunk-bytes must be positive")
+    if args.transfer_write_burst_chunks < 0:
+        raise ValueError("--transfer-write-burst-chunks must be non-negative")
+    if args.transfer_write_burst_pause_micros < 0:
+        raise ValueError("--transfer-write-burst-pause-micros must be non-negative")
+    if args.transfer_write_burst_pause_micros > 0 and args.transfer_write_burst_chunks == 0:
+        raise ValueError("--transfer-write-burst-chunks must be positive when burst pause is set")
     if args.target_mode != "go" and args.perf_target_bin:
         raise ValueError("--perf-target-bin only applies when --target-mode=go")
 
@@ -903,12 +961,31 @@ def run_stability_workload(
     }
 
 
+def build_skipped_stability_workload(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "workload": "stability",
+        "skipped": True,
+        "concurrency": args.stability_concurrency,
+        "duration_seconds": 0.0,
+        "target_duration_seconds": args.stability_duration,
+        "payload_bytes": args.stability_payload_bytes,
+        "attempts": 0,
+        "success": 0,
+        "failures": 0,
+        "success_rate": 0.0,
+        "requests_per_second": 0.0,
+        "latency_ms": summarize_latencies([]),
+        "errors": {},
+    }
+
+
 def run_transfer_workload(
     workload_name: str,
     host: str,
     port: int,
     concurrency: int,
     bytes_per_connection: int,
+    transfer_pattern: TransferPattern,
     timeout_seconds: float,
     processes: list[ManagedProcess],
 ) -> dict[str, object]:
@@ -930,13 +1007,13 @@ def run_transfer_workload(
         started_at = time.perf_counter()
         try:
             if workload_name == "upload":
-                run_upload_request(host, port, bytes_per_connection, timeout_seconds)
+                run_upload_request(host, port, bytes_per_connection, transfer_pattern, timeout_seconds)
             elif workload_name == "download":
-                run_download_request(host, port, bytes_per_connection, timeout_seconds)
+                run_download_request(host, port, bytes_per_connection, transfer_pattern, timeout_seconds)
             elif workload_name == "upload_symmetric":
-                run_sink_request(host, port, bytes_per_connection, timeout_seconds)
+                run_sink_request(host, port, bytes_per_connection, transfer_pattern, timeout_seconds)
             elif workload_name == "download_symmetric":
-                run_download_request(host, port, bytes_per_connection, timeout_seconds)
+                run_download_request(host, port, bytes_per_connection, transfer_pattern, timeout_seconds)
             else:
                 raise ValueError(f"unsupported workload: {workload_name}")
             local_success = 1
@@ -990,39 +1067,146 @@ def run_echo_request(host: str, port: int, payload: bytes, timeout_seconds: floa
         return read_exact(conn, len(payload))
 
 
-def run_upload_request(host: str, port: int, byte_count: int, timeout_seconds: float) -> None:
-    payload = b"u" * min(TRANSFER_CHUNK_BYTES, max(byte_count, 1))
+def run_upload_request(
+    host: str,
+    port: int,
+    byte_count: int,
+    transfer_pattern: TransferPattern,
+    timeout_seconds: float,
+) -> None:
     with socket.create_connection((host, port), timeout=timeout_seconds) as conn:
         conn.settimeout(timeout_seconds)
         conn.sendall(f"UPLOAD {byte_count}\n".encode("ascii"))
-        remaining = byte_count
-        while remaining > 0:
-            chunk = payload if remaining >= len(payload) else payload[:remaining]
-            conn.sendall(chunk)
-            remaining -= len(chunk)
+        send_patterned_payload(conn, byte_count, b"u", transfer_pattern)
         acknowledgement = read_line(conn, LINE_LIMIT_BYTES)
         expected = f"OK {byte_count}\n".encode("ascii")
         if acknowledgement != expected:
             raise RuntimeError(f"unexpected upload acknowledgement: {acknowledgement!r}")
 
 
-def run_download_request(host: str, port: int, byte_count: int, timeout_seconds: float) -> None:
+def run_download_request(
+    host: str,
+    port: int,
+    byte_count: int,
+    transfer_pattern: TransferPattern,
+    timeout_seconds: float,
+) -> None:
     with socket.create_connection((host, port), timeout=timeout_seconds) as conn:
         conn.settimeout(timeout_seconds)
-        conn.sendall(f"DOWNLOAD {byte_count}\n".encode("ascii"))
+        conn.sendall(
+            (
+                f"DOWNLOAD {byte_count} "
+                f"{transfer_pattern.write_chunk_bytes} "
+                f"{transfer_pattern.burst_chunks} "
+                f"{transfer_pattern.burst_pause_micros}\n"
+            ).encode("ascii")
+        )
         read_exact_into_sink(conn, byte_count)
 
 
-def run_sink_request(host: str, port: int, byte_count: int, timeout_seconds: float) -> None:
-    payload = b"s" * min(TRANSFER_CHUNK_BYTES, max(byte_count, 1))
+def run_sink_request(
+    host: str,
+    port: int,
+    byte_count: int,
+    transfer_pattern: TransferPattern,
+    timeout_seconds: float,
+) -> None:
     with socket.create_connection((host, port), timeout=timeout_seconds) as conn:
         conn.settimeout(timeout_seconds)
         conn.sendall(f"SINK {byte_count}\n".encode("ascii"))
-        remaining = byte_count
-        while remaining > 0:
-            chunk = payload if remaining >= len(payload) else payload[:remaining]
-            conn.sendall(chunk)
-            remaining -= len(chunk)
+        send_patterned_payload(conn, byte_count, b"s", transfer_pattern)
+
+
+def send_patterned_payload(
+    conn: socket.socket,
+    byte_count: int,
+    fill_byte: bytes,
+    transfer_pattern: TransferPattern,
+) -> None:
+    payload = fill_byte * min(transfer_pattern.write_chunk_bytes, max(byte_count, 1))
+    remaining = byte_count
+    sent_chunks = 0
+    while remaining > 0:
+        chunk = payload if remaining >= len(payload) else payload[:remaining]
+        conn.sendall(chunk)
+        remaining -= len(chunk)
+        sent_chunks = maybe_pause_after_burst(transfer_pattern, sent_chunks, remaining)
+
+
+def parse_perf_command(command_line: bytes) -> tuple[str, int, TransferPattern]:
+    parts = command_line.decode("ascii", errors="strict").strip().split()
+    if len(parts) < 2:
+        raise ValueError("missing command arguments")
+
+    command = parts[0].upper()
+    try:
+        byte_count = int(parts[1])
+    except ValueError as exc:
+        raise ValueError("invalid byte count") from exc
+    if byte_count < 0:
+        raise ValueError("negative byte count")
+
+    pattern = TransferPattern(
+        write_chunk_bytes=DEFAULT_TRANSFER_WRITE_CHUNK_BYTES,
+        burst_chunks=DEFAULT_TRANSFER_WRITE_BURST_CHUNKS,
+        burst_pause_micros=DEFAULT_TRANSFER_WRITE_BURST_PAUSE_MICROS,
+    )
+    if len(parts) >= 3:
+        try:
+            write_chunk_bytes = int(parts[2])
+        except ValueError as exc:
+            raise ValueError("invalid write chunk bytes") from exc
+        pattern = TransferPattern(
+            write_chunk_bytes=write_chunk_bytes,
+            burst_chunks=pattern.burst_chunks,
+            burst_pause_micros=pattern.burst_pause_micros,
+        )
+    if len(parts) >= 4:
+        try:
+            burst_chunks = int(parts[3])
+        except ValueError as exc:
+            raise ValueError("invalid burst chunks") from exc
+        pattern = TransferPattern(
+            write_chunk_bytes=pattern.write_chunk_bytes,
+            burst_chunks=burst_chunks,
+            burst_pause_micros=pattern.burst_pause_micros,
+        )
+    if len(parts) >= 5:
+        try:
+            burst_pause_micros = int(parts[4])
+        except ValueError as exc:
+            raise ValueError("invalid burst pause micros") from exc
+        pattern = TransferPattern(
+            write_chunk_bytes=pattern.write_chunk_bytes,
+            burst_chunks=pattern.burst_chunks,
+            burst_pause_micros=burst_pause_micros,
+        )
+
+    if pattern.write_chunk_bytes <= 0:
+        raise ValueError("write chunk bytes must be positive")
+    if pattern.burst_chunks < 0:
+        raise ValueError("burst chunks must be non-negative")
+    if pattern.burst_pause_micros < 0:
+        raise ValueError("burst pause micros must be non-negative")
+
+    return command, byte_count, pattern
+
+
+def maybe_pause_after_burst(
+    transfer_pattern: TransferPattern,
+    sent_chunks: int,
+    remaining_bytes: int,
+) -> int:
+    if transfer_pattern.burst_chunks <= 0:
+        return sent_chunks
+
+    sent_chunks += 1
+    if sent_chunks < transfer_pattern.burst_chunks or remaining_bytes <= 0:
+        return sent_chunks
+
+    if transfer_pattern.burst_pause_micros > 0:
+        time.sleep(transfer_pattern.burst_pause_micros / 1_000_000.0)
+    return 0
 
 
 def read_line(conn: socket.socket, limit: int) -> bytes:
@@ -1165,11 +1349,15 @@ def build_report(
         "parameters": {
             "timeout_seconds": args.timeout,
             "target_mode": args.target_mode,
+            "skip_stability": args.skip_stability,
             "stability_duration_seconds": args.stability_duration,
             "stability_concurrency": args.stability_concurrency,
             "stability_payload_bytes": args.stability_payload_bytes,
             "transfer_concurrency": args.transfer_concurrency,
             "transfer_bytes_per_connection": args.transfer_bytes_per_connection,
+            "transfer_write_chunk_bytes": args.transfer_write_chunk_bytes,
+            "transfer_write_burst_chunks": args.transfer_write_burst_chunks,
+            "transfer_write_burst_pause_micros": args.transfer_write_burst_pause_micros,
             "frps_log_level": args.frps_log_level,
             "frpc_log_level": args.frpc_log_level,
         },
@@ -1195,15 +1383,19 @@ def analyze_report(
         "Primary goal: detect proxy-chain or code-path failures under load. Throughput and latency are secondary signals."
     )
 
+    stability_skipped = bool(stability.get("skipped"))
     stability_failures = int(stability["failures"])
     upload_failures = int(upload["failures"])
     download_failures = int(download["failures"])
     host_limited = (
-        stability_failures > 0
+        not stability_skipped
+        and stability_failures > 0
         and upload_failures == 0
         and download_failures == 0
         and has_only_windows_ephemeral_port_errors(stability)
     )
+    if stability_skipped:
+        notes.append("Stability workload was skipped for this run; this report only validates transfer throughput paths.")
     if stability_failures or upload_failures or download_failures:
         if host_limited:
             verdict = "host_limited"
@@ -1222,7 +1414,7 @@ def analyze_report(
         notes.append("All benchmark workloads completed without transport-level failures.")
 
     latency = stability["latency_ms"]
-    if isinstance(latency, dict):
+    if not stability_skipped and isinstance(latency, dict):
         p50 = latency.get("p50")
         p95 = latency.get("p95")
         if isinstance(p50, (int, float)) and isinstance(p95, (int, float)) and p50 > 0:
@@ -1271,13 +1463,23 @@ def render_markdown_report(report: dict[str, object]) -> str:
         f"- Generated at: `{report['generated_at']}`",
         f"- Output dir: `{report['output_dir']}`",
         f"- Target mode: `{report['parameters']['target_mode']}`",
+        (
+            "- Transfer write pattern: "
+            f"`chunk={report['parameters']['transfer_write_chunk_bytes']} "
+            f"burst_chunks={report['parameters']['transfer_write_burst_chunks']} "
+            f"burst_pause_us={report['parameters']['transfer_write_burst_pause_micros']}`"
+        ),
         f"- Ports: `{json.dumps(report['ports'], ensure_ascii=True)}`",
         "",
         "## Workloads",
         "",
         (
-            f"- Stability: concurrency `{stability['concurrency']}`, payload `{stability['payload_bytes']}` bytes, "
-            f"duration `{stability['duration_seconds']:.2f}` s, success `{stability['success']}/{stability['attempts']}`"
+            "- Stability: skipped"
+            if stability.get("skipped")
+            else (
+                f"- Stability: concurrency `{stability['concurrency']}`, payload `{stability['payload_bytes']}` bytes, "
+                f"duration `{stability['duration_seconds']:.2f}` s, success `{stability['success']}/{stability['attempts']}`"
+            )
         ),
         (
             f"- Symmetric upload: concurrency `{upload['concurrency']}`, payload `{upload['bytes_per_connection']}` bytes per connection, "
@@ -1290,29 +1492,42 @@ def render_markdown_report(report: dict[str, object]) -> str:
         "",
         "## Stability",
         "",
-        f"- Requests per second: `{stability['requests_per_second']:.2f}`",
-        f"- Failures: `{stability['failures']}`",
-        f"- Latency ms: `{json.dumps(stability['latency_ms'], ensure_ascii=True)}`",
-        f"- Errors: `{json.dumps(stability['errors'], ensure_ascii=True)}`",
-        "",
-        "## Symmetric Transfer",
-        "",
-        (
-            f"- Symmetric upload bytes/s: `{upload['throughput_bytes_per_second']:.2f}` "
-            f"({upload['throughput_mbps']:.2f} Mbps)"
-        ),
-        f"- Symmetric upload per-connection seconds: `{json.dumps(upload['connection_seconds'], ensure_ascii=True)}`",
-        f"- Symmetric upload errors: `{json.dumps(upload['errors'], ensure_ascii=True)}`",
-        (
-            f"- Symmetric download bytes/s: `{download['throughput_bytes_per_second']:.2f}` "
-            f"({download['throughput_mbps']:.2f} Mbps)"
-        ),
-        f"- Symmetric download per-connection seconds: `{json.dumps(download['connection_seconds'], ensure_ascii=True)}`",
-        f"- Symmetric download errors: `{json.dumps(download['errors'], ensure_ascii=True)}`",
-        "",
-        "## Process Summary",
-        "",
     ]
+
+    if stability.get("skipped"):
+        lines.append("- Skipped for this run.")
+    else:
+        lines.extend(
+            [
+                f"- Requests per second: `{stability['requests_per_second']:.2f}`",
+                f"- Failures: `{stability['failures']}`",
+                f"- Latency ms: `{json.dumps(stability['latency_ms'], ensure_ascii=True)}`",
+                f"- Errors: `{json.dumps(stability['errors'], ensure_ascii=True)}`",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Symmetric Transfer",
+            "",
+            (
+                f"- Symmetric upload bytes/s: `{upload['throughput_bytes_per_second']:.2f}` "
+                f"({upload['throughput_mbps']:.2f} Mbps)"
+            ),
+            f"- Symmetric upload per-connection seconds: `{json.dumps(upload['connection_seconds'], ensure_ascii=True)}`",
+            f"- Symmetric upload errors: `{json.dumps(upload['errors'], ensure_ascii=True)}`",
+            (
+                f"- Symmetric download bytes/s: `{download['throughput_bytes_per_second']:.2f}` "
+                f"({download['throughput_mbps']:.2f} Mbps)"
+            ),
+            f"- Symmetric download per-connection seconds: `{json.dumps(download['connection_seconds'], ensure_ascii=True)}`",
+            f"- Symmetric download errors: `{json.dumps(download['errors'], ensure_ascii=True)}`",
+            "",
+            "## Process Summary",
+            "",
+        ]
+    )
 
     for name, summary in process_summary.items():
         lines.append(f"- {name}: `{json.dumps(summary, ensure_ascii=True)}`")

@@ -17,6 +17,18 @@ const (
 	chunkSize      = 64 * 1024
 )
 
+type transferPattern struct {
+	writeChunkBytes int
+	burstChunks     int
+	burstPause      time.Duration
+}
+
+type commandSpec struct {
+	name      string
+	byteCount int64
+	pattern   transferPattern
+}
+
 func main() {
 	listenAddr := flag.String("listen", "", "listen address, for example 127.0.0.1:9000")
 	readTimeout := flag.Duration("read-timeout", 60*time.Second, "per-connection read timeout")
@@ -59,65 +71,52 @@ func handleConn(conn net.Conn, readTimeout, writeTimeout time.Duration) {
 		return
 	}
 
-	command, byteCount, err := parseCommand(commandLine)
+	command, err := parseCommand(commandLine)
 	if err != nil {
 		log.Printf("bad command remote=%s error=%v", conn.RemoteAddr().String(), err)
 		return
 	}
 
-	switch command {
+	switch command.name {
 	case "ECHO":
-		written, err := echoPayload(conn, reader, byteCount)
+		written, err := echoPayload(conn, reader, command.byteCount)
 		if err != nil {
 			log.Printf("echo failed remote=%s error=%v", conn.RemoteAddr().String(), err)
 			return
 		}
-		if written != byteCount {
-			log.Printf("echo short read remote=%s got=%d want=%d", conn.RemoteAddr().String(), written, byteCount)
+		if written != command.byteCount {
+			log.Printf("echo short read remote=%s got=%d want=%d", conn.RemoteAddr().String(), written, command.byteCount)
 		}
 	case "UPLOAD":
-		written, err := io.CopyBuffer(io.Discard, io.LimitReader(reader, byteCount), make([]byte, chunkSize))
+		written, err := io.CopyBuffer(io.Discard, io.LimitReader(reader, command.byteCount), make([]byte, chunkSize))
 		if err != nil {
 			log.Printf("upload failed remote=%s error=%v", conn.RemoteAddr().String(), err)
 			return
 		}
-		if written != byteCount {
-			log.Printf("upload short read remote=%s got=%d want=%d", conn.RemoteAddr().String(), written, byteCount)
+		if written != command.byteCount {
+			log.Printf("upload short read remote=%s got=%d want=%d", conn.RemoteAddr().String(), written, command.byteCount)
 			return
 		}
-		if _, err := io.WriteString(conn, fmt.Sprintf("OK %d\n", byteCount)); err != nil {
+		if _, err := io.WriteString(conn, fmt.Sprintf("OK %d\n", command.byteCount)); err != nil {
 			log.Printf("upload ack failed remote=%s error=%v", conn.RemoteAddr().String(), err)
 		}
 	case "DOWNLOAD":
-		chunk := make([]byte, chunkSize)
-		for i := range chunk {
-			chunk[i] = 'x'
-		}
-		remaining := byteCount
-		for remaining > 0 {
-			payload := chunk
-			if remaining < int64(len(payload)) {
-				payload = payload[:remaining]
-			}
-			n, err := conn.Write(payload)
-			if err != nil {
-				log.Printf("download failed remote=%s error=%v", conn.RemoteAddr().String(), err)
-				return
-			}
-			remaining -= int64(n)
+		if err := writePatternedDownload(conn, command.byteCount, command.pattern); err != nil {
+			log.Printf("download failed remote=%s error=%v", conn.RemoteAddr().String(), err)
+			return
 		}
 	case "SINK":
-		written, err := io.CopyBuffer(io.Discard, io.LimitReader(reader, byteCount), make([]byte, chunkSize))
+		written, err := io.CopyBuffer(io.Discard, io.LimitReader(reader, command.byteCount), make([]byte, chunkSize))
 		if err != nil {
 			log.Printf("sink failed remote=%s error=%v", conn.RemoteAddr().String(), err)
 			return
 		}
-		if written != byteCount {
-			log.Printf("sink short read remote=%s got=%d want=%d", conn.RemoteAddr().String(), written, byteCount)
+		if written != command.byteCount {
+			log.Printf("sink short read remote=%s got=%d want=%d", conn.RemoteAddr().String(), written, command.byteCount)
 			return
 		}
 	default:
-		log.Printf("unsupported command remote=%s command=%s", conn.RemoteAddr().String(), command)
+		log.Printf("unsupported command remote=%s command=%s", conn.RemoteAddr().String(), command.name)
 	}
 }
 
@@ -156,6 +155,43 @@ func writeFull(conn net.Conn, payload []byte) error {
 	return nil
 }
 
+func writePatternedDownload(conn net.Conn, byteCount int64, pattern transferPattern) error {
+	chunk := make([]byte, pattern.writeChunkBytes)
+	for i := range chunk {
+		chunk[i] = 'x'
+	}
+	remaining := byteCount
+	sentChunks := 0
+	for remaining > 0 {
+		payload := chunk
+		if remaining < int64(len(payload)) {
+			payload = payload[:remaining]
+		}
+		if err := writeFull(conn, payload); err != nil {
+			return err
+		}
+		remaining -= int64(len(payload))
+		sentChunks = maybePauseAfterBurst(pattern, sentChunks, remaining)
+	}
+	return nil
+}
+
+func maybePauseAfterBurst(pattern transferPattern, sentChunks int, remaining int64) int {
+	if pattern.burstChunks <= 0 {
+		return sentChunks
+	}
+
+	sentChunks++
+	if sentChunks < pattern.burstChunks || remaining <= 0 {
+		return sentChunks
+	}
+
+	if pattern.burstPause > 0 {
+		time.Sleep(pattern.burstPause)
+	}
+	return 0
+}
+
 func readLineLimited(reader *bufio.Reader, limit int) (string, error) {
 	var builder strings.Builder
 	for builder.Len() < limit {
@@ -174,18 +210,56 @@ func readLineLimited(reader *bufio.Reader, limit int) (string, error) {
 	return builder.String(), nil
 }
 
-func parseCommand(line string) (string, int64, error) {
-	trimmed := strings.TrimSpace(line)
-	command, value, found := strings.Cut(trimmed, " ")
-	if !found {
-		return "", 0, fmt.Errorf("missing byte count")
+func parseCommand(line string) (commandSpec, error) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) < 2 {
+		return commandSpec{}, fmt.Errorf("missing byte count")
 	}
-	byteCount, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	byteCount, err := strconv.ParseInt(fields[1], 10, 64)
 	if err != nil {
-		return "", 0, fmt.Errorf("parse byte count: %w", err)
+		return commandSpec{}, fmt.Errorf("parse byte count: %w", err)
 	}
 	if byteCount < 0 {
-		return "", 0, fmt.Errorf("byte count must be non-negative")
+		return commandSpec{}, fmt.Errorf("byte count must be non-negative")
 	}
-	return strings.ToUpper(strings.TrimSpace(command)), byteCount, nil
+
+	pattern := transferPattern{
+		writeChunkBytes: chunkSize,
+	}
+	if len(fields) >= 3 {
+		writeChunkBytes, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return commandSpec{}, fmt.Errorf("parse write chunk bytes: %w", err)
+		}
+		pattern.writeChunkBytes = writeChunkBytes
+	}
+	if len(fields) >= 4 {
+		burstChunks, err := strconv.Atoi(fields[3])
+		if err != nil {
+			return commandSpec{}, fmt.Errorf("parse burst chunks: %w", err)
+		}
+		pattern.burstChunks = burstChunks
+	}
+	if len(fields) >= 5 {
+		burstPauseMicros, err := strconv.ParseInt(fields[4], 10, 64)
+		if err != nil {
+			return commandSpec{}, fmt.Errorf("parse burst pause micros: %w", err)
+		}
+		pattern.burstPause = time.Duration(burstPauseMicros) * time.Microsecond
+	}
+	if pattern.writeChunkBytes <= 0 {
+		return commandSpec{}, fmt.Errorf("write chunk bytes must be positive")
+	}
+	if pattern.burstChunks < 0 {
+		return commandSpec{}, fmt.Errorf("burst chunks must be non-negative")
+	}
+	if pattern.burstPause < 0 {
+		return commandSpec{}, fmt.Errorf("burst pause must be non-negative")
+	}
+
+	return commandSpec{
+		name:      strings.ToUpper(fields[0]),
+		byteCount: byteCount,
+		pattern:   pattern,
+	}, nil
 }
