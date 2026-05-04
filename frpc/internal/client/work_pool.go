@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+
+	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
 func (c *Client) workPoolLoop(ctx context.Context, state *sessionState) error {
@@ -43,15 +45,34 @@ func (c *Client) fillTCPWorkPool(ctx context.Context, state *sessionState, wakeC
 			_ = conn.Close()
 			return err
 		}
-		go c.watchTCPWorkConn(ctx, state, conn, wakeCh)
+		go c.serveTCPWorkConn(ctx, state, conn, wakeCh)
 	}
 }
 
-func (c *Client) watchTCPWorkConn(ctx context.Context, state *sessionState, conn net.Conn, wakeCh chan struct{}) {
-	buffer := make([]byte, 1)
-	_, _ = conn.Read(buffer)
+func (c *Client) serveTCPWorkConn(ctx context.Context, state *sessionState, conn net.Conn, wakeCh chan struct{}) {
+	defer func() {
+		_ = conn.Close()
+		_ = state.removeTCPWorkConn(conn)
+	}()
 
-	removed := state.removeTCPWorkConn(conn)
+	frame, err := c.readMessageWithState(conn, state, 0)
+	if err != nil {
+		c.notifyTCPWorkPoolWake(ctx, state.removeTCPWorkConn(conn), wakeCh)
+		return
+	}
+	if frame.Type == protocol.TypeError {
+		c.notifyTCPWorkPoolWake(ctx, state.removeTCPWorkConn(conn), wakeCh)
+		return
+	}
+	if !state.markTCPWorkConnBusy(conn) {
+		return
+	}
+	c.notifyTCPWorkPoolWake(ctx, true, wakeCh)
+
+	_ = c.handleWorkStreamOpen(conn, state, frame)
+}
+
+func (c *Client) notifyTCPWorkPoolWake(ctx context.Context, removed bool, wakeCh chan struct{}) {
 	if !removed || ctx.Err() != nil {
 		return
 	}

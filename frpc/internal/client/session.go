@@ -303,11 +303,18 @@ func (s *sessionState) removeTCPWorkConn(conn net.Conn) bool {
 	return s.tcpWork.Remove(conn)
 }
 
+func (s *sessionState) markTCPWorkConnBusy(conn net.Conn) bool {
+	if s == nil || s.tcpWork == nil {
+		return false
+	}
+	return s.tcpWork.MarkBusy(conn)
+}
+
 func (s *sessionState) tcpWorkConnCount() int {
 	if s == nil || s.tcpWork == nil {
 		return 0
 	}
-	return s.tcpWork.Count()
+	return s.tcpWork.IdleCount()
 }
 
 func (s *sessionState) closeAllTCPWorkConns() {

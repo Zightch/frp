@@ -28,38 +28,16 @@ func (c *Client) handleStreamOpen(conn net.Conn, state *sessionState, frame prot
 		return err
 	}
 
-	target, err := state.localTarget(open)
+	_, stream, errorCode, err := c.prepareLocalTCPStream(state, open)
 	if err != nil {
 		return c.replyStreamOpened(conn, state, frame, protocol.StreamOpened{
 			Status:    protocol.StatusError,
-			ErrorCode: protocol.ErrorCodeStreamTunnelNotFound,
+			ErrorCode: errorCode,
 			Message:   err.Error(),
 		})
 	}
-
-	tunnel, ok := state.tunnelByID(open.TunnelID)
-	if !ok {
-		return c.replyStreamOpened(conn, state, frame, protocol.StreamOpened{
-			Status:    protocol.StatusError,
-			ErrorCode: protocol.ErrorCodeStreamTunnelNotFound,
-			Message:   fmt.Sprintf("tunnel %d not found", open.TunnelID),
-		})
-	}
-
-	localConn, err := dialTunnelBackend(tunnel, target)
-	if err != nil {
-		c.logBackendDialFailure(tunnel, target, err)
-		return c.replyStreamOpened(conn, state, frame, protocol.StreamOpened{
-			Status:    protocol.StatusError,
-			ErrorCode: protocol.ErrorCodeStreamLocalDialFailed,
-			Message:   err.Error(),
-		})
-	}
-	c.clearBackendDialFailure(tunnel, target)
-
-	stream := &localStream{conn: localConn}
 	if !state.addStream(frame.StreamID, stream) {
-		_ = localConn.Close()
+		_ = stream.conn.Close()
 		return c.replyStreamOpened(conn, state, frame, protocol.StreamOpened{
 			Status:    protocol.StatusError,
 			ErrorCode: protocol.ErrorCodeProtocolBadBody,
@@ -74,6 +52,26 @@ func (c *Client) handleStreamOpen(conn net.Conn, state *sessionState, frame prot
 
 	go c.copyLocalToServer(conn, state, frame.StreamID, stream)
 	return nil
+}
+
+func (c *Client) prepareLocalTCPStream(state *sessionState, open protocol.StreamOpen) (protocol.TunnelEntry, *localStream, uint16, error) {
+	target, err := state.localTarget(open)
+	if err != nil {
+		return protocol.TunnelEntry{}, nil, protocol.ErrorCodeStreamTunnelNotFound, err
+	}
+
+	tunnel, ok := state.tunnelByID(open.TunnelID)
+	if !ok {
+		return protocol.TunnelEntry{}, nil, protocol.ErrorCodeStreamTunnelNotFound, fmt.Errorf("tunnel %d not found", open.TunnelID)
+	}
+
+	localConn, err := dialTunnelBackend(tunnel, target)
+	if err != nil {
+		c.logBackendDialFailure(tunnel, target, err)
+		return tunnel, nil, protocol.ErrorCodeStreamLocalDialFailed, err
+	}
+	c.clearBackendDialFailure(tunnel, target)
+	return tunnel, &localStream{conn: localConn}, 0, nil
 }
 
 func (c *Client) handleStreamData(conn net.Conn, state *sessionState, frame protocol.Frame) error {

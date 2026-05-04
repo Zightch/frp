@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -239,68 +240,11 @@ func TestServerForwardsTCPStream(t *testing.T) {
 		"test-server",
 	)
 
-	clientRaw, serverRaw := net.Pipe()
-	clientConn := &connWithRemoteAddr{
-		Conn:   clientRaw,
-		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 10001},
-	}
-	serverConn := &connWithRemoteAddr{
-		Conn:   serverRaw,
-		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20001},
-	}
-	defer clientConn.Close()
+	controlConn, controlDone, hello, configFrame := loginControlSessionForTCPWorkTest(t, server, tokenID, tokenHash)
+	defer controlConn.Close()
 
-	done := make(chan struct{})
-	server.registerConn(serverConn)
-	server.connWG.Add(1)
-	go func() {
-		defer close(done)
-		server.handleConnection(serverConn)
-	}()
-
-	performTransportHello(t, clientConn, tokenID)
-
-	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
-		ClientID:      tokenID,
-		ClientVersion: "test-client",
-		Hostname:      "node-1",
-		OS:            protocol.OSLinux,
-		Arch:          protocol.ArchAMD64,
-	})
-	if err != nil {
-		t.Fatalf("marshal auth.begin: %v", err)
-	}
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeAuthBegin,
-		RequestID: 2,
-		Body:      authBeginBody,
-	})
-
-	challengeFrame := readMessage(t, clientConn)
-	challenge, err := protocol.UnmarshalAuthChallenge(challengeFrame.Body)
-	if err != nil {
-		t.Fatalf("unmarshal auth.challenge: %v", err)
-	}
-
-	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
-		ChallengeID: challenge.ChallengeID,
-		Response:    protocol.ChallengeResponse(tokenHash, challenge.Nonce),
-	})
-	if err != nil {
-		t.Fatalf("marshal auth.finish: %v", err)
-	}
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeAuthFinish,
-		RequestID: 3,
-		Body:      authFinishBody,
-	})
-
-	helloFrame := readMessage(t, clientConn)
-	if helloFrame.Type != protocol.TypeServerHello {
-		t.Fatalf("expected server.hello, got %s", helloFrame.Type.String())
-	}
-
-	configFrame := readMessage(t, clientConn)
+	workConn, workDone := openTCPWorkConnForTest(t, server, hello)
+	defer workConn.Close()
 	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
 	if err != nil {
 		t.Fatalf("unmarshal config.push: %v", err)
@@ -314,7 +258,7 @@ func TestServerForwardsTCPStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal config.ack: %v", err)
 	}
-	writeMessage(t, clientConn, protocol.Frame{
+	writeMessage(t, controlConn, protocol.Frame{
 		Type:      protocol.TypeConfigAck,
 		RequestID: configFrame.RequestID,
 		Body:      configAckBody,
@@ -323,10 +267,7 @@ func TestServerForwardsTCPStream(t *testing.T) {
 	publicConn := waitForTCPDial(t, remotePort)
 	defer publicConn.Close()
 
-	streamOpenFrame := readMessage(t, clientConn)
-	if streamOpenFrame.Type != protocol.TypeStreamOpen {
-		t.Fatalf("expected stream.open, got %s", streamOpenFrame.Type.String())
-	}
+	streamOpenFrame := waitForTCPWorkStreamOpen(t, workConn)
 	streamOpen, err := protocol.UnmarshalStreamOpen(streamOpenFrame.Body)
 	if err != nil {
 		t.Fatalf("unmarshal stream.open: %v", err)
@@ -335,34 +276,23 @@ func TestServerForwardsTCPStream(t *testing.T) {
 		t.Fatalf("unexpected tunnel id: %d", streamOpen.TunnelID)
 	}
 
-	streamOpenedBody, err := protocol.MarshalStreamOpened(protocol.StreamOpened{Status: protocol.StatusOK})
-	if err != nil {
-		t.Fatalf("marshal stream.opened: %v", err)
-	}
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeStreamOpened,
-		RequestID: streamOpenFrame.RequestID,
-		StreamID:  streamOpenFrame.StreamID,
-		Body:      streamOpenedBody,
-	})
+	writeTCPWorkStreamOpened(t, workConn, streamOpenFrame, protocol.StreamOpened{Status: protocol.StatusOK})
 
 	if _, err := publicConn.Write([]byte("hello")); err != nil {
 		t.Fatalf("write public Conn: %v", err)
 	}
 
-	streamDataFrame := readMessage(t, clientConn)
-	if streamDataFrame.Type != protocol.TypeStreamData {
-		t.Fatalf("expected stream.data, got %s", streamDataFrame.Type.String())
+	var forwarded [5]byte
+	if _, err := io.ReadFull(workConn, forwarded[:]); err != nil {
+		t.Fatalf("read work payload: %v", err)
 	}
-	if string(streamDataFrame.Body) != "hello" {
-		t.Fatalf("unexpected forwarded payload: %q", string(streamDataFrame.Body))
+	if string(forwarded[:]) != "hello" {
+		t.Fatalf("unexpected forwarded payload: %q", string(forwarded[:]))
 	}
 
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:     protocol.TypeStreamData,
-		StreamID: streamDataFrame.StreamID,
-		Body:     []byte("world"),
-	})
+	if _, err := workConn.Write([]byte("world")); err != nil {
+		t.Fatalf("write work payload: %v", err)
+	}
 
 	var response [5]byte
 	if _, err := io.ReadFull(publicConn, response[:]); err != nil {
@@ -373,14 +303,15 @@ func TestServerForwardsTCPStream(t *testing.T) {
 	}
 
 	_ = publicConn.Close()
-	streamCloseFrame := readMessage(t, clientConn)
-	if streamCloseFrame.Type != protocol.TypeStreamClose {
-		t.Fatalf("expected stream.close, got %s", streamCloseFrame.Type.String())
+	select {
+	case <-workDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tcp work connection did not exit")
 	}
 
-	_ = clientConn.Close()
+	_ = controlConn.Close()
 	select {
-	case <-done:
+	case <-controlDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("server connection did not exit")
 	}
@@ -912,8 +843,11 @@ func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testi
 		"test-server",
 	)
 
-	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
-	defer clientConn.Close()
+	controlConn, controlDone, hello, configFrame := loginControlSessionForTCPWorkTest(t, server, tokenID, tokenHash)
+	defer controlConn.Close()
+
+	workConn, workDone := openTCPWorkConnForTest(t, server, hello)
+	defer workConn.Close()
 
 	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
 	if err != nil {
@@ -922,33 +856,27 @@ func TestServerStartsTunnelListenerOnlyAfterConfigAckAndStopsOnShutdown(t *testi
 
 	assertTCPDialFails(t, remotePort)
 
-	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+	writeConfigAck(t, controlConn, configFrame.RequestID, configPush.ConfigVersion)
 
 	publicConn := waitForTCPDial(t, remotePort)
-	streamOpenFrame := readMessage(t, clientConn)
-	if streamOpenFrame.Type != protocol.TypeStreamOpen {
-		t.Fatalf("expected stream.open, got %s", streamOpenFrame.Type.String())
-	}
+	streamOpenFrame := waitForTCPWorkStreamOpen(t, workConn)
 
-	streamOpenedBody, err := protocol.MarshalStreamOpened(protocol.StreamOpened{
+	writeTCPWorkStreamOpened(t, workConn, streamOpenFrame, protocol.StreamOpened{
 		Status:    protocol.StatusError,
 		ErrorCode: protocol.ErrorCodeStreamLocalDialFailed,
 		Message:   "reject for test cleanup",
 	})
-	if err != nil {
-		t.Fatalf("marshal stream.opened: %v", err)
-	}
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeStreamOpened,
-		RequestID: streamOpenFrame.RequestID,
-		StreamID:  streamOpenFrame.StreamID,
-		Body:      streamOpenedBody,
-	})
 	_ = publicConn.Close()
 
-	_ = clientConn.Close()
 	select {
-	case <-done:
+	case <-workDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tcp work connection did not exit")
+	}
+
+	_ = controlConn.Close()
+	select {
+	case <-controlDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("server connection did not exit")
 	}
@@ -1137,23 +1065,25 @@ func TestServerStartsListenersForEnabledTCPRangeTunnelAndUsesMatchedRemotePort(t
 		"test-server",
 	)
 
-	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
-	defer clientConn.Close()
+	controlConn, controlDone, hello, configFrame := loginControlSessionForTCPWorkTest(t, server, tokenID, tokenHash)
+	defer controlConn.Close()
+
+	singleWorkConn, singleWorkDone := openTCPWorkConnForTest(t, server, hello)
+	defer singleWorkConn.Close()
+	rangeWorkConn, rangeWorkDone := openTCPWorkConnForTest(t, server, hello)
+	defer rangeWorkConn.Close()
 
 	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
 	if err != nil {
 		t.Fatalf("unmarshal config.push: %v", err)
 	}
-	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+	writeConfigAck(t, controlConn, configFrame.RequestID, configPush.ConfigVersion)
 
 	assertTCPDialFails(t, disabledPort)
 	assertTCPDialFails(t, udpPort)
 
 	singleConn := waitForTCPDial(t, allowedPort)
-	singleOpenFrame := readMessage(t, clientConn)
-	if singleOpenFrame.Type != protocol.TypeStreamOpen {
-		t.Fatalf("expected stream.open, got %s", singleOpenFrame.Type.String())
-	}
+	singleOpenFrame := waitForTCPWorkStreamOpen(t, singleWorkConn)
 	singleOpen, err := protocol.UnmarshalStreamOpen(singleOpenFrame.Body)
 	if err != nil {
 		t.Fatalf("unmarshal single stream.open: %v", err)
@@ -1162,27 +1092,20 @@ func TestServerStartsListenersForEnabledTCPRangeTunnelAndUsesMatchedRemotePort(t
 		t.Fatalf("unexpected single stream.open: %#v", singleOpen)
 	}
 
-	streamOpenedBody, err := protocol.MarshalStreamOpened(protocol.StreamOpened{
+	writeTCPWorkStreamOpened(t, singleWorkConn, singleOpenFrame, protocol.StreamOpened{
 		Status:    protocol.StatusError,
 		ErrorCode: protocol.ErrorCodeStreamLocalDialFailed,
 		Message:   "reject for test cleanup",
 	})
-	if err != nil {
-		t.Fatalf("marshal stream.opened: %v", err)
-	}
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeStreamOpened,
-		RequestID: singleOpenFrame.RequestID,
-		StreamID:  singleOpenFrame.StreamID,
-		Body:      streamOpenedBody,
-	})
 	_ = singleConn.Close()
+	select {
+	case <-singleWorkDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("single tcp work connection did not exit")
+	}
 
 	rangeConn := waitForTCPDial(t, rangePort+1)
-	rangeOpenFrame := readMessage(t, clientConn)
-	if rangeOpenFrame.Type != protocol.TypeStreamOpen {
-		t.Fatalf("expected range stream.open, got %s", rangeOpenFrame.Type.String())
-	}
+	rangeOpenFrame := waitForTCPWorkStreamOpen(t, rangeWorkConn)
 	rangeOpen, err := protocol.UnmarshalStreamOpen(rangeOpenFrame.Body)
 	if err != nil {
 		t.Fatalf("unmarshal range stream.open: %v", err)
@@ -1194,17 +1117,21 @@ func TestServerStartsListenersForEnabledTCPRangeTunnelAndUsesMatchedRemotePort(t
 		t.Fatalf("unexpected range remote port: got %d want %d", rangeOpen.RemotePort, rangePort+1)
 	}
 
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeStreamOpened,
-		RequestID: rangeOpenFrame.RequestID,
-		StreamID:  rangeOpenFrame.StreamID,
-		Body:      streamOpenedBody,
+	writeTCPWorkStreamOpened(t, rangeWorkConn, rangeOpenFrame, protocol.StreamOpened{
+		Status:    protocol.StatusError,
+		ErrorCode: protocol.ErrorCodeStreamLocalDialFailed,
+		Message:   "reject for test cleanup",
 	})
 	_ = rangeConn.Close()
-
-	_ = clientConn.Close()
 	select {
-	case <-done:
+	case <-rangeWorkDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("range tcp work connection did not exit")
+	}
+
+	_ = controlConn.Close()
+	select {
+	case <-controlDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("server connection did not exit")
 	}
@@ -1599,8 +1526,9 @@ func TestServerRejectsSecondClientForSameGroup(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("first server connection did not exit")
 	}
+	waitForInactiveGroupSession(t, server, 1)
 
-	thirdConn, thirdDone, _ := authenticateServerSession(t, server, tokenID, tokenHash)
+	thirdConn, thirdDone, _ := authenticateServerSessionEventually(t, server, tokenID, tokenHash)
 	_ = thirdConn.Close()
 	select {
 	case <-thirdDone:
@@ -2016,75 +1944,15 @@ func TestServerRefreshGroupBlocksReplacementSessionUntilRefreshCompletes(t *test
 	}
 
 	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale session did not exit")
+	}
+	waitForInactiveGroupSession(t, server, repo.group.ID)
 
-	replacementClientRaw, replacementServerRaw := net.Pipe()
-	replacementClientConn := &connWithRemoteAddr{
-		Conn:   replacementClientRaw,
-		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 10002},
-	}
-	replacementServerConn := &connWithRemoteAddr{
-		Conn:   replacementServerRaw,
-		remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 20002},
-	}
+	replacementClientConn, replacementDone, replacementConfigFrame := authenticateServerSessionEventually(t, server, tokenID, tokenHash)
 	defer replacementClientConn.Close()
-
-	replacementDone := make(chan struct{})
-	server.registerConn(replacementServerConn)
-	server.connWG.Add(1)
-	go func() {
-		defer close(replacementDone)
-		server.handleConnection(replacementServerConn)
-	}()
-
-	performTransportHello(t, replacementClientConn, tokenID)
-
-	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
-		ClientID:      tokenID,
-		ClientVersion: "test-client",
-		Hostname:      "node-2",
-		OS:            protocol.OSLinux,
-		Arch:          protocol.ArchAMD64,
-	})
-	if err != nil {
-		t.Fatalf("marshal replacement auth.begin: %v", err)
-	}
-	writeMessage(t, replacementClientConn, protocol.Frame{
-		Type:      protocol.TypeAuthBegin,
-		RequestID: 2,
-		Body:      authBeginBody,
-	})
-
-	challengeFrame := readMessage(t, replacementClientConn)
-	if challengeFrame.Type != protocol.TypeAuthChallenge {
-		t.Fatalf("expected replacement auth.challenge, got %s", challengeFrame.Type.String())
-	}
-	challenge, err := protocol.UnmarshalAuthChallenge(challengeFrame.Body)
-	if err != nil {
-		t.Fatalf("unmarshal replacement auth.challenge: %v", err)
-	}
-
-	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
-		ChallengeID: challenge.ChallengeID,
-		Response:    protocol.ChallengeResponse(tokenHash, challenge.Nonce),
-	})
-	if err != nil {
-		t.Fatalf("marshal replacement auth.finish: %v", err)
-	}
-	writeMessage(t, replacementClientConn, protocol.Frame{
-		Type:      protocol.TypeAuthFinish,
-		RequestID: 3,
-		Body:      authFinishBody,
-	})
-
-	helloFrame := readMessage(t, replacementClientConn)
-	if helloFrame.Type != protocol.TypeServerHello {
-		t.Fatalf("expected replacement server.hello, got %s", helloFrame.Type.String())
-	}
-
-	replacementConfigFrame := readMessage(t, replacementClientConn)
-	if replacementConfigFrame.Type != protocol.TypeConfigPush {
-		t.Fatalf("expected replacement config.push, got %s", replacementConfigFrame.Type.String())
-	}
 
 	close(repo.allowLoadByID)
 
@@ -2092,12 +1960,6 @@ func TestServerRefreshGroupBlocksReplacementSessionUntilRefreshCompletes(t *test
 	case <-refreshDone:
 	case <-time.After(time.Second):
 		t.Fatal("refresh did not complete")
-	}
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stale session did not exit")
 	}
 
 	if _, err := protocol.UnmarshalConfigPush(replacementConfigFrame.Body); err != nil {
@@ -2199,14 +2061,19 @@ func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing
 		"test-server",
 	)
 
-	clientConn, done, configFrame := authenticateServerSession(t, server, tokenID, tokenHash)
-	defer clientConn.Close()
+	controlConn, controlDone, hello, configFrame := loginControlSessionForTCPWorkTest(t, server, tokenID, tokenHash)
+	defer controlConn.Close()
+
+	activeWorkConn, activeWorkDone := openTCPWorkConnForTest(t, server, hello)
+	defer activeWorkConn.Close()
+	refreshedWorkConn, refreshedWorkDone := openTCPWorkConnForTest(t, server, hello)
+	defer refreshedWorkConn.Close()
 
 	configPush, err := protocol.UnmarshalConfigPush(configFrame.Body)
 	if err != nil {
 		t.Fatalf("unmarshal initial config.push: %v", err)
 	}
-	writeConfigAck(t, clientConn, configFrame.RequestID, configPush.ConfigVersion)
+	writeConfigAck(t, controlConn, configFrame.RequestID, configPush.ConfigVersion)
 
 	active, ok := server.activeSession(repo.group.ID)
 	if !ok || active == nil {
@@ -2221,29 +2088,17 @@ func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing
 	publicConn := waitForTCPDial(t, oldTCPPort)
 	defer publicConn.Close()
 
-	streamOpenFrame := readMessage(t, clientConn)
-	if streamOpenFrame.Type != protocol.TypeStreamOpen {
-		t.Fatalf("expected stream.open, got %s", streamOpenFrame.Type.String())
-	}
-	streamOpenedBody, err := protocol.MarshalStreamOpened(protocol.StreamOpened{Status: protocol.StatusOK})
-	if err != nil {
-		t.Fatalf("marshal stream.opened: %v", err)
-	}
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeStreamOpened,
-		RequestID: streamOpenFrame.RequestID,
-		StreamID:  streamOpenFrame.StreamID,
-		Body:      streamOpenedBody,
-	})
+	streamOpenFrame := waitForTCPWorkStreamOpen(t, activeWorkConn)
+	writeTCPWorkStreamOpened(t, activeWorkConn, streamOpenFrame, protocol.StreamOpened{Status: protocol.StatusOK})
 
 	publicUDPConn := dialUDPConn(t, oldUDPPort)
 	defer publicUDPConn.Close()
 
-	udpOpenFrame := writeUDPAndReadOpenFrame(t, clientConn, publicUDPConn, []byte("hello"))
+	udpOpenFrame := writeUDPAndReadOpenFrame(t, controlConn, publicUDPConn, []byte("hello"))
 	if udpOpenFrame.Type != protocol.TypeUDPOpen {
 		t.Fatalf("expected udp.open, got %s", udpOpenFrame.Type.String())
 	}
-	firstUDPData := readMessage(t, clientConn)
+	firstUDPData := readMessage(t, controlConn)
 	if firstUDPData.Type != protocol.TypeUDPData {
 		t.Fatalf("expected udp.data, got %s", firstUDPData.Type.String())
 	}
@@ -2288,7 +2143,7 @@ func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing
 	)
 	deadline := time.Now().Add(2 * time.Second)
 	for !(gotStreamClose && gotUDPClose && refreshedFrame.Type == protocol.TypeConfigPush) {
-		frame, err := readMessageWithin(clientConn, 200*time.Millisecond)
+		frame, err := readMessageWithin(controlConn, 200*time.Millisecond)
 		if err != nil {
 			if isTimeoutError(err) && time.Now().Before(deadline) {
 				continue
@@ -2351,7 +2206,7 @@ func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing
 		t.Fatal("expected active public tcp connection to close during refresh")
 	}
 
-	writeConfigAck(t, clientConn, refreshedFrame.RequestID, refreshedPush.ConfigVersion)
+	writeConfigAck(t, controlConn, refreshedFrame.RequestID, refreshedPush.ConfigVersion)
 	select {
 	case <-refreshDone:
 	case <-time.After(time.Second):
@@ -2361,10 +2216,7 @@ func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing
 	refreshedPublicConn := waitForTCPDial(t, newTCPPort)
 	defer refreshedPublicConn.Close()
 
-	refreshedStreamOpen := readMessage(t, clientConn)
-	if refreshedStreamOpen.Type != protocol.TypeStreamOpen {
-		t.Fatalf("expected refreshed stream.open, got %s", refreshedStreamOpen.Type.String())
-	}
+	refreshedStreamOpen := waitForTCPWorkStreamOpen(t, refreshedWorkConn)
 	streamOpen, err := protocol.UnmarshalStreamOpen(refreshedStreamOpen.Body)
 	if err != nil {
 		t.Fatalf("unmarshal refreshed stream.open: %v", err)
@@ -2372,32 +2224,40 @@ func TestServerRefreshGroupFreezesRuntimeUntilAckAndRebuildsListeners(t *testing
 	if streamOpen.RemotePort != uint16(newTCPPort) {
 		t.Fatalf("unexpected refreshed remote port: got %d want %d", streamOpen.RemotePort, newTCPPort)
 	}
-	writeMessage(t, clientConn, protocol.Frame{
-		Type:      protocol.TypeStreamOpened,
-		RequestID: refreshedStreamOpen.RequestID,
-		StreamID:  refreshedStreamOpen.StreamID,
-		Body:      streamOpenedBody,
-	})
+	writeTCPWorkStreamOpened(t, refreshedWorkConn, refreshedStreamOpen, protocol.StreamOpened{Status: protocol.StatusOK})
 
 	pingBody, err := protocol.MarshalHeartbeatPing(protocol.HeartbeatPing{ClientUnixMs: 12345})
 	if err != nil {
 		t.Fatalf("marshal heartbeat.ping: %v", err)
 	}
-	writeMessage(t, clientConn, protocol.Frame{
+	writeMessage(t, controlConn, protocol.Frame{
 		Type:      protocol.TypeHeartbeatPing,
 		RequestID: 3,
 		Body:      pingBody,
 	})
-	pongFrame := readMessage(t, clientConn)
+	pongFrame := readMessage(t, controlConn)
 	if pongFrame.Type != protocol.TypeHeartbeatPong || pongFrame.RequestID != 3 {
 		t.Fatalf("unexpected heartbeat.pong after refresh: %#v", pongFrame)
 	}
 
-	_ = clientConn.Close()
+	_ = refreshedPublicConn.Close()
 	select {
-	case <-done:
+	case <-activeWorkDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active tcp work connection did not exit")
+	}
+
+	_ = controlConn.Close()
+	select {
+	case <-controlDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("server connection did not exit")
+	}
+
+	select {
+	case <-refreshedWorkDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refreshed tcp work connection did not exit")
 	}
 }
 
@@ -3627,6 +3487,7 @@ func TestServerRefreshGroupKeepsSessionAliveAfterKeyResetUntilNextLogin(t *testi
 	case <-time.After(2 * time.Second):
 		t.Fatal("server connection did not exit")
 	}
+	waitForInactiveGroupSession(t, server, 1)
 
 	errorBody := authenticateServerSessionExpectError(t, server, tokenID, tokenHash)
 	if errorBody.ErrorCode != protocol.ErrorCodeAuthInvalidClient {
@@ -4042,6 +3903,31 @@ func readMessageWithin(conn net.Conn, timeout time.Duration) (protocol.Frame, er
 	return protocol.ParseFrame(frameBytes)
 }
 
+func waitForTCPWorkStreamOpen(t *testing.T, conn net.Conn) protocol.Frame {
+	t.Helper()
+
+	frame := readMessage(t, conn)
+	if frame.Type != protocol.TypeStreamOpen {
+		t.Fatalf("expected stream.open on tcp work connection, got %s", frame.Type.String())
+	}
+	return frame
+}
+
+func writeTCPWorkStreamOpened(t *testing.T, conn net.Conn, openFrame protocol.Frame, opened protocol.StreamOpened) {
+	t.Helper()
+
+	body, err := protocol.MarshalStreamOpened(opened)
+	if err != nil {
+		t.Fatalf("marshal stream.opened: %v", err)
+	}
+	writeMessage(t, conn, protocol.Frame{
+		Type:      protocol.TypeStreamOpened,
+		RequestID: openFrame.RequestID,
+		StreamID:  openFrame.StreamID,
+		Body:      body,
+	})
+}
+
 func isTimeoutError(err error) bool {
 	if err == nil {
 		return false
@@ -4071,6 +3957,21 @@ func waitForActiveGroupSession(t *testing.T, server *Server, groupID int64) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for active group session %d", groupID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForInactiveGroupSession(t *testing.T, server *Server, groupID int64) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, ok := server.activeSession(groupID); !ok && server.supervisor.GroupSlotRemoteEndpoint(groupID) == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for inactive group session %d", groupID)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -4124,6 +4025,32 @@ func performTransportHello(t *testing.T, clientConn net.Conn, tokenID [16]byte) 
 func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.Frame) {
 	t.Helper()
 
+	clientConn, done, configFrame, err := tryAuthenticateServerSession(server, tokenID, tokenHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return clientConn, done, configFrame
+}
+
+func authenticateServerSessionEventually(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.Frame) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	var lastErr error
+	for {
+		clientConn, done, configFrame, err := tryAuthenticateServerSession(server, tokenID, tokenHash)
+		if err == nil {
+			return clientConn, done, configFrame
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			t.Fatalf("authenticate session eventually failed: %v", lastErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func tryAuthenticateServerSession(server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.Frame, error) {
 	clientRaw, serverRaw := net.Pipe()
 	clientConn := &connWithRemoteAddr{
 		Conn:   clientRaw,
@@ -4142,7 +4069,59 @@ func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, t
 		server.handleConnection(serverConn)
 	}()
 
-	performTransportHello(t, clientConn, tokenID)
+	fail := func(err error) (*connWithRemoteAddr, chan struct{}, protocol.Frame, error) {
+		_ = clientConn.Close()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Millisecond):
+		}
+		return nil, nil, protocol.Frame{}, err
+	}
+
+	writeFrame := func(frame protocol.Frame) error {
+		frameBytes, err := frame.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		return transport.WriteFrame(clientConn, frameBytes, time.Second)
+	}
+
+	readFrame := func() (protocol.Frame, error) {
+		frameBytes, err := transport.ReadFrame(clientConn, time.Second)
+		if err != nil {
+			return protocol.Frame{}, err
+		}
+		return protocol.ParseFrame(frameBytes)
+	}
+
+	helloBody, err := protocol.MarshalTransportClientHello(protocol.TransportClientHello{
+		ClientID:               tokenID,
+		SupportedSecurityModes: protocol.TransportSecurityModePlain | protocol.TransportSecurityModeTLS,
+	})
+	if err != nil {
+		return fail(fmt.Errorf("marshal transport.client_hello: %w", err))
+	}
+	if err := writeFrame(protocol.Frame{
+		Type:      protocol.TypeTransportClientHello,
+		RequestID: 1,
+		Body:      helloBody,
+	}); err != nil {
+		return fail(fmt.Errorf("write transport.client_hello: %w", err))
+	}
+	serverHelloFrame, err := readFrame()
+	if err != nil {
+		return fail(fmt.Errorf("read transport.server_hello: %w", err))
+	}
+	if serverHelloFrame.Type != protocol.TypeTransportServerHello {
+		return fail(fmt.Errorf("expected transport.server_hello, got %s", serverHelloFrame.Type.String()))
+	}
+	serverHello, err := protocol.UnmarshalTransportServerHello(serverHelloFrame.Body)
+	if err != nil {
+		return fail(fmt.Errorf("unmarshal transport.server_hello: %w", err))
+	}
+	if serverHello.SelectedSecurityMode != protocol.TransportSecurityModePlain {
+		return fail(fmt.Errorf("unexpected transport security mode: %d", serverHello.SelectedSecurityMode))
+	}
 
 	authBeginBody, err := protocol.MarshalAuthBegin(protocol.AuthBegin{
 		ClientID:      tokenID,
@@ -4152,21 +4131,26 @@ func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, t
 		Arch:          protocol.ArchAMD64,
 	})
 	if err != nil {
-		t.Fatalf("marshal auth.begin: %v", err)
+		return fail(fmt.Errorf("marshal auth.begin: %w", err))
 	}
-	writeMessage(t, clientConn, protocol.Frame{
+	if err := writeFrame(protocol.Frame{
 		Type:      protocol.TypeAuthBegin,
 		RequestID: 2,
 		Body:      authBeginBody,
-	})
+	}); err != nil {
+		return fail(fmt.Errorf("write auth.begin: %w", err))
+	}
 
-	challengeFrame := readMessage(t, clientConn)
+	challengeFrame, err := readFrame()
+	if err != nil {
+		return fail(fmt.Errorf("read auth.challenge: %w", err))
+	}
 	if challengeFrame.Type != protocol.TypeAuthChallenge {
-		t.Fatalf("expected auth.challenge, got %s", challengeFrame.Type.String())
+		return fail(fmt.Errorf("expected auth.challenge, got %s", challengeFrame.Type.String()))
 	}
 	challenge, err := protocol.UnmarshalAuthChallenge(challengeFrame.Body)
 	if err != nil {
-		t.Fatalf("unmarshal auth.challenge: %v", err)
+		return fail(fmt.Errorf("unmarshal auth.challenge: %w", err))
 	}
 
 	authFinishBody, err := protocol.MarshalAuthFinish(protocol.AuthFinish{
@@ -4174,25 +4158,33 @@ func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, t
 		Response:    protocol.ChallengeResponse(tokenHash, challenge.Nonce),
 	})
 	if err != nil {
-		t.Fatalf("marshal auth.finish: %v", err)
+		return fail(fmt.Errorf("marshal auth.finish: %w", err))
 	}
-	writeMessage(t, clientConn, protocol.Frame{
+	if err := writeFrame(protocol.Frame{
 		Type:      protocol.TypeAuthFinish,
 		RequestID: 3,
 		Body:      authFinishBody,
-	})
+	}); err != nil {
+		return fail(fmt.Errorf("write auth.finish: %w", err))
+	}
 
-	helloFrame := readMessage(t, clientConn)
+	helloFrame, err := readFrame()
+	if err != nil {
+		return fail(fmt.Errorf("read server.hello: %w", err))
+	}
 	if helloFrame.Type != protocol.TypeServerHello {
-		t.Fatalf("expected server.hello, got %s", helloFrame.Type.String())
+		return fail(fmt.Errorf("expected server.hello, got %s", helloFrame.Type.String()))
 	}
 
-	configFrame := readMessage(t, clientConn)
+	configFrame, err := readFrame()
+	if err != nil {
+		return fail(fmt.Errorf("read config.push: %w", err))
+	}
 	if configFrame.Type != protocol.TypeConfigPush {
-		t.Fatalf("expected config.push, got %s", configFrame.Type.String())
+		return fail(fmt.Errorf("expected config.push, got %s", configFrame.Type.String()))
 	}
 
-	return clientConn, done, configFrame
+	return clientConn, done, configFrame, nil
 }
 
 func authenticateServerSessionExpectError(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) protocol.ErrorBody {

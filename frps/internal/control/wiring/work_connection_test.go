@@ -61,7 +61,7 @@ func TestServerAcceptsTCPWorkConnection(t *testing.T) {
 		"test-server",
 	)
 
-	controlConn, controlDone, hello := loginControlSessionForTCPWorkTest(t, server, tokenID, tokenHash)
+	controlConn, controlDone, hello, _ := loginControlSessionForTCPWorkTest(t, server, tokenID, tokenHash)
 	defer func() {
 		_ = controlConn.Close()
 	}()
@@ -220,7 +220,7 @@ func TestServerShutdownSessionClosesBusyTCPWorkConnection(t *testing.T) {
 		"test-server",
 	)
 
-	controlConn, controlDone, hello := loginControlSessionForTCPWorkTest(t, server, tokenID, tokenHash)
+	controlConn, controlDone, hello, _ := loginControlSessionForTCPWorkTest(t, server, tokenID, tokenHash)
 	defer func() {
 		_ = controlConn.Close()
 	}()
@@ -257,7 +257,7 @@ func TestServerShutdownSessionClosesBusyTCPWorkConnection(t *testing.T) {
 	}
 }
 
-func loginControlSessionForTCPWorkTest(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.ServerHello) {
+func loginControlSessionForTCPWorkTest(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.ServerHello, protocol.Frame) {
 	t.Helper()
 
 	clientRaw, serverRaw := net.Pipe()
@@ -335,7 +335,7 @@ func loginControlSessionForTCPWorkTest(t *testing.T, server *Server, tokenID [16
 		t.Fatalf("expected config.push, got %s", configFrame.Type.String())
 	}
 
-	return clientConn, done, hello
+	return clientConn, done, hello, configFrame
 }
 
 func openTCPWorkConnForTest(t *testing.T, server *Server, hello protocol.ServerHello) (*connWithRemoteAddr, chan struct{}) {

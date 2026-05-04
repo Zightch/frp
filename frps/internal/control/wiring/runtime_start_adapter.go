@@ -111,7 +111,7 @@ func (s *Server) resolveGroupEffectiveIP(group GroupRuntime) (string, error) {
 }
 
 func (s *Server) serveTunnelListener(serve tunnelRuntimeServeContext, listener net.Listener) {
-	s.tcpHandler().ServeTunnelListener(tcpServeContext(serve), listener)
+	s.serveTunnelListenerOverTCPWork(serve, listener)
 }
 
 func (s *Server) serveUDPTunnelListener(serve tunnelRuntimeServeContext, listener UDPListener) {
