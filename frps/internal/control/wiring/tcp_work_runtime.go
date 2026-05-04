@@ -13,6 +13,8 @@ import (
 	"github.com/zightch/frp/frps/pkg/ratepolicy"
 )
 
+const maxTCPWorkAcquireWait = 200 * time.Millisecond
+
 func (s *Server) serveTunnelListenerOverTCPWork(serve tunnelRuntimeServeContext, listener net.Listener) {
 	for {
 		publicConn, err := listener.Accept()
@@ -45,7 +47,7 @@ func (s *Server) handlePublicTCPWorkConnection(serve tunnelRuntimeServeContext, 
 		return
 	}
 
-	workConn, ok := serve.session.AcquireTCPWorkConn()
+	workConn, ok := serve.session.AcquireTCPWorkConnWait(s.tcpWorkAcquireWaitTimeout())
 	if !ok || workConn == nil {
 		serve.session.ClosePublicStream(openOp.streamID)
 		return
@@ -131,6 +133,10 @@ func streamRateLimitForTCPWork(session *sessionState, streamID uint32) (context.
 }
 
 func copyTCPRawConn(dst net.Conn, src net.Conn, limitCtx context.Context, limiter ratepolicy.Limiter, stream *publicStream) error {
+	if limiter == nil {
+		return copyTCPRawConnFast(dst, src, stream)
+	}
+
 	if limitCtx == nil {
 		limitCtx = context.Background()
 	}
@@ -162,6 +168,29 @@ func copyTCPRawConn(dst net.Conn, src net.Conn, limitCtx context.Context, limite
 	}
 }
 
+func copyTCPRawConnFast(dst net.Conn, src net.Conn, stream *publicStream) error {
+	written, err := copyTCPFast(dst, src)
+	if written > 0 && stream != nil {
+		stream.Touch(time.Now().UTC())
+	}
+	if err != nil {
+		return err
+	}
+
+	closeErr := closeTCPWrite(dst)
+	if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+		return closeErr
+	}
+	return nil
+}
+
+func copyTCPFast(dst net.Conn, src net.Conn) (int64, error) {
+	if readerFrom, ok := dst.(io.ReaderFrom); ok {
+		return readerFrom.ReadFrom(src)
+	}
+	return io.Copy(dst, src)
+}
+
 func writeConnFullTouch(conn net.Conn, payload []byte, stream *publicStream) error {
 	for len(payload) > 0 {
 		n, err := conn.Write(payload)
@@ -181,4 +210,12 @@ func closeTCPWrite(conn net.Conn) error {
 		return closeWriter.CloseWrite()
 	}
 	return conn.Close()
+}
+
+func (s *Server) tcpWorkAcquireWaitTimeout() time.Duration {
+	timeout := s.options.WriteTimeout
+	if timeout <= 0 || timeout > maxTCPWorkAcquireWait {
+		return maxTCPWorkAcquireWait
+	}
+	return timeout
 }

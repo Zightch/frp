@@ -81,27 +81,21 @@ func (c *Client) relayWorkConnToLocal(workConn net.Conn, state *sessionState, st
 }
 
 func copyTCPRaw(dst net.Conn, src net.Conn) error {
-	buffer := make([]byte, protocol.MaxDataBodyLen)
-	for {
-		n, err := src.Read(buffer)
-		if n > 0 {
-			if writeErr := writeConnFull(dst, buffer[:n]); writeErr != nil {
-				return writeErr
-			}
-		}
-
-		if err == nil {
-			continue
-		}
-		if errors.Is(err, io.EOF) {
-			closeErr := closeTCPWrite(dst)
-			if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
-				return closeErr
-			}
-			return nil
-		}
+	if _, err := copyTCPFast(dst, src); err != nil {
 		return err
 	}
+	closeErr := closeTCPWrite(dst)
+	if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+		return closeErr
+	}
+	return nil
+}
+
+func copyTCPFast(dst net.Conn, src net.Conn) (int64, error) {
+	if readerFrom, ok := dst.(io.ReaderFrom); ok {
+		return readerFrom.ReadFrom(src)
+	}
+	return io.Copy(dst, src)
 }
 
 func closeTCPWrite(conn net.Conn) error {

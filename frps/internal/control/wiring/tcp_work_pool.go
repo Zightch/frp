@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/zightch/frp/frps/pkg/transport"
 )
@@ -64,12 +65,14 @@ type tcpWorkConnPool struct {
 	idle      map[string]*tcpWorkConnHandle
 	busy      map[string]*tcpWorkConnHandle
 	closed    bool
+	waitCh    chan struct{}
 }
 
 func newTCPWorkConnPool() *tcpWorkConnPool {
 	return &tcpWorkConnPool{
-		idle: make(map[string]*tcpWorkConnHandle),
-		busy: make(map[string]*tcpWorkConnHandle),
+		idle:   make(map[string]*tcpWorkConnHandle),
+		busy:   make(map[string]*tcpWorkConnHandle),
+		waitCh: make(chan struct{}),
 	}
 }
 
@@ -94,6 +97,7 @@ func (p *tcpWorkConnPool) Register(conn net.Conn) (*tcpWorkConnHandle, error) {
 
 	p.idle[handle.id] = handle
 	p.idleOrder = append(p.idleOrder, handle.id)
+	p.notifyWaitersLocked()
 	return handle, nil
 }
 
@@ -104,20 +108,36 @@ func (p *tcpWorkConnPool) Acquire() (net.Conn, bool) {
 	if p.closed {
 		return nil, false
 	}
+	return p.acquireLocked()
+}
 
-	for len(p.idleOrder) > 0 {
-		id := p.idleOrder[0]
-		p.idleOrder = p.idleOrder[1:]
-
-		handle, exists := p.idle[id]
-		if !exists {
-			continue
-		}
-		delete(p.idle, id)
-		p.busy[id] = handle
-		return handle.conn, true
+func (p *tcpWorkConnPool) AcquireWait(timeout time.Duration) (net.Conn, bool) {
+	if timeout <= 0 {
+		return p.Acquire()
 	}
-	return nil, false
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return nil, false
+		}
+		if conn, ok := p.acquireLocked(); ok {
+			p.mu.Unlock()
+			return conn, true
+		}
+		waitCh := p.waitCh
+		p.mu.Unlock()
+
+		select {
+		case <-waitCh:
+		case <-timer.C:
+			return nil, false
+		}
+	}
 }
 
 func (p *tcpWorkConnPool) Release(conn net.Conn) bool {
@@ -141,6 +161,7 @@ func (p *tcpWorkConnPool) Release(conn net.Conn) bool {
 	}
 	p.idle[id] = handle
 	p.idleOrder = append(p.idleOrder, id)
+	p.notifyWaitersLocked()
 	p.mu.Unlock()
 	return true
 }
@@ -190,6 +211,7 @@ func (p *tcpWorkConnPool) CloseAll() {
 	p.idle = make(map[string]*tcpWorkConnHandle)
 	p.busy = make(map[string]*tcpWorkConnHandle)
 	p.idleOrder = nil
+	p.notifyWaitersLocked()
 	p.mu.Unlock()
 
 	for _, handle := range handles {
@@ -220,4 +242,28 @@ func (p *tcpWorkConnPool) Counts() (idle int, busy int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.idle), len(p.busy)
+}
+
+func (p *tcpWorkConnPool) acquireLocked() (net.Conn, bool) {
+	for len(p.idleOrder) > 0 {
+		id := p.idleOrder[0]
+		p.idleOrder = p.idleOrder[1:]
+
+		handle, exists := p.idle[id]
+		if !exists {
+			continue
+		}
+		delete(p.idle, id)
+		p.busy[id] = handle
+		return handle.conn, true
+	}
+	return nil, false
+}
+
+func (p *tcpWorkConnPool) notifyWaitersLocked() {
+	if p.waitCh == nil {
+		p.waitCh = make(chan struct{})
+	}
+	close(p.waitCh)
+	p.waitCh = make(chan struct{})
 }

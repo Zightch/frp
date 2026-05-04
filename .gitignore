@@ -25,5 +25,6 @@ docs/tmp/*
 
 frps/data/
 frps/configs/
+frps/frps
 
 CLAUDE.md

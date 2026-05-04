@@ -133,14 +133,8 @@ func (s *Server) negotiateTCPWork(conn net.Conn, initialFrame protocol.Frame) (*
 		)
 	}
 
-	handle, err := session.RegisterTCPWorkConn(conn)
-	if err != nil {
-		return nil, nil, s.replyTCPWorkRegisterError(conn, session, registerFrame, err)
-	}
-
 	readyBody, err := protocol.MarshalTCPWorkReady(protocol.TCPWorkReady{})
 	if err != nil {
-		session.RetireTCPWorkConn(conn)
 		return nil, nil, err
 	}
 	if err := s.writeFrameWithSession(conn, session, protocol.Frame{
@@ -148,7 +142,11 @@ func (s *Server) negotiateTCPWork(conn net.Conn, initialFrame protocol.Frame) (*
 		RequestID: registerFrame.RequestID,
 		Body:      readyBody,
 	}); err != nil {
-		session.RetireTCPWorkConn(conn)
+		return nil, nil, err
+	}
+
+	handle, err := session.RegisterTCPWorkConn(conn)
+	if err != nil {
 		return nil, nil, err
 	}
 	return handle, session, nil

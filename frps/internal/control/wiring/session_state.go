@@ -79,6 +79,13 @@ func (s *sessionState) AcquireTCPWorkConn() (net.Conn, bool) {
 	return s.tcpWork.Acquire()
 }
 
+func (s *sessionState) AcquireTCPWorkConnWait(timeout time.Duration) (net.Conn, bool) {
+	if s == nil || s.tcpWork == nil {
+		return nil, false
+	}
+	return s.tcpWork.AcquireWait(timeout)
+}
+
 func (s *sessionState) ReleaseTCPWorkConn(conn net.Conn) bool {
 	if s == nil || s.tcpWork == nil {
 		return false

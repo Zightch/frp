@@ -14,7 +14,7 @@ import (
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
-const defaultTCPWorkPoolSize = 8
+const defaultTCPWorkPoolSize = 1024
 
 func (s *Server) authenticate(conn net.Conn, expectedClientID [16]byte, logger *slog.Logger) (*sessionState, *controlsession.Agent, error) {
 	result, err := controlauth.Authenticate(controlauth.AuthenticateOptions{

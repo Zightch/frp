@@ -38,6 +38,34 @@ func TestCopyTCPRawConnSplitsPayloadByLimiterBurst(t *testing.T) {
 	if dst.closeWriteCalls != 1 {
 		t.Fatalf("expected one close-write call, got %d", dst.closeWriteCalls)
 	}
+	if dst.readFromCalls != 0 {
+		t.Fatalf("expected limiter path to avoid fast-path ReaderFrom, got %d calls", dst.readFromCalls)
+	}
+	if stream.LastActiveUnixMs.Load() == 0 {
+		t.Fatal("expected stream last-active timestamp to be updated")
+	}
+}
+
+func TestCopyTCPRawConnUsesFastPathWithoutLimiter(t *testing.T) {
+	src := &fakeRelayConn{
+		reads:   [][]byte{[]byte("payload")},
+		readErr: io.EOF,
+	}
+	dst := &fakeRelayConn{supportCloseWrite: true}
+	stream := &publicStream{}
+
+	if err := copyTCPRawConn(dst, src, context.Background(), nil, stream); err != nil {
+		t.Fatalf("copy tcp raw conn: %v", err)
+	}
+	if got := dst.writes.String(); got != "payload" {
+		t.Fatalf("unexpected dst payload: %q", got)
+	}
+	if dst.readFromCalls != 1 {
+		t.Fatalf("expected one fast-path ReaderFrom call, got %d", dst.readFromCalls)
+	}
+	if dst.closeWriteCalls != 1 {
+		t.Fatalf("expected one close-write call, got %d", dst.closeWriteCalls)
+	}
 	if stream.LastActiveUnixMs.Load() == 0 {
 		t.Fatal("expected stream last-active timestamp to be updated")
 	}
@@ -123,6 +151,7 @@ type fakeRelayConn struct {
 	writes            bytes.Buffer
 	closeCalls        int
 	closeWriteCalls   int
+	readFromCalls     int
 	supportCloseWrite bool
 }
 
@@ -169,6 +198,11 @@ func (c *fakeRelayConn) CloseWrite() error {
 	}
 	c.closeWriteCalls++
 	return nil
+}
+
+func (c *fakeRelayConn) ReadFrom(r io.Reader) (int64, error) {
+	c.readFromCalls++
+	return io.Copy(&c.writes, r)
 }
 
 func (c *fakeRelayConn) LocalAddr() net.Addr {

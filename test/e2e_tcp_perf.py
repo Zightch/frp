@@ -58,6 +58,7 @@ class RuntimePaths:
     frps_config_path: Path
     frps_log_path: Path
     frpc_log_path: Path
+    target_log_path: Path
     report_json_path: Path
     report_md_path: Path
 
@@ -227,8 +228,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frps-bin", help="Existing frps binary path. If omitted, build into the output directory.")
     parser.add_argument("--frpc-bin", help="Existing frpc binary path. If omitted, build into the output directory.")
     parser.add_argument(
+        "--perf-target-bin",
+        help="Existing Go perf target binary path. Only used when --target-mode=go.",
+    )
+    parser.add_argument(
         "--output-dir",
         help="Directory used for sqlite, logs, and reports. Default: test/tmp/perf-<timestamp>.",
+    )
+    parser.add_argument(
+        "--target-mode",
+        default="python",
+        choices=("python", "go"),
+        help="Perf target implementation. python keeps the in-process server; go uses a standalone Go target.",
     )
     parser.add_argument(
         "--timeout",
@@ -304,6 +315,7 @@ def main() -> int:
         frps_config_path=(output_dir / "data" / "config.json"),
         frps_log_path=output_dir / "frps.log",
         frpc_log_path=output_dir / "frpc.log",
+        target_log_path=output_dir / "target.log",
         report_json_path=output_dir / "report.json",
         report_md_path=output_dir / "report.md",
     )
@@ -362,7 +374,17 @@ def main() -> int:
 
         stage = "start perf target server"
         print(f"[stage] {stage}")
-        target_handle = run_perf_target_server("127.0.0.1", ports.target)
+        if args.target_mode == "python":
+            target_handle = run_perf_target_server("127.0.0.1", ports.target)
+        else:
+            target_process = start_process(
+                name="perf-target",
+                command=[str(binaries["perf-target"]), "--listen", f"127.0.0.1:{ports.target}"],
+                cwd=repo_root / "frps",
+                log_path=paths.target_log_path,
+            )
+            processes.append(target_process)
+            wait_tcp_ready("127.0.0.1", ports.target, args.timeout, processes)
 
         stage = "start frpc"
         print(f"[stage] {stage}")
@@ -493,6 +515,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--transfer-concurrency must be positive")
     if args.transfer_bytes_per_connection <= 0:
         raise ValueError("--transfer-bytes-per-connection must be positive")
+    if args.target_mode != "go" and args.perf_target_bin:
+        raise ValueError("--perf-target-bin only applies when --target-mode=go")
 
 
 def resolve_output_dir(args: argparse.Namespace, repo_root: Path) -> Path:
@@ -526,6 +550,14 @@ def build_or_resolve_binaries(args: argparse.Namespace, repo_root: Path, output_
         output_path = output_dir / f"frpc{suffix}"
         build_go_binary(repo_root / "frpc", "./cmd/frpc", output_path)
         binaries["frpc"] = output_path
+
+    if args.target_mode == "go":
+        if args.perf_target_bin:
+            binaries["perf-target"] = Path(args.perf_target_bin).resolve()
+        else:
+            output_path = output_dir / f"perf-target{suffix}"
+            build_go_binary(repo_root / "frps", "./cmd/perftarget", output_path)
+            binaries["perf-target"] = output_path
 
     for name, path in binaries.items():
         if not path.exists():
@@ -764,6 +796,18 @@ def wait_log_contains(
             return
         time.sleep(0.25)
     raise TimeoutError(f"log readiness check timed out: {needle!r} in {log_path}")
+
+
+def wait_tcp_ready(host: str, port: int, timeout_seconds: float, processes: list[ManagedProcess]) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        ensure_processes_alive(processes)
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return
+        except OSError:
+            time.sleep(0.1)
+    raise TimeoutError(f"tcp readiness check timed out: {host}:{port}")
 
 
 def ensure_processes_alive(processes: list[ManagedProcess]) -> None:
@@ -1091,6 +1135,7 @@ def build_report(
         "ports": asdict(ports),
         "parameters": {
             "timeout_seconds": args.timeout,
+            "target_mode": args.target_mode,
             "stability_duration_seconds": args.stability_duration,
             "stability_concurrency": args.stability_concurrency,
             "stability_payload_bytes": args.stability_payload_bytes,
@@ -1196,6 +1241,7 @@ def render_markdown_report(report: dict[str, object]) -> str:
         "",
         f"- Generated at: `{report['generated_at']}`",
         f"- Output dir: `{report['output_dir']}`",
+        f"- Target mode: `{report['parameters']['target_mode']}`",
         f"- Ports: `{json.dumps(report['ports'], ensure_ascii=True)}`",
         "",
         "## Workloads",

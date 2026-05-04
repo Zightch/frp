@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -195,6 +196,73 @@ func TestClientRunSessionRebuildsTCPWorkPoolAcrossSessions(t *testing.T) {
 	}
 
 	waitForWaitGroup(t, &workWG)
+}
+
+func TestClientRunSessionPrefillsTCPWorkPoolConcurrently(t *testing.T) {
+	credentials := testCredentials(t)
+	var workSecret [32]byte
+	copy(workSecret[:], []byte("0123456789abcdef0123456789abcdef"))
+
+	controlClientConn, controlServerConn := net.Pipe()
+	defer controlClientConn.Close()
+
+	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
+
+	readyCh := make(chan int, 4)
+	var workWG sync.WaitGroup
+	baseDialer := workConnDialer(t, &workWG, readyCh, nil, []workConnExpectation{
+		{SessionID: 11, WorkSecret: workSecret},
+		{SessionID: 11, WorkSecret: workSecret},
+	})
+
+	var started atomic.Int32
+	startedCh := make(chan int, 4)
+	releaseFirst := make(chan struct{})
+	client.dialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
+		current := int(started.Add(1))
+		startedCh <- current
+		if current == 1 {
+			select {
+			case <-releaseFirst:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return baseDialer(ctx, network, address)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	controlDone := make(chan struct{})
+	go func() {
+		defer close(controlDone)
+		defer controlServerConn.Close()
+		serveControlSession(t, controlServerConn, credentials, 11, workSecret, 2)
+		<-ctx.Done()
+	}()
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- client.runSession(ctx, controlClientConn, credentials)
+	}()
+
+	waitForDialStarts(t, startedCh, 1, 2)
+	close(releaseFirst)
+	waitForWorkReadySet(t, readyCh, 1, 2)
+	waitForTCPWorkPoolCount(t, client, 2)
+
+	cancel()
+
+	if err := <-runDone; err != nil {
+		t.Fatalf("run session: %v", err)
+	}
+	waitForWaitGroup(t, &workWG)
+	select {
+	case <-controlDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control server did not exit")
+	}
 }
 
 func serveControlSession(t *testing.T, conn net.Conn, credentials appconfig.Credentials, sessionID uint64, workSecret [32]byte, workPoolTarget uint16) {
@@ -432,6 +500,28 @@ func waitForTCPWorkPoolCount(t *testing.T, client *Client, want int) {
 			t.Fatalf("timed out waiting for tcp work pool count %d, got %d", want, got)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForDialStarts(t *testing.T, startedCh <-chan int, wants ...int) {
+	t.Helper()
+
+	remaining := make(map[int]struct{}, len(wants))
+	for _, want := range wants {
+		remaining[want] = struct{}{}
+	}
+
+	deadline := time.After(2 * time.Second)
+	for len(remaining) > 0 {
+		select {
+		case got := <-startedCh:
+			if _, ok := remaining[got]; !ok {
+				t.Fatalf("unexpected dial start index: got %d want one of %#v", got, wants)
+			}
+			delete(remaining, got)
+		case <-deadline:
+			t.Fatalf("timed out waiting for dial starts %#v", wants)
+		}
 	}
 }
 
