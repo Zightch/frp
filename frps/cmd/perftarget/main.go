@@ -106,6 +106,16 @@ func handleConn(conn net.Conn, readTimeout, writeTimeout time.Duration) {
 			}
 			remaining -= int64(n)
 		}
+	case "SINK":
+		written, err := io.CopyBuffer(io.Discard, io.LimitReader(reader, byteCount), make([]byte, chunkSize))
+		if err != nil {
+			log.Printf("sink failed remote=%s error=%v", conn.RemoteAddr().String(), err)
+			return
+		}
+		if written != byteCount {
+			log.Printf("sink short read remote=%s got=%d want=%d", conn.RemoteAddr().String(), written, byteCount)
+			return
+		}
 	default:
 		log.Printf("unsupported command remote=%s command=%s", conn.RemoteAddr().String(), command)
 	}

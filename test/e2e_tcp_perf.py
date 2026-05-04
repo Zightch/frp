@@ -33,6 +33,7 @@ DEFAULT_TRANSFER_BYTES_PER_CONNECTION = 8 * 1024 * 1024
 PROCESS_SAMPLE_INTERVAL_SECONDS = 1.0
 PROCESS_SAMPLE_HISTORY_LIMIT = 512
 LINE_LIMIT_BYTES = 256
+TRANSFER_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,10 @@ class PerfTargetRequestHandler(BaseRequestHandler):
                 payload = chunk if remaining >= len(chunk) else chunk[:remaining]
                 self.request.sendall(payload)
                 remaining -= len(payload)
+            return
+
+        if command == "SINK":
+            read_exact(self.request, byte_count)
             return
 
 
@@ -269,14 +274,14 @@ def parse_args() -> argparse.Namespace:
         "--transfer-concurrency",
         type=int,
         default=DEFAULT_TRANSFER_CONCURRENCY,
-        help=f"Concurrent clients for upload/download directional transfer checks. Default: {DEFAULT_TRANSFER_CONCURRENCY}.",
+        help=f"Concurrent clients for symmetric transfer checks. Default: {DEFAULT_TRANSFER_CONCURRENCY}.",
     )
     parser.add_argument(
         "--transfer-bytes-per-connection",
         type=int,
         default=DEFAULT_TRANSFER_BYTES_PER_CONNECTION,
         help=(
-            "Payload bytes transferred by each upload/download directional transfer connection. "
+            "Payload bytes transferred by each symmetric transfer connection. "
             f"Default: {DEFAULT_TRANSFER_BYTES_PER_CONNECTION}."
         ),
     )
@@ -414,10 +419,10 @@ def main() -> int:
         sampler = ProcessSampler({process.name: process for process in processes}, PROCESS_SAMPLE_INTERVAL_SECONDS)
         sampler.start()
 
-        stage = "run upload throughput benchmark"
+        stage = "run symmetric upload throughput benchmark"
         print(f"[stage] {stage}")
         upload = run_transfer_workload(
-            workload_name="upload",
+            workload_name="upload_symmetric",
             host="127.0.0.1",
             port=ports.remote,
             concurrency=args.transfer_concurrency,
@@ -426,10 +431,10 @@ def main() -> int:
             processes=processes,
         )
 
-        stage = "run download throughput benchmark"
+        stage = "run symmetric download throughput benchmark"
         print(f"[stage] {stage}")
         download = run_transfer_workload(
-            workload_name="download",
+            workload_name="download_symmetric",
             host="127.0.0.1",
             port=ports.remote,
             concurrency=args.transfer_concurrency,
@@ -479,9 +484,9 @@ def main() -> int:
         print(f"[info] report_md={paths.report_md_path}")
         print(f"[info] stability_attempts={stability['attempts']} success={stability['success']} failures={stability['failures']}")
         print(
-            "[info] upload_mbps="
+            "[info] upload_symmetric_mbps="
             f"{upload['throughput_mbps']:.2f} "
-            f"download_mbps={download['throughput_mbps']:.2f}"
+            f"download_symmetric_mbps={download['throughput_mbps']:.2f}"
         )
         return 0
     except Exception as exc:
@@ -928,6 +933,10 @@ def run_transfer_workload(
                 run_upload_request(host, port, bytes_per_connection, timeout_seconds)
             elif workload_name == "download":
                 run_download_request(host, port, bytes_per_connection, timeout_seconds)
+            elif workload_name == "upload_symmetric":
+                run_sink_request(host, port, bytes_per_connection, timeout_seconds)
+            elif workload_name == "download_symmetric":
+                run_download_request(host, port, bytes_per_connection, timeout_seconds)
             else:
                 raise ValueError(f"unsupported workload: {workload_name}")
             local_success = 1
@@ -982,7 +991,7 @@ def run_echo_request(host: str, port: int, payload: bytes, timeout_seconds: floa
 
 
 def run_upload_request(host: str, port: int, byte_count: int, timeout_seconds: float) -> None:
-    payload = b"u" * min(65536, max(byte_count, 1))
+    payload = b"u" * min(TRANSFER_CHUNK_BYTES, max(byte_count, 1))
     with socket.create_connection((host, port), timeout=timeout_seconds) as conn:
         conn.settimeout(timeout_seconds)
         conn.sendall(f"UPLOAD {byte_count}\n".encode("ascii"))
@@ -1001,9 +1010,19 @@ def run_download_request(host: str, port: int, byte_count: int, timeout_seconds:
     with socket.create_connection((host, port), timeout=timeout_seconds) as conn:
         conn.settimeout(timeout_seconds)
         conn.sendall(f"DOWNLOAD {byte_count}\n".encode("ascii"))
-        received = read_exact(conn, byte_count)
-        if len(received) != byte_count:
-            raise RuntimeError(f"download size mismatch: got {len(received)} want {byte_count}")
+        read_exact_into_sink(conn, byte_count)
+
+
+def run_sink_request(host: str, port: int, byte_count: int, timeout_seconds: float) -> None:
+    payload = b"s" * min(TRANSFER_CHUNK_BYTES, max(byte_count, 1))
+    with socket.create_connection((host, port), timeout=timeout_seconds) as conn:
+        conn.settimeout(timeout_seconds)
+        conn.sendall(f"SINK {byte_count}\n".encode("ascii"))
+        remaining = byte_count
+        while remaining > 0:
+            chunk = payload if remaining >= len(payload) else payload[:remaining]
+            conn.sendall(chunk)
+            remaining -= len(chunk)
 
 
 def read_line(conn: socket.socket, limit: int) -> bytes:
@@ -1026,6 +1045,16 @@ def read_exact(conn: socket.socket, byte_count: int) -> bytes:
             raise RuntimeError(f"connection closed early after {len(buffer)} of {byte_count} bytes")
         buffer.extend(chunk)
     return bytes(buffer)
+
+
+def read_exact_into_sink(conn: socket.socket, byte_count: int) -> None:
+    remaining = byte_count
+    while remaining > 0:
+        chunk = conn.recv(min(TRANSFER_CHUNK_BYTES, remaining))
+        if not chunk:
+            received = byte_count - remaining
+            raise RuntimeError(f"connection closed early after {received} of {byte_count} bytes")
+        remaining -= len(chunk)
 
 
 def build_payload(byte_count: int) -> bytes:
@@ -1182,7 +1211,7 @@ def analyze_report(
                 "Failures only appeared as local WinError 10048 during short-connection stability churn; treat this as test-host pressure first."
             )
             notes.append(
-                "Upload/download workloads still completed, so this run does not yet provide direct evidence of a frps/frpc proxy-chain failure."
+                "Symmetric transfer workloads still completed, so this run does not yet provide direct evidence of a frps/frpc proxy-chain failure."
             )
         else:
             verdict = "attention"
@@ -1208,9 +1237,9 @@ def analyze_report(
     if upload_mbps > 0 and download_mbps > 0:
         ratio = max(upload_mbps, download_mbps) / min(upload_mbps, download_mbps)
         if ratio > 1.5:
-            notes.append("Upload and download transfer rates are imbalanced; inspect directional buffering and copy paths.")
+            notes.append("Symmetric upload and download transfer rates are imbalanced; inspect directional buffering and copy paths.")
         else:
-            notes.append("Upload and download transfer rates stayed in a similar range.")
+            notes.append("Symmetric upload and download transfer rates stayed in a similar range.")
 
     if has_windows_ephemeral_port_error(stability) or has_windows_ephemeral_port_error(upload) or has_windows_ephemeral_port_error(download):
         notes.append(
@@ -1251,11 +1280,11 @@ def render_markdown_report(report: dict[str, object]) -> str:
             f"duration `{stability['duration_seconds']:.2f}` s, success `{stability['success']}/{stability['attempts']}`"
         ),
         (
-            f"- Upload: concurrency `{upload['concurrency']}`, payload `{upload['bytes_per_connection']}` bytes per connection, "
+            f"- Symmetric upload: concurrency `{upload['concurrency']}`, payload `{upload['bytes_per_connection']}` bytes per connection, "
             f"throughput `{upload['throughput_mbps']:.2f}` Mbps, success `{upload['success']}/{upload['connections']}`"
         ),
         (
-            f"- Download: concurrency `{download['concurrency']}`, payload `{download['bytes_per_connection']}` bytes per connection, "
+            f"- Symmetric download: concurrency `{download['concurrency']}`, payload `{download['bytes_per_connection']}` bytes per connection, "
             f"throughput `{download['throughput_mbps']:.2f}` Mbps, success `{download['success']}/{download['connections']}`"
         ),
         "",
@@ -1266,20 +1295,20 @@ def render_markdown_report(report: dict[str, object]) -> str:
         f"- Latency ms: `{json.dumps(stability['latency_ms'], ensure_ascii=True)}`",
         f"- Errors: `{json.dumps(stability['errors'], ensure_ascii=True)}`",
         "",
-        "## Directional Transfer",
+        "## Symmetric Transfer",
         "",
         (
-            f"- Upload bytes/s: `{upload['throughput_bytes_per_second']:.2f}` "
+            f"- Symmetric upload bytes/s: `{upload['throughput_bytes_per_second']:.2f}` "
             f"({upload['throughput_mbps']:.2f} Mbps)"
         ),
-        f"- Upload per-connection seconds: `{json.dumps(upload['connection_seconds'], ensure_ascii=True)}`",
-        f"- Upload errors: `{json.dumps(upload['errors'], ensure_ascii=True)}`",
+        f"- Symmetric upload per-connection seconds: `{json.dumps(upload['connection_seconds'], ensure_ascii=True)}`",
+        f"- Symmetric upload errors: `{json.dumps(upload['errors'], ensure_ascii=True)}`",
         (
-            f"- Download bytes/s: `{download['throughput_bytes_per_second']:.2f}` "
+            f"- Symmetric download bytes/s: `{download['throughput_bytes_per_second']:.2f}` "
             f"({download['throughput_mbps']:.2f} Mbps)"
         ),
-        f"- Download per-connection seconds: `{json.dumps(download['connection_seconds'], ensure_ascii=True)}`",
-        f"- Download errors: `{json.dumps(download['errors'], ensure_ascii=True)}`",
+        f"- Symmetric download per-connection seconds: `{json.dumps(download['connection_seconds'], ensure_ascii=True)}`",
+        f"- Symmetric download errors: `{json.dumps(download['errors'], ensure_ascii=True)}`",
         "",
         "## Process Summary",
         "",
