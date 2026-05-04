@@ -1,6 +1,8 @@
 package wiring
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -8,13 +10,14 @@ import (
 	"time"
 
 	"github.com/zightch/frp/frps/pkg/protocol"
+	"github.com/zightch/frp/frps/pkg/ratepolicy"
 )
 
 func (s *Server) serveTunnelListenerOverTCPWork(serve tunnelRuntimeServeContext, listener net.Listener) {
 	for {
 		publicConn, err := listener.Accept()
 		if err != nil {
-			if err == net.ErrClosed {
+			if isTCPListenerClosed(err) {
 				return
 			}
 			if serve.logger != nil {
@@ -25,6 +28,10 @@ func (s *Server) serveTunnelListenerOverTCPWork(serve tunnelRuntimeServeContext,
 
 		go s.handlePublicTCPWorkConnection(serve, publicConn)
 	}
+}
+
+func isTCPListenerClosed(err error) bool {
+	return errors.Is(err, net.ErrClosed)
 }
 
 func (s *Server) handlePublicTCPWorkConnection(serve tunnelRuntimeServeContext, publicConn net.Conn) {
@@ -85,6 +92,8 @@ func (s *Server) openTCPWorkStream(workConn net.Conn, session *sessionState, ope
 }
 
 func (s *Server) relayPublicTCPOverWorkConn(session *sessionState, streamID uint32, stream *publicStream, workConn net.Conn) {
+	limitCtx, limiters := streamRateLimitForTCPWork(session, streamID)
+
 	var cleanup sync.Once
 	cleanupAll := func() {
 		cleanup.Do(func() {
@@ -95,10 +104,10 @@ func (s *Server) relayPublicTCPOverWorkConn(session *sessionState, streamID uint
 
 	errCh := make(chan error, 2)
 	go func() {
-		errCh <- copyTCPRawConn(workConn, stream.Conn, stream)
+		errCh <- copyTCPRawConn(workConn, stream.Conn, limitCtx, limiters.Downlink, stream)
 	}()
 	go func() {
-		errCh <- copyTCPRawConn(stream.Conn, workConn, stream)
+		errCh <- copyTCPRawConn(stream.Conn, workConn, limitCtx, limiters.Uplink, stream)
 	}()
 
 	firstErr := <-errCh
@@ -109,25 +118,67 @@ func (s *Server) relayPublicTCPOverWorkConn(session *sessionState, streamID uint
 	cleanupAll()
 }
 
-func copyTCPRawConn(dst net.Conn, src net.Conn, stream *publicStream) error {
-	_, err := io.Copy(touchConnWriter{conn: dst, stream: stream}, src)
-	if closeWriter, ok := dst.(interface{ CloseWrite() error }); ok {
-		_ = closeWriter.CloseWrite()
-	} else {
-		_ = dst.Close()
+func streamRateLimitForTCPWork(session *sessionState, streamID uint32) (context.Context, ratepolicy.TunnelLimiters) {
+	if session == nil {
+		return context.Background(), ratepolicy.TunnelLimiters{}
 	}
-	return err
+
+	limitCtx, limiters, ok := session.StreamRateLimit(streamID)
+	if !ok || limitCtx == nil {
+		return context.Background(), ratepolicy.TunnelLimiters{}
+	}
+	return limitCtx, limiters
 }
 
-type touchConnWriter struct {
-	conn   net.Conn
-	stream *publicStream
+func copyTCPRawConn(dst net.Conn, src net.Conn, limitCtx context.Context, limiter ratepolicy.Limiter, stream *publicStream) error {
+	if limitCtx == nil {
+		limitCtx = context.Background()
+	}
+
+	buffer := make([]byte, ratepolicy.ChunkSize(limiter, protocol.MaxDataBodyLen))
+	for {
+		n, err := src.Read(buffer)
+		if n > 0 {
+			payload := buffer[:n]
+			writeErr := ratepolicy.WritePayload(limitCtx, limiter, protocol.MaxDataBodyLen, payload, func(chunk []byte) error {
+				return writeConnFullTouch(dst, chunk, stream)
+			})
+			if writeErr != nil {
+				return writeErr
+			}
+		}
+
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			closeErr := closeTCPWrite(dst)
+			if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+				return closeErr
+			}
+			return nil
+		}
+		return err
+	}
 }
 
-func (w touchConnWriter) Write(payload []byte) (int, error) {
-	n, err := w.conn.Write(payload)
-	if n > 0 && w.stream != nil {
-		w.stream.Touch(time.Now().UTC())
+func writeConnFullTouch(conn net.Conn, payload []byte, stream *publicStream) error {
+	for len(payload) > 0 {
+		n, err := conn.Write(payload)
+		if n > 0 && stream != nil {
+			stream.Touch(time.Now().UTC())
+		}
+		if err != nil {
+			return err
+		}
+		payload = payload[n:]
 	}
-	return n, err
+	return nil
+}
+
+func closeTCPWrite(conn net.Conn) error {
+	if closeWriter, ok := conn.(interface{ CloseWrite() error }); ok {
+		return closeWriter.CloseWrite()
+	}
+	return conn.Close()
 }

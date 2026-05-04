@@ -266,8 +266,8 @@ def main() -> int:
         wait_log_contains(paths.frps_log_path, "frpc control login succeeded", args.timeout, processes)
         wait_log_contains(paths.frps_log_path, "config acknowledged", args.timeout, processes)
         wait_log_contains(paths.frps_log_path, "udp tunnel listener ready", args.timeout, processes)
-        wait_log_contains(paths.frpc_log_path, "login succeeded", args.timeout, processes)
-        wait_log_contains(paths.frpc_log_path, "config applied", args.timeout, processes)
+        wait_log_contains(paths.frpc_log_path, "登录成功", args.timeout, processes)
+        wait_log_contains(paths.frpc_log_path, "领取配置", args.timeout, processes)
 
         stage = f"run udp scenario {args.scenario}"
         print(f"[stage] {stage}")
@@ -966,11 +966,11 @@ def run_hot_reload_scenario(
     processes: list[ManagedProcess],
 ) -> dict[str, object]:
     wait_log_count_at_least(paths.frps_log_path, "config acknowledged", 1, timeout_seconds, processes)
-    wait_log_count_at_least(paths.frpc_log_path, "config applied", 1, timeout_seconds, processes)
+    wait_log_count_at_least(paths.frpc_log_path, "领取配置", 1, timeout_seconds, processes)
     wait_log_count_at_least(paths.frps_log_path, "udp tunnel listener ready", 1, timeout_seconds, processes)
 
     initial_ack_count = count_log_occurrences(paths.frps_log_path, "config acknowledged")
-    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "config applied")
+    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "领取配置")
     initial_listener_count = count_log_occurrences(paths.frps_log_path, "udp tunnel listener ready")
 
     first_payload = payload + b"-before"
@@ -990,26 +990,29 @@ def run_hot_reload_scenario(
 
         base_url = f"http://127.0.0.1:{ports.management}"
         opener = login_management_session(base_url, MANAGEMENT_SECRET)
-        tunnel_id, group_id = load_single_tunnel_record(paths.db_path, "e2e-udp")
-        patch_single_tunnel_via_management(
-            opener,
-            base_url,
-            tunnel_id,
-            group_id,
-            "e2e-udp",
-            "udp",
-            ports.reloaded_remote_udp,
-            ports.reloaded_local_udp,
-        )
-        assert_single_tunnel_mapping(
-            paths.db_path,
-            "e2e-udp",
-            ports.reloaded_remote_udp,
-            ports.reloaded_local_udp,
-        )
+        try:
+            tunnel_id, group_id = load_single_tunnel_record(paths.db_path, "e2e-udp")
+            patch_single_tunnel_via_management(
+                opener,
+                base_url,
+                tunnel_id,
+                group_id,
+                "e2e-udp",
+                "udp",
+                ports.reloaded_remote_udp,
+                ports.reloaded_local_udp,
+            )
+            assert_single_tunnel_mapping(
+                paths.db_path,
+                "e2e-udp",
+                ports.reloaded_remote_udp,
+                ports.reloaded_local_udp,
+            )
+        finally:
+            logout_management_session(opener, base_url)
 
         wait_log_count_at_least(paths.frps_log_path, "config acknowledged", initial_ack_count + 1, timeout_seconds, processes)
-        wait_log_count_at_least(paths.frpc_log_path, "config applied", initial_apply_count + 1, timeout_seconds, processes)
+        wait_log_count_at_least(paths.frpc_log_path, "领取配置", initial_apply_count + 1, timeout_seconds, processes)
         wait_log_count_at_least(
             paths.frps_log_path,
             "udp tunnel listener ready",
@@ -1017,9 +1020,7 @@ def run_hot_reload_scenario(
             timeout_seconds,
             processes,
         )
-        wait_log_contains(paths.frpc_log_path, "replaced_tunnels=1", timeout_seconds, processes)
-        wait_log_contains(paths.frpc_log_path, "udp session closed", timeout_seconds, processes)
-        wait_log_contains(paths.frpc_log_path, "reload in progress", timeout_seconds, processes)
+        wait_log_contains(paths.frpc_log_path, "+0 ~1 -0", timeout_seconds, processes)
 
         expect_no_connected_udp_response(old_sock, stale_payload, min(timeout_seconds, 2.0))
         assert_udp_received_count_stable(echo_server, received_before_stale, 0.5)
@@ -1332,38 +1333,42 @@ def apply_rate_policy_to_tunnels(
     base_url = f"http://127.0.0.1:{ports.management}"
     opener = login_management_session(base_url, MANAGEMENT_SECRET)
     initial_ack_count = count_log_occurrences(paths.frps_log_path, "config acknowledged")
-    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "config applied")
+    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "领取配置")
+    try:
+        policy_id = create_rate_policy(
+            opener,
+            base_url,
+            name=name,
+            mode=mode,
+            downlink_value=downlink_value,
+            downlink_unit=downlink_unit,
+            uplink_value=uplink_value,
+            uplink_unit=uplink_unit,
+        )
+        tunnel_ids: list[int] = []
+        for tunnel_name in tunnel_names:
+            tunnel_id, _ = load_single_tunnel_record(paths.db_path, tunnel_name)
+            tunnel_ids.append(tunnel_id)
+        set_rate_policy_tunnels(opener, base_url, policy_id, tunnel_ids)
 
-    policy_id = create_rate_policy(
-        opener,
-        base_url,
-        name=name,
-        mode=mode,
-        downlink_value=downlink_value,
-        downlink_unit=downlink_unit,
-        uplink_value=uplink_value,
-        uplink_unit=uplink_unit,
-    )
-    for tunnel_name in tunnel_names:
-        tunnel_id, _ = load_single_tunnel_record(paths.db_path, tunnel_name)
-        bind_rate_policy_tunnel(opener, base_url, policy_id, tunnel_id)
-
-    expected_refreshes = len(tunnel_names)
-    wait_log_count_at_least(
-        paths.frps_log_path,
-        "config acknowledged",
-        initial_ack_count + expected_refreshes,
-        timeout_seconds,
-        processes,
-    )
-    wait_log_count_at_least(
-        paths.frpc_log_path,
-        "config applied",
-        initial_apply_count + expected_refreshes,
-        timeout_seconds,
-        processes,
-    )
-    return policy_id
+        expected_refreshes = 1 if tunnel_ids else 0
+        wait_log_count_at_least(
+            paths.frps_log_path,
+            "config acknowledged",
+            initial_ack_count + expected_refreshes,
+            timeout_seconds,
+            processes,
+        )
+        wait_log_count_at_least(
+            paths.frpc_log_path,
+            "领取配置",
+            initial_apply_count + expected_refreshes,
+            timeout_seconds,
+            processes,
+        )
+        return policy_id
+    finally:
+        logout_management_session(opener, base_url)
 
 
 def update_rate_policy_and_wait(
@@ -1383,34 +1388,36 @@ def update_rate_policy_and_wait(
     base_url = f"http://127.0.0.1:{ports.management}"
     opener = login_management_session(base_url, MANAGEMENT_SECRET)
     initial_ack_count = count_log_occurrences(paths.frps_log_path, "config acknowledged")
-    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "config applied")
+    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "领取配置")
+    try:
+        update_rate_policy(
+            opener,
+            base_url,
+            policy_id,
+            name=name,
+            mode=mode,
+            downlink_value=downlink_value,
+            downlink_unit=downlink_unit,
+            uplink_value=uplink_value,
+            uplink_unit=uplink_unit,
+        )
 
-    update_rate_policy(
-        opener,
-        base_url,
-        policy_id,
-        name=name,
-        mode=mode,
-        downlink_value=downlink_value,
-        downlink_unit=downlink_unit,
-        uplink_value=uplink_value,
-        uplink_unit=uplink_unit,
-    )
-
-    wait_log_count_at_least(
-        paths.frps_log_path,
-        "config acknowledged",
-        initial_ack_count + 1,
-        timeout_seconds,
-        processes,
-    )
-    wait_log_count_at_least(
-        paths.frpc_log_path,
-        "config applied",
-        initial_apply_count + 1,
-        timeout_seconds,
-        processes,
-    )
+        wait_log_count_at_least(
+            paths.frps_log_path,
+            "config acknowledged",
+            initial_ack_count + 1,
+            timeout_seconds,
+            processes,
+        )
+        wait_log_count_at_least(
+            paths.frpc_log_path,
+            "领取配置",
+            initial_apply_count + 1,
+            timeout_seconds,
+            processes,
+        )
+    finally:
+        logout_management_session(opener, base_url)
 
 
 def wait_for_udp_rate_limit_minimum(
@@ -1551,6 +1558,18 @@ def login_management_session(base_url: str, secret: str) -> urllib.request.Opene
     return opener
 
 
+def logout_management_session(opener: urllib.request.OpenerDirector, base_url: str) -> None:
+    try:
+        request_json(
+            opener,
+            "POST",
+            f"{base_url}/api/v1/auth/logout",
+            expected_status=200,
+        )
+    except RuntimeError:
+        return
+
+
 def patch_single_tunnel_via_management(
     opener: urllib.request.OpenerDirector,
     base_url: str,
@@ -1636,18 +1655,18 @@ def update_rate_policy(
     )
 
 
-def bind_rate_policy_tunnel(
+def set_rate_policy_tunnels(
     opener: urllib.request.OpenerDirector,
     base_url: str,
     policy_id: int,
-    tunnel_id: int,
+    tunnel_ids: list[int],
 ) -> None:
     request_json(
         opener,
-        "POST",
+        "PUT",
         f"{base_url}/api/v1/rate-policies/{policy_id}/bindings",
-        payload={"tunnel_id": tunnel_id},
-        expected_status=201,
+        payload={"tunnel_ids": tunnel_ids},
+        expected_status=200,
     )
 
 

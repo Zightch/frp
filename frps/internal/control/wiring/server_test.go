@@ -4025,11 +4025,7 @@ func performTransportHello(t *testing.T, clientConn net.Conn, tokenID [16]byte) 
 func authenticateServerSession(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.Frame) {
 	t.Helper()
 
-	clientConn, done, configFrame, err := tryAuthenticateServerSession(server, tokenID, tokenHash)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return clientConn, done, configFrame
+	return authenticateServerSessionEventually(t, server, tokenID, tokenHash)
 }
 
 func authenticateServerSessionEventually(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.Frame) {

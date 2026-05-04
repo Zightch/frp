@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -80,11 +81,32 @@ func (c *Client) relayWorkConnToLocal(workConn net.Conn, state *sessionState, st
 }
 
 func copyTCPRaw(dst net.Conn, src net.Conn) error {
-	_, err := io.Copy(dst, src)
-	if closeWriter, ok := dst.(interface{ CloseWrite() error }); ok {
-		_ = closeWriter.CloseWrite()
-	} else {
-		_ = dst.Close()
+	buffer := make([]byte, protocol.MaxDataBodyLen)
+	for {
+		n, err := src.Read(buffer)
+		if n > 0 {
+			if writeErr := writeConnFull(dst, buffer[:n]); writeErr != nil {
+				return writeErr
+			}
+		}
+
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			closeErr := closeTCPWrite(dst)
+			if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+				return closeErr
+			}
+			return nil
+		}
+		return err
 	}
-	return err
+}
+
+func closeTCPWrite(conn net.Conn) error {
+	if closeWriter, ok := conn.(interface{ CloseWrite() error }); ok {
+		return closeWriter.CloseWrite()
+	}
+	return conn.Close()
 }
