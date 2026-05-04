@@ -105,16 +105,6 @@ type BindingState struct {
 	LastError string
 }
 
-type TCPStreamState struct {
-	StreamID      uint32
-	TunnelID      uint32
-	Epoch         uint64
-	RemotePort    uint16
-	ClientAddr    string
-	OpenRequestID uint32
-	Established   bool
-}
-
 type UDPSessionState struct {
 	SessionID   uint32
 	TunnelID    uint32
@@ -143,7 +133,6 @@ type SessionState struct {
 	NextStreamID  uint32
 
 	Bindings    map[BindingKey]BindingState
-	Streams     map[uint32]TCPStreamState
 	UDPSessions map[uint32]UDPSessionState
 }
 
@@ -157,7 +146,6 @@ func NewState(groupID int64, sessionID uint64) SessionState {
 		NextRequestID: 1,
 		NextStreamID:  1,
 		Bindings:      make(map[BindingKey]BindingState),
-		Streams:       make(map[uint32]TCPStreamState),
 		UDPSessions:   make(map[uint32]UDPSessionState),
 	}
 }
@@ -184,10 +172,6 @@ func cloneState(state SessionState) SessionState {
 	next.Bindings = make(map[BindingKey]BindingState, len(state.Bindings))
 	for key, value := range state.Bindings {
 		next.Bindings[key] = value
-	}
-	next.Streams = make(map[uint32]TCPStreamState, len(state.Streams))
-	for key, value := range state.Streams {
-		next.Streams[key] = value
 	}
 	next.UDPSessions = make(map[uint32]UDPSessionState, len(state.UDPSessions))
 	for key, value := range state.UDPSessions {

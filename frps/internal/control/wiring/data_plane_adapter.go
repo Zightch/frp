@@ -107,49 +107,13 @@ func (s *sessionState) preparePublicUDPDatagramForward(configVersion uint64, tun
 	}, nil
 }
 
-func (s *Server) handlePublicConnection(serve tunnelRuntimeServeContext, publicConn net.Conn) {
-	s.tcpHandler().HandlePublicConnection(tcpServeContext(serve), publicConn)
-}
-
 func (s *Server) handleStreamOpened(conn net.Conn, session *sessionState, frame protocol.Frame) error {
 	return s.tcpHandler().HandleStreamOpened(s.sessionFrameWriter(conn, session), session, frame)
 }
 
-func (s *Server) handleStreamData(conn net.Conn, session *sessionState, frame protocol.Frame) error {
-	return s.tcpHandler().HandleStreamData(s.sessionFrameWriter(conn, session), session, frame)
-}
-
-func (s *Server) handleStreamClose(session *sessionState, frame protocol.Frame) error {
-	return s.tcpHandler().HandleStreamClose(session, frame)
-}
-
-func (s *Server) sendStreamClose(conn net.Conn, session *sessionState, streamID uint32, reasonCode uint16, message string) error {
-	return controltcp.SendStreamClose(s.sessionFrameWriter(conn, session), streamID, reasonCode, message)
-}
-
-func (s *Server) copyPublicToClient(runtimeIO sessionRuntimeIOWriter, streamID uint32, stream *publicStream) {
-	s.tcpHandler().CopyPublicToClient(runtimeIO, runtimeIO.controlFrameWriter(), runtimeIO.session, streamID, stream)
-}
-
 func (s *Server) tcpHandler() controltcp.Handler {
 	return controltcp.Handler{
-		Clock:        s.clock,
-		WriteTimeout: s.options.WriteTimeout,
-		RuntimeWriteStopped: func(err error) bool {
-			return errors.Is(err, errRuntimeIOStopped)
-		},
-	}
-}
-
-func tcpServeContext(serve tunnelRuntimeServeContext) controltcp.ServeContext {
-	return controltcp.ServeContext{
-		Logger:        serve.logger,
-		Session:       serve.session,
-		RuntimeWriter: serve.runtimeIO,
-		ControlWriter: serve.runtimeIO.controlFrameWriter(),
-		ConfigVersion: serve.runtimeIO.configVersion,
-		Tunnel:        serve.tunnel,
-		RemotePort:    serve.remotePort,
+		Clock: s.clock,
 	}
 }
 

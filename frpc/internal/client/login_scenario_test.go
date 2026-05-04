@@ -1,8 +1,6 @@
 package client
 
 import (
-	"context"
-	"crypto/sha256"
 	"io"
 	"log/slog"
 	"net"
@@ -12,9 +10,7 @@ import (
 	"github.com/zightch/frp/frps/pkg/protocol"
 )
 
-func TestClientRunSessionUsesLoginSnapshotForFirstStream(t *testing.T) {
-	credentials := testCredentials(t)
-
+func TestClientHandleWorkStreamOpenUsesSnapshotForFirstStream(t *testing.T) {
 	loginTarget, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen login target: %v", err)
@@ -47,193 +43,90 @@ func TestClientRunSessionUsesLoginSnapshotForFirstStream(t *testing.T) {
 		targetDone <- nil
 	}()
 
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
+	workClient, workServer := net.Pipe()
+	defer workClient.Close()
+	defer workServer.Close()
 
 	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
+	state := newSessionState(1000)
+	state.setSnapshot(protocol.ConfigPush{
+		ConfigVersion: 2,
+		GeneratedAtMs: 5678,
+		Tunnels: []protocol.TunnelEntry{
+			{
+				TunnelID:    7,
+				Protocol:    protocol.ProtocolTCP,
+				TunnelFlags: protocol.TunnelFlagEnabled,
+				RemoteStart: 20000,
+				RemoteEnd:   20000,
+				LocalHost:   mustHost(t, "127.0.0.1"),
+				LocalStart:  uint16(loginTarget.Addr().(*net.TCPAddr).Port),
+				LocalEnd:    uint16(loginTarget.Addr().(*net.TCPAddr).Port),
+			},
+		},
+	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	openBody, err := protocol.MarshalStreamOpen(protocol.StreamOpen{
+		TunnelID:   7,
+		RemotePort: 20000,
+		ClientAddr: protocol.SockAddr{
+			IP:   net.ParseIP("203.0.113.10").To4(),
+			Port: 45678,
+		},
+		OpenedAtMs: 9999,
+	})
+	if err != nil {
+		t.Fatalf("marshal stream.open: %v", err)
+	}
 
-	serverDone := make(chan struct{})
+	errCh := make(chan error, 1)
 	go func() {
-		defer close(serverDone)
-		defer serverConn.Close()
-
-		performPlainTransportHello(t, serverConn, credentials.ClientID)
-
-		frame := readFrame(t, serverConn)
-		if frame.Type != protocol.TypeAuthBegin {
-			t.Errorf("expected auth.begin, got %s", frame.Type.String())
-			return
-		}
-
-		challenge := protocol.AuthChallenge{
-			ChallengeID: 7,
-			ExpiresInMs: 5000,
-		}
-		copy(challenge.Nonce[:], []byte("nonce-1234567890"))
-		challengeBody, err := protocol.MarshalAuthChallenge(challenge)
-		if err != nil {
-			t.Errorf("marshal auth.challenge: %v", err)
-			return
-		}
-		writeFrame(t, serverConn, protocol.Frame{
-			Type:      protocol.TypeAuthChallenge,
-			RequestID: frame.RequestID,
-			Body:      challengeBody,
-		})
-
-		frame = readFrame(t, serverConn)
-		if frame.Type != protocol.TypeAuthFinish {
-			t.Errorf("expected auth.finish, got %s", frame.Type.String())
-			return
-		}
-		finish, err := protocol.UnmarshalAuthFinish(frame.Body)
-		if err != nil {
-			t.Errorf("unmarshal auth.finish: %v", err)
-			return
-		}
-		secretHash := sha256.Sum256(credentials.ClientSecret[:])
-		expected := protocol.ChallengeResponse(secretHash, challenge.Nonce)
-		if finish.Response != expected {
-			t.Errorf("unexpected auth response")
-			return
-		}
-
-		helloBody, err := protocol.MarshalServerHello(protocol.ServerHello{
-			HeartbeatIntervalMs: 50,
-			SessionID:           11,
-			ServerVersion:       "test-server",
-		})
-		if err != nil {
-			t.Errorf("marshal server.hello: %v", err)
-			return
-		}
-		writeFrame(t, serverConn, protocol.Frame{
-			Type:      protocol.TypeServerHello,
-			RequestID: frame.RequestID,
-			Body:      helloBody,
-		})
-
-		configPushBody, err := protocol.MarshalConfigPush(protocol.ConfigPush{
-			ConfigVersion: 2,
-			GeneratedAtMs: 5678,
-			Tunnels: []protocol.TunnelEntry{
-				{
-					TunnelID:    7,
-					Protocol:    protocol.ProtocolTCP,
-					TunnelFlags: protocol.TunnelFlagEnabled,
-					RemoteStart: 20000,
-					RemoteEnd:   20000,
-					LocalHost:   mustHost(t, "127.0.0.1"),
-					LocalStart:  uint16(loginTarget.Addr().(*net.TCPAddr).Port),
-					LocalEnd:    uint16(loginTarget.Addr().(*net.TCPAddr).Port),
-				},
-			},
-		})
-		if err != nil {
-			t.Errorf("marshal config.push: %v", err)
-			return
-		}
-		writeFrame(t, serverConn, protocol.Frame{
-			Type:      protocol.TypeConfigPush,
-			RequestID: 2147483648,
-			Body:      configPushBody,
-		})
-
-		ackFrame := readFrame(t, serverConn)
-		if ackFrame.Type != protocol.TypeConfigAck {
-			t.Errorf("expected config.ack, got %s", ackFrame.Type.String())
-			return
-		}
-		ack, err := protocol.UnmarshalConfigAck(ackFrame.Body)
-		if err != nil {
-			t.Errorf("unmarshal config.ack: %v", err)
-			return
-		}
-		if ack.ConfigVersion != 2 || ack.Status != protocol.StatusOK {
-			t.Errorf("unexpected config.ack: %#v", ack)
-			return
-		}
-
-		openBody, err := protocol.MarshalStreamOpen(protocol.StreamOpen{
-			TunnelID:   7,
-			RemotePort: 20000,
-			ClientAddr: protocol.SockAddr{
-				IP:   net.ParseIP("203.0.113.10").To4(),
-				Port: 45678,
-			},
-			OpenedAtMs: 9999,
-		})
-		if err != nil {
-			t.Errorf("marshal stream.open: %v", err)
-			return
-		}
-		writeFrame(t, serverConn, protocol.Frame{
+		errCh <- client.handleWorkStreamOpen(workClient, state, protocol.Frame{
 			Type:      protocol.TypeStreamOpen,
 			RequestID: 4,
 			StreamID:  70,
 			Body:      openBody,
 		})
-
-		openedFrame := readFrame(t, serverConn)
-		if openedFrame.Type != protocol.TypeStreamOpened {
-			t.Errorf("expected stream.opened, got %s", openedFrame.Type.String())
-			return
-		}
-		opened, err := protocol.UnmarshalStreamOpened(openedFrame.Body)
-		if err != nil {
-			t.Errorf("unmarshal stream.opened: %v", err)
-			return
-		}
-		if opened.Status != protocol.StatusOK {
-			t.Errorf("unexpected stream.opened: %#v", opened)
-			return
-		}
-
-		writeFrame(t, serverConn, protocol.Frame{
-			Type:     protocol.TypeStreamData,
-			StreamID: 70,
-			Body:     []byte("ping"),
-		})
-
-		dataFrame := readFrame(t, serverConn)
-		if dataFrame.Type != protocol.TypeStreamData {
-			t.Errorf("expected stream.data, got %s", dataFrame.Type.String())
-			return
-		}
-		if string(dataFrame.Body) != "login-snapshot" {
-			t.Errorf("unexpected payload from login snapshot target: %q", string(dataFrame.Body))
-			return
-		}
-
-		closeFrame := readFrame(t, serverConn)
-		if closeFrame.Type != protocol.TypeStreamClose {
-			t.Errorf("expected stream.close, got %s", closeFrame.Type.String())
-			return
-		}
-
-		cancel()
-		<-ctx.Done()
 	}()
 
-	if err := client.runSession(ctx, clientConn, credentials); err != nil {
-		t.Fatalf("run session: %v", err)
+	openedFrame := readFrame(t, workServer)
+	if openedFrame.Type != protocol.TypeStreamOpened {
+		t.Fatalf("expected stream.opened, got %s", openedFrame.Type.String())
+	}
+	opened, err := protocol.UnmarshalStreamOpened(openedFrame.Body)
+	if err != nil {
+		t.Fatalf("unmarshal stream.opened: %v", err)
+	}
+	if opened.Status != protocol.StatusOK {
+		t.Fatalf("unexpected stream.opened: %#v", opened)
+	}
+
+	if _, err := workServer.Write([]byte("ping")); err != nil {
+		t.Fatalf("write raw work payload: %v", err)
+	}
+	response := make([]byte, len("login-snapshot"))
+	if _, err := io.ReadFull(workServer, response); err != nil {
+		t.Fatalf("read relayed response: %v", err)
+	}
+	if string(response) != "login-snapshot" {
+		t.Fatalf("unexpected payload from snapshot target: %q", string(response))
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil && !isNetClosed(err) {
+			t.Fatalf("handle work stream open: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("work stream relay did not exit")
 	}
 
 	select {
 	case err := <-targetDone:
 		if err != nil {
-			t.Fatalf("login snapshot target: %v", err)
+			t.Fatalf("snapshot target: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("login snapshot target did not finish")
-	}
-
-	select {
-	case <-serverDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("mock server did not exit")
+		t.Fatal("snapshot target did not finish")
 	}
 }

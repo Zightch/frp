@@ -87,6 +87,7 @@ func (s *sessionState) FreezeTunnelRuntime() ([]net.Listener, []UDPListener, map
 		return nil, nil, nil, nil
 	}
 	listeners, udpListeners, streams, udpSessions := s.ConcreteSessionState.FreezeTunnelRuntime()
+	s.CloseBusyTCPWorkConns()
 	s.resetRateLimitRuntime()
 	return listeners, udpListeners, streams, udpSessions
 }

@@ -257,6 +257,56 @@ func TestServerShutdownSessionClosesBusyTCPWorkConnection(t *testing.T) {
 	}
 }
 
+func TestSessionFreezeTunnelRuntimeClosesBusyTCPWorkConnectionsOnly(t *testing.T) {
+	session := newTestSessionState(
+		GroupRuntime{ID: 1, Name: "group-a", EffectiveIP: system.AnyIPv4},
+		ConfigSnapshot{Version: 1},
+	)
+
+	busyClient, busyServer := net.Pipe()
+	defer busyClient.Close()
+	busyHandle, err := session.RegisterTCPWorkConn(busyServer)
+	if err != nil {
+		t.Fatalf("register busy work connection: %v", err)
+	}
+
+	idleClient, idleServer := net.Pipe()
+	defer idleClient.Close()
+	idleHandle, err := session.RegisterTCPWorkConn(idleServer)
+	if err != nil {
+		t.Fatalf("register idle work connection: %v", err)
+	}
+
+	acquired, ok := session.AcquireTCPWorkConn()
+	if !ok || acquired == nil {
+		t.Fatal("expected busy work connection to be acquired")
+	}
+
+	idleBefore, busyBefore := session.TCPWorkConnCounts()
+	if idleBefore != 1 || busyBefore != 1 {
+		t.Fatalf("unexpected pool counts before freeze: idle=%d busy=%d", idleBefore, busyBefore)
+	}
+
+	session.FreezeTunnelRuntime()
+
+	idleAfter, busyAfter := session.TCPWorkConnCounts()
+	if idleAfter != 1 || busyAfter != 0 {
+		t.Fatalf("unexpected pool counts after freeze: idle=%d busy=%d", idleAfter, busyAfter)
+	}
+
+	select {
+	case <-busyHandle.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("busy work connection did not close on freeze")
+	}
+
+	select {
+	case <-idleHandle.Done():
+		t.Fatal("idle work connection should remain open across freeze")
+	default:
+	}
+}
+
 func loginControlSessionForTCPWorkTest(t *testing.T, server *Server, tokenID [16]byte, tokenHash [32]byte) (*connWithRemoteAddr, chan struct{}, protocol.ServerHello, protocol.Frame) {
 	t.Helper()
 

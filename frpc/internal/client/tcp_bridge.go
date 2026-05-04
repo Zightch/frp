@@ -1,9 +1,7 @@
 package client
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 
@@ -16,42 +14,7 @@ type localStream struct {
 }
 
 func (c *Client) handleStreamOpen(conn net.Conn, state *sessionState, frame protocol.Frame) error {
-	if frame.RequestID == 0 {
-		return fmt.Errorf("stream.open requestId must be non-zero")
-	}
-	if frame.StreamID == 0 {
-		return fmt.Errorf("stream.open streamId must be non-zero")
-	}
-
-	open, err := protocol.UnmarshalStreamOpen(frame.Body)
-	if err != nil {
-		return err
-	}
-
-	_, stream, errorCode, err := c.prepareLocalTCPStream(state, open)
-	if err != nil {
-		return c.replyStreamOpened(conn, state, frame, protocol.StreamOpened{
-			Status:    protocol.StatusError,
-			ErrorCode: errorCode,
-			Message:   err.Error(),
-		})
-	}
-	if !state.addStream(frame.StreamID, stream) {
-		_ = stream.conn.Close()
-		return c.replyStreamOpened(conn, state, frame, protocol.StreamOpened{
-			Status:    protocol.StatusError,
-			ErrorCode: protocol.ErrorCodeProtocolBadBody,
-			Message:   fmt.Sprintf("stream %d already exists", frame.StreamID),
-		})
-	}
-
-	if err := c.replyStreamOpened(conn, state, frame, protocol.StreamOpened{Status: protocol.StatusOK}); err != nil {
-		state.closeStream(frame.StreamID)
-		return err
-	}
-
-	go c.copyLocalToServer(conn, state, frame.StreamID, stream)
-	return nil
+	return c.handleWorkStreamOpen(conn, state, frame)
 }
 
 func (c *Client) prepareLocalTCPStream(state *sessionState, open protocol.StreamOpen) (protocol.TunnelEntry, *localStream, uint16, error) {
@@ -74,42 +37,6 @@ func (c *Client) prepareLocalTCPStream(state *sessionState, open protocol.Stream
 	return tunnel, &localStream{conn: localConn}, 0, nil
 }
 
-func (c *Client) handleStreamData(conn net.Conn, state *sessionState, frame protocol.Frame) error {
-	if frame.RequestID != 0 {
-		return fmt.Errorf("stream.data requestId must be zero")
-	}
-	if frame.StreamID == 0 {
-		return fmt.Errorf("stream.data streamId must be non-zero")
-	}
-
-	stream := state.stream(frame.StreamID)
-	if stream == nil {
-		return c.sendStreamClose(conn, state, frame.StreamID, protocol.CloseReasonProtocolError, "stream not found")
-	}
-
-	if err := writeConnFull(stream.conn, frame.Body); err != nil {
-		if state.closeStream(frame.StreamID) {
-			return c.sendStreamClose(conn, state, frame.StreamID, protocol.CloseReasonWriteError, err.Error())
-		}
-	}
-	return nil
-}
-
-func (c *Client) handleStreamClose(state *sessionState, frame protocol.Frame) error {
-	if frame.RequestID != 0 {
-		return fmt.Errorf("stream.close requestId must be zero")
-	}
-	if frame.StreamID == 0 {
-		return fmt.Errorf("stream.close streamId must be non-zero")
-	}
-
-	if _, err := protocol.UnmarshalStreamClose(frame.Body); err != nil {
-		return err
-	}
-	state.closeStream(frame.StreamID)
-	return nil
-}
-
 func (c *Client) replyStreamOpened(conn net.Conn, state *sessionState, frame protocol.Frame, opened protocol.StreamOpened) error {
 	body, err := protocol.MarshalStreamOpened(opened)
 	if err != nil {
@@ -121,57 +48,6 @@ func (c *Client) replyStreamOpened(conn net.Conn, state *sessionState, frame pro
 		StreamID:  frame.StreamID,
 		Body:      body,
 	})
-}
-
-func (c *Client) sendStreamClose(conn net.Conn, state *sessionState, streamID uint32, reasonCode uint16, message string) error {
-	body, err := protocol.MarshalStreamClose(protocol.StreamClose{
-		ReasonCode: reasonCode,
-		Initiator:  protocol.InitiatorFRPC,
-		Message:    message,
-	})
-	if err != nil {
-		return err
-	}
-	return c.writeMessage(conn, &state.writeMu, protocol.Frame{
-		Type:     protocol.TypeStreamClose,
-		StreamID: streamID,
-		Body:     body,
-	})
-}
-
-func (c *Client) copyLocalToServer(conn net.Conn, state *sessionState, streamID uint32, stream *localStream) {
-	buffer := make([]byte, protocol.MaxDataBodyLen)
-	for {
-		n, err := stream.conn.Read(buffer)
-		if n > 0 {
-			payload := append([]byte(nil), buffer[:n]...)
-			writeErr := c.writeMessage(conn, &state.writeMu, protocol.Frame{
-				Type:     protocol.TypeStreamData,
-				StreamID: streamID,
-				Body:     payload,
-			})
-			if writeErr != nil {
-				state.closeStream(streamID)
-				return
-			}
-		}
-
-		if err == nil {
-			continue
-		}
-
-		reasonCode := protocol.CloseReasonReadError
-		message := err.Error()
-		if errors.Is(err, io.EOF) {
-			reasonCode = protocol.CloseReasonEOF
-			message = "eof"
-		}
-
-		if state.closeStream(streamID) {
-			_ = c.sendStreamClose(conn, state, streamID, reasonCode, message)
-		}
-		return
-	}
 }
 
 func (s *sessionState) addStream(streamID uint32, stream *localStream) bool {

@@ -31,23 +31,6 @@ type ActionSendHeartbeatPong struct {
 
 func (ActionSendHeartbeatPong) sessionAction() {}
 
-type ActionSendStreamOpen struct {
-	StreamID   uint32
-	RequestID  uint32
-	TunnelID   uint32
-	RemotePort uint16
-	ClientAddr string
-}
-
-func (ActionSendStreamOpen) sessionAction() {}
-
-type ActionSendStreamClose struct {
-	StreamID uint32
-	Message  string
-}
-
-func (ActionSendStreamClose) sessionAction() {}
-
 type ActionSendUDPStart struct {
 	SessionID  uint32
 	TunnelID   uint32

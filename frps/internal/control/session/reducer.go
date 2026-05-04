@@ -178,52 +178,6 @@ func Reduce(state SessionState, event Event) (SessionState, []Action) {
 			ActionRequestReconcile{Reason: "binding_closed"},
 		}
 
-	case TCPAccepted:
-		if next.Phase != SessionPhaseOnline || next.RuntimePhase != RuntimePhaseActive || !next.Conn.Attached {
-			return next, nil
-		}
-		streamID := nextStreamID(&next)
-		requestID := nextRequestID(&next)
-		next.Streams[streamID] = TCPStreamState{
-			StreamID:      streamID,
-			TunnelID:      typed.TunnelID,
-			Epoch:         next.Epoch,
-			RemotePort:    typed.RemotePort,
-			ClientAddr:    typed.ClientAddr,
-			OpenRequestID: requestID,
-		}
-		return next, []Action{
-			ActionSendStreamOpen{
-				StreamID:   streamID,
-				RequestID:  requestID,
-				TunnelID:   typed.TunnelID,
-				RemotePort: typed.RemotePort,
-				ClientAddr: typed.ClientAddr,
-			},
-		}
-
-	case StreamOpenedReceived:
-		stream, ok := next.Streams[typed.StreamID]
-		if !ok {
-			return next, nil
-		}
-		if !typed.OK {
-			delete(next.Streams, typed.StreamID)
-			return next, []Action{
-				ActionSendStreamClose{StreamID: typed.StreamID, Message: typed.Message},
-			}
-		}
-		stream.Established = true
-		next.Streams[typed.StreamID] = stream
-		return next, nil
-
-	case StreamClosedReceived:
-		delete(next.Streams, typed.StreamID)
-		return next, nil
-
-	case StreamDataReceived:
-		return next, nil
-
 	case UDPDatagramReceived:
 		if next.Phase != SessionPhaseOnline || next.RuntimePhase != RuntimePhaseActive || !next.Conn.Attached {
 			return next, nil

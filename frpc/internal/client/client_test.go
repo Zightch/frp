@@ -293,9 +293,9 @@ func TestClientHandlesStreamOpenAndData(t *testing.T) {
 		_, _ = conn.Write(buffer[:n])
 	}()
 
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
+	workClient, workServer := net.Pipe()
+	defer workClient.Close()
+	defer workServer.Close()
 
 	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
@@ -316,14 +316,6 @@ func TestClientHandlesStreamOpenAndData(t *testing.T) {
 		},
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	readDone := make(chan error, 1)
-	go func() {
-		readDone <- client.readLoop(ctx, clientConn, state)
-	}()
-
 	openBody, err := protocol.MarshalStreamOpen(protocol.StreamOpen{
 		TunnelID:   7,
 		RemotePort: 20000,
@@ -336,14 +328,17 @@ func TestClientHandlesStreamOpenAndData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal stream.open: %v", err)
 	}
-	writeFrame(t, serverConn, protocol.Frame{
-		Type:      protocol.TypeStreamOpen,
-		RequestID: 1,
-		StreamID:  7,
-		Body:      openBody,
-	})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.handleWorkStreamOpen(workClient, state, protocol.Frame{
+			Type:      protocol.TypeStreamOpen,
+			RequestID: 1,
+			StreamID:  7,
+			Body:      openBody,
+		})
+	}()
 
-	openedFrame := readFrame(t, serverConn)
+	openedFrame := readFrame(t, workServer)
 	if openedFrame.Type != protocol.TypeStreamOpened {
 		t.Fatalf("expected stream.opened, got %s", openedFrame.Type.String())
 	}
@@ -355,44 +350,25 @@ func TestClientHandlesStreamOpenAndData(t *testing.T) {
 		t.Fatalf("unexpected stream.opened status: %#v", opened)
 	}
 
-	writeFrame(t, serverConn, protocol.Frame{
-		Type:     protocol.TypeStreamData,
-		StreamID: 7,
-		Body:     []byte("hello"),
-	})
-
-	dataFrame := readFrame(t, serverConn)
-	if dataFrame.Type != protocol.TypeStreamData {
-		t.Fatalf("expected stream.data, got %s", dataFrame.Type.String())
-	}
-	if string(dataFrame.Body) != "hello" {
-		t.Fatalf("unexpected echoed payload: %q", string(dataFrame.Body))
+	if _, err := workServer.Write([]byte("hello")); err != nil {
+		t.Fatalf("write work payload: %v", err)
 	}
 
-	closeBody, err := protocol.MarshalStreamClose(protocol.StreamClose{
-		ReasonCode: protocol.CloseReasonEOF,
-		Initiator:  protocol.InitiatorFRPS,
-		Message:    "done",
-	})
-	if err != nil {
-		t.Fatalf("marshal stream.close: %v", err)
+	buffer := make([]byte, 5)
+	if _, err := io.ReadFull(workServer, buffer); err != nil {
+		t.Fatalf("read raw relay payload: %v", err)
 	}
-	writeFrame(t, serverConn, protocol.Frame{
-		Type:     protocol.TypeStreamClose,
-		StreamID: 7,
-		Body:     closeBody,
-	})
-
-	cancel()
-	_ = clientConn.Close()
+	if string(buffer) != "hello" {
+		t.Fatalf("unexpected relayed payload: %q", string(buffer))
+	}
 
 	select {
-	case err := <-readDone:
+	case err := <-errCh:
 		if err != nil && !isNetClosed(err) {
-			t.Fatalf("read loop: %v", err)
+			t.Fatalf("handle work stream open: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("read loop did not exit")
+		t.Fatal("work stream relay did not exit")
 	}
 
 	select {
@@ -453,8 +429,8 @@ func TestClientRejectsStreamOpenForUnknownTunnel(t *testing.T) {
 		t.Fatalf("unexpected error message: %q", opened.Message)
 	}
 
-	if err := <-errCh; err != nil {
-		t.Fatalf("handle stream.open: %v", err)
+	if err := <-errCh; err == nil || err.Error() != "tunnel 99 not found" {
+		t.Fatalf("unexpected stream.open error: %v", err)
 	}
 	if state.activeStreams.Load() != 0 {
 		t.Fatalf("unexpected active stream count: %d", state.activeStreams.Load())

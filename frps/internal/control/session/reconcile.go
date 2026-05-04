@@ -37,7 +37,7 @@ func Reconcile(state SessionState) (SessionState, []Action) {
 	}
 
 	if !desiredHasEnabledTunnels(next.Applied.Snapshot) {
-		if len(next.Bindings) == 0 && len(next.Streams) == 0 && len(next.UDPSessions) == 0 {
+		if len(next.Bindings) == 0 && len(next.UDPSessions) == 0 {
 			next.RuntimePhase = RuntimePhaseEmpty
 			next.BlockReason = BlockReasonNone
 			next.Phase = SessionPhaseOnline

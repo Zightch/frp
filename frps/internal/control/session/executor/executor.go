@@ -67,10 +67,6 @@ type EventDispatcher interface {
 	DispatchBySessionID(sessionID uint64, event controlsession.Event) bool
 }
 
-type StreamCloser interface {
-	SendStreamClose(runtime Runtime, streamID uint32, reasonCode uint16, message string) error
-}
-
 type UDPCloser interface {
 	SendUDPClose(runtime Runtime, sessionID uint32, reasonCode uint16, message string) error
 }
@@ -80,7 +76,6 @@ type Options struct {
 	Frames            FrameSender
 	Resolver          EffectiveIPResolver
 	BindingStarter    BindingStarter
-	StreamCloser      StreamCloser
 	UDPCloser         UDPCloser
 	Clock             Clock
 	Events            EventDispatcher
@@ -124,7 +119,7 @@ func New(options Options) Executor {
 			Events:  options.Events,
 		},
 		runtimeStopper: RuntimeStopper{},
-		streamDrainer:  StreamDrainer{Closer: options.StreamCloser},
+		streamDrainer:  StreamDrainer{},
 		udpDrainer:     UDPDrainer{Closer: options.UDPCloser},
 		runtimeReset:   RuntimeResetter{},
 		controlCloser:  ControlCloser{},
@@ -361,18 +356,12 @@ func (RuntimeStopper) Handle(runtime Runtime) []controlsession.Event {
 	return nil
 }
 
-type StreamDrainer struct {
-	Closer StreamCloser
-}
+type StreamDrainer struct{}
 
 func (h StreamDrainer) Handle(runtime Runtime, action controlsession.ActionDrainStreams) []controlsession.Event {
-	for streamID, stream := range runtime.TakeDrainedStreams() {
-		if h.Closer != nil {
-			if err := h.Closer.SendStreamClose(runtime, streamID, protocol.CloseReasonAdminTerminated, action.Reason); err != nil {
-				if logger := runtime.Logger(); logger != nil {
-					logger.Warn("stream drain close failed", "stream_id", streamID, "error", err)
-				}
-			}
+	for _, stream := range runtime.TakeDrainedStreams() {
+		if stream == nil {
+			continue
 		}
 		stream.SignalReady(net.ErrClosed)
 		stream.Close()

@@ -45,27 +45,6 @@ type HeartbeatPingReceived struct {
 
 func (HeartbeatPingReceived) sessionEvent() {}
 
-type StreamOpenedReceived struct {
-	StreamID uint32
-	OK       bool
-	Message  string
-}
-
-func (StreamOpenedReceived) sessionEvent() {}
-
-type StreamDataReceived struct {
-	StreamID   uint32
-	PayloadLen int
-}
-
-func (StreamDataReceived) sessionEvent() {}
-
-type StreamClosedReceived struct {
-	StreamID uint32
-}
-
-func (StreamClosedReceived) sessionEvent() {}
-
 type UDPDataReceived struct {
 	SessionID  uint32
 	PayloadLen int
@@ -126,14 +105,6 @@ type BindingClosed struct {
 }
 
 func (BindingClosed) sessionEvent() {}
-
-type TCPAccepted struct {
-	TunnelID   uint32
-	RemotePort uint16
-	ClientAddr string
-}
-
-func (TCPAccepted) sessionEvent() {}
 
 type UDPDatagramReceived struct {
 	TunnelID   uint32

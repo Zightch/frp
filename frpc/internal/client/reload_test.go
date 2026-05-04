@@ -1,7 +1,6 @@
 package client
 
 import (
-	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -152,7 +151,7 @@ func TestClientApplyConfigPushClosesLocalRuntimeBeforeAck(t *testing.T) {
 	}
 }
 
-func TestClientReadLoopUsesReloadedSnapshotForNewStreams(t *testing.T) {
+func TestClientHandleWorkStreamOpenUsesReloadedSnapshotForNewStreams(t *testing.T) {
 	newListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen reload target: %v", err)
@@ -185,9 +184,9 @@ func TestClientReadLoopUsesReloadedSnapshotForNewStreams(t *testing.T) {
 		newTargetDone <- nil
 	}()
 
-	clientConn, serverConn := net.Pipe()
-	defer clientConn.Close()
-	defer serverConn.Close()
+	workClient, workServer := net.Pipe()
+	defer workClient.Close()
+	defer workServer.Close()
 
 	client := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), "test-client")
 
@@ -209,14 +208,6 @@ func TestClientReadLoopUsesReloadedSnapshotForNewStreams(t *testing.T) {
 		},
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	readDone := make(chan error, 1)
-	go func() {
-		readDone <- client.readLoop(ctx, clientConn, state)
-	}()
-
 	pushBody, err := protocol.MarshalConfigPush(protocol.ConfigPush{
 		ConfigVersion: 2,
 		GeneratedAtMs: 5678,
@@ -236,13 +227,19 @@ func TestClientReadLoopUsesReloadedSnapshotForNewStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal config.push: %v", err)
 	}
-	writeFrame(t, serverConn, protocol.Frame{
-		Type:      protocol.TypeConfigPush,
-		RequestID: 3,
-		Body:      pushBody,
-	})
+	configClient, configServer := net.Pipe()
+	defer configClient.Close()
+	defer configServer.Close()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.applyConfigPush(configClient, state, protocol.Frame{
+			Type:      protocol.TypeConfigPush,
+			RequestID: 3,
+			Body:      pushBody,
+		})
+	}()
 
-	ackFrame := readFrame(t, serverConn)
+	ackFrame := readFrame(t, configServer)
 	if ackFrame.Type != protocol.TypeConfigAck {
 		t.Fatalf("expected config.ack, got %s", ackFrame.Type.String())
 	}
@@ -252,6 +249,9 @@ func TestClientReadLoopUsesReloadedSnapshotForNewStreams(t *testing.T) {
 	}
 	if ack.Status != protocol.StatusOK || ack.ConfigVersion != 2 {
 		t.Fatalf("unexpected config.ack: %#v", ack)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("apply config.push: %v", err)
 	}
 
 	openBody, err := protocol.MarshalStreamOpen(protocol.StreamOpen{
@@ -266,14 +266,17 @@ func TestClientReadLoopUsesReloadedSnapshotForNewStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal stream.open: %v", err)
 	}
-	writeFrame(t, serverConn, protocol.Frame{
-		Type:      protocol.TypeStreamOpen,
-		RequestID: 4,
-		StreamID:  70,
-		Body:      openBody,
-	})
+	workErrCh := make(chan error, 1)
+	go func() {
+		workErrCh <- client.handleWorkStreamOpen(workClient, state, protocol.Frame{
+			Type:      protocol.TypeStreamOpen,
+			RequestID: 4,
+			StreamID:  70,
+			Body:      openBody,
+		})
+	}()
 
-	openedFrame := readFrame(t, serverConn)
+	openedFrame := readFrame(t, workServer)
 	if openedFrame.Type != protocol.TypeStreamOpened {
 		t.Fatalf("expected stream.opened, got %s", openedFrame.Type.String())
 	}
@@ -285,23 +288,15 @@ func TestClientReadLoopUsesReloadedSnapshotForNewStreams(t *testing.T) {
 		t.Fatalf("unexpected stream.opened: %#v", opened)
 	}
 
-	writeFrame(t, serverConn, protocol.Frame{
-		Type:     protocol.TypeStreamData,
-		StreamID: 70,
-		Body:     []byte("ping"),
-	})
-
-	dataFrame := readFrame(t, serverConn)
-	if dataFrame.Type != protocol.TypeStreamData {
-		t.Fatalf("expected stream.data, got %s", dataFrame.Type.String())
+	if _, err := workServer.Write([]byte("ping")); err != nil {
+		t.Fatalf("write raw work payload: %v", err)
 	}
-	if string(dataFrame.Body) != "reloaded" {
-		t.Fatalf("unexpected payload from reloaded target: %q", string(dataFrame.Body))
+	response := make([]byte, len("reloaded"))
+	if _, err := io.ReadFull(workServer, response); err != nil {
+		t.Fatalf("read relayed response: %v", err)
 	}
-
-	closeFrame := readFrame(t, serverConn)
-	if closeFrame.Type != protocol.TypeStreamClose {
-		t.Fatalf("expected stream.close, got %s", closeFrame.Type.String())
+	if string(response) != "reloaded" {
+		t.Fatalf("unexpected payload from reloaded target: %q", string(response))
 	}
 
 	select {
@@ -313,16 +308,13 @@ func TestClientReadLoopUsesReloadedSnapshotForNewStreams(t *testing.T) {
 		t.Fatal("reloaded target did not finish")
 	}
 
-	cancel()
-	_ = clientConn.Close()
-
 	select {
-	case err := <-readDone:
+	case err := <-workErrCh:
 		if err != nil && !isNetClosed(err) {
-			t.Fatalf("read loop: %v", err)
+			t.Fatalf("handle work stream open: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("read loop did not exit")
+		t.Fatal("work stream relay did not exit")
 	}
 }
 

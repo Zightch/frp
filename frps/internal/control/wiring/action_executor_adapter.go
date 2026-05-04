@@ -32,7 +32,6 @@ func newServerActionExecutor(server *Server) serverActionExecutor {
 			Resolver:          serverActionResolver{server: server},
 			BindingStarter:    serverActionBindingStarter{server: server},
 			Events:            serverActionEventDispatcher{server: server},
-			StreamCloser:      serverActionStreamCloser{server: server},
 			UDPCloser:         serverActionUDPCloser{server: server},
 			Clock:             server.clock,
 			HeartbeatInterval: server.options.HeartbeatInterval,
@@ -111,18 +110,6 @@ func (d serverActionEventDispatcher) DispatchBySessionID(sessionID uint64, event
 		return false
 	}
 	return d.server.supervisor.DispatchBySessionID(sessionID, event)
-}
-
-type serverActionStreamCloser struct {
-	server *Server
-}
-
-func (s serverActionStreamCloser) SendStreamClose(runtime controlsessionexecutor.Runtime, streamID uint32, reasonCode uint16, message string) error {
-	local, ok := localRuntimeExecutor(runtime)
-	if !ok || s.server == nil {
-		return net.ErrClosed
-	}
-	return s.server.sendStreamClose(local.conn, local.session, streamID, reasonCode, message)
 }
 
 type serverActionUDPCloser struct {

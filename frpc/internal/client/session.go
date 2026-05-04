@@ -200,14 +200,6 @@ func (c *Client) readLoop(ctx context.Context, conn net.Conn, state *sessionStat
 			if err := c.handleStreamOpen(conn, state, frame); err != nil {
 				return err
 			}
-		case protocol.TypeStreamData:
-			if err := c.handleStreamData(conn, state, frame); err != nil {
-				return err
-			}
-		case protocol.TypeStreamClose:
-			if err := c.handleStreamClose(state, frame); err != nil {
-				return err
-			}
 		case protocol.TypeUDPOpen:
 			if err := c.handleUDPOpen(conn, state, frame); err != nil {
 				return err

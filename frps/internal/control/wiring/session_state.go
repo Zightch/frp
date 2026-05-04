@@ -100,6 +100,13 @@ func (s *sessionState) CloseTCPWorkConns() {
 	s.tcpWork.CloseAll()
 }
 
+func (s *sessionState) CloseBusyTCPWorkConns() {
+	if s == nil || s.tcpWork == nil {
+		return
+	}
+	s.tcpWork.CloseBusy()
+}
+
 func (s *sessionState) TCPWorkConnCounts() (int, int) {
 	if s == nil || s.tcpWork == nil {
 		return 0, 0

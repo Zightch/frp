@@ -123,14 +123,6 @@ func (s *Server) runSession(conn net.Conn, logger *slog.Logger, session *session
 			if err := s.handleStreamOpened(conn, session, frame); err != nil {
 				return err
 			}
-		case protocol.TypeStreamData:
-			if err := s.handleStreamData(conn, session, frame); err != nil {
-				return err
-			}
-		case protocol.TypeStreamClose:
-			if err := s.handleStreamClose(session, frame); err != nil {
-				return err
-			}
 		case protocol.TypeUDPData:
 			if err := s.handleUDPData(conn, session, frame); err != nil {
 				return err

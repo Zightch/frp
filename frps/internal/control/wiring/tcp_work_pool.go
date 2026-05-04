@@ -197,6 +197,25 @@ func (p *tcpWorkConnPool) CloseAll() {
 	}
 }
 
+func (p *tcpWorkConnPool) CloseBusy() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+
+	handles := make([]*tcpWorkConnHandle, 0, len(p.busy))
+	for id, handle := range p.busy {
+		delete(p.busy, id)
+		handles = append(handles, handle)
+	}
+	p.mu.Unlock()
+
+	for _, handle := range handles {
+		handle.closeConn()
+	}
+}
+
 func (p *tcpWorkConnPool) Counts() (idle int, busy int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

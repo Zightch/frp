@@ -54,8 +54,7 @@ func TestClientRunSessionMaintainsTCPWorkPool(t *testing.T) {
 		runDone <- client.runSession(ctx, controlClientConn, credentials)
 	}()
 
-	waitForWorkReady(t, readyCh, 1)
-	waitForWorkReady(t, readyCh, 2)
+	waitForWorkReadySet(t, readyCh, 1, 2)
 	waitForTCPWorkPoolCount(t, client, 2)
 
 	cancel()
@@ -104,8 +103,7 @@ func TestClientRunSessionReplenishesClosedTCPWorkConn(t *testing.T) {
 		runDone <- client.runSession(ctx, controlClientConn, credentials)
 	}()
 
-	waitForWorkReady(t, readyCh, 1)
-	waitForWorkReady(t, readyCh, 2)
+	waitForWorkReadySet(t, readyCh, 1, 2)
 	waitForTCPWorkPoolCount(t, client, 1)
 
 	cancel()
@@ -379,6 +377,28 @@ func waitForWorkReady(t *testing.T, readyCh <-chan int, want int) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for work ready %d", want)
+	}
+}
+
+func waitForWorkReadySet(t *testing.T, readyCh <-chan int, wants ...int) {
+	t.Helper()
+
+	remaining := make(map[int]struct{}, len(wants))
+	for _, want := range wants {
+		remaining[want] = struct{}{}
+	}
+
+	deadline := time.After(2 * time.Second)
+	for len(remaining) > 0 {
+		select {
+		case got := <-readyCh:
+			if _, ok := remaining[got]; !ok {
+				t.Fatalf("unexpected work ready index: got %d want one of %#v", got, wants)
+			}
+			delete(remaining, got)
+		case <-deadline:
+			t.Fatalf("timed out waiting for work ready set %#v", wants)
+		}
 	}
 }
 
