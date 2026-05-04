@@ -321,8 +321,8 @@ def main() -> int:
         print(f"[stage] {stage}")
         wait_log_contains(paths.frps_log_path, "frpc control login succeeded", args.timeout, processes)
         wait_log_contains(paths.frps_log_path, "config acknowledged", args.timeout, processes)
-        wait_log_contains(paths.frpc_log_path, "login succeeded", args.timeout, processes)
-        wait_log_contains(paths.frpc_log_path, "config applied", args.timeout, processes)
+        wait_log_contains(paths.frpc_log_path, "登录成功", args.timeout, processes)
+        wait_log_contains(paths.frpc_log_path, "领取配置", args.timeout, processes)
         wait_log_count_at_least(paths.frps_log_path, "tcp tunnel listener ready", 3, args.timeout, processes)
 
         stage = "run tcp range scenario"
@@ -418,7 +418,7 @@ def validate_args(args: argparse.Namespace) -> None:
 def resolve_output_dir(args: argparse.Namespace, repo_root: Path) -> Path:
     if args.output_dir:
         return Path(args.output_dir).resolve()
-    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     return (repo_root / "test" / "tmp" / f"tcp-range-e2e-{timestamp}").resolve()
 
 
@@ -1038,11 +1038,11 @@ def run_hot_reload_scenario(
     reload_range1_handle = handles_by_name["reload-range-1"]
 
     wait_log_count_at_least(paths.frps_log_path, "config acknowledged", 1, timeout_seconds, processes)
-    wait_log_count_at_least(paths.frpc_log_path, "config applied", 1, timeout_seconds, processes)
+    wait_log_count_at_least(paths.frpc_log_path, "领取配置", 1, timeout_seconds, processes)
     wait_log_count_at_least(paths.frps_log_path, "tcp tunnel listener ready", 3, timeout_seconds, processes)
 
     initial_ack_count = count_log_occurrences(paths.frps_log_path, "config acknowledged")
-    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "config applied")
+    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "领取配置")
     initial_listener_count = count_log_occurrences(paths.frps_log_path, "tcp tunnel listener ready")
 
     removed_payload = f"{payload_prefix}-range-reload-before-removed".encode("utf-8")
@@ -1122,7 +1122,7 @@ def run_hot_reload_scenario(
         )
         wait_log_count_at_least(
             paths.frpc_log_path,
-            "config applied",
+            "领取配置",
             initial_apply_count + 1,
             timeout_seconds,
             processes,
@@ -1134,7 +1134,7 @@ def run_hot_reload_scenario(
             timeout_seconds,
             processes,
         )
-        wait_log_contains(paths.frpc_log_path, "replaced_tunnels=1", timeout_seconds, processes)
+        wait_log_contains(paths.frpc_log_path, "领取配置 隧道数量2 启用2 +0 ~1 -0", timeout_seconds, processes)
 
         wait_for_tcp_connection_close(removed_connection, timeout_seconds)
         wait_for_tcp_connection_close(shared_connection, timeout_seconds)

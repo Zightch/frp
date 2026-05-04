@@ -947,10 +947,11 @@ def validate_local_unavailable_scenario(
     attempt = run_external_client_expect_failure("127.0.0.1", ports.remote, payload, timeout_seconds)
     observations.external_attempt = attempt
     try:
-        wait_log_contains(paths.frps_log_path, "stream open rejected", timeout_seconds, processes)
+        wait_log_contains(paths.frps_log_path, "tcp work stream open failed", timeout_seconds, processes)
+        wait_log_contains(paths.frpc_log_path, "连接内网失败", timeout_seconds, processes)
     except Exception as exc:
         raise RuntimeError(
-            f"local_unavailable missing stream open rejection; {describe_external_attempt(attempt)}"
+            f"local_unavailable missing current tcp work dial failure logs; {describe_external_attempt(attempt)}"
         ) from exc
 
     if attempt.response:
@@ -1889,9 +1890,10 @@ def scenario_actual_summary(
         f"frps_login_succeeded={'frpc control login succeeded' in frps_log}",
         f"frps_config_ack={'config acknowledged' in frps_log}",
         f"frps_listener_ready={'tcp tunnel listener ready' in frps_log}",
-        f"frps_stream_open_rejected={'stream open rejected' in frps_log}",
+        f"frps_tcp_work_open_failed={'tcp work stream open failed' in frps_log}",
         f"frpc_login_succeeded={'登录成功' in frpc_log}",
         f"frpc_config_applied={'领取配置' in frpc_log}",
+        f"frpc_local_dial_failed={'连接内网失败' in frpc_log}",
         f"processes={summarize_process_states(processes)}",
     ]
 

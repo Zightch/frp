@@ -1,6 +1,6 @@
 # 仓库级回归入口
 
-更新时间：2026-04-29
+更新时间：2026-05-04
 
 本文档是当前仓库的统一回归入口，只收口已经存在且当前真实有效的 Go 定向测试、模块级 `go test` 和 Python e2e 命令矩阵。
 
@@ -59,6 +59,14 @@ go run ./cmd/stabilitymatrix -profile all
 
 控制面故障和竞争场景的直接必跑基线仍是 `go test -tags testhooks ./internal/control/...`；`stabilitymatrix` 用于补跑 `race`、多 `GOMAXPROCS`、配置抖动、soak、平台基线和资源压力 profile。
 
+当前 TCP work-data-plane 的定向补充入口：
+
+```powershell
+cd frps
+go test ./internal/control/wiring -run 'TestServerAcceptsTCPWorkConnection|TestServerShutdownSessionClosesBusyTCPWorkConnection|TestServerClosesPublicTCPConnectionWhenNoIdleWorkConn|TestServerRefreshGroupPushesUpdatedConfigToActiveSession|TestServerRefreshGroupBlocksReplacementSessionUntilRefreshCompletes' -count=1
+go test ./internal/control/session ./internal/control/session/executor ./internal/control/runtime/serve/tcp -count=1
+```
+
 ### 2.2 `frpc`
 
 常用定向回归入口：
@@ -75,13 +83,25 @@ cd frpc
 go test ./...
 ```
 
+当前 TCP work-data-plane 的定向补充入口：
+
+```powershell
+cd frpc
+go test ./internal/client -run 'TestClientRunSessionMaintainsTCPWorkPool|TestClientRunSessionReplenishesClosedTCPWorkConn|TestClientRunSessionRebuildsTCPWorkPoolAcrossSessions|TestClientHandleWorkStreamOpenUsesSnapshotForFirstStream|TestClientHandleWorkStreamOpenUsesReloadedSnapshotForNewStreams|TestClientRunExitsOnTerminalRemoteErrorWithoutReconnect' -count=1
+```
+
 ## 3. 当前核心 Python e2e 矩阵
 
 以下命令组成当前必须守住的最小端到端闭环：
 
 ```powershell
 python test/e2e_tcp_single.py --scenario happy_path
+python test/e2e_tcp_single.py --scenario hot_reload
+python test/e2e_tcp_single.py --scenario rate_limit_independent
+python test/e2e_tcp_single.py --scenario rate_limit_shared
+python test/e2e_tcp_single.py --scenario rate_limit_reload
 python test/e2e_tcp_range.py
+python test/e2e_tcp_range.py --scenario hot_reload
 python test/e2e_udp_single.py --scenario happy_path
 python test/e2e_udp_single.py --scenario idle_cleanup
 python test/e2e_udp_range.py
@@ -92,7 +112,12 @@ python test/e2e_management_webui.py --webui-prefix /frps
 对应覆盖边界如下：
 
 - `e2e_tcp_single.py --scenario happy_path`：TCP 单端口最小正向链路。
+- `e2e_tcp_single.py --scenario hot_reload`：在线整组热重载后，旧 TCP 运行态被收口，新快照继续接流。
+- `e2e_tcp_single.py --scenario rate_limit_independent`：独享限速策略按 tunnel 各自持有令牌桶。
+- `e2e_tcp_single.py --scenario rate_limit_shared`：共享限速策略下多条单端口 TCP 隧道竞争同一对令牌桶。
+- `e2e_tcp_single.py --scenario rate_limit_reload`：在线策略更新后，新速率立即进入真实 TCP 数据面。
 - `e2e_tcp_range.py`：TCP range 偏移映射，并同轮确认 TCP single 不回退。
+- `e2e_tcp_range.py --scenario hot_reload`：range tunnel 在线热重载后按新偏移规则继续生效。
 - `e2e_udp_single.py --scenario happy_path`：UDP 单端口最小正向链路。
 - `e2e_udp_single.py --scenario idle_cleanup`：`frps` 侧空闲约 `30s` 后清理 UDP 会话，并向 `frpc` 下发 `udp.close`。
 - `e2e_udp_range.py`：UDP range 偏移映射，并同轮确认 UDP single 不回退。
@@ -115,7 +140,7 @@ python test/e2e_tcp_perf.py --transfer-concurrency 8 --transfer-bytes-per-connec
 当前口径固定如下：
 
 - TCP 单端口负向场景只在改动登录、`proxy_group` 启停、隧道启停或本地目标失败路径时重点补跑。
-- `e2e_tcp_perf.py` 属于代码健康压测基线，不属于每次日常最小回归的阻塞门槛。
+- `e2e_tcp_perf.py` 属于 TCP 数据面性能回归基线；在 work-connection、raw relay、copy loop 或限速执行路径改动时应补跑。
 
 ## 5. 当前建议执行顺序
 

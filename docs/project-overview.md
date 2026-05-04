@@ -19,10 +19,13 @@
 - 一个 `proxy_group` 固定只允许 `1` 个在线 `frpc`。
 - 同 `proxy_group` 后登录的 `frpc` 不再接管当前在线者；服务端会返回 `1107 auth_client_limit_reached`，并在错误消息里携带当前在线 `frpc` 的 `ip:port`；客户端直接退出，不进入重连。
 - 登录成功后由 `frps` 下发首次 `config.push`，`frpc` 回 `config.ack`。
+- `server.hello` 当前会同时下发 `tcp work pool` 参数和会话级 `work secret`。
+- `frpc` 登录成功后会预热固定数量的 idle `tcp work connection`。
 - `frps` 在 `config.ack` 后启动启用状态的 TCP/UDP 公网 listener。
 - 管理面命中运行态字段且 `proxy_group` 在线时，会复用现有 `config.push / config.ack` 触发整组热重载。
 - 已支持 TCP 单端口和连续端口范围映射。
 - 已支持 UDP 单端口和连续端口范围映射。
+- TCP 当前固定走“`control connection` 建议配置 + `tcp work connection` 承载数据面”的双连接模型；`control connection` 不再承载 TCP 业务字节。
 - UDP 生命周期由 `frps` 裁决；任一路径有成功转发都会立即刷新活跃时间，最后一次活动结束后空闲约 `30s` 自动清理并下发 `udp.close`。
 - 管理认证固定为本地 `auth.json` 单一管理密钥模型：只初始化一次，不做在线轮换；删除文件后服务端自动回到未初始化态。
 - `auth.json` 删除检测已落地：认证管理器会按固定间隔轮询文件是否被删除，并清空旧 challenge 和旧会话。
@@ -91,6 +94,10 @@ TCP control connection
   |
 frps control
   |
+  +--> config / heartbeat / udp
+  |
+  +--> tcp work pool
+  |
 TCP/UDP public listeners
   |
 External clients
@@ -100,6 +107,7 @@ External clients
 
 - 配置在首次登录和后续在线热重载阶段都复用整组 `config.push / config.ack` 同步。
 - `frps` 只在 `frpc` 确认配置后开放公网 listener。
+- `control connection` 只负责登录、心跳、配置同步、UDP 和少量控制消息；TCP 数据面固定走 `tcp work connection + raw relay`。
 - TCP/UDP 范围映射都按相同偏移规则计算目标本地端口。
 - `frpc` 不做本地 UDP idle timer，只接受 `frps` 的 `udp.close`。
 - `frpc` 普通断线固定每 `5s` 重连一次；重连周期内只输出一次“重连 frps 中...”，中间失败不刷屏。
@@ -137,7 +145,11 @@ External clients
 - `go test -tags testhooks ./internal/control/...`（`frps/`）
 - `go test -tags testhooks ./...`（`frps/`，发布前补跑）
 - `go test ./...`（`frpc/`）
-- `python test/e2e_tcp_single.py`
+- `python test/e2e_tcp_single.py --scenario happy_path`
+- `python test/e2e_tcp_single.py --scenario hot_reload`
+- `python test/e2e_tcp_single.py --scenario rate_limit_independent`
+- `python test/e2e_tcp_single.py --scenario rate_limit_shared`
+- `python test/e2e_tcp_single.py --scenario rate_limit_reload`
 - `python test/e2e_tcp_range.py`
 - `python test/e2e_udp_single.py`
 - `python test/e2e_udp_range.py`

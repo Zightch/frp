@@ -1,6 +1,6 @@
 # frps / frpc 当前代码架构图
 
-本文根据当前代码实现绘制，不包含尚未落地的设计目标。代码现状以 `2026-04-29` 的工作区为准。
+本文根据当前代码实现绘制，不包含尚未落地的设计目标。代码现状以 `2026-05-04` 的工作区为准。
 
 ## 1. 总体运行拓扑
 
@@ -17,16 +17,15 @@ flowchart LR
 
     Frpc[frpc] -->|TCP control connection| Control[frps control server]
     Control -->|LoadGroupRuntime| DB
-    Control -->|transport hello / auth.challenge / server.hello / config.push / stream frames| Frpc
+    Control -->|transport hello / auth.challenge / server.hello / config.push / udp frames| Frpc
+    Frpc -->|tcp work pool| WorkPool[frps tcp work registry]
 
     External[Python 外网客户端] -->|TCP connect remote_start| Public[frps TCP tunnel listener]
-    Public -->|public connection| Control
-    Control -->|stream.open / stream.data / stream.close| Frpc
+    Public -->|public connection| WorkPool
+    WorkPool -->|stream.open / stream.opened| Frpc
     Frpc -->|net.Dial local_host:local_start| Internal[Python 内网主机]
-
-    Internal -->|response bytes| Frpc
-    Frpc -->|stream.data| Control
-    Control -->|write public conn| Public
+    Public <-->|raw relay over busy work conn| Frpc
+    Internal <-->|raw relay over busy work conn| Frpc
     Public -->|response bytes| External
 ```
 
@@ -35,7 +34,10 @@ flowchart LR
 - `frps` 同进程内同时运行管理面 HTTP 服务和 `frpc` 控制连接服务。
 - `frps` 的公网隧道监听器由控制会话在收到 `config.ack` 后启动。
 - `frpc` 只通过 `--server` 和 `--key` 启动，不保存复杂隧道配置。
-- 当前数据面把多个 stream 复用在同一条 `frpc <-> frps` 控制 TCP 连接上，没有单独工作连接池。
+- 当前 TCP 数据面已经从 `control connection` 摘离：
+  - `control connection` 只负责登录、心跳、配置同步、UDP 和少量控制消息
+  - `tcp work connection` 负责 TCP 建链和后续 raw relay
+  - `frpc` 登录后会按 `server.hello` 预热固定数量的 idle `tcp work connection`
 - UDP 当前已经具备 `frps` 公网 listener、控制帧桥接、`frpc` 本地 UDP 转发、`frps` 侧空闲 `30s` cleanup，以及 Python happy path / idle cleanup e2e。
 
 ## 2. frps 进程内架构
@@ -101,17 +103,20 @@ flowchart TB
 
     Session --> ReadLoop[readLoop]
     Session --> Heartbeat[heartbeatLoop]
+    Session --> WorkPool[maintain tcp work pool]
 
     ReadLoop --> ConfigPush[applyConfigPush]
-    ReadLoop --> StreamOpen[handleStreamOpen]
-    ReadLoop --> StreamData[handleStreamData]
-    ReadLoop --> StreamClose[handleStreamClose]
+    ReadLoop --> UDP[handle udp.*]
+
+    WorkPool --> WorkDial[dial tcp work connection]
+    WorkDial --> WorkHello[tcp.work.* handshake]
+    WorkHello --> StreamOpen[handle stream.open on work conn]
 
     ConfigPush --> Snapshot[session snapshot]
     StreamOpen --> Target[localTarget tunnel lookup]
     Target --> LocalDial[net.DialTimeout local target]
     LocalDial --> LocalStream[localStream registry]
-    LocalStream --> CopyLocal[copyLocalToServer]
+    LocalStream --> Relay[raw relay local <-> work conn]
 
     Login --> Protocol[frps/pkg/protocol]
     ReadLoop --> Protocol
@@ -124,9 +129,11 @@ flowchart TB
 - `cmd/frpc/main.go`：只接收 `--server` 和 `--key`，日志级别通过 `FRPC_LOG_LEVEL` 控制。
 - `internal/config`：校验 server 地址，按固定长度解析 `key` 为 `client_id` 和 `client_secret`。
 - `internal/client.Client`：连接 `frps`、登录、固定 `5s` 断线重连、启动读循环和心跳循环。
-- `sessionState`：保存配置快照、活跃 stream、活跃 UDP session、心跳间隔、已确认配置版本和写锁。
+- `sessionState`：保存配置快照、活跃本地 TCP/UDP 运行态、心跳间隔、已确认配置版本和写锁。
 - `targets.go`：统一 tunnel 查找、本地 target 解析和 range 端口换算。
-- `tcp_bridge.go` / `udp_bridge.go`：分别承接 TCP stream 和 UDP session 的本地桥接逻辑。
+- `work_conn.go` / `work_pool.go` / `tcp_work_pool.go`：承接 `tcp work connection` 的建连、注册和池化。
+- `tcp_work_runtime.go` / `tcp_bridge.go`：承接 `stream.open` 建链和 busy work conn 上的 raw relay。
+- `udp_bridge.go`：承接 UDP session 的本地桥接逻辑。
 - `runtime_info.go`：提供主机名、OS、架构等登录期运行时信息。
 
 ## 4. 登录和配置下发时序
@@ -155,10 +162,11 @@ sequenceDiagram
     S->>S: consumeChallenge
     S->>S: reserveGroupSlot(group_id, session_id)
     alt slot available
-        S->>C: server.hello(session_id, heartbeat interval)
+        S->>C: server.hello(session_id, heartbeat interval, tcp work config)
         S->>C: config.push(config_version, tunnels)
         C->>C: replace runtime snapshot
         C->>S: config.ack(config_version)
+        C->>S: prewarm tcp work pool
         S->>S: ensureTunnelListeners
     else slot occupied
         S->>C: error(1107, retryable=false, current online frpc ip:port)
@@ -184,37 +192,38 @@ sequenceDiagram
     participant E as Python 外网客户端
     participant L as frps TCP listener
     participant S as frps session
-    participant C as frpc
+    participant W as frps tcp work pool
+    participant C as frpc work conn
     participant I as Python 内网主机
 
     E->>L: connect(remote_start)
-    L->>S: handlePublicConnection
-    S->>S: allocate stream_id and request_id
-    S->>C: stream.open(tunnel_id, remote_port)
+    L->>S: preparePublicStreamOpen
+    S->>W: acquire idle tcp work conn
+    W->>C: stream.open(tunnel_id, remote_port)
     C->>C: lookup tunnel snapshot
     C->>I: net.Dial(local_host:local_port)
-    C->>S: stream.opened(status)
+    C->>W: stream.opened(status)
 
     par public to local
         E->>L: request bytes
-        L->>S: read public conn
-        S->>C: stream.data(stream_id)
-        C->>I: write local conn
+        L->>C: raw bytes over busy work conn
+        C->>I: raw bytes
     and local to public
         I->>C: response bytes
-        C->>S: stream.data(stream_id)
-        S->>L: write public conn
+        C->>L: raw bytes over busy work conn
         L->>E: response bytes
     end
 
     E-->>L: EOF or close
-    S-->>C: stream.close
-    C-->>I: close local conn
+    C-->>I: EOF or close
+    W-->>W: retire busy work conn
 ```
 
 当前实际数据面边界：
 
 - `frps` 会为 `enabled` 的 TCP 单端口 / range 隧道，以及 `enabled` 的 UDP 单端口 / range 隧道启动公网 listener。
+- `frps` 当前不会再把 TCP 业务字节写回 `control connection`；`control connection` 上只剩 `config.push/config.ack`、heartbeat、UDP 和少量错误帧。
+- `frps` 当前会为每个在线 session 维护 idle / busy `tcp work connection` 池；公网 TCP accept 时必须先拿到一条 idle work conn，拿不到就直接关闭该公网连接，不保留悬挂 stream。
 - `frps` 当前已经能把公网 UDP datagram 按 `tunnelId + remotePort + 公网客户端地址` 绑定到 `sessionId`，并向 `frpc` 顺序发送 `udp.open` / `udp.data`，同时接收来自 `frpc` 的 `udp.data` 回写公网客户端。
 - `frps` 是 UDP session 生命周期的唯一裁决方；当前会在公网收包和 `frpc` 回包时立即刷新 UDP session 活跃时间，并由后台短周期 sweep 按 `lastActive + timeout` 裁决空闲会话，在“最后一次成功双向转发后空闲约 `30s`”时删除本地 session、向 `frpc` 发送 `udp.close`。
 - `frpc` 当前会在收到 `udp.open` 后按 `sessionId` 建立真实本地 `UDPConn`，收到 `udp.data` 后把 datagram 写到本地 UDP 服务，并由后台读循环把本地响应按同一 `sessionId` 回发给 `frps`。

@@ -293,8 +293,8 @@ def main() -> int:
         print(f"[stage] {stage}")
         wait_log_contains(paths.frps_log_path, "frpc control login succeeded", args.timeout, processes)
         wait_log_contains(paths.frps_log_path, "config acknowledged", args.timeout, processes)
-        wait_log_contains(paths.frpc_log_path, "login succeeded", args.timeout, processes)
-        wait_log_contains(paths.frpc_log_path, "config applied", args.timeout, processes)
+        wait_log_contains(paths.frpc_log_path, "登录成功", args.timeout, processes)
+        wait_log_contains(paths.frpc_log_path, "领取配置", args.timeout, processes)
         wait_log_count_at_least(paths.frps_log_path, "udp tunnel listener ready", 3, args.timeout, processes)
 
         stage = "run udp range scenario"
@@ -390,7 +390,7 @@ def validate_args(args: argparse.Namespace) -> None:
 def resolve_output_dir(args: argparse.Namespace, repo_root: Path) -> Path:
     if args.output_dir:
         return Path(args.output_dir).resolve()
-    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     return (repo_root / "test" / "tmp" / f"udp-range-e2e-{timestamp}").resolve()
 
 
@@ -955,7 +955,6 @@ def run_verification_round(
         range_responses.append(response.decode("utf-8", errors="replace"))
 
     wait_log_count_at_least(paths.frps_log_path, "udp session opened", 3, timeout_seconds, processes)
-    wait_log_count_at_least(paths.frpc_log_path, "udp session opened", 3, timeout_seconds, processes)
 
     ensure_exact_server_payloads(single_handle, [single_payload])
     ensure_exact_server_payloads(handles_by_name["range-0"], [range_payloads[0]])
@@ -967,9 +966,21 @@ def run_verification_round(
             raise RuntimeError(f"frps log did not record udp listener startup for remote_port={remote_port}")
 
     frpc_log = read_log_text(paths.frpc_log_path)
-    for local_port in [ports.local_single, *ports.local_range_ports]:
-        if f"target=127.0.0.1:{local_port}" not in frpc_log:
-            raise RuntimeError(f"frpc log did not record udp session target 127.0.0.1:{local_port}")
+    expected_startup_summaries = [
+        (
+            "e2e-udp-single",
+            f"隧道[e2e-udp-single] 已启动 udp {ports.remote_single} -> "
+            f"127.0.0.1:{ports.local_single} tls:listen=off,backend=off",
+        ),
+        (
+            "e2e-udp-range",
+            f"隧道[e2e-udp-range] 已启动 udp {ports.remote_range_start}-{ports.remote_range_end} -> "
+            f"127.0.0.1:{ports.local_range_start}-{ports.local_range_end} tls:listen=off,backend=off",
+        ),
+    ]
+    for tunnel_name, summary in expected_startup_summaries:
+        if summary not in frpc_log:
+            raise RuntimeError(f"frpc log did not record startup summary for tunnel {tunnel_name}: {summary}")
 
     single_received, single_clients, single_error = single_handle.snapshot()
     range0_received, range0_clients, range0_error = handles_by_name["range-0"].snapshot()
@@ -1051,11 +1062,11 @@ def run_hot_reload_scenario(
     reload_range1_handle = handles_by_name["reload-range-1"]
 
     wait_log_count_at_least(paths.frps_log_path, "config acknowledged", 1, timeout_seconds, processes)
-    wait_log_count_at_least(paths.frpc_log_path, "config applied", 1, timeout_seconds, processes)
+    wait_log_count_at_least(paths.frpc_log_path, "领取配置", 1, timeout_seconds, processes)
     wait_log_count_at_least(paths.frps_log_path, "udp tunnel listener ready", 3, timeout_seconds, processes)
 
     initial_ack_count = count_log_occurrences(paths.frps_log_path, "config acknowledged")
-    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "config applied")
+    initial_apply_count = count_log_occurrences(paths.frpc_log_path, "领取配置")
     initial_listener_count = count_log_occurrences(paths.frps_log_path, "udp tunnel listener ready")
 
     removed_payload = f"{payload_prefix}-range-reload-before-removed".encode("utf-8")
@@ -1128,7 +1139,7 @@ def run_hot_reload_scenario(
         )
         wait_log_count_at_least(
             paths.frpc_log_path,
-            "config applied",
+            "领取配置",
             initial_apply_count + 1,
             timeout_seconds,
             processes,
@@ -1140,9 +1151,7 @@ def run_hot_reload_scenario(
             timeout_seconds,
             processes,
         )
-        wait_log_contains(paths.frpc_log_path, "replaced_tunnels=1", timeout_seconds, processes)
-        wait_log_contains(paths.frpc_log_path, "udp session closed", timeout_seconds, processes)
-        wait_log_contains(paths.frpc_log_path, "reload in progress", timeout_seconds, processes)
+        wait_log_contains(paths.frpc_log_path, "领取配置 隧道数量2 启用2 +0 ~1 -0", timeout_seconds, processes)
 
         expect_no_connected_udp_response(removed_sock, removed_stale_payload, min(timeout_seconds, 2.0))
         assert_udp_received_count_stable(old_range0_handle, old_range0_count, 0.5)

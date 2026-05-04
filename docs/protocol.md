@@ -66,11 +66,11 @@ read 4-byte length
 
 ## 3.3 发送约束
 
-- 控制类帧与数据类帧共用同一条底层 TCP 连接。
-- 控制类帧必须优先于数据类帧发送，避免大流量把心跳、配置同步和关闭指令饿死。
-- `stream.data` 单帧 body 最大 `64 KiB`。
+- `control connection` 只承载登录、心跳、配置同步、UDP 帧和少量控制帧。
+- `tcp work connection` 只在握手和建链阶段承载 `tcp.work.*`、`stream.open`、`stream.opened`；建链成功后立刻切到原始 TCP 字节转发，不再继续发送 `stream.data` 这类业务帧。
+- `control connection` 上的控制帧必须优先发送，避免配置同步、心跳和关闭语义被饿死。
 - `udp.data` 单帧 body 最大 `64 KiB`。
-- 发送端必须自行拆分 TCP 字节流，不允许把很大的 TCP 数据块一次性塞进一个帧。
+- `TCP` raw relay 的分块方式属于实现细节，不再定义 `stream.data` 帧级切片规则。
 
 ## 4. 业务帧格式
 
@@ -193,7 +193,7 @@ CPU 架构：
 
 - 只有“请求 -> 响应”型消息需要使用非零 `requestId`。
 - 响应消息必须回填与请求一致的 `requestId`。
-- `stream.data`、`udp.data`、单向事件上报这类消息可以使用 `0`。
+- `udp.data`、单向事件上报这类消息可以使用 `0`。
 - 同一条底层连接上，发送方在某个请求尚未完成前，不得复用该请求的 `requestId`。
 
 ## 4.7 streamId 规则
@@ -217,8 +217,6 @@ CPU 架构：
 | `0x11` | `config.ack` | `frpc -> frps` | binary |
 | `0x20` | `stream.open` | `frps -> frpc` | binary |
 | `0x21` | `stream.opened` | `frpc -> frps` | binary |
-| `0x22` | `stream.data` | 双向 | binary |
-| `0x23` | `stream.close` | 双向 | binary |
 | `0x30` | `udp.open` | `frps -> frpc` | binary |
 | `0x31` | `udp.data` | 双向 | binary |
 | `0x32` | `udp.close` | 双向 | binary |
@@ -226,12 +224,15 @@ CPU 架构：
 | `0x41` | `error` | 双向 | binary |
 | `0x50` | `transport.client_hello` | `frpc -> frps` | binary |
 | `0x51` | `transport.server_hello` | `frps -> frpc` | binary |
+| `0x52` | `tcp.work.hello` | `frpc -> frps` | binary |
+| `0x53` | `tcp.work.server_hello` | `frps -> frpc` | binary |
+| `0x54` | `tcp.work.register` | `frpc -> frps` | binary |
+| `0x55` | `tcp.work.ready` | `frps -> frpc` | binary |
 
-首版不单独定义“读请求”和“写请求”消息。对于 TCP：
+当前消息固定分成两类连接：
 
-- `stream.open` 表示创建逻辑连接。
-- `stream.data` 表示该逻辑连接上的字节流数据。
-- 数据方向由发送方决定，不再拆成 `read` 和 `write` 两种消息。
+- `control connection`：登录、心跳、配置同步、UDP 和少量错误/事件消息。
+- `tcp work connection`：先完成 `tcp.work.*` 握手，再用 `stream.open / stream.opened` 完成一次 TCP 配对，随后直接进入原始字节转发。
 
 ## 6. 登录与建链协议
 
@@ -352,6 +353,8 @@ body：
 | 2 | `sessionId` | `u64` | 当前控制连接运行态 ID |
 | 3 | `capabilityBits` | `u32` | 服务端能力位，首版固定为 `0` |
 | 4 | `serverVersion` | `shortstr` | 服务端版本 |
+| 5 | `tcpWorkPoolSize` | `u16` | 当前会话希望 `frpc` 维持的 idle `tcp work connection` 数量 |
+| 6 | `tcpWorkSecret` | `bytes32` | 当前会话专用的 `tcp work connection` 注册密钥 |
 
 登录失败时，`frps` 不发送 `server.hello`，而是发送 `error` 后关闭连接。
 
@@ -535,13 +538,80 @@ localPort = localStart + offset
 - 只要 `remoteStart / remoteEnd / localStart / localEnd` 之一变化，就视为该 tunnel 的执行配置已经整体替换。
 - 例如旧配置 `1000-2000 -> 3000-4000` 改为新配置 `1500-2500 -> 3000-4000` 时，虽然 `1500-2000` 数值上同时落在新旧范围内，但因为 `offset = remotePort - remoteStart` 的基准已经从 `1000` 变成 `1500`，对应的 `localPort` 映射整体变化，因此必须按完整替换处理。
 
-## 9. TCP 工作流协议
+## 9. TCP 工作连接与建链协议
 
-## 9.1 `stream.open`
+## 9.1 `tcp.work.hello`
 
 用途：
 
-- `frps` 通知 `frpc` 为某个公网接入连接创建对应的本地 TCP 连接。
+- `frpc` 为某个已登录 `sessionId` 新建一条 `tcp work connection`。
+
+头字段要求：
+
+- `requestId` 必须非 `0`。
+- `streamId` 必须为 `0`。
+
+body：
+
+| 顺序 | 字段 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| 1 | `sessionId` | `u64` | 对应 `server.hello.sessionId` |
+| 2 | `supportedSecurityModes` | `u8` | bitmask；`1=plain`，`2=tls` |
+
+## 9.2 `tcp.work.server_hello`
+
+用途：
+
+- `frps` 返回该 `tcp work connection` 选定的安全模式。
+
+头字段要求：
+
+- `requestId` 必须等于触发它的 `tcp.work.hello.requestId`。
+- `streamId` 必须为 `0`。
+
+body：
+
+| 顺序 | 字段 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| 1 | `selectedSecurityMode` | `u8` | `1=plain`，`2=tls` |
+
+## 9.3 `tcp.work.register`
+
+用途：
+
+- `frpc` 用当前控制会话下发的 `tcpWorkSecret` 注册这条工作连接。
+
+头字段要求：
+
+- `requestId` 必须非 `0`。
+- `streamId` 必须为 `0`。
+
+body：
+
+| 顺序 | 字段 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| 1 | `workSecret` | `bytes32` | 必须等于当前 `server.hello.tcpWorkSecret` |
+
+## 9.4 `tcp.work.ready`
+
+用途：
+
+- `frps` 确认这条 `tcp work connection` 已进入 idle 池，可用于承接 TCP 隧道流量。
+
+头字段要求：
+
+- `requestId` 必须等于触发它的 `tcp.work.register.requestId`。
+- `streamId` 必须为 `0`。
+
+body：
+
+- 空。
+
+## 9.5 `stream.open`
+
+用途：
+
+- `frps` 在某条 idle `tcp work connection` 上通知 `frpc` 为一个公网 TCP 连接创建对应本地连接。
 
 头字段要求：
 
@@ -559,12 +629,11 @@ body：
 
 `frpc` 收到 `stream.open` 后必须：
 
-1. 用 `streamId` 创建运行态记录。
-2. 依据当前已确认的 `configVersion` 查找 `tunnelId`。
-3. 计算本地目标地址。
-4. 拨号本地 TCP 服务。
-5. 成功则回复 `stream.opened`。
-6. 失败则回复 `stream.opened` 失败结果，随后结束该 `streamId`。
+1. 依据当前已确认的 `configVersion` 查找 `tunnelId`。
+2. 结合 `remotePort` 解析本地目标。
+3. 拨号本地 TCP 服务。
+4. 成功则回复 `stream.opened(status=ok)`。
+5. 失败则回复 `stream.opened(status=error)`，并释放这次建链上下文。
 
 补充约定：
 
@@ -572,11 +641,11 @@ body：
 - 对单端口 tunnel，`remotePort = remoteStart`。
 - 对 range tunnel，`frpc` 必须按 `offset = remotePort - remoteStart` 计算 `localPort = localStart + offset`。
 
-## 9.2 `stream.opened`
+## 9.6 `stream.opened`
 
 用途：
 
-- `frpc` 告知 `frps` 该逻辑连接是否已准备好。
+- `frpc` 告知 `frps` 该条工作连接上的本地 TCP 目标是否已准备好。
 
 头字段要求：
 
@@ -591,60 +660,30 @@ body：
 | 2 | `errorCode` | `u16` | 成功时为 `0` |
 | 3 | `message` | `shortstr` | 成功时应为空 |
 
-## 9.3 `stream.data`
+## 9.7 TCP raw relay 语义
 
-用途：
+- `stream.opened(status=ok)` 发出后，该 `tcp work connection` 立即从“帧模式”切换到“raw relay 模式”。
+- 切换后，这条连接上不再发送 `stream.data`、`stream.close` 或其他业务帧；双方直接双向转发原始 TCP 字节。
+- 任一侧读到 `EOF` 后，应只关闭对端写方向或关闭连接，让另一方向剩余字节尽可能继续排空。
+- 任一侧发生不可恢复读写错误、热重载冻结、session replacement、客户端重连或服务端 shutdown 时，可以直接关闭整条 busy `tcp work connection`；这就是当前 TCP 的唯一收口语义。
+- busy `tcp work connection` 结束后不得回到 idle 池；应由 `frpc` 重新补一条新的 idle work connection。
 
-- 在某个 `streamId` 上承载原始 TCP 字节流。
-
-头字段要求：
-
-- `requestId` 固定为 `0`。
-- `streamId` 必须为目标逻辑流 ID。
-- body 为原始字节，不做任何二次包装。
-
-规则如下：
-
-- `stream.data` 的方向由发送方决定。
-- 同一发送方在同一 `streamId` 上发送的数据顺序必须保持不变。
-- 不同 `streamId` 之间允许交错发送。
-- `frps` 与 `frpc` 都不得假设一个 `stream.data` 对应对端的一次 `read` 或一次 `write`；它只是一段连续字节。
-
-## 9.4 `stream.close`
-
-用途：
-
-- 关闭某个 `streamId`。
-
-头字段要求：
-
-- `requestId` 固定为 `0`。
-- `streamId` 必须为目标逻辑流 ID。
-
-body：
-
-| 顺序 | 字段 | 类型 | 说明 |
-| --- | --- | --- | --- |
-| 1 | `reasonCode` | `u16` | 关闭原因 |
-| 2 | `initiator` | `u8` | `1=frps`，`2=frpc` |
-| 3 | `message` | `shortstr` | 可为空 |
-
-首版不支持半关闭。任一端发送 `stream.close` 后，该 `streamId` 立即进入终态：
-
-- 发送方不得再继续发送该 `streamId` 的 `stream.data`。
-- 接收方收到后必须尽快释放相关资源。
-
-## 9.5 TCP 时序
+## 9.8 TCP 时序
 
 ```text
+frpc login ok
+-> frps sends server.hello(tcpWorkPoolSize, tcpWorkSecret)
+-> frpc prewarms idle tcp work connections
+-> each work conn completes tcp.work.hello / tcp.work.server_hello / tcp.work.register / tcp.work.ready
+
 public tcp accepted on frps
--> frps allocates streamId
--> frps sends stream.open
--> frpc dials local target
+-> frps acquires one idle tcp work connection
+-> frps sends stream.open on that work connection
+-> frpc dials local tcp target
 -> frpc sends stream.opened(status=ok)
--> both sides exchange stream.data
--> either side sends stream.close
--> both sides release stream resources
+-> both sides switch the same work connection to raw byte relay
+-> on EOF / error / reload / shutdown, busy work connection closes
+-> frpc replenishes idle pool
 ```
 
 ## 10. UDP 会话协议

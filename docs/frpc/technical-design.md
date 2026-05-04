@@ -48,11 +48,19 @@
   - `sessionState`
   - `readLoop`
   - `heartbeatLoop`
+- `work_conn.go`
+  - `tcp work connection` 建连与握手
+- `work_pool.go`
+  - work pool 维持与补池
+- `tcp_work_pool.go`
+  - idle / busy work conn 池
+- `tcp_work_runtime.go`
+  - work conn 上的 `stream.open` 建链和 raw relay
 - `targets.go`
   - tunnel 查找
   - TCP/UDP 共用端口偏移换算
 - `tcp_bridge.go`
-  - `stream.*`
+  - 本地 TCP stream registry 和建链辅助
 - `udp_bridge.go`
   - `udp.*`
 - `runtime_info.go`
@@ -102,7 +110,7 @@ if selected security mode == tls:
 - 活跃 stream 数
 - 活跃 UDP session 数
 - 当前配置快照
-- 活跃 TCP stream 映射
+- 活跃本地 TCP stream 映射
 - 活跃 UDP session 映射
 
 当前没有：
@@ -174,12 +182,15 @@ max(3 * heartbeat_interval, 5s)
 当前 TCP bridge 设计：
 
 ```text
-stream.open
+server.hello -> tcp work pool target
+-> prewarm idle tcp work connections
+-> tcp.work.* handshake
+-> stream.open on one work conn
 -> 按 tunnelId + remotePort 解析本地目标
 -> net.DialTimeout(local target)
 -> stream.opened
--> stream.data 双向转发
--> stream.close 收口
+-> same work conn switches to raw relay
+-> busy work conn closes on EOF / error / reload / reconnect
 ```
 
 当前错误路径：
@@ -189,8 +200,9 @@ stream.open
 - tunnel 已禁用
 - 本地拨号失败
 - 本地读写失败
+- work pool 暂时无 idle 连接
 
-每个活跃 stream 当前只保存一个 `net.Conn`，不额外持有复杂元数据。
+每个活跃本地 stream 当前只保存一个 `net.Conn`，不额外持有复杂元数据；真正的 TCP 数据面承载体是与之临时绑定的 busy work conn。
 
 ## 6. UDP 设计
 

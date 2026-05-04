@@ -372,7 +372,7 @@ def main() -> int:
                 str(binaries["frpc"]),
                 "--server",
                 f"127.0.0.1:{ports.control}",
-                "--token",
+                "--key",
                 token.token_value,
             ],
             cwd=repo_root / "frpc",
@@ -386,8 +386,8 @@ def main() -> int:
         wait_log_contains(paths.frps_log_path, "frpc control login succeeded", args.timeout, processes)
         wait_log_contains(paths.frps_log_path, "config acknowledged", args.timeout, processes)
         wait_log_contains(paths.frps_log_path, "tcp tunnel listener ready", args.timeout, processes)
-        wait_log_contains(paths.frpc_log_path, "login succeeded", args.timeout, processes)
-        wait_log_contains(paths.frpc_log_path, "config applied", args.timeout, processes)
+        wait_log_contains(paths.frpc_log_path, "登录成功", args.timeout, processes)
+        wait_log_contains(paths.frpc_log_path, "领取配置", args.timeout, processes)
 
         sampler = ProcessSampler({process.name: process for process in processes}, PROCESS_SAMPLE_INTERVAL_SECONDS)
         sampler.start()
@@ -498,7 +498,7 @@ def validate_args(args: argparse.Namespace) -> None:
 def resolve_output_dir(args: argparse.Namespace, repo_root: Path) -> Path:
     if args.output_dir:
         return Path(args.output_dir).resolve()
-    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     return (repo_root / "test" / "tmp" / f"perf-{timestamp}").resolve()
 
 

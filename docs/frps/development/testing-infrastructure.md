@@ -354,7 +354,7 @@ type Snapshot struct {
 
 - `frps/internal/control/wiring/frame_adapter.go`、`frps/internal/control/wiring/auth.go`、`frps/internal/control/wiring/configsync_adapter.go`、`frps/internal/control/wiring/refresh.go`，以及 `frpc/internal/client/client.go`、`frpc/internal/client/login.go`、`frpc/internal/client/session.go`，必须继续通过同一条“frame 级”传输 seam 交互。
 - 第一版目标不是把整个 TCP/IP 栈 fake 掉，而是稳定控制“哪一帧什么时候写出、什么时候被对端读到、是否被丢弃/延迟/重复/重排、连接何时半关闭或全关闭、旧连接残帧是否仍尝试到达”。
-- 只有把故障注入放在 frame transport / session harness 这一层，才能同时覆盖首登 `config.push`、热更新 `config.push`、`config.ack`、heartbeat、`stream.close` / `udp.close`、session replacement 和晚到错误回包；若只在 `handleConfigAck()` 或 `applyConfigPush()` 上层做 stub，会绕过真实 requestId、streamId、session 交接和写锁语义。
+- 只有把故障注入放在 frame transport / session harness 这一层，才能同时覆盖首登 `config.push`、热更新 `config.push`、`config.ack`、heartbeat、TCP busy work conn 关闭 / `udp.close`、session replacement 和晚到错误回包；若只在 `handleConfigAck()` 或 `applyConfigPush()` 上层做 stub，会绕过真实 requestId、streamId、session 交接和写锁语义。
 
 第一版边界建议固定为“两层 transport + 一层脚本化连接编排”：
 
@@ -372,7 +372,7 @@ type Snapshot struct {
 - 旧 `config.ack` 在新 `config.push` 或新 session 建立后晚到。
 - 服务端错误回包晚到，且晚到时旧 session 已关闭或新 session 已接管。
 - heartbeat 丢失、晚到、重复、与 `config.push` / `config.ack` 交错。
-- 服务端 `stream.close` / `udp.close` / shutdown 帧与 reload、断线、半关闭并发。
+- 服务端 busy work conn 关闭 / `udp.close` / shutdown 与 reload、断线、半关闭并发。
 - 单向半关闭：
   - client write closed / server read EOF，但 server->client 方向仍可写。
   - server write closed / client read EOF，但 client->server 方向仍可写。

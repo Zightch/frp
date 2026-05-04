@@ -319,23 +319,6 @@ func TestStreamMessagesRoundTrip(t *testing.T) {
 	if opened.Status != StatusError || opened.ErrorCode != ErrorCodeStreamLocalDialFailed || opened.Message != "dial failed" {
 		t.Fatalf("unexpected stream.opened: %#v", opened)
 	}
-
-	closeBody, err := MarshalStreamClose(StreamClose{
-		ReasonCode: CloseReasonEOF,
-		Initiator:  InitiatorFRPC,
-		Message:    "done",
-	})
-	if err != nil {
-		t.Fatalf("marshal stream.close: %v", err)
-	}
-
-	closeMessage, err := UnmarshalStreamClose(closeBody)
-	if err != nil {
-		t.Fatalf("unmarshal stream.close: %v", err)
-	}
-	if closeMessage.ReasonCode != CloseReasonEOF || closeMessage.Initiator != InitiatorFRPC || closeMessage.Message != "done" {
-		t.Fatalf("unexpected stream.close: %#v", closeMessage)
-	}
 }
 
 func TestUDPMessagesRoundTrip(t *testing.T) {

@@ -29,8 +29,6 @@ const (
 	TypeConfigAck            Type = 0x11
 	TypeStreamOpen           Type = 0x20
 	TypeStreamOpened         Type = 0x21
-	TypeStreamData           Type = 0x22
-	TypeStreamClose          Type = 0x23
 	TypeUDPOpen              Type = 0x30
 	TypeUDPData              Type = 0x31
 	TypeUDPClose             Type = 0x32
@@ -257,8 +255,6 @@ func (t Type) Known() bool {
 		TypeConfigAck,
 		TypeStreamOpen,
 		TypeStreamOpened,
-		TypeStreamData,
-		TypeStreamClose,
 		TypeUDPOpen,
 		TypeUDPData,
 		TypeUDPClose,
@@ -298,10 +294,6 @@ func (t Type) String() string {
 		return "stream.open"
 	case TypeStreamOpened:
 		return "stream.opened"
-	case TypeStreamData:
-		return "stream.data"
-	case TypeStreamClose:
-		return "stream.close"
 	case TypeUDPOpen:
 		return "udp.open"
 	case TypeUDPData:
@@ -457,12 +449,6 @@ type StreamOpened struct {
 	Status    uint8
 	ErrorCode uint16
 	Message   string
-}
-
-type StreamClose struct {
-	ReasonCode uint16
-	Initiator  uint8
-	Message    string
 }
 
 type UDPOpen struct {
@@ -939,32 +925,6 @@ func UnmarshalStreamOpened(data []byte) (StreamOpened, error) {
 		return message, err
 	}
 	if message.ErrorCode, err = dec.u16(); err != nil {
-		return message, err
-	}
-	if message.Message, err = dec.shortstr(); err != nil {
-		return message, err
-	}
-	return message, dec.done()
-}
-
-func MarshalStreamClose(message StreamClose) ([]byte, error) {
-	var enc bodyEncoder
-	enc.u16(message.ReasonCode)
-	enc.u8(message.Initiator)
-	if err := enc.shortstr(message.Message); err != nil {
-		return nil, err
-	}
-	return enc.bytesValue(), nil
-}
-
-func UnmarshalStreamClose(data []byte) (StreamClose, error) {
-	var message StreamClose
-	dec := newBodyDecoder(data)
-	var err error
-	if message.ReasonCode, err = dec.u16(); err != nil {
-		return message, err
-	}
-	if message.Initiator, err = dec.u8(); err != nil {
 		return message, err
 	}
 	if message.Message, err = dec.shortstr(); err != nil {

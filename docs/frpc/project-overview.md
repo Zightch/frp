@@ -32,6 +32,7 @@
 - 首次 `config.push` / `config.ack`
 - 同一控制连接上的后续在线 `config.push` / `config.ack`
 - 心跳保活
+- `tcp work pool` 预热、补池和跨 session 重建
 - TCP 单端口转发
 - TCP 连续范围映射
 - UDP 单端口转发
@@ -72,6 +73,10 @@ frpc/
 - `client.go`
 - `login.go`
 - `session.go`
+- `work_conn.go`
+- `work_pool.go`
+- `tcp_work_pool.go`
+- `tcp_work_runtime.go`
 - `targets.go`
 - `tcp_bridge.go`
 - `udp_bridge.go`
@@ -99,9 +104,10 @@ frpc --server 1.2.3.4:7000 --key <key>
 4. 登录
 5. 接收首次配置
 6. 回 `config.ack`
-7. 启动心跳和读循环
-8. 等待后续 `config.push`、`stream.*` / `udp.*`
-9. 普通断线后每 `5s` 重连
+7. 预热 idle `tcp work connection`
+8. 启动心跳和读循环
+9. 等待后续 `config.push`、`udp.*` 和 work conn 上的 `stream.open`
+10. 普通断线后每 `5s` 重连
 
 当前例外：
 

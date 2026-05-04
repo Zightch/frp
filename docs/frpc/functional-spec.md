@@ -80,18 +80,19 @@ frpc --server 1.2.3.4:7000 --key <key>
 
 当前 TCP 行为：
 
-1. 收到 `stream.open`
-2. 根据 `tunnelId` 和 `remotePort` 解析本地目标
-3. 拨号本地 TCP 服务
-4. 成功后回 `stream.opened(status=ok)`
-5. 失败后回 `stream.opened(status=error)`
-6. 双向收发 `stream.data`
-7. 收到或发送 `stream.close` 后回收本地连接
+1. 登录成功后按 `server.hello` 预热 idle `tcp work connection`
+2. 在某条 work conn 上收到 `stream.open`
+3. 根据 `tunnelId` 和 `remotePort` 解析本地目标
+4. 拨号本地 TCP 服务
+5. 成功后回 `stream.opened(status=ok)`
+6. 失败后回 `stream.opened(status=error)`
+7. 成功建链后，把这条 work conn 切到 raw relay，双向转发本地 TCP 字节
+8. EOF、读写失败、reload、重连或服务端关闭时，直接收口这条 busy work conn，并回收本地连接
 
 当前要求：
 
-- 只关闭目标 `streamId`
-- 不影响其他 stream
+- 只影响当前 busy work conn 绑定的那条 TCP 连接
+- 不得回退到 `control connection` 承载 TCP 业务字节
 
 ## 6. UDP 转发功能
 

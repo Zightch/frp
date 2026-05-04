@@ -23,6 +23,7 @@ go test ./...
 - 参数校验
 - key 解析
 - 登录逻辑
+- `tcp work pool` 维持、补池和跨 session 重建
 - target 解析
 - 范围端口换算
 - TCP/UDP bridge 关键路径
@@ -37,6 +38,10 @@ python test/e2e_tcp_single.py --scenario bad_token
 python test/e2e_tcp_single.py --scenario disabled_group
 python test/e2e_tcp_single.py --scenario disabled_tunnel
 python test/e2e_tcp_single.py --scenario local_unavailable
+python test/e2e_tcp_single.py --scenario hot_reload
+python test/e2e_tcp_single.py --scenario rate_limit_independent
+python test/e2e_tcp_single.py --scenario rate_limit_shared
+python test/e2e_tcp_single.py --scenario rate_limit_reload
 python test/e2e_tcp_range.py
 python test/e2e_udp_single.py --scenario happy_path
 python test/e2e_udp_single.py --scenario idle_cleanup
@@ -47,6 +52,7 @@ python test/e2e_udp_range.py
 
 - 登录成功和失败
 - TCP 单端口与范围
+- `tcp work pool`、热重载和限速回归
 - UDP 单端口与范围
 - UDP idle cleanup
 - 本地目标不可达
@@ -76,7 +82,15 @@ python test/e2e_udp_range.py
 - 错误消息会带当前在线 `frpc` 的 `ip:port`
 - 该场景下 `frpc` 直接退出，不进入重连
 
-### 3.3 已登录但无转发
+### 3.3 TCP 已登录但无转发
+
+优先排查：
+
+- `server.hello` 是否下发了非零 `tcp work pool` 参数
+- `frpc` 是否已经完成 work conn 预热
+- `frps` 当前是否还有 idle work conn 可分配
+- 本地目标是否真的在监听
+### 3.4 已登录但无转发
 
 优先排查：
 
@@ -85,7 +99,7 @@ python test/e2e_udp_range.py
 - 本地目标是否真的在监听
 - `remotePort` 是否命中了预期 tunnel
 
-### 3.4 UDP 行为异常
+### 3.5 UDP 行为异常
 
 当前应按下面规则判断：
 
@@ -131,7 +145,14 @@ $env:FRPC_LOG_LEVEL="debug"
 - `stream.open.remotePort` 是否是实际命中的公网端口
 - tunnel 的 `remoteStart/remoteEnd` 与 `localStart/localEnd` 是否对齐
 
-### 5.3 UDP 会话没有回收
+### 5.3 work pool 不稳定
+
+优先排查：
+
+- `frps` 是否在会话替换、reload 或 shutdown 后正确关闭旧 busy work conn
+- `frpc` 是否在同一轮会话里持续补回目标 idle 数量
+- 是否误把登录冲突或非重试远端错误当成普通重连
+### 5.4 UDP 会话没有回收
 
 优先排查：
 

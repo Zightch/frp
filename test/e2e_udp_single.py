@@ -397,7 +397,7 @@ def validate_args(args: argparse.Namespace) -> None:
 def resolve_output_dir(args: argparse.Namespace, repo_root: Path) -> Path:
     if args.output_dir:
         return Path(args.output_dir).resolve()
-    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     return (repo_root / "test" / "tmp" / f"udp-e2e-{timestamp}").resolve()
 
 

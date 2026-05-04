@@ -93,12 +93,13 @@ frps -> start listeners
 当前 TCP 行为：
 
 - listener 只在对应 `config.ack` 后启动
-- 公网连接进入后，`frps` 分配 `streamId`
-- `frps` 发送 `stream.open`
+- `frps` 为在线 session 维持 idle / busy `tcp work connection` 池
+- 公网连接进入后，`frps` 先申请一条 idle work conn，再分配 `streamId`
+- `frps` 在该 work conn 上发送 `stream.open`
 - `frpc` 返回 `stream.opened`
-- 双方通过 `stream.data` 传输原始字节
+- 成功建链后，同一条 busy work conn 直接进入 raw relay
 - 限速只在 `frps` 数据面执行
-- 任一侧结束时用 `stream.close` 收口
+- EOF、读写失败、reload、重连或 shutdown 时，直接关闭当前 busy work conn 收口
 
 ## UDP 转发
 
