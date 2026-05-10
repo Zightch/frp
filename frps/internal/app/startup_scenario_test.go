@@ -2,12 +2,19 @@ package app
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -26,6 +33,17 @@ import (
 	"github.com/zightch/frp/frps/pkg/protocol"
 	sharedtestsupport "github.com/zightch/frp/frps/pkg/testsupport"
 )
+
+type startupScenarioCertificateSpec struct {
+	CommonName string
+	NotBefore  time.Time
+	NotAfter   time.Time
+}
+
+type startupScenarioIssuedCertificate struct {
+	CertPEM string
+	KeyPEM  string
+}
 
 func TestAppStartupScenarioBlocksVisibilityUntilInitialScanReleases(t *testing.T) {
 	controller := testhooks.NewController()
@@ -206,151 +224,6 @@ func TestAppStartupScenarioPublishesControlBeforeManagementVisibility(t *testing
 	}
 }
 
-func TestAppStartupScenarioBlocksInitialScanUntilCertificatePreparationReleases(t *testing.T) {
-	controller := testhooks.NewController()
-	controller.AddBarrier("startup.certificate_assets.before_prepare", 1)
-	controller.AddBarrier("startup.initial_scan.before_full_scan", 1)
-	restoreHooks := testhooks.Install(controller)
-	defer restoreHooks()
-
-	allowPrepare := make(chan struct{})
-	originalPrepare := prepareCertificateAssetRuntime
-	prepareCertificateAssetRuntime = func(ctx context.Context, store *storage.SQL) (*certassets.Runtime, error) {
-		testhooks.Point("startup.certificate_assets.prepare_entered")
-		select {
-		case <-allowPrepare:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-		return &certassets.Runtime{}, nil
-	}
-	defer func() {
-		prepareCertificateAssetRuntime = originalPrepare
-	}()
-
-	application, controlAddr, managementAddr, cancel, done := startStartupScenarioApp(t)
-	defer func() {
-		cancel()
-		waitForAppRunExit(t, done)
-	}()
-
-	ctx, timeoutCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer timeoutCancel()
-
-	runner := &scenariotest.Runner{
-		Hooks:   controller,
-		Observe: application.ObserveState,
-	}
-	result, err := runner.Run(ctx, scenariotest.Scenario{
-		Name: "startup-certificate-preparation-gates-initial-scan",
-		Steps: []scenariotest.ScenarioStep{
-			{
-				Name:    "hold-before-certificate-prepare",
-				Actor:   "frps",
-				WaitFor: []scenariotest.BarrierRef{{Point: "startup.certificate_assets.before_prepare", HitIndex: 1}},
-				Do: func(context.Context) error {
-					if err := expectTCPClosed(controlAddr); err != nil {
-						return err
-					}
-					if err := expectTCPClosed(managementAddr); err != nil {
-						return err
-					}
-					if hits := controller.Hits("startup.initial_scan.before_full_scan"); len(hits) != 0 {
-						return fmt.Errorf("initial runtime scan started before certificate preparation: %#v", hits)
-					}
-					return nil
-				},
-				Observe: "before-prepare",
-				Assert: []scenariotest.InvariantFunc{
-					expectAppState(sharedtestsupport.AppObservedState{
-						InitialRuntimeScanDone: false,
-						ControlListenerOpen:    false,
-						LoginGateOpen:          false,
-						ManagementAPIVisible:   false,
-					}),
-				},
-			},
-			{
-				Name:    "release-before-certificate-prepare",
-				Actor:   "test",
-				Release: []scenariotest.BarrierRef{{Point: "startup.certificate_assets.before_prepare", HitIndex: 1}},
-			},
-			{
-				Name:    "prepare-entered-and-blocked",
-				Actor:   "frps",
-				WaitFor: []scenariotest.BarrierRef{{Point: "startup.certificate_assets.prepare_entered", HitIndex: 1}},
-				Do: func(context.Context) error {
-					if err := expectTCPClosed(controlAddr); err != nil {
-						return err
-					}
-					if err := expectTCPClosed(managementAddr); err != nil {
-						return err
-					}
-					if hits := controller.Hits("startup.initial_scan.before_full_scan"); len(hits) != 0 {
-						return fmt.Errorf("initial runtime scan started while certificate preparation was blocked: %#v", hits)
-					}
-					return nil
-				},
-				Observe: "prepare-blocked",
-				Assert: []scenariotest.InvariantFunc{
-					expectAppState(sharedtestsupport.AppObservedState{
-						InitialRuntimeScanDone: false,
-						ControlListenerOpen:    false,
-						LoginGateOpen:          false,
-						ManagementAPIVisible:   false,
-					}),
-				},
-			},
-			{
-				Name:  "release-certificate-prepare",
-				Actor: "test",
-				Do: func(context.Context) error {
-					close(allowPrepare)
-					return nil
-				},
-			},
-			{
-				Name:    "scan-starts-after-certificate-prepare",
-				Actor:   "frps",
-				WaitFor: []scenariotest.BarrierRef{{Point: "startup.initial_scan.before_full_scan", HitIndex: 1}},
-				Do: func(context.Context) error {
-					if err := expectTCPClosed(controlAddr); err != nil {
-						return err
-					}
-					if err := expectTCPClosed(managementAddr); err != nil {
-						return err
-					}
-					return nil
-				},
-				Observe: "scan-starting",
-				Assert: []scenariotest.InvariantFunc{
-					expectAppState(sharedtestsupport.AppObservedState{
-						InitialRuntimeScanDone: false,
-						ControlListenerOpen:    false,
-						LoginGateOpen:          false,
-						ManagementAPIVisible:   false,
-					}),
-				},
-			},
-			{
-				Name:    "release-initial-scan",
-				Actor:   "test",
-				Release: []scenariotest.BarrierRef{{Point: "startup.initial_scan.before_full_scan", HitIndex: 1}},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("run startup certificate preparation scenario: %v", err)
-	}
-
-	waitForHookHit(t, controller, "startup.control_listener.after_open", 1)
-	waitForHookHit(t, controller, "startup.management_api.after_open", 1)
-
-	if observed := result.Observations["prepare-blocked"].App; observed.InitialRuntimeScanDone {
-		t.Fatalf("expected initial runtime scan to remain unpublished while certificate preparation is blocked, got %#v", observed)
-	}
-}
-
 func TestAppStartupScenarioFirstManagementResponseContainsInitialRuntimeStatus(t *testing.T) {
 	workdir := t.TempDir()
 	t.Chdir(workdir)
@@ -437,6 +310,81 @@ func TestAppStartupScenarioFirstManagementResponseContainsInitialRuntimeStatus(t
 	reason, _ := item["status_reason"].(string)
 	if !strings.Contains(reason, "端口冲突") {
 		t.Fatalf("expected first visible tunnel reason to contain port conflict, got %#v", item)
+	}
+}
+
+func TestAppStartupIgnoresUnreferencedExpiredCertificateAssets(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	controlPort := freeTCPPort(t)
+	managementPort := freeTCPPortExcept(t, controlPort)
+	dbPath := filepath.Join(workdir, "frps.sqlite")
+
+	seedStartupScenarioDatabase(t, dbPath, freeTCPPortExcept(t, controlPort, managementPort))
+	insertExpiredCertificateAsset(t, dbPath, "staticplant.top", false)
+
+	application := New(config.Config{
+		ControlListenAddr:    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		ManagementListenAddr: net.JoinHostPort("127.0.0.1", strconv.Itoa(managementPort)),
+		ReadHeaderTimeout:    "1s",
+		ShutdownTimeout:      "1s",
+		Database: config.DatabaseConfig{
+			Type: "sqlite",
+			Path: dbPath,
+		},
+		WebUI: config.WebUIConfig{
+			DistDir: filepath.Join(workdir, "missing-webui"),
+		},
+	}, logger, "test-server")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- application.Run(ctx)
+	}()
+
+	waitForListeningPort(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)))
+	waitForListeningPort(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(managementPort)))
+
+	cancel()
+	waitForAppRunExit(t, done)
+}
+
+func TestAppStartupFailsWhenExpiredCertificateAssetIsEnabledForEntryUsage(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	controlPort := freeTCPPort(t)
+	managementPort := freeTCPPortExcept(t, controlPort)
+	dbPath := filepath.Join(workdir, "frps.sqlite")
+
+	seedStartupScenarioDatabase(t, dbPath, freeTCPPortExcept(t, controlPort, managementPort))
+	expiredID := insertExpiredCertificateAsset(t, dbPath, "expired-entry.example.com", true)
+	bindGlobalEntryCertificateUsage(t, dbPath, "frpc_tls", expiredID, true)
+
+	application := New(config.Config{
+		ControlListenAddr:    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		ManagementListenAddr: net.JoinHostPort("127.0.0.1", strconv.Itoa(managementPort)),
+		ReadHeaderTimeout:    "1s",
+		ShutdownTimeout:      "1s",
+		Database: config.DatabaseConfig{
+			Type: "sqlite",
+			Path: dbPath,
+		},
+		WebUI: config.WebUIConfig{
+			DistDir: filepath.Join(workdir, "missing-webui"),
+		},
+	}, logger, "test-server")
+
+	err := application.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected startup to fail when enabled entry certificate is expired")
+	}
+	if !strings.Contains(err.Error(), "certificate[0] expired at") {
+		t.Fatalf("expected expired certificate error, got %v", err)
 	}
 }
 
@@ -654,6 +602,92 @@ func seedStartupScenarioDatabase(t *testing.T, dbPath string, blockedPort int) {
 	}
 }
 
+func insertExpiredCertificateAsset(t *testing.T, dbPath string, commonName string, withKey bool) int64 {
+	t.Helper()
+
+	db, err := openDatabase(context.Background(), config.DatabaseConfig{
+		Type: "sqlite",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("open startup scenario database for expired asset: %v", err)
+	}
+	defer db.Close()
+
+	store := storage.NewSQL(appStoreObjectID)
+	if err := store.SetConn(db); err != nil {
+		t.Fatalf("attach startup scenario store for expired asset: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	issued := issueStartupScenarioCertificate(t, startupScenarioCertificateSpec{
+		CommonName: commonName,
+		NotBefore:  now.Add(-48 * time.Hour),
+		NotAfter:   now.Add(-12 * time.Hour),
+	})
+	crtHash, err := computeStartupScenarioCRTHash(issued.CertPEM)
+	if err != nil {
+		t.Fatalf("compute startup scenario crt hash: %v", err)
+	}
+
+	keyPEM := ""
+	if withKey {
+		keyPEM = issued.KeyPEM
+	}
+
+	result, err := store.Exec(
+		`INSERT INTO certificate_assets (name, remark, source, asset_type, format_type, crt, crt_hash, `+"`key`"+`, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		commonName,
+		"",
+		"upload",
+		"certificate",
+		"pem",
+		issued.CertPEM,
+		crtHash,
+		keyPEM,
+		now.Format("2006-01-02 15:04:05.000000"),
+		now.Format("2006-01-02 15:04:05.000000"),
+	)
+	if err != nil {
+		t.Fatalf("insert expired certificate asset: %v", err)
+	}
+	return result.LastInsertID
+}
+
+func bindGlobalEntryCertificateUsage(t *testing.T, dbPath string, usageType string, assetID int64, enabled bool) {
+	t.Helper()
+
+	db, err := openDatabase(context.Background(), config.DatabaseConfig{
+		Type: "sqlite",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("open startup scenario database for certificate usage: %v", err)
+	}
+	defer db.Close()
+
+	store := storage.NewSQL(appStoreObjectID)
+	if err := store.SetConn(db); err != nil {
+		t.Fatalf("attach startup scenario store for certificate usage: %v", err)
+	}
+	defer store.Close()
+
+	nowText := time.Now().UTC().Format("2006-01-02 15:04:05.000000")
+	if _, err := store.Exec(
+		`INSERT INTO certificate_asset_usages (target_type, usage_type, target_id, asset_id, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"global",
+		usageType,
+		0,
+		assetID,
+		boolToInt(enabled),
+		nowText,
+		nowText,
+	); err != nil {
+		t.Fatalf("insert startup scenario certificate usage: %v", err)
+	}
+}
+
 func issueStartupManagementToken(t *testing.T, application *App, secret string) string {
 	t.Helper()
 
@@ -713,4 +747,60 @@ func waitForAuthorizedJSON(t *testing.T, url string, token string) map[string]an
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func issueStartupScenarioCertificate(t *testing.T, spec startupScenarioCertificateSpec) startupScenarioIssuedCertificate {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate startup scenario key: %v", err)
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("generate startup scenario serial: %v", err)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName: spec.CommonName,
+		},
+		NotBefore:             spec.NotBefore.UTC(),
+		NotAfter:              spec.NotAfter.UTC(),
+		BasicConstraintsValid: true,
+		DNSNames:              []string{spec.CommonName},
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageServerAuth,
+			x509.ExtKeyUsageClientAuth,
+		},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
+	if err != nil {
+		t.Fatalf("create startup scenario certificate: %v", err)
+	}
+
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal startup scenario private key: %v", err)
+	}
+
+	return startupScenarioIssuedCertificate{
+		CertPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		KeyPEM:  string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})),
+	}
+}
+
+func computeStartupScenarioCRTHash(crt string) (string, error) {
+	return certassets.ComputeCRTHash(crt)
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

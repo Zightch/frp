@@ -54,7 +54,7 @@ func (s *Service) List(ctx context.Context) ([]DescribedUsage, error) {
 		usageByType[item.UsageType] = item
 	}
 
-	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
+	_, describedByID, err := s.loadDescribedState(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func (s *Service) List(ctx context.Context) ([]DescribedUsage, error) {
 		}
 		item := describeUsage(usage, describedByID)
 		if usage.Enabled {
-			resolved, err := s.resolveBindingFromState(usageType, usage.AssetID, assets, prepared, describedByID)
+			resolved, err := s.Resolve(ctx, usageType, usage.AssetID)
 			if err != nil {
 				item.Status = "error"
 				item.StatusReason = err.Error()
@@ -103,13 +103,13 @@ func (s *Service) Describe(ctx context.Context, usageType UsageType) (DescribedU
 		return DescribedUsage{}, err
 	}
 
-	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
+	_, describedByID, err := s.loadDescribedState(ctx)
 	if err != nil {
 		return DescribedUsage{}, err
 	}
 	item := describeUsage(usage, describedByID)
 	if usage.Enabled {
-		resolved, resolveErr := s.resolveBindingFromState(usageType, usage.AssetID, assets, prepared, describedByID)
+		resolved, resolveErr := s.Resolve(ctx, usageType, usage.AssetID)
 		if resolveErr != nil {
 			item.Status = "error"
 			item.StatusReason = resolveErr.Error()
@@ -127,11 +127,11 @@ func (s *Service) Resolve(ctx context.Context, usageType UsageType, assetID int6
 	if s == nil || s.store == nil {
 		return ResolvedBinding{}, fmt.Errorf("entry certificate service store is nil")
 	}
-	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
+	prepared, describedByID, err := s.loadPreparedStateForAssetIDs(ctx, []int64{assetID})
 	if err != nil {
 		return ResolvedBinding{}, err
 	}
-	binding, err := s.resolveBindingFromState(usageType, assetID, assets, prepared, describedByID)
+	binding, err := s.resolveBindingFromState(usageType, assetID, prepared, describedByID)
 	if err != nil {
 		return ResolvedBinding{}, err
 	}
@@ -143,22 +143,22 @@ func (s *Service) ResolveCertificateAsset(ctx context.Context, assetID int64) (R
 	if s == nil || s.store == nil {
 		return ResolvedBinding{}, fmt.Errorf("entry certificate service store is nil")
 	}
-	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
+	prepared, describedByID, err := s.loadPreparedStateForAssetIDs(ctx, []int64{assetID})
 	if err != nil {
 		return ResolvedBinding{}, err
 	}
-	return s.resolveCertificateAssetFromState(assetID, assets, prepared, describedByID)
+	return s.resolveCertificateAssetFromState(assetID, prepared, describedByID)
 }
 
 func (s *Service) ResolveCAPoolAssets(ctx context.Context, assetIDs []int64) (ResolvedCAPool, error) {
 	if s == nil || s.store == nil {
 		return ResolvedCAPool{}, fmt.Errorf("entry certificate service store is nil")
 	}
-	assets, prepared, describedByID, err := s.loadPreparedState(ctx)
+	prepared, describedByID, err := s.loadPreparedStateForAssetIDs(ctx, assetIDs)
 	if err != nil {
 		return ResolvedCAPool{}, err
 	}
-	return s.resolveCAPoolAssetsFromState(assetIDs, assets, prepared, describedByID)
+	return s.resolveCAPoolAssetsFromState(assetIDs, prepared, describedByID)
 }
 
 func (s *Service) LoadUsage(ctx context.Context, usageType UsageType) (Usage, bool, error) {
@@ -284,17 +284,36 @@ func describeUsage(usage Usage, describedByID map[int64]certassets.DescribedAsse
 	return item
 }
 
-func (s *Service) loadPreparedState(ctx context.Context) ([]certassets.Asset, []certassets.PreparedAsset, map[int64]certassets.DescribedAsset, error) {
+func (s *Service) loadDescribedState(ctx context.Context) ([]certassets.Asset, map[int64]certassets.DescribedAsset, error) {
 	assets, err := certassets.ListAssetsWithConn(ctx, s.store)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
+	}
+
+	described := certassets.DescribeAssetsBestEffort(assets)
+	describedByID := make(map[int64]certassets.DescribedAsset, len(described))
+	for _, item := range described {
+		describedByID[item.ID] = item
+	}
+	return assets, describedByID, nil
+}
+
+func (s *Service) loadPreparedStateForAssetIDs(ctx context.Context, assetIDs []int64) ([]certassets.PreparedAsset, map[int64]certassets.DescribedAsset, error) {
+	assets, err := certassets.ListAssetsWithConn(ctx, s.store)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	selected, err := selectAssetsForPreparation(assets, assetIDs)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	options := s.prepare
 	options.Now = s.now().UTC()
-	prepared, _, err := certassets.PrepareAssetsWithOptions(assets, options)
+	prepared, _, err := certassets.PrepareAssetsWithOptions(selected, options)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	described := certassets.DescribePreparedAssets(prepared)
@@ -302,14 +321,14 @@ func (s *Service) loadPreparedState(ctx context.Context) ([]certassets.Asset, []
 	for _, item := range described {
 		describedByID[item.ID] = item
 	}
-	return assets, prepared, describedByID, nil
+	return prepared, describedByID, nil
 }
 
-func (s *Service) resolveBindingFromState(usageType UsageType, assetID int64, _ []certassets.Asset, prepared []certassets.PreparedAsset, describedByID map[int64]certassets.DescribedAsset) (ResolvedBinding, error) {
+func (s *Service) resolveBindingFromState(usageType UsageType, assetID int64, prepared []certassets.PreparedAsset, describedByID map[int64]certassets.DescribedAsset) (ResolvedBinding, error) {
 	if !isKnownUsageType(usageType) {
 		return ResolvedBinding{}, fmt.Errorf("unsupported entry certificate type %q", usageType)
 	}
-	binding, err := s.resolveCertificateAssetFromState(assetID, nil, prepared, describedByID)
+	binding, err := s.resolveCertificateAssetFromState(assetID, prepared, describedByID)
 	if err != nil {
 		return ResolvedBinding{}, err
 	}
@@ -317,7 +336,7 @@ func (s *Service) resolveBindingFromState(usageType UsageType, assetID int64, _ 
 	return binding, nil
 }
 
-func (s *Service) resolveCertificateAssetFromState(assetID int64, _ []certassets.Asset, prepared []certassets.PreparedAsset, describedByID map[int64]certassets.DescribedAsset) (ResolvedBinding, error) {
+func (s *Service) resolveCertificateAssetFromState(assetID int64, prepared []certassets.PreparedAsset, describedByID map[int64]certassets.DescribedAsset) (ResolvedBinding, error) {
 	if assetID <= 0 {
 		return ResolvedBinding{}, fmt.Errorf("asset_id must be greater than zero")
 	}
@@ -355,7 +374,7 @@ func (s *Service) resolveCertificateAssetFromState(assetID int64, _ []certassets
 	}, nil
 }
 
-func (s *Service) resolveCAPoolAssetsFromState(assetIDs []int64, _ []certassets.Asset, prepared []certassets.PreparedAsset, describedByID map[int64]certassets.DescribedAsset) (ResolvedCAPool, error) {
+func (s *Service) resolveCAPoolAssetsFromState(assetIDs []int64, prepared []certassets.PreparedAsset, describedByID map[int64]certassets.DescribedAsset) (ResolvedCAPool, error) {
 	pool := x509.NewCertPool()
 	assets := make([]certassets.DescribedAsset, 0, len(assetIDs))
 	seen := make(map[int64]struct{}, len(assetIDs))
@@ -403,6 +422,50 @@ func (s *Service) resolveCAPoolAssetsFromState(assetIDs []int64, _ []certassets.
 		PEM:    builder.String(),
 		Pool:   pool,
 	}, nil
+}
+
+func selectAssetsForPreparation(assets []certassets.Asset, rootAssetIDs []int64) ([]certassets.Asset, error) {
+	if len(rootAssetIDs) == 0 {
+		return nil, nil
+	}
+
+	assetsByID := make(map[int64]certassets.Asset, len(assets))
+	for _, asset := range assets {
+		assetsByID[asset.ID] = asset
+	}
+
+	selected := make([]certassets.Asset, 0, len(rootAssetIDs))
+	selectedSet := make(map[int64]struct{}, len(rootAssetIDs))
+
+	for _, rootID := range rootAssetIDs {
+		if rootID <= 0 {
+			return nil, fmt.Errorf("asset_id must be greater than zero")
+		}
+
+		currentID := rootID
+		chainSeen := make(map[int64]struct{})
+		for currentID > 0 {
+			if _, ok := chainSeen[currentID]; ok {
+				return nil, fmt.Errorf("issuer cycle detected for asset %d", rootID)
+			}
+			chainSeen[currentID] = struct{}{}
+
+			asset, ok := assetsByID[currentID]
+			if !ok {
+				return nil, sql.ErrNoRows
+			}
+			if _, ok := selectedSet[currentID]; !ok {
+				selected = append(selected, asset)
+				selectedSet[currentID] = struct{}{}
+			}
+			if !asset.HasIssuer() {
+				break
+			}
+			currentID = *asset.IssuerAssetID
+		}
+	}
+
+	return selected, nil
 }
 
 func buildCertificatePEM(target certassets.PreparedAsset, prepared []certassets.PreparedAsset) (string, int, error) {
