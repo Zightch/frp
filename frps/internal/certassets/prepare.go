@@ -17,6 +17,7 @@ import (
 type PrepareOptions struct {
 	Now                time.Time
 	LoadSystemCertPool func() (*x509.CertPool, error)
+	IgnoreTimeValidity bool
 }
 
 type PreparedAsset struct {
@@ -83,7 +84,7 @@ func PrepareAssetsWithOptions(assets []Asset, options PrepareOptions) ([]Prepare
 		systemCAPool = x509.NewCertPool()
 	}
 
-	prepared, err := prepareAssets(assets, systemCAPool, now)
+	prepared, err := prepareAssets(assets, systemCAPool, now, options)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -121,13 +122,13 @@ func ComputeCRTHash(crt string) (string, error) {
 	return computeCertificateHash(certs), nil
 }
 
-func prepareAssets(assets []Asset, systemCAPool *x509.CertPool, now time.Time) ([]PreparedAsset, error) {
+func prepareAssets(assets []Asset, systemCAPool *x509.CertPool, now time.Time, options PrepareOptions) ([]PreparedAsset, error) {
 	preparedByID := make(map[int64]PreparedAsset, len(assets))
 	prepared := make([]PreparedAsset, 0, len(assets))
 	parseErrors := make([]error, 0)
 
 	for _, asset := range assets {
-		current, err := parseAsset(asset, now)
+		current, err := parseAsset(asset, now, options)
 		if err != nil {
 			parseErrors = append(parseErrors, wrapAssetError(asset, err))
 			continue
@@ -154,7 +155,7 @@ func prepareAssets(assets []Asset, systemCAPool *x509.CertPool, now time.Time) (
 
 	verificationErrors := make([]error, 0)
 	for _, current := range prepared {
-		if err := validateAssetChain(current, preparedByID, systemCAPool, now); err != nil {
+		if err := validateAssetChain(current, preparedByID, systemCAPool, now, options.IgnoreTimeValidity); err != nil {
 			verificationErrors = append(verificationErrors, wrapAssetError(current.Asset, err))
 		}
 	}
@@ -165,7 +166,7 @@ func prepareAssets(assets []Asset, systemCAPool *x509.CertPool, now time.Time) (
 	return prepared, nil
 }
 
-func parseAsset(asset Asset, now time.Time) (PreparedAsset, error) {
+func parseAsset(asset Asset, now time.Time, options PrepareOptions) (PreparedAsset, error) {
 	if err := validateStaticAssetFields(asset); err != nil {
 		return PreparedAsset{}, err
 	}
@@ -195,8 +196,10 @@ func parseAsset(asset Asset, now time.Time) (PreparedAsset, error) {
 	if err := validateAssetTopology(asset, certs[0]); err != nil {
 		return PreparedAsset{}, err
 	}
-	if err := validateCertificateTimes(certs, now); err != nil {
-		return PreparedAsset{}, err
+	if !options.IgnoreTimeValidity {
+		if err := validateCertificateTimes(certs, now); err != nil {
+			return PreparedAsset{}, err
+		}
 	}
 
 	return PreparedAsset{
@@ -385,7 +388,7 @@ func detectIssuerCycles(prepared []PreparedAsset) error {
 	return nil
 }
 
-func validateAssetChain(asset PreparedAsset, assetsByID map[int64]PreparedAsset, systemCAPool *x509.CertPool, now time.Time) error {
+func validateAssetChain(asset PreparedAsset, assetsByID map[int64]PreparedAsset, systemCAPool *x509.CertPool, now time.Time, ignoreTimeValidity bool) error {
 	roots := x509.NewCertPool()
 	if systemCAPool != nil {
 		roots = systemCAPool.Clone()
@@ -426,15 +429,35 @@ func validateAssetChain(asset PreparedAsset, assetsByID map[int64]PreparedAsset,
 		roots.AddCert(asset.Leaf)
 	}
 
+	verifyTime := now
+	if ignoreTimeValidity {
+		verifyTime = managementVerifyTime(asset, now)
+	}
+
 	if _, err := asset.Leaf.Verify(x509.VerifyOptions{
 		Roots:         roots,
 		Intermediates: intermediates,
-		CurrentTime:   now,
+		CurrentTime:   verifyTime,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 	}); err != nil {
 		return fmt.Errorf("verify certificate chain: %w", err)
 	}
 	return nil
+}
+
+func managementVerifyTime(asset PreparedAsset, fallback time.Time) time.Time {
+	if asset.Leaf == nil {
+		return fallback
+	}
+
+	verifyTime := asset.Leaf.NotBefore.UTC()
+	if verifyTime.IsZero() {
+		return fallback
+	}
+	if asset.Leaf.NotAfter.Before(verifyTime) {
+		return fallback
+	}
+	return verifyTime
 }
 
 func addCertificateToPools(cert *x509.Certificate, roots *x509.CertPool, intermediates *x509.CertPool) {

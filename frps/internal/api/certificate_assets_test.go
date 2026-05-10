@@ -178,6 +178,111 @@ func TestCertificateAssetsLifecycle(t *testing.T) {
 	}
 }
 
+func TestCertificateAssetsExpiredAssetStillListsAndDeletes(t *testing.T) {
+	store := newTestStore(t)
+	manager := newTestAuthManager(t, true)
+
+	server, err := NewServer(
+		Options{
+			Addr:              "127.0.0.1:7080",
+			ReadHeaderTimeout: 5 * time.Second,
+			Store:             store,
+			Auth:              manager,
+		},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		"test",
+	)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+
+	sessionCookie := authenticatedManagementCookie(t, manager)
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	expired := issueAPITestCertificate(t, apiTestCertificateSpec{
+		CommonName: "staticplant.top",
+		NotBefore:  now.Add(-48 * time.Hour),
+		NotAfter:   now.Add(-12 * time.Hour),
+	})
+	crtHash, err := certassets.ComputeCRTHash(expired.CertPEM)
+	if err != nil {
+		t.Fatalf("compute crt hash: %v", err)
+	}
+	expiredID, err := certassets.InsertAsset(context.Background(), store, certassets.Asset{
+		Name:       "staticplant.top",
+		Source:     certassets.SourceUpload,
+		AssetType:  certassets.AssetTypeCertificate,
+		FormatType: certassets.FormatTypePEM,
+		CRT:        expired.CertPEM,
+		CRTHash:    crtHash,
+		Key:        expired.KeyPEM,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	if err != nil {
+		t.Fatalf("insert expired asset: %v", err)
+	}
+
+	list := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	items := list.JSON["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("unexpected asset count: %#v", list.JSON)
+	}
+	item := items[0].(map[string]any)
+	if int64(item["id"].(float64)) != expiredID {
+		t.Fatalf("unexpected listed asset: %#v", item)
+	}
+	if item["not_after"] == "" {
+		t.Fatalf("expected expired asset to keep not_after metadata: %#v", item)
+	}
+
+	impact := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(expiredID, 10)+"/delete-impact",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if impact.JSON["target"].(map[string]any)["id"].(float64) != float64(expiredID) {
+		t.Fatalf("unexpected delete impact target: %#v", impact.JSON)
+	}
+
+	deleted := performRequest(
+		t,
+		server.Handler(),
+		http.MethodDelete,
+		"/api/v1/certificate-assets/"+strconv.FormatInt(expiredID, 10),
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if deleted.JSON["deleted"] != true {
+		t.Fatalf("unexpected delete response: %#v", deleted.JSON)
+	}
+
+	listAfterDelete := performRequest(
+		t,
+		server.Handler(),
+		http.MethodGet,
+		"/api/v1/certificate-assets",
+		nil,
+		http.StatusOK,
+		sessionCookie,
+	)
+	if len(listAfterDelete.JSON["items"].([]any)) != 0 {
+		t.Fatalf("expected empty asset list after delete: %#v", listAfterDelete.JSON)
+	}
+}
+
 func TestCertificateAssetsGenerateSupportsCustomKeySpec(t *testing.T) {
 	store := newTestStore(t)
 	manager := newTestAuthManager(t, true)

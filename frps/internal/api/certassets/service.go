@@ -20,6 +20,7 @@ type Options struct {
 }
 
 type Service struct {
+	store      *storage.SQL
 	assets     *domaincertassets.Service
 	entryCerts *entrycerts.Service
 }
@@ -30,6 +31,7 @@ func NewService(options Options) *Service {
 	}
 
 	return &Service{
+		store:      options.Store,
 		assets:     domaincertassets.NewService(options.Store, domaincertassets.ServiceOptions{}),
 		entryCerts: entrycerts.NewService(options.Store, entrycerts.ServiceOptions{}),
 	}
@@ -218,7 +220,7 @@ func (s *Service) activeEntryCertificateConflicts(ctx context.Context, assetIDs 
 		return nil, nil
 	}
 
-	items, err := s.entryCerts.List(ctx)
+	usages, err := entrycerts.ListUsagesWithConn(ctx, s.store)
 	if err != nil {
 		return nil, mapEntryCertificateError(err)
 	}
@@ -229,14 +231,21 @@ func (s *Service) activeEntryCertificateConflicts(ctx context.Context, assetIDs 
 	}
 
 	conflicts := make([]entryCertificateView, 0)
-	for _, item := range items {
-		if item.AssetID == nil || !item.Enabled {
+	for _, usage := range usages {
+		if usage.TargetType != entrycerts.TargetTypeGlobal || usage.AssetID <= 0 || !usage.Enabled {
 			continue
 		}
-		if _, ok := seen[*item.AssetID]; !ok {
+		if _, ok := seen[usage.AssetID]; !ok {
 			continue
 		}
-		conflicts = append(conflicts, mapEntryCertificateView(item))
+		assetID := usage.AssetID
+		conflicts = append(conflicts, entryCertificateView{
+			UsageType: string(usage.UsageType),
+			AssetID:   &assetID,
+			Enabled:   usage.Enabled,
+			Status:    "enabled",
+			UpdatedAt: usage.UpdatedAt.UTC().Format(schemaTimestampLayout),
+		})
 	}
 	return conflicts, nil
 }

@@ -37,20 +37,24 @@ func (s *Service) Download(ctx context.Context, id int64, request DownloadReques
 	if err != nil {
 		return DownloadArtifact{}, err
 	}
-	prepared, _, err := PrepareAssetsWithOptions(assets, s.prepareOptionsAt(s.now()))
-	if err != nil {
-		return DownloadArtifact{}, err
-	}
-	return buildDownloadArtifact(prepared, id, request)
+	return buildDownloadArtifactFromAssets(assets, id, request)
 }
 
 func buildDownloadArtifact(prepared []PreparedAsset, id int64, request DownloadRequest) (DownloadArtifact, error) {
-	target, ok := FindPreparedAssetByID(prepared, id)
+	assets := make([]Asset, 0, len(prepared))
+	for _, item := range prepared {
+		assets = append(assets, item.Asset)
+	}
+	return buildDownloadArtifactFromAssets(assets, id, request)
+}
+
+func buildDownloadArtifactFromAssets(assets []Asset, id int64, request DownloadRequest) (DownloadArtifact, error) {
+	target, ok := findAssetByID(assets, id)
 	if !ok {
 		return DownloadArtifact{}, sql.ErrNoRows
 	}
 
-	options, err := buildDownloadOptions(prepared, id)
+	options, err := buildDownloadOptionsFromAssets(assets, id)
 	if err != nil {
 		return DownloadArtifact{}, err
 	}
@@ -63,9 +67,9 @@ func buildDownloadArtifact(prepared []PreparedAsset, id int64, request DownloadR
 		return DownloadArtifact{}, err
 	}
 
-	preparedByID := make(map[int64]PreparedAsset, len(prepared))
-	for _, item := range prepared {
-		preparedByID[item.Asset.ID] = item
+	assetsByID := make(map[int64]Asset, len(assets))
+	for _, item := range assets {
+		assetsByID[item.ID] = item
 	}
 
 	var files []downloadFile
@@ -75,12 +79,12 @@ func buildDownloadArtifact(prepared []PreparedAsset, id int64, request DownloadR
 	case DownloadModeSingle:
 		files = buildSingleDownloadFiles(target)
 	case DownloadModeChain:
-		files, err = buildChainDownloadFiles(target, options, preparedByID, request.AncestorAssetID)
+		files, err = buildChainDownloadFiles(target, options, assetsByID, request.AncestorAssetID)
 		if err != nil {
 			return DownloadArtifact{}, err
 		}
 	case DownloadModeTree:
-		files, err = buildTreeDownloadFiles(options, preparedByID, request.AssetIDs)
+		files, err = buildTreeDownloadFiles(options, assetsByID, request.AssetIDs)
 		if err != nil {
 			return DownloadArtifact{}, err
 		}
@@ -97,7 +101,7 @@ func buildDownloadArtifact(prepared []PreparedAsset, id int64, request DownloadR
 		return DownloadArtifact{}, err
 	}
 	return DownloadArtifact{
-		FileName:    downloadArchiveName(target.Asset, mode),
+		FileName:    downloadArchiveName(target, mode),
 		ContentType: downloadArtifactContentType,
 		Body:        body,
 	}, nil
@@ -162,46 +166,46 @@ func validateDownloadRequestShape(mode DownloadMode, request DownloadRequest) er
 	return nil
 }
 
-func buildSingleDownloadFiles(target PreparedAsset) []downloadFile {
+func buildSingleDownloadFiles(target Asset) []downloadFile {
 	files := make([]downloadFile, 0, 2)
 	files = append(files, downloadFile{
-		Name:    downloadCRTFileName(target.Asset, ""),
-		Content: []byte(target.Asset.CRT),
+		Name:    downloadCRTFileName(target, ""),
+		Content: []byte(target.CRT),
 	})
-	if target.Asset.HasKey() {
+	if target.HasKey() {
 		files = append(files, downloadFile{
-			Name:    downloadKeyFileName(target.Asset),
-			Content: []byte(target.Asset.Key),
+			Name:    downloadKeyFileName(target),
+			Content: []byte(target.Key),
 		})
 	}
 	return files
 }
 
-func buildAssetMaterialFiles(target PreparedAsset, crtSuffix string) []downloadFile {
+func buildAssetMaterialFiles(target Asset, crtSuffix string) []downloadFile {
 	files := make([]downloadFile, 0, 2)
 	files = append(files, downloadFile{
-		Name:    downloadCRTFileName(target.Asset, crtSuffix),
-		Content: []byte(target.Asset.CRT),
+		Name:    downloadCRTFileName(target, crtSuffix),
+		Content: []byte(target.CRT),
 	})
-	if target.Asset.HasKey() {
+	if target.HasKey() {
 		files = append(files, downloadFile{
-			Name:    downloadKeyFileName(target.Asset),
-			Content: []byte(target.Asset.Key),
+			Name:    downloadKeyFileName(target),
+			Content: []byte(target.Key),
 		})
 	}
 	return files
 }
 
-func buildChainDownloadFiles(target PreparedAsset, options DownloadOptions, preparedByID map[int64]PreparedAsset, ancestorAssetID *int64) ([]downloadFile, error) {
+func buildChainDownloadFiles(target Asset, options DownloadOptions, assetsByID map[int64]Asset, ancestorAssetID *int64) ([]downloadFile, error) {
 	var chain bytes.Buffer
 	foundAncestor := ancestorAssetID == nil
 
 	for _, item := range options.ChainItems {
-		prepared, exists := preparedByID[item.Item.ID]
+		asset, exists := assetsByID[item.Item.ID]
 		if !exists {
-			return nil, fmt.Errorf("prepared asset %d not found for download", item.Item.ID)
+			return nil, fmt.Errorf("asset %d not found for download", item.Item.ID)
 		}
-		chain.WriteString(prepared.Asset.CRT)
+		chain.WriteString(asset.CRT)
 		if ancestorAssetID != nil && item.Item.ID == *ancestorAssetID {
 			foundAncestor = true
 			break
@@ -218,19 +222,19 @@ func buildChainDownloadFiles(target PreparedAsset, options DownloadOptions, prep
 
 	files := make([]downloadFile, 0, 2)
 	files = append(files, downloadFile{
-		Name:    downloadCRTFileName(target.Asset, "chain"),
+		Name:    downloadCRTFileName(target, "chain"),
 		Content: []byte(normalizePEMText(chain.String())),
 	})
-	if target.Asset.HasKey() {
+	if target.HasKey() {
 		files = append(files, downloadFile{
-			Name:    downloadKeyFileName(target.Asset),
-			Content: []byte(target.Asset.Key),
+			Name:    downloadKeyFileName(target),
+			Content: []byte(target.Key),
 		})
 	}
 	return files, nil
 }
 
-func buildTreeDownloadFiles(options DownloadOptions, preparedByID map[int64]PreparedAsset, requestedIDs []int64) ([]downloadFile, error) {
+func buildTreeDownloadFiles(options DownloadOptions, assetsByID map[int64]Asset, requestedIDs []int64) ([]downloadFile, error) {
 	available := make(map[int64]struct{}, len(options.TreeItems))
 	for _, item := range options.TreeItems {
 		available[item.Item.ID] = struct{}{}
@@ -256,11 +260,11 @@ func buildTreeDownloadFiles(options DownloadOptions, preparedByID map[int64]Prep
 			}
 		}
 
-		prepared, exists := preparedByID[item.Item.ID]
+		asset, exists := assetsByID[item.Item.ID]
 		if !exists {
-			return nil, fmt.Errorf("prepared asset %d not found for download", item.Item.ID)
+			return nil, fmt.Errorf("asset %d not found for download", item.Item.ID)
 		}
-		files = append(files, buildAssetMaterialFiles(prepared, "")...)
+		files = append(files, buildAssetMaterialFiles(asset, "")...)
 	}
 
 	if len(files) == 0 {

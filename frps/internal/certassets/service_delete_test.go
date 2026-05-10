@@ -83,12 +83,7 @@ func TestBuildDeleteImpactIncludesUploadedAssetsThatLoseDatabaseBackedChain(t *t
 		},
 	}
 
-	prepared, _, err := PrepareAssetsWithOptions(assets, options)
-	if err != nil {
-		t.Fatalf("prepare assets: %v", err)
-	}
-
-	impact, err := buildDeleteImpact(assets, prepared, 1, options)
+	impact, err := buildDeleteImpact(assets, 1, options)
 	if err != nil {
 		t.Fatalf("build delete impact: %v", err)
 	}
@@ -109,5 +104,70 @@ func TestBuildDeleteImpactIncludesUploadedAssetsThatLoseDatabaseBackedChain(t *t
 	}
 	if _, exists := affectedByID[3]; !exists {
 		t.Fatalf("expected leaf to be affected: %#v", impact)
+	}
+}
+
+func TestBuildDeleteImpactIgnoresBaselineExpiredAsset(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	expired := issueTestCertificate(t, certificateSpec{
+		CommonName: "expired-cert",
+		NotBefore:  now.Add(-72 * time.Hour),
+		NotAfter:   now.Add(-24 * time.Hour),
+	})
+	healthy := issueTestCertificate(t, certificateSpec{
+		CommonName: "healthy-cert",
+		NotBefore:  now.Add(-time.Hour),
+		NotAfter:   now.Add(24 * time.Hour),
+	})
+
+	expiredHash, err := ComputeCRTHash(expired.CertPEM)
+	if err != nil {
+		t.Fatalf("compute expired crt hash: %v", err)
+	}
+	healthyHash, err := ComputeCRTHash(healthy.CertPEM)
+	if err != nil {
+		t.Fatalf("compute healthy crt hash: %v", err)
+	}
+
+	assets := []Asset{
+		{
+			ID:         1,
+			Name:       "expired-cert",
+			Source:     SourceUpload,
+			AssetType:  AssetTypeCertificate,
+			FormatType: FormatTypePEM,
+			CRT:        expired.CertPEM,
+			CRTHash:    expiredHash,
+			Key:        expired.KeyPEM,
+		},
+		{
+			ID:         2,
+			Name:       "healthy-cert",
+			Source:     SourceUpload,
+			AssetType:  AssetTypeCertificate,
+			FormatType: FormatTypePEM,
+			CRT:        healthy.CertPEM,
+			CRTHash:    healthyHash,
+			Key:        healthy.KeyPEM,
+		},
+	}
+
+	options := PrepareOptions{
+		Now:                now,
+		IgnoreTimeValidity: true,
+		LoadSystemCertPool: func() (*x509.CertPool, error) { return x509.NewCertPool(), nil },
+	}
+
+	impact, err := buildDeleteImpact(assets, 2, options)
+	if err != nil {
+		t.Fatalf("build delete impact: %v", err)
+	}
+	if impact.Target.ID != 2 {
+		t.Fatalf("unexpected target id: got %d want 2", impact.Target.ID)
+	}
+	if len(impact.Affected) != 0 {
+		t.Fatalf("unexpected affected items: %#v", impact.Affected)
 	}
 }

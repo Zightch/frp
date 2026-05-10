@@ -48,36 +48,40 @@ func (s *Service) DownloadOptions(ctx context.Context, id int64) (DownloadOption
 	if err != nil {
 		return DownloadOptions{}, err
 	}
-	prepared, _, err := PrepareAssetsWithOptions(assets, s.prepareOptionsAt(s.now()))
-	if err != nil {
-		return DownloadOptions{}, err
-	}
-	return buildDownloadOptions(prepared, id)
+	return buildDownloadOptionsFromAssets(assets, id)
 }
 
 func buildDownloadOptions(prepared []PreparedAsset, id int64) (DownloadOptions, error) {
-	target, ok := FindPreparedAssetByID(prepared, id)
+	assets := make([]Asset, 0, len(prepared))
+	for _, item := range prepared {
+		assets = append(assets, item.Asset)
+	}
+	return buildDownloadOptionsFromAssets(assets, id)
+}
+
+func buildDownloadOptionsFromAssets(assets []Asset, id int64) (DownloadOptions, error) {
+	target, ok := findAssetByID(assets, id)
 	if !ok {
 		return DownloadOptions{}, sql.ErrNoRows
 	}
 
-	described := DescribePreparedAssets(prepared)
+	described := DescribeAssetsBestEffort(assets)
 	describedByID := make(map[int64]DescribedAsset, len(described))
-	preparedByID := make(map[int64]PreparedAsset, len(prepared))
-	childrenByParentID := make(map[int64][]PreparedAsset)
+	assetsByID := make(map[int64]Asset, len(assets))
+	childrenByParentID := make(map[int64][]Asset)
 	for _, item := range described {
 		describedByID[item.ID] = item
 	}
-	for _, item := range prepared {
-		preparedByID[item.Asset.ID] = item
-		if item.Asset.HasIssuer() {
-			parentID := *item.Asset.IssuerAssetID
+	for _, item := range assets {
+		assetsByID[item.ID] = item
+		if item.HasIssuer() {
+			parentID := *item.IssuerAssetID
 			childrenByParentID[parentID] = append(childrenByParentID[parentID], item)
 		}
 	}
 	for parentID := range childrenByParentID {
 		sort.Slice(childrenByParentID[parentID], func(left, right int) bool {
-			return childrenByParentID[parentID][left].Asset.ID < childrenByParentID[parentID][right].Asset.ID
+			return childrenByParentID[parentID][left].ID < childrenByParentID[parentID][right].ID
 		})
 	}
 
@@ -85,7 +89,7 @@ func buildDownloadOptions(prepared []PreparedAsset, id int64) (DownloadOptions, 
 		Target: describedByID[id],
 	}
 
-	if target.Asset.Source == SourceUpload {
+	if target.Source == SourceUpload {
 		options.Modes = []DownloadModeOption{
 			{Mode: DownloadModeOriginal, Default: true},
 		}
@@ -100,14 +104,18 @@ func buildDownloadOptions(prepared []PreparedAsset, id int64) (DownloadOptions, 
 	current := target
 	depth := 0
 	for {
+		currentDescription, ok := describedByID[current.ID]
+		if !ok {
+			return DownloadOptions{}, fmt.Errorf("described asset %d not found", current.ID)
+		}
 		options.ChainItems = append(options.ChainItems, DownloadChainItem{
-			Item:  describedByID[current.Asset.ID],
+			Item:  currentDescription,
 			Depth: depth,
 		})
-		if !current.Asset.HasIssuer() {
+		if !current.HasIssuer() {
 			break
 		}
-		next, exists := preparedByID[*current.Asset.IssuerAssetID]
+		next, exists := assetsByID[*current.IssuerAssetID]
 		if !exists {
 			break
 		}
@@ -115,7 +123,7 @@ func buildDownloadOptions(prepared []PreparedAsset, id int64) (DownloadOptions, 
 		depth++
 	}
 
-	if target.Asset.AssetType != AssetTypeCA {
+	if target.AssetType != AssetTypeCA {
 		return options, nil
 	}
 
@@ -125,8 +133,8 @@ func buildDownloadOptions(prepared []PreparedAsset, id int64) (DownloadOptions, 
 	walk = func(parentID int64, depth int) {
 		item := describedByID[parentID]
 		var parentAssetID *int64
-		if preparedItem, exists := preparedByID[parentID]; exists && preparedItem.Asset.HasIssuer() {
-			parentAssetID = preparedItem.Asset.IssuerAssetID
+		if assetItem, exists := assetsByID[parentID]; exists && assetItem.HasIssuer() {
+			parentAssetID = assetItem.IssuerAssetID
 		}
 		options.TreeItems = append(options.TreeItems, DownloadTreeItem{
 			Item:          item,
@@ -134,7 +142,7 @@ func buildDownloadOptions(prepared []PreparedAsset, id int64) (DownloadOptions, 
 			Depth:         depth,
 		})
 		for _, child := range childrenByParentID[parentID] {
-			walk(child.Asset.ID, depth+1)
+			walk(child.ID, depth+1)
 		}
 	}
 	walk(id, 0)
