@@ -31,6 +31,8 @@ type AssetView struct {
 	CanIssue      bool     `json:"can_issue"`
 	IsSelfSigned  bool     `json:"is_self_signed"`
 	ChainLength   int      `json:"chain_length"`
+	Status        string   `json:"status"`
+	StatusReason  string   `json:"status_reason,omitempty"`
 	CreatedAt     string   `json:"created_at"`
 	UpdatedAt     string   `json:"updated_at"`
 }

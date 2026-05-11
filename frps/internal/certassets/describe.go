@@ -4,6 +4,13 @@ import (
 	"crypto/x509"
 	"net"
 	"sort"
+	"time"
+)
+
+const (
+	AssetStatusNormal  = "normal"
+	AssetStatusWarning = "warning"
+	AssetStatusBroken  = "broken"
 )
 
 type DescribedAsset struct {
@@ -21,6 +28,8 @@ type DescribedAsset struct {
 	CanIssue     bool
 	IsSelfSigned bool
 	ChainLength  int
+	Status       string
+	StatusReason string
 }
 
 func DescribePreparedAssets(prepared []PreparedAsset) []DescribedAsset {
@@ -53,9 +62,20 @@ func DescribeAssetsBestEffort(assets []Asset) []DescribedAsset {
 		issuerNames[item.ID] = item.Name
 	}
 
+	now := time.Now().UTC()
+	prepared, systemCAPool := PrepareAssetsBestEffort(assets, PrepareOptions{
+		Now:                    now,
+		IgnoreTimeValidity:     true,
+		IgnoreSemanticValidity: true,
+	})
+	preparedByID := make(map[int64]PreparedAsset, len(prepared))
+	for _, item := range prepared {
+		preparedByID[item.Asset.ID] = item
+	}
+
 	items := make([]DescribedAsset, 0, len(assets))
 	for _, item := range assets {
-		items = append(items, describeAssetBestEffort(item, issuerNames))
+		items = append(items, describeAssetBestEffort(item, issuerNames, preparedByID, systemCAPool, now))
 	}
 	sort.Slice(items, func(left, right int) bool {
 		return items[left].ID < items[right].ID
@@ -71,6 +91,7 @@ func describePreparedAsset(item PreparedAsset, issuerNames map[int64]string) Des
 		CanIssue:     item.Asset.Source == SourceGenerated && item.Asset.AssetType == AssetTypeCA && item.Asset.HasKey(),
 		IsSelfSigned: isSelfSigned(leaf),
 		ChainLength:  len(item.Certificates),
+		Status:       AssetStatusNormal,
 	}
 	if item.Asset.HasIssuer() {
 		described.IssuerName = issuerNames[*item.Asset.IssuerAssetID]
@@ -90,34 +111,47 @@ func describePreparedAsset(item PreparedAsset, issuerNames map[int64]string) Des
 	return described
 }
 
-func describeAssetBestEffort(asset Asset, issuerNames map[int64]string) DescribedAsset {
+func describeAssetBestEffort(asset Asset, issuerNames map[int64]string, preparedByID map[int64]PreparedAsset, systemCAPool *x509.CertPool, now time.Time) DescribedAsset {
 	described := DescribedAsset{
 		Asset:        asset,
 		KeyPresent:   asset.HasKey(),
 		CanIssue:     asset.Source == SourceGenerated && asset.AssetType == AssetTypeCA && asset.HasKey(),
 		IsSelfSigned: false,
 		ChainLength:  0,
+		Status:       AssetStatusBroken,
 	}
 	if asset.HasIssuer() {
 		described.IssuerName = issuerNames[*asset.IssuerAssetID]
 	}
 
-	certs, err := parseCertificatesPEM(asset.CRT)
-	if err != nil || len(certs) == 0 || certs[0] == nil {
-		return described
+	prepared, ok := preparedByID[asset.ID]
+	if !ok {
+		broken, err := parseAsset(asset, now, PrepareOptions{
+			Now:                    now,
+			IgnoreTimeValidity:     true,
+			IgnoreSemanticValidity: true,
+		})
+		if err == nil {
+			prepared = broken
+		} else {
+			described.StatusReason = err.Error()
+			return described
+		}
 	}
 
-	leaf := certs[0]
-	described.IsSelfSigned = isSelfSigned(leaf)
-	described.ChainLength = len(certs)
-	described.CommonName = leaf.Subject.CommonName
-	described.Subject = leaf.Subject.String()
-	described.Issuer = leaf.Issuer.String()
-	described.SerialNumber = leaf.SerialNumber.Text(16)
-	described.NotBefore = leaf.NotBefore.UTC().Format(schemaTimestampLayout)
-	described.NotAfter = leaf.NotAfter.UTC().Format(schemaTimestampLayout)
-	described.DNSNames = append([]string(nil), leaf.DNSNames...)
-	described.IPAddresses = ipAddressesToStrings(leaf.IPAddresses)
+	described = describePreparedAsset(prepared, issuerNames)
+	described.Status = AssetStatusNormal
+
+	if err := validateCertificateTimes(prepared.Certificates, now); err != nil {
+		described.Status = AssetStatusWarning
+		described.StatusReason = err.Error()
+		return described
+	}
+	if err := validateAssetChain(prepared, preparedByID, systemCAPool, now, false); err != nil {
+		described.Status = AssetStatusWarning
+		described.StatusReason = err.Error()
+		return described
+	}
 	return described
 }
 

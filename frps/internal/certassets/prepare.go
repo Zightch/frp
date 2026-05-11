@@ -15,9 +15,10 @@ import (
 )
 
 type PrepareOptions struct {
-	Now                time.Time
-	LoadSystemCertPool func() (*x509.CertPool, error)
-	IgnoreTimeValidity bool
+	Now                    time.Time
+	LoadSystemCertPool     func() (*x509.CertPool, error)
+	IgnoreTimeValidity     bool
+	IgnoreSemanticValidity bool
 }
 
 type PreparedAsset struct {
@@ -91,6 +92,37 @@ func PrepareAssetsWithOptions(assets []Asset, options PrepareOptions) ([]Prepare
 	return prepared, systemCAPool, nil
 }
 
+func PrepareAssetsBestEffort(assets []Asset, options PrepareOptions) ([]PreparedAsset, *x509.CertPool) {
+	now := options.Now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	loadSystemCertPool := options.LoadSystemCertPool
+	if loadSystemCertPool == nil {
+		loadSystemCertPool = x509.SystemCertPool
+	}
+
+	systemCAPool, err := loadSystemCertPool()
+	if err != nil || systemCAPool == nil {
+		systemCAPool = x509.NewCertPool()
+	}
+
+	result := make([]PreparedAsset, 0, len(assets))
+	for _, asset := range assets {
+		current, err := parseAsset(asset, now, PrepareOptions{
+			Now:                    now,
+			IgnoreTimeValidity:     true,
+			IgnoreSemanticValidity: true,
+		})
+		if err != nil {
+			continue
+		}
+		result = append(result, current)
+	}
+	return result, systemCAPool
+}
+
 func (r *Runtime) SystemCACount() int {
 	if r == nil {
 		return 0
@@ -140,27 +172,29 @@ func prepareAssets(assets []Asset, systemCAPool *x509.CertPool, now time.Time, o
 		return nil, errors.Join(parseErrors...)
 	}
 
-	relationshipErrors := make([]error, 0)
-	for _, current := range prepared {
-		if err := validateIssuerRelation(current, preparedByID); err != nil {
-			relationshipErrors = append(relationshipErrors, wrapAssetError(current.Asset, err))
+	if !options.IgnoreSemanticValidity {
+		relationshipErrors := make([]error, 0)
+		for _, current := range prepared {
+			if err := validateIssuerRelation(current, preparedByID); err != nil {
+				relationshipErrors = append(relationshipErrors, wrapAssetError(current.Asset, err))
+			}
 		}
-	}
-	if cycleErr := detectIssuerCycles(prepared); cycleErr != nil {
-		relationshipErrors = append(relationshipErrors, cycleErr)
-	}
-	if len(relationshipErrors) > 0 {
-		return nil, errors.Join(relationshipErrors...)
-	}
+		if cycleErr := detectIssuerCycles(prepared); cycleErr != nil {
+			relationshipErrors = append(relationshipErrors, cycleErr)
+		}
+		if len(relationshipErrors) > 0 {
+			return nil, errors.Join(relationshipErrors...)
+		}
 
-	verificationErrors := make([]error, 0)
-	for _, current := range prepared {
-		if err := validateAssetChain(current, preparedByID, systemCAPool, now, options.IgnoreTimeValidity); err != nil {
-			verificationErrors = append(verificationErrors, wrapAssetError(current.Asset, err))
+		verificationErrors := make([]error, 0)
+		for _, current := range prepared {
+			if err := validateAssetChain(current, preparedByID, systemCAPool, now, options.IgnoreTimeValidity); err != nil {
+				verificationErrors = append(verificationErrors, wrapAssetError(current.Asset, err))
+			}
 		}
-	}
-	if len(verificationErrors) > 0 {
-		return nil, errors.Join(verificationErrors...)
+		if len(verificationErrors) > 0 {
+			return nil, errors.Join(verificationErrors...)
+		}
 	}
 
 	return prepared, nil
@@ -184,17 +218,19 @@ func parseAsset(asset Asset, now time.Time, options PrepareOptions) (PreparedAss
 		return PreparedAsset{}, fmt.Errorf("crt_hash mismatch")
 	}
 
-	if err := validateAssetSourceStructure(asset, certs); err != nil {
-		return PreparedAsset{}, err
-	}
 	if err := validatePrivateKey(asset, now); err != nil {
 		return PreparedAsset{}, err
 	}
-	if err := validateCertificateUsage(asset, certs[0]); err != nil {
-		return PreparedAsset{}, err
-	}
-	if err := validateAssetTopology(asset, certs[0]); err != nil {
-		return PreparedAsset{}, err
+	if !options.IgnoreSemanticValidity {
+		if err := validateAssetSourceStructure(asset, certs); err != nil {
+			return PreparedAsset{}, err
+		}
+		if err := validateCertificateUsage(asset, certs[0]); err != nil {
+			return PreparedAsset{}, err
+		}
+		if err := validateAssetTopology(asset, certs[0]); err != nil {
+			return PreparedAsset{}, err
+		}
 	}
 	if !options.IgnoreTimeValidity {
 		if err := validateCertificateTimes(certs, now); err != nil {

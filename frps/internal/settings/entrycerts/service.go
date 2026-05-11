@@ -70,17 +70,22 @@ func (s *Service) List(ctx context.Context) ([]DescribedUsage, error) {
 			continue
 		}
 		item := describeUsage(usage, describedByID)
-		if usage.Enabled {
-			resolved, err := s.Resolve(ctx, usageType, usage.AssetID)
-			if err != nil {
-				item.Status = "error"
-				item.StatusReason = err.Error()
-			} else {
-				item.Status = "enabled"
-				item.ResolvedChainLength = resolved.ResolvedChainLength
-			}
-		} else {
+		switch {
+		case !usage.Enabled:
 			item.Status = "disabled"
+		case item.Asset == nil:
+			item.Status = "broken"
+			item.StatusReason = "bound asset not found"
+		case item.Asset.Status == certassets.AssetStatusBroken:
+			item.Status = "broken"
+			item.StatusReason = item.Asset.StatusReason
+		case item.Asset.Status == certassets.AssetStatusWarning:
+			item.Status = "warning"
+			item.StatusReason = item.Asset.StatusReason
+			item.ResolvedChainLength = item.Asset.ChainLength
+		default:
+			item.Status = "enabled"
+			item.ResolvedChainLength = item.Asset.ChainLength
 		}
 		items = append(items, item)
 	}
@@ -108,17 +113,26 @@ func (s *Service) Describe(ctx context.Context, usageType UsageType) (DescribedU
 		return DescribedUsage{}, err
 	}
 	item := describeUsage(usage, describedByID)
-	if usage.Enabled {
-		resolved, resolveErr := s.Resolve(ctx, usageType, usage.AssetID)
-		if resolveErr != nil {
-			item.Status = "error"
-			item.StatusReason = resolveErr.Error()
-		} else {
-			item.Status = "enabled"
-			item.ResolvedChainLength = resolved.ResolvedChainLength
-		}
-	} else {
+	if !usage.Enabled {
 		item.Status = "disabled"
+		return item, nil
+	}
+	if item.Asset == nil {
+		item.Status = "broken"
+		item.StatusReason = "bound asset not found"
+		return item, nil
+	}
+	switch item.Asset.Status {
+	case certassets.AssetStatusBroken:
+		item.Status = "broken"
+		item.StatusReason = item.Asset.StatusReason
+	case certassets.AssetStatusWarning:
+		item.Status = "warning"
+		item.StatusReason = item.Asset.StatusReason
+		item.ResolvedChainLength = item.Asset.ChainLength
+	default:
+		item.Status = "enabled"
+		item.ResolvedChainLength = item.Asset.ChainLength
 	}
 	return item, nil
 }
@@ -311,10 +325,7 @@ func (s *Service) loadPreparedStateForAssetIDs(ctx context.Context, assetIDs []i
 
 	options := s.prepare
 	options.Now = s.now().UTC()
-	prepared, _, err := certassets.PrepareAssetsWithOptions(selected, options)
-	if err != nil {
-		return nil, nil, err
-	}
+	prepared, _ := certassets.PrepareAssetsBestEffort(selected, options)
 
 	described := certassets.DescribePreparedAssets(prepared)
 	describedByID := make(map[int64]certassets.DescribedAsset, len(described))
@@ -396,7 +407,7 @@ func (s *Service) resolveCAPoolAssetsFromState(assetIDs []int64, prepared []cert
 
 		target, ok := preparedByID[assetID]
 		if !ok {
-			return ResolvedCAPool{}, sql.ErrNoRows
+			continue
 		}
 		if target.Asset.AssetType != certassets.AssetTypeCA {
 			return ResolvedCAPool{}, fmt.Errorf("bound asset must be a ca")
@@ -446,13 +457,16 @@ func selectAssetsForPreparation(assets []certassets.Asset, rootAssetIDs []int64)
 		chainSeen := make(map[int64]struct{})
 		for currentID > 0 {
 			if _, ok := chainSeen[currentID]; ok {
-				return nil, fmt.Errorf("issuer cycle detected for asset %d", rootID)
+				break
 			}
 			chainSeen[currentID] = struct{}{}
 
 			asset, ok := assetsByID[currentID]
 			if !ok {
-				return nil, sql.ErrNoRows
+				if currentID == rootID {
+					return nil, sql.ErrNoRows
+				}
+				break
 			}
 			if _, ok := selectedSet[currentID]; !ok {
 				selected = append(selected, asset)
@@ -488,13 +502,13 @@ func buildCertificatePEM(target certassets.PreparedAsset, prepared []certassets.
 	for current.Asset.HasIssuer() {
 		issuerID := *current.Asset.IssuerAssetID
 		if _, ok := visited[issuerID]; ok {
-			return "", 0, fmt.Errorf("issuer chain contains a cycle")
+			break
 		}
 		visited[issuerID] = struct{}{}
 
 		issuer, ok := preparedByID[issuerID]
 		if !ok {
-			return "", 0, fmt.Errorf("issuer asset %d not found", issuerID)
+			break
 		}
 		if isSelfSigned(issuer.Leaf) {
 			break

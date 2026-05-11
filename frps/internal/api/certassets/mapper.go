@@ -116,6 +116,8 @@ func MapAssetView(item domaincertassets.DescribedAsset) AssetView {
 		CanIssue:      item.CanIssue,
 		IsSelfSigned:  item.IsSelfSigned,
 		ChainLength:   item.ChainLength,
+		Status:        item.Status,
+		StatusReason:  item.StatusReason,
 		CreatedAt:     item.CreatedAt.UTC().Format(schemaTimestampLayout),
 		UpdatedAt:     item.UpdatedAt.UTC().Format(schemaTimestampLayout),
 	}

@@ -175,12 +175,7 @@ func (s *Service) Import(ctx context.Context, input CreateInput) (DescribedAsset
 			return err
 		}
 
-		preparedAll, _, err := PrepareAssetsWithOptions(append(cloneAssets(existing), candidate), s.managementPrepareOptionsAt(now))
-		if err != nil {
-			return validationErrorFromPrepare(candidate, err)
-		}
-
-		created, err = insertAndDescribeAsset(ctx, tx, candidate, preparedAll, now)
+		created, err = insertAndDescribeAsset(ctx, tx, candidate, now)
 		return err
 	})
 	return created, err
@@ -200,12 +195,7 @@ func (s *Service) Generate(ctx context.Context, input GenerateInput) (DescribedA
 			return err
 		}
 
-		preparedAll, _, err := PrepareAssetsWithOptions(append(cloneAssets(existing), candidate), s.managementPrepareOptionsAt(now))
-		if err != nil {
-			return validationErrorFromPrepare(candidate, err)
-		}
-
-		created, err = insertAndDescribeAsset(ctx, tx, candidate, preparedAll, now)
+		created, err = insertAndDescribeAsset(ctx, tx, candidate, now)
 		return err
 	})
 	return created, err
@@ -214,7 +204,7 @@ func (s *Service) Generate(ctx context.Context, input GenerateInput) (DescribedA
 func (s *Service) UpdateMetadata(ctx context.Context, id int64, input UpdateMetadataInput) (DescribedAsset, error) {
 	var updated DescribedAsset
 	err := s.withTx(ctx, func(tx *storage.Tx, existing []Asset, _ []PreparedAsset, now time.Time) error {
-		current, ok := findAssetByID(existing, id)
+		_, ok := findAssetByID(existing, id)
 		if !ok {
 			return sql.ErrNoRows
 		}
@@ -250,12 +240,7 @@ func (s *Service) UpdateMetadata(ctx context.Context, id int64, input UpdateMeta
 			break
 		}
 
-		preparedAll, _, err := PrepareAssetsWithOptions(updatedAssets, s.managementPrepareOptionsAt(now))
-		if err != nil {
-			return validationErrorFromPrepare(current, err)
-		}
-
-		described := DescribePreparedAssets(preparedAll)
+		described := DescribeAssetsBestEffort(updatedAssets)
 		for _, item := range described {
 			if item.ID == id {
 				updated = item
@@ -329,10 +314,7 @@ func (s *Service) withTx(ctx context.Context, fn func(tx *storage.Tx, existing [
 			return err
 		}
 		now := s.now()
-		preparedExisting, _, err := PrepareAssetsWithOptions(existing, s.managementPrepareOptionsAt(now))
-		if err != nil {
-			return err
-		}
+		preparedExisting, _ := PrepareAssetsBestEffort(existing, s.managementPrepareOptionsAt(now))
 		return fn(tx, existing, preparedExisting, now)
 	})
 }
@@ -745,7 +727,7 @@ func generatePEMMaterial(input generateMaterialInput) (string, string, error) {
 	return normalizePEMText(crt), normalizePEMText(keyPEM), nil
 }
 
-func insertAndDescribeAsset(ctx context.Context, tx *storage.Tx, candidate Asset, preparedAll []PreparedAsset, now time.Time) (DescribedAsset, error) {
+func insertAndDescribeAsset(ctx context.Context, tx *storage.Tx, candidate Asset, now time.Time) (DescribedAsset, error) {
 	candidate.CreatedAt = now.UTC()
 	candidate.UpdatedAt = now.UTC()
 
@@ -765,19 +747,17 @@ func insertAndDescribeAsset(ctx context.Context, tx *storage.Tx, candidate Asset
 		}
 	}
 
-	preparedCandidate, ok := FindPreparedAssetByID(preparedAll, candidate.ID)
-	if !ok {
-		return DescribedAsset{}, fmt.Errorf("prepared candidate asset %d not found", candidate.ID)
+	currentAssets, err := ListAssetsWithConn(ctx, tx)
+	if err != nil {
+		return DescribedAsset{}, err
 	}
-	preparedCandidate.Asset.ID = insertID
-	preparedCandidate.Asset.CreatedAt = candidate.CreatedAt
-	preparedCandidate.Asset.UpdatedAt = candidate.UpdatedAt
-
-	issuerNames := make(map[int64]string, len(preparedAll))
-	for _, item := range preparedAll {
-		issuerNames[item.Asset.ID] = item.Asset.Name
+	described := DescribeAssetsBestEffort(currentAssets)
+	for _, item := range described {
+		if item.ID == insertID {
+			return item, nil
+		}
 	}
-	return describePreparedAsset(preparedCandidate, issuerNames), nil
+	return DescribedAsset{}, fmt.Errorf("described candidate asset %d not found", candidate.ID)
 }
 
 func ensureNameAvailable(existing []Asset, name string) error {

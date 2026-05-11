@@ -242,6 +242,12 @@ func TestCertificateAssetsExpiredAssetStillListsAndDeletes(t *testing.T) {
 	if item["not_after"] == "" {
 		t.Fatalf("expected expired asset to keep not_after metadata: %#v", item)
 	}
+	if item["status"] != "warning" {
+		t.Fatalf("expected expired asset to be warning, got %#v", item)
+	}
+	if item["status_reason"] == "" {
+		t.Fatalf("expected expired asset to carry warning reason: %#v", item)
+	}
 
 	impact := performRequest(
 		t,

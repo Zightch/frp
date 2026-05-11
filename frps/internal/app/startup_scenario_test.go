@@ -352,7 +352,7 @@ func TestAppStartupIgnoresUnreferencedExpiredCertificateAssets(t *testing.T) {
 	waitForAppRunExit(t, done)
 }
 
-func TestAppStartupFailsWhenExpiredCertificateAssetIsEnabledForEntryUsage(t *testing.T) {
+func TestAppStartupAllowsExpiredCertificateAssetWhenEnabledForEntryUsage(t *testing.T) {
 	workdir := t.TempDir()
 	t.Chdir(workdir)
 
@@ -379,13 +379,17 @@ func TestAppStartupFailsWhenExpiredCertificateAssetIsEnabledForEntryUsage(t *tes
 		},
 	}, logger, "test-server")
 
-	err := application.Run(context.Background())
-	if err == nil {
-		t.Fatal("expected startup to fail when enabled entry certificate is expired")
-	}
-	if !strings.Contains(err.Error(), "certificate[0] expired at") {
-		t.Fatalf("expected expired certificate error, got %v", err)
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- application.Run(ctx)
+	}()
+
+	waitForListeningPort(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)))
+	waitForListeningPort(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(managementPort)))
+
+	cancel()
+	waitForAppRunExit(t, done)
 }
 
 func startStartupScenarioApp(t *testing.T) (*App, string, string, context.CancelFunc, <-chan error) {

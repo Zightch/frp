@@ -21,6 +21,9 @@ func (a *App) initEntryCertificates(ctx context.Context, service *entrycerts.Ser
 		if !item.Enabled || item.AssetID == nil {
 			continue
 		}
+		if item.Status == "broken" {
+			continue
+		}
 
 		binding, err := service.Resolve(ctx, item.UsageType, *item.AssetID)
 		if err != nil {
