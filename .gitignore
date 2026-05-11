@@ -26,8 +26,6 @@ docs/tmp/*
 frps/data/
 frps/configs/
 frps/frps
-frps/frps.exe
 frpc/frpc
-frpc/frpc.exe
 
 CLAUDE.md
